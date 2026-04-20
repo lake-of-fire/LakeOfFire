@@ -963,6 +963,7 @@ public class ReaderModeViewModel: ObservableObject {
     private var syntheticLoadIssuedAtByURL: [String: Date] = [:]
     private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
     private var activeRenderGenerationByURL: [String: UUID] = [:]
+    private var completedRenderGenerationByURL: [String: UUID] = [:]
     private var metadataRefreshTaskByURL: [String: Task<Void, Never>] = [:]
     private var metadataRefreshGenerationByURL: [String: UUID] = [:]
 
@@ -1085,6 +1086,9 @@ public class ReaderModeViewModel: ObservableObject {
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
         expectedSyntheticReaderLoaderURL = nil
         lastRenderedURL = nil
+        if let completedURL {
+            completedRenderGenerationByURL.removeValue(forKey: canonicalRenderKey(completedURL))
+        }
         readerModeLoading(false)
         if let completedURL {
             let elapsed = loadStartTimes[completedURL.absoluteString].map { formattedInterval(Date().timeIntervalSince($0)) } ?? "nil"
@@ -1118,6 +1122,10 @@ public class ReaderModeViewModel: ObservableObject {
         updatePendingReaderModeURL(nil, reason: "markReaderModeLoadComplete")
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
+        let renderKey = canonicalRenderKey(canonicalURL)
+        if let activeGeneration = activeRenderGenerationByURL[renderKey] {
+            completedRenderGenerationByURL[renderKey] = activeGeneration
+        }
         lastRenderedURL = canonicalURL
         readerModeLoadCompletionHandler?(canonicalURL)
         debugPrint(
@@ -1130,6 +1138,8 @@ public class ReaderModeViewModel: ObservableObject {
             "# READERLOAD stage=readerMode.markComplete",
             "url=\(canonicalURL.absoluteString)",
             "elapsed=\(elapsed)",
+            "renderGeneration=\(renderGenerationDescription(for: renderKey))",
+            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: canonicalURL))",
             "matchesPending=\(matchesPending)",
             "matchesLastRendered=\(matchesLastRendered)",
             "matchesExpected=\(matchesExpected)",
@@ -1179,6 +1189,7 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = nil
         if matchesLastRendered {
             lastRenderedURL = nil
+            completedRenderGenerationByURL.removeValue(forKey: canonicalRenderKey(canonicalURL))
         }
         if matchesPending {
             updatePendingReaderModeURL(nil, reason: "clearReadabilityCache")
@@ -1274,6 +1285,35 @@ public class ReaderModeViewModel: ObservableObject {
         return nil
     }
 
+    private func logSharedReaderFontInjectionDecision(
+        mode: SharedReaderFontInjectionMode,
+        pageURL: URL,
+        stylesheetURLTemplate: String? = nil,
+        base64: String? = nil
+    ) {
+        let desiredFamily = UserDefaults.standard.string(forKey: "readerFont") ?? "nil"
+        var metadata: [String: String] = [
+            "mode": mode.rawValue,
+            "pageURL": pageURL.absoluteString,
+            "desiredFamily": desiredFamily,
+            "fontAssetPresent": sharedReaderFontAsset == nil ? "0" : "1",
+            "fontAssetFilename": sharedReaderFontAsset?.publicFilename ?? "nil",
+            "fontAssetFamilies": sharedReaderFontAsset?.supportedFamilyNames.joined(separator: "|") ?? "nil",
+            "fontCSSBase64Present": {
+                guard let base64 else { return "0" }
+                return base64.isEmpty ? "0" : "1"
+            }(),
+        ]
+        if let stylesheetURLTemplate {
+            metadata["stylesheetURLTemplate"] = stylesheetURLTemplate
+        }
+        if let base64, !base64.isEmpty {
+            metadata["fontCSSBase64Length"] = String(base64.count)
+            metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
+        }
+        print("# EPUB", "sharedReaderFont.inject", metadata)
+    }
+
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
         guard !pageURL.isReaderURLLoaderURL else { return false }
         if sharedReaderFontUsesLocalScheme(for: pageURL) {
@@ -1288,6 +1328,11 @@ public class ReaderModeViewModel: ObservableObject {
         guard !pageURL.isReaderURLLoaderURL else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
+            logSharedReaderFontInjectionDecision(
+                mode: .localScheme,
+                pageURL: pageURL,
+                stylesheetURLTemplate: stylesheetURLTemplate
+            )
             let js = """
             (function() {
                 const postLog = (message) => {
@@ -1432,6 +1477,11 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
+        logSharedReaderFontInjectionDecision(
+            mode: .blob,
+            pageURL: pageURL,
+            base64: base64
+        )
         let fontHash = readerFontPayloadHash(base64)
         let js = """
             (function() {
@@ -1748,7 +1798,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func currentRenderGenerationDescription(for url: URL) -> String {
-        activeRenderGenerationDescription(for: canonicalRenderKey(url))
+        renderGenerationDescription(for: canonicalRenderKey(url))
     }
 
     private func markSyntheticLoadIssued(for url: URL) {
@@ -1790,7 +1840,7 @@ public class ReaderModeViewModel: ObservableObject {
             "hasReaderContent=\(hasReaderContent)",
             "hasReaderRenderReady=\(hasReaderRenderReady)",
             "reason=\(reason)",
-            "renderGeneration=\(activeRenderGenerationDescription(for: canonicalRenderKey(pageURL)))",
+            "renderGeneration=\(renderGenerationDescription(for: canonicalRenderKey(pageURL)))",
             "manabiFontPending=\(manabiFontPending)",
             "bodyVisibility=\(bodyVisibility)",
             "bodyOpacity=\(bodyOpacity)",
@@ -1800,6 +1850,16 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func activeRenderGenerationDescription(for key: String) -> String {
         activeRenderGenerationByURL[key]?.uuidString ?? "nil"
+    }
+
+    private func renderGenerationDescription(for key: String) -> String {
+        if let activeGeneration = activeRenderGenerationByURL[key] {
+            return activeGeneration.uuidString
+        }
+        if let completedGeneration = completedRenderGenerationByURL[key] {
+            return completedGeneration.uuidString
+        }
+        return "nil"
     }
 
     private func metadataRefreshGenerationDescription(for key: String) -> String {
@@ -1844,6 +1904,14 @@ public class ReaderModeViewModel: ObservableObject {
         guard let activeGeneration = activeRenderGenerationByURL[key], activeGeneration == generation else {
             return
         }
+        completedRenderGenerationByURL[key] = generation
+        debugPrint(
+            "# READERLOAD stage=readerMode.renderGenerationHandoff",
+            "url=\(url.absoluteString)",
+            "reason=\(reason)",
+            "generation=\(generation.uuidString)",
+            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: url))"
+        )
         activeRenderTaskByURL.removeValue(forKey: key)
         activeRenderGenerationByURL.removeValue(forKey: key)
         debugPrint(
@@ -1968,6 +2036,7 @@ public class ReaderModeViewModel: ObservableObject {
         let generation = UUID()
         let scheduledAt = CFAbsoluteTimeGetCurrent()
         activeRenderGenerationByURL[key] = generation
+        completedRenderGenerationByURL.removeValue(forKey: key)
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
             let operationInvokeStartedAt = CFAbsoluteTimeGetCurrent()

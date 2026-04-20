@@ -16,10 +16,6 @@ fileprivate let blockedHosts = Set([
     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
 ])
 
-private func logLandscapeInset(_ message: String) {
-    debugPrint("# LANDSCAPEINSET \(message)")
-}
-
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {

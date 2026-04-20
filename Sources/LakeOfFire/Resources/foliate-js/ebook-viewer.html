@@ -8,7 +8,9 @@
             <style>
                 body {
                     --active-bg: rgba(0, 0, 0, .05);
-                    --side-nav-width: 32px;
+                    --side-nav-width: 28px;
+                    --page-read-button-size: 28px;
+                    --nav-relocate-reserve: 112px;
                 }
                 @media screen and (min-width: 960px) {
                     body {
@@ -45,8 +47,11 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
+                    --manabi-nav-bar-height: 44px;
                     --manabi-toolbar-bottom-offset: 0px;
                     --manabi-obscured-bottom-inset: 0px;
+                    --manabi-toolbar-visual-drop: 6px;
+                    --manabi-reader-stage-bottom-inset: calc(var(--manabi-nav-bar-height) + var(--manabi-toolbar-bottom-offset, 0px));
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
@@ -97,6 +102,17 @@
                     stroke-width: 2px;
                     flex-shrink: 0;
                 }
+                .sr-only {
+                    position: absolute !important;
+                    width: 1px !important;
+                    height: 1px !important;
+                    padding: 0 !important;
+                    margin: -1px !important;
+                    overflow: hidden !important;
+                    clip: rect(0 0 0 0) !important;
+                    white-space: nowrap !important;
+                    border: 0 !important;
+                }
                 .icon.finish-icon {
                     width: 1em;
                     height: 1em;
@@ -114,7 +130,10 @@
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
-                    width: 100dvw;
+                    left: 0;
+                    right: 0;
+                    width: auto;
+                    max-width: 100%;
                     height: 63px;
                     /*padding: 6px;*/
                     transition: opacity 250ms ease;
@@ -196,23 +215,23 @@
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: var(--manabi-toolbar-bottom-offset, 0px);
-                    height: 39px !important;
-                    min-height: 39px;
-                    max-height: 39px;
-                    flex: 0 0 39px;
+                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px));
+                    height: var(--manabi-nav-bar-height) !important;
+                    min-height: var(--manabi-nav-bar-height);
+                    max-height: var(--manabi-nav-bar-height);
+                    flex: 0 0 var(--manabi-nav-bar-height);
                     -webkit-backdrop-filter: blur(30px);
                     contain: strict;
                     padding: 0;
                 }
                 #reader-stage {
                     position: absolute;
-                    inset: 0;
+                    top: 0;
+                    right: 0;
+                    bottom: var(--manabi-reader-stage-bottom-inset, 0px);
+                    left: 0;
                     overflow: hidden;
                     z-index: 1;
-                }
-                body.nav-hidden {
-                    --manabi-highlight-opacity: 0.5;
                 }
                 .nav-relocate-button,
                 .nav-section-progress,
@@ -258,8 +277,17 @@
                     position: relative;
                     display: block;
                     padding: 0 var(--nav-horizontal-padding);
-                    height: 39px;
+                    height: 44px;
                     box-sizing: border-box;
+                }
+                #nav-primary-cluster {
+                    position: absolute;
+                    top: 3px;
+                    left: var(--nav-horizontal-padding);
+                    right: var(--nav-horizontal-padding);
+                    height: 26px;
+                    min-width: 0;
+                    pointer-events: none;
                 }
                 #nav-primary-text {
                     font-weight: 500;
@@ -268,19 +296,23 @@
                     font-size: 10px !important;
                     line-height: 12px;
                     position: absolute;
-                    top: 3px;
+                    top: 0;
                     left: 50%;
                     transform: translateX(-50%);
-                    width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    display: inline-grid;
+                    width: max-content;
+                    max-width: min(220px, calc(100vw - (var(--nav-horizontal-padding) * 2) - (var(--nav-relocate-reserve) * 2)));
                     white-space: nowrap;
                     direction: ltr;
                     unicode-bidi: isolate;
                     pointer-events: auto;
                     height: 26px;
                     box-sizing: border-box;
+                    flex: 0 1 auto;
+                    min-width: 0;
                 }
                 .nav-action-link {
-                    display: block;
+                    display: inline-block;
                     background: none;
                     border: none;
                     color: inherit;
@@ -311,9 +343,9 @@
                     margin-top: 14px;
                 }
                 .nav-primary-layer {
-                    position: absolute;
-                    inset: 0;
+                    grid-area: 1 / 1;
                     display: block;
+                    min-width: 0;
                     overflow: hidden;
                     text-overflow: ellipsis;
                     white-space: nowrap;
@@ -332,8 +364,10 @@
                 #nav-primary-text[data-label-variant="compact"] #nav-primary-text-full {
                     opacity: 0;
                 }
-                #nav-primary-text[data-label-variant="compact"] ~ #nav-primary-percent,
                 #nav-primary-text[data-label-variant="compact"] #nav-primary-text-compact {
+                    opacity: 0.8;
+                }
+                #nav-primary-percent:not([hidden]) {
                     opacity: 0.8;
                 }
                 #nav-primary-text-compact {
@@ -344,24 +378,7 @@
                     display: none;
                 }
                 #nav-hidden-overlay {
-                    position: fixed;
-                    left: 50%;
-                    right: auto;
-                    transform: translateX(-50%);
-                    bottom: calc(16px + var(--manabi-toolbar-bottom-offset, 0px));
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 2px;
-                    pointer-events: none;
-                    opacity: 0;
-                    transition: opacity 240ms ease;
-                    z-index: 6;
-                    padding: 0;
-                    box-sizing: border-box;
-                    width: max-content;
-                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    display: none !important;
                 }
                 #nav-hidden-overlay .nav-hidden-label {
                     font-weight: 500;
@@ -378,17 +395,17 @@
                 }
                 #nav-hidden-primary-text {
                     pointer-events: auto;
+                    display: inline-block;
+                    width: max-content;
+                    max-width: 100%;
                 }
-                body.nav-hidden #nav-primary-text,
-                body.nav-hidden #nav-primary-percent {
-                    opacity: 0 !important;
-                    pointer-events: none !important;
-                }
-                body.nav-hidden #nav-hidden-overlay {
-                    opacity: 1;
+                #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
+                    opacity: 1 !important;
+                    pointer-events: auto !important;
                 }
                 #nav-bar.nav-hidden-due-to-scroll {
-                    display: none;
+                    -webkit-backdrop-filter: none;
+                    backdrop-filter: none;
                 }
                 .nav-section-progress {
                     font-size: var(--nav-section-progress-font-size, 14px);
@@ -402,7 +419,7 @@
                 }
                 .nav-relocate-button {
                     display: flex;
-                    align-items: flex-end;
+                    align-items: center;
                     justify-content: flex-start;
                     flex-direction: row;
                     gap: 4px;
@@ -411,15 +428,19 @@
                     color: var(--nav-relocate-icon-color, var(--nav-accent-color, var(--secondary-color)));
                     font-size: var(--nav-section-progress-font-size, 16px);
                     font-weight: 500;
-                    padding: 4px 12px;
+                    padding: 3px 10px;
                     min-height: 26px;
                     border-radius: 999px;
                     cursor: pointer;
                     transition: color 0.2s ease, opacity 375ms ease-out, background-color 0.2s ease;
-                    position: absolute;
-                    bottom: calc(-1 * var(--nav-relocate-baseline-offset));
                     direction: ltr;
                     line-height: 1.2;
+                    pointer-events: auto;
+                    flex: 0 1 auto;
+                    min-width: 0;
+                    max-width: min(140px, 32vw);
+                    position: absolute;
+                    top: 0;
                 }
                 .nav-relocate-button:disabled {
                     opacity: 0.35;
@@ -427,14 +448,6 @@
                 }
                 .nav-relocate-button[hidden] {
                     display: none;
-                }
-                .nav-relocate-button[data-nav-edge='left'] {
-                    left: calc(var(--nav-horizontal-padding) + var(--nav-left-aux-inset, 0px));
-                    right: auto;
-                }
-                .nav-relocate-button[data-nav-edge='right'] {
-                    right: calc(var(--nav-horizontal-padding) + var(--nav-right-aux-inset, 0px));
-                    left: auto;
                 }
                 .nav-relocate-icon {
                     width: 1em;
@@ -452,6 +465,8 @@
                     color: var(--nav-relocate-icon-color, currentColor);
                     font-size: var(--nav-section-progress-font-size, 16px);
                     white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
                     direction: ltr;
                     unicode-bidi: plaintext;
                 }
@@ -466,17 +481,12 @@
                     opacity: 0;
                     pointer-events: none;
                 }
-                body.nav-hidden .nav-relocate-button,
-                body.nav-hidden .nav-section-progress,
-                body.nav-hidden #nav-section-progress-leading,
-                body.nav-hidden #nav-section-progress-trailing,
-                body.nav-hidden #nav-bottom-row,
-                body.nav-hidden #progress-wrapper {
-                    opacity: 0;
-                    pointer-events: none;
-                }
-                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
-                #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row {
+                #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
+                #nav-bar.nav-hidden-due-to-scroll .nav-section-progress,
+                #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-leading,
+                #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-trailing,
+                #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row,
+                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper {
                     opacity: 0;
                     pointer-events: none;
                 }
@@ -568,7 +578,7 @@
                 #nav-section-progress-leading,
                 #nav-section-progress-trailing {
                     position: absolute;
-                    bottom: 0;
+                    bottom: 2px;
                     font-size: var(--nav-section-progress-font-size, 14px);
                     line-height: var(--nav-section-progress-font-size, 14px);
                     white-space: nowrap;
@@ -587,17 +597,20 @@
                 #nav-section-progress-center {
                     position: absolute;
                     left: 50%;
-                    bottom: 0;
+                    bottom: 2px;
                     transform: translateX(-50%);
+                    display: inline-block;
+                    width: max-content;
                     font-size: var(--nav-section-progress-font-size, 14px);
-                    line-height: var(--nav-section-progress-font-size, 14px);
+                    line-height: calc(var(--nav-section-progress-font-size, 14px) + 3px);
                     white-space: nowrap;
                     pointer-events: none;
                     direction: ltr;
                     unicode-bidi: isolate;
                     text-align: center;
-                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2) - var(--nav-left-aux-inset, 0px) - var(--nav-right-aux-inset, 0px));
-                    overflow: hidden;
+                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2) - 20px);
+                    overflow-x: hidden;
+                    overflow-y: visible;
                     text-overflow: ellipsis;
                 }
                 #nav-section-progress-center {
@@ -625,32 +638,36 @@
                     color: inherit;
                 }
                 #page-tracking-container {
-                    position: absolute;
-                    bottom: calc(48px + var(--manabi-toolbar-bottom-offset, 0px));
+                    position: fixed;
+                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px) + ((var(--manabi-nav-bar-height) - var(--page-read-button-size)) / 2));
                     right: var(--nav-horizontal-padding);
                     left: auto;
                     display: flex;
                     align-items: center;
                     justify-content: flex-end;
                     min-width: 0;
-                    z-index: 6;
-                    pointer-events: none;
+                    z-index: 7;
+                    pointer-events: auto;
                 }
                 body[data-book-dir="rtl"] #page-tracking-container {
                     right: auto;
                     left: var(--nav-horizontal-padding);
                     justify-content: flex-start;
                 }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container {
+                    opacity: 0;
+                    pointer-events: none;
+                }
                 #page-tracking-buttons {
                     display: flex;
-                    flex-direction: column;
-                    align-items: flex-end;
-                    gap: 6px;
+                    flex-direction: row;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 0;
                     min-width: 0;
-                    pointer-events: auto;
                 }
                 body[data-book-dir="rtl"] #page-tracking-buttons {
-                    align-items: flex-start;
+                    align-items: center;
                 }
                 #page-tracking-buttons[hidden] {
                     display: none;
@@ -671,34 +688,57 @@
                     left: -9999px;
                 }
                 .page-read-button {
-                    border: 1px solid color-mix(in srgb, var(--secondary-color) 55%, transparent 45%);
-                    background: color-mix(in srgb, var(--tertiary-color) 82%, transparent 18%);
+                    width: var(--page-read-button-size);
+                    height: var(--page-read-button-size);
+                    padding: 0;
+                    border: 1px solid color-mix(in srgb, var(--secondary-color) 72%, transparent 28%);
+                    background: color-mix(in srgb, var(--tertiary-color) 92%, white 8%);
                     color: var(--secondary-color);
                     border-radius: 9999px;
-                    padding: 3px 10px;
                     display: inline-flex;
                     align-items: center;
                     justify-content: center;
-                    gap: 4px;
-                    min-width: 0;
-                    max-width: 180px;
-                    transition: background 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease;
+                    gap: 0;
+                    min-width: var(--page-read-button-size);
+                    box-shadow: none;
+                    font-weight: 600;
+                    transition: background 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease, transform 150ms ease, box-shadow 150ms ease;
                 }
-                .page-read-button .button-label {
-                    overflow: hidden;
-                    text-overflow: ellipsis;
+                .page-read-button:hover:not(:disabled) {
+                    transform: translateY(-1px);
+                }
+                .page-read-button-icon {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                }
+                .page-read-button-icon svg {
+                    width: 16px;
+                    height: 16px;
+                    fill: currentColor;
                 }
                 .page-read-button[data-read-state="complete"] {
-                    color: green;
-                    border-color: color-mix(in srgb, green 60%, transparent 40%);
+                    color: white;
+                    background: #2ea44f;
+                    border-color: #2ea44f;
+                    box-shadow: 0 4px 12px rgb(46 164 79 / 0.28);
                 }
                 .page-read-button[data-read-state="pending"] {
-                    color: var(--manabi-red);
-                    border-color: color-mix(in srgb, var(--manabi-red) 60%, transparent 40%);
+                    color: white;
+                    background: var(--manabi-red);
+                    border-color: var(--manabi-red);
                 }
                 .page-read-button:disabled {
                     opacity: 0.6;
                     cursor: default;
+                }
+                .page-read-button[data-read-state="complete"]:disabled {
+                    opacity: 1;
+                }
+                .page-read-button[data-read-state="pending"]:disabled {
+                    opacity: 0.88;
                 }
                 .page-read-button[hidden] {
                     display: none !important;
@@ -706,7 +746,7 @@
                 #side-bar {
                     visibility: hidden;
                     box-sizing: border-box;
-                    position: absolute;
+                    position: fixed;
                     z-index: 4;
                     top: 0;
                     left: 0;
@@ -1049,6 +1089,25 @@
                 #btn-scroll-right .icon {
                     margin-right: calc(var(--side-nav-width, 32px) / 5);
                 }
+                #nav-relocate-back {
+                    left: 0;
+                }
+                #nav-relocate-forward {
+                    right: 0;
+                }
+                #nav-bar.nav-hidden-due-to-scroll #nav-relocate-back,
+                #nav-bar.nav-hidden-due-to-scroll #nav-relocate-forward,
+                #nav-bar.nav-hidden-due-to-scroll #nav-primary-percent,
+                #nav-bar.nav-hidden-due-to-scroll #completion-stack,
+                #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-leading,
+                #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-trailing,
+                #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-center,
+                #nav-bar.nav-hidden-due-to-scroll #nav-hidden-buttons,
+                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
+                #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
                 
                 /* Generated with Input range slider CSS style generator (version 20211225)
                  https://toughengineer.github.io/demo/slider-styler */
@@ -1191,10 +1250,24 @@
         <div id="nav-bar" class="toolbar">
                 <div id="nav-content">
                     <div id="nav-top-row">
-                    <a id="nav-primary-text" class="nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite" data-label-variant="full">
-                        <span id="nav-primary-text-full" class="nav-primary-layer"></span>
-                        <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
-                    </a>
+                    <div id="nav-primary-cluster" aria-live="polite">
+                        <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled hidden>
+                            <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                                <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
+                            </svg>
+                            <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
+                        </button>
+                        <a id="nav-primary-text" class="nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite" data-label-variant="full">
+                            <span id="nav-primary-text-full" class="nav-primary-layer"></span>
+                            <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
+                        </a>
+                        <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled hidden>
+                            <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
+                            <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                                <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
+                            </svg>
+                        </button>
+                    </div>
                     <div id="nav-primary-percent" aria-live="polite" hidden></div>
                     <div id="completion-stack" class="button-stack" hidden>
                         <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
@@ -1210,25 +1283,10 @@
                             </svg>
                         </button>
                     </div>
-                    <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled hidden>
-                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
-                        </svg>
-                        <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
-                    </button>
-                    <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled hidden>
-                        <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
-                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
-                        </svg>
-                    </button>
                     <div id="nav-section-progress-leading" class="nav-section-progress" aria-live="polite"></div>
                     <div id="nav-section-progress-trailing" class="nav-section-progress" aria-live="polite"></div>
                     <a id="nav-section-progress-center" class="nav-section-progress nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite"></a>
                 </div>
-            </div>
-            <div id="page-tracking-container" hidden aria-live="polite">
-                <div id="page-tracking-buttons" hidden></div>
             </div>
             <div id="nav-hidden-buttons" aria-hidden="true">
                 <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter" tabindex="-1">
@@ -1242,6 +1300,9 @@
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
             </div>
+        </div>
+        <div id="page-tracking-container" hidden aria-live="polite">
+            <div id="page-tracking-buttons" hidden></div>
         </div>
         <div id="nav-hidden-overlay" aria-hidden="true">
             <a id="nav-hidden-primary-text" class="nav-hidden-label nav-action-link" href="#" role="button" aria-label="Open Go To sheet"></a>

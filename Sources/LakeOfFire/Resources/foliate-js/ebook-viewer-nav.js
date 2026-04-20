@@ -299,6 +299,13 @@ export class NavigationHUD {
             shouldHide: this.hideNavigationDueToScroll,
             previous,
             source,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            hiddenOverlayLabel: this.navHiddenOverlay?.text?.textContent || '',
+            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
+            hiddenOverlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
+            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
@@ -575,14 +582,16 @@ export class NavigationHUD {
         const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
         const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
         const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        const normalizedRaw = rawLabel ? rawLabel.replace(/^Page\\s+/i, 'Page ') : '';
+        const normalizedRaw = typeof rawLabel === 'string'
+            ? rawLabel.replace(/\s+/g, ' ').trim()
+            : '';
         const condensed = normalizedRaw ? this._condensePrimaryLabel(normalizedRaw) : '';
 
-        // Full shows the complete page string (with total when available); compact omits the total.
+        // Full shows the current page and total; compact/hidden shows only the current page.
         fullLabelTarget.textContent = normalizedRaw || condensed;
         compactLabelTarget.textContent = condensed || normalizedRaw;
         if (overlayLabelTarget) {
-            overlayLabelTarget.textContent = condensed || normalizedRaw;
+            overlayLabelTarget.textContent = normalizedRaw || condensed;
         }
 
         if (fullLabelCandidate) {
@@ -595,6 +604,11 @@ export class NavigationHUD {
         logEBookPageNumLimited('ui:primary-label', {
             label: fullLabelTarget.textContent || '',
             compactLabel: compactLabelTarget.textContent || '',
+            hiddenOverlayLabel: overlayLabelTarget?.textContent || '',
+            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
+            hiddenOverlayLabelWidth: overlayLabelTarget?.offsetWidth ?? null,
+            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
             source: this.lastPrimaryLabelDiagnostics?.source ?? null,
             current: this.lastPrimaryLabelDiagnostics?.candidateIndex != null
                 ? this.lastPrimaryLabelDiagnostics.candidateIndex + 1
@@ -613,11 +627,8 @@ export class NavigationHUD {
     }
 
     _syncLabelVariantFromDOM() {
-        const bodyHidden = typeof document !== 'undefined'
-            ? document.body?.classList?.contains?.('nav-hidden')
-            : false;
         const barHidden = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
-        const desiredHide = bodyHidden || barHidden || this.hideNavigationDueToScroll || this.navHidden;
+        const desiredHide = barHidden || this.hideNavigationDueToScroll || this.navHidden;
         if (this.navPrimaryText?.dataset) {
             const next = desiredHide ? 'compact' : 'full';
             if (this.navPrimaryText.dataset.labelVariant !== next) {
@@ -628,33 +639,33 @@ export class NavigationHUD {
 
     _updateCompactPercent(detail) {
         if (!this.navPrimaryPercent) return;
-        const isCompact = this.navPrimaryText?.dataset?.labelVariant === 'compact';
-        const fraction = this._fractionForPercent(detail);
-        const hasValue = isCompact && typeof fraction === 'number' && isFinite(fraction);
         const primary = this.navPrimaryPercent;
         const overlay = this.navHiddenOverlay?.percent;
-
-        if (hasValue) {
-            const clamped = Math.max(0, Math.min(1, fraction));
-            const text = this.formatPercent(clamped);
-            primary.textContent = text;
-            primary.hidden = false;
-            primary.setAttribute('aria-hidden', 'false');
-            if (overlay) {
-                overlay.textContent = text;
-                overlay.hidden = false;
-                overlay.setAttribute('aria-hidden', 'false');
-            }
-        } else {
-            primary.textContent = '';
-            primary.hidden = true;
-            primary.setAttribute('aria-hidden', 'true');
-            if (overlay) {
-                overlay.textContent = '';
-                overlay.hidden = true;
-                overlay.setAttribute('aria-hidden', 'true');
-            }
+        primary.textContent = '';
+        primary.hidden = true;
+        primary.setAttribute('aria-hidden', 'true');
+        if (overlay) {
+            overlay.textContent = '';
+            overlay.hidden = true;
+            overlay.setAttribute('aria-hidden', 'true');
         }
+        logNavHide('hud:compact-percent', {
+            isCompact: this.navPrimaryText?.dataset?.labelVariant === 'compact',
+            hasValue: false,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            locationLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            overlayLabel: this.navHiddenOverlay?.text?.textContent || '',
+            overlayLabelHidden: this.navHiddenOverlay?.text?.hidden ?? null,
+            overlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
+            overlayPercent: overlay?.textContent || '',
+            overlayPercentHidden: overlay?.hidden ?? null,
+            overlayPercentWidth: overlay?.offsetWidth ?? null,
+            overlayPercentDisplay: overlay ? window.getComputedStyle(overlay).display : null,
+            overlayPercentVisibility: overlay ? window.getComputedStyle(overlay).visibility : null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+        });
     }
 
     _fractionForPercent(detail) {
@@ -681,21 +692,54 @@ export class NavigationHUD {
     _updateAuxiliaryInsets() {
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
-        const trackSide = this.isRTL ? 'left' : 'right';
-        const trackingVisible =
-            !!this.pageTrackingContainer
-            && !this.pageTrackingContainer.hidden
-            && this.pageTrackingContainer.offsetWidth > 0
-            && !!this.pageTrackingButtons
-            && !this.pageTrackingButtons.hidden
-            && this.pageTrackingButtons.childElementCount > 0;
-        const reserve = trackingVisible
-            ? this.pageTrackingContainer.offsetWidth + 8
-            : 0;
-        const leftInset = trackSide === 'left' ? reserve : 0;
-        const rightInset = trackSide === 'right' ? reserve : 0;
+        const reserveGap = 18;
+        const leftVisible = !!this.navRelocateButtons?.back
+            && !this.navRelocateButtons.back.hidden
+            && this.navRelocateButtons.back.offsetWidth > 0
+            && this.navRelocateButtons.back.dataset.navEdge === 'left';
+        const rightVisible = !!this.navRelocateButtons?.back
+            && !this.navRelocateButtons.back.hidden
+            && this.navRelocateButtons.back.offsetWidth > 0
+            && this.navRelocateButtons.back.dataset.navEdge === 'right';
+        const leftForwardVisible = !!this.navRelocateButtons?.forward
+            && !this.navRelocateButtons.forward.hidden
+            && this.navRelocateButtons.forward.offsetWidth > 0
+            && this.navRelocateButtons.forward.dataset.navEdge === 'left';
+        const rightForwardVisible = !!this.navRelocateButtons?.forward
+            && !this.navRelocateButtons.forward.hidden
+            && this.navRelocateButtons.forward.offsetWidth > 0
+            && this.navRelocateButtons.forward.dataset.navEdge === 'right';
+        const leftInset = Math.max(
+            leftVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
+            leftForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
+        );
+        const rightInset = Math.max(
+            rightVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
+            rightForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
+        );
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
+        logNavHide('hud:aux-layout', {
+            leftInset,
+            rightInset,
+            backButtonWidth: this.navRelocateButtons?.back?.offsetWidth ?? null,
+            forwardButtonWidth: this.navRelocateButtons?.forward?.offsetWidth ?? null,
+            backButtonHidden: this.navRelocateButtons?.back?.hidden ?? null,
+            forwardButtonHidden: this.navRelocateButtons?.forward?.hidden ?? null,
+            backButtonEdge: this.navRelocateButtons?.back?.dataset?.navEdge ?? null,
+            forwardButtonEdge: this.navRelocateButtons?.forward?.dataset?.navEdge ?? null,
+            pageTrackingContainerHidden: this.pageTrackingContainer?.hidden ?? null,
+            pageTrackingButtonsHidden: this.pageTrackingButtons?.hidden ?? null,
+            pageTrackingButtonCount: this.pageTrackingButtons?.childElementCount ?? 0,
+            pageTrackingContainerWidth: this.pageTrackingContainer?.offsetWidth ?? null,
+            pageTrackingButtonsWidth: this.pageTrackingButtons?.offsetWidth ?? null,
+            pageTrackingContainerDisplay: this.pageTrackingContainer ? window.getComputedStyle(this.pageTrackingContainer).display : null,
+            pageTrackingContainerVisibility: this.pageTrackingContainer ? window.getComputedStyle(this.pageTrackingContainer).visibility : null,
+            pageTrackingOwnedByMainDocument: this.pageTrackingContainer?.ownerDocument === document,
+            pageTrackingContainedByReaderStage: !!document.getElementById('reader-stage')?.contains(this.pageTrackingContainer),
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+        });
     }
 
     _setButtonEdge(button, edge) {
@@ -805,8 +849,8 @@ export class NavigationHUD {
             const currentPageNumber = metrics.currentPageNumber;
             const totalPages = metrics.totalPages;
             const label = totalPages != null
-                ? `Page ${currentPageNumber} of ${totalPages}`
-                : `Page ${currentPageNumber}`;
+                ? `${currentPageNumber} of ${totalPages}`
+                : `${currentPageNumber}`;
             this.lastPrimaryLabelDiagnostics = {
                 source: 'page-metrics',
                 label,
@@ -830,14 +874,18 @@ export class NavigationHUD {
 
     _condensePrimaryLabel(label) {
         if (typeof label !== 'string') return '';
-        // Prefer an explicit "Page <n>" capture so we keep the prefix even if the suffix format changes.
-        const pageMatch = label.match(/\bPage\s*(\d+)/i);
+        const normalized = label.replace(/\s+/g, ' ').trim();
+        const pageMatch = normalized.match(/^Page\s*(\d+)(?:\s+of\s+\d+)?$/i);
         if (pageMatch) {
-            return `Page ${pageMatch[1]}`.replace(/\s+/g, ' ').trim();
+            return pageMatch[1];
+        }
+        const totalMatch = normalized.match(/^(\d+)\s+of\s+\d+$/i);
+        if (totalMatch) {
+            return totalMatch[1];
         }
         // Otherwise strip any "of <total>" suffix (allowing for varied whitespace/non-breaking spaces).
-        const trimmed = label.replace(/\s*of\s+.*$/i, '').trim();
-        return trimmed || label;
+        const trimmed = normalized.replace(/\s*of\s+.*$/i, '').trim();
+        return trimmed || normalized;
     }
 
     _computePageMetrics(detail) {

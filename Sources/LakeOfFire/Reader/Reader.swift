@@ -229,12 +229,11 @@ private func ebookToolbarBottomOffset(
 ) -> CGFloat {
     let obscuredBottomInset = max(0, obscuredBottomInset)
     let additionalBottomSafeAreaInset = max(0, additionalBottomSafeAreaInset)
-    guard additionalBottomSafeAreaInset > 0 else {
-        return obscuredBottomInset
-    }
-    // The minimized detent adds a full safe-area bar for content/layout, but the floating
-    // EPUB toolbar only needs to clear the visible chrome near the sheet edge.
-    return max(0, obscuredBottomInset - (additionalBottomSafeAreaInset * 0.5))
+    guard additionalBottomSafeAreaInset > 0 else { return obscuredBottomInset }
+    // Keep the EPUB toolbar above the minimized-detent clearance, but bias it slightly downward
+    // so the centered chapter-progress label is not needlessly floating above the sheet.
+    let fullClearanceOffset = max(obscuredBottomInset, additionalBottomSafeAreaInset)
+    return max(0, fullClearanceOffset - 4)
 }
 
 @MainActor
@@ -257,6 +256,15 @@ func syncEbookViewerChromeInsets(
             (function() {
               const toolbarBottomOffset = '\(toolbarBottomOffsetCSS)';
               const obscuredBottomInset = '\(obscuredBottomInsetCSS)';
+              const appliedInsets = {
+                toolbarBottomOffset,
+                obscuredBottomInset,
+              };
+              window.__manabiChromeInsets = appliedInsets;
+              if (typeof window.manabiApplyChromeInsets === 'function') {
+                window.manabiApplyChromeInsets(appliedInsets, 'native-sync');
+                return;
+              }
               const targets = [document.documentElement, document.body].filter(Boolean);
               for (const target of targets) {
                 target.style.setProperty('--manabi-toolbar-bottom-offset', toolbarBottomOffset);

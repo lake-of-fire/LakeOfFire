@@ -53,12 +53,6 @@ function forwardShadowErrors(root) {
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
-        logReplaceTextOnce('ebook.replaceText.skip', {
-            href,
-            mediaType: mediaType || 'nil',
-            isCacheWarmer: !!isCacheWarmer,
-            reason: 'unsupported-media-type',
-        });
         return text;
     }
     const headers = {
@@ -216,6 +210,70 @@ const flattenTOCEntries = (items, collector = []) => {
     return collector;
 };
 
+const fallbackSectionTitle = (href, index) => {
+    if (typeof href === 'string' && href) {
+        const lastSegment = href.split('/').pop() || href;
+        const withoutExtension = lastSegment.replace(/\.[^/.]+$/, '');
+        if (/^title$/i.test(withoutExtension)) {
+            return 'Title Page';
+        }
+        const prettified = withoutExtension
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (prettified && !/^\d+$/.test(prettified)) {
+            return prettified.replace(/\b\w/g, (char) => char.toUpperCase());
+        }
+    }
+    return `Section ${index + 1}`;
+};
+
+const buildGoToSnapshotChapters = (book) => {
+    const chapters = [];
+    const seenHrefs = new Set();
+    const tocEntries = flattenTOCEntries(book?.toc ?? []);
+    const tocTitleByHref = new Map();
+    for (const entry of tocEntries) {
+        const href = typeof entry?.href === 'string' ? entry.href : null;
+        const title = typeof entry?.label === 'string' ? entry.label.trim() : '';
+        if (!href || !title) {
+            continue;
+        }
+        if (!tocTitleByHref.has(href)) {
+            tocTitleByHref.set(href, title);
+        }
+        if (seenHrefs.has(href)) {
+            continue;
+        }
+        seenHrefs.add(href);
+        chapters.push({
+            href,
+            title,
+            pageNumber: null,
+        });
+    }
+    const sectionEntries = Array.isArray(book?.sections)
+        ? book.sections
+            .filter((section) => section && section.linear !== 'no')
+            .map((section, index) => {
+                const href = typeof section?.id === 'string' ? section.id : null;
+                const title = href ? (tocTitleByHref.get(href) ?? fallbackSectionTitle(href, index)) : '';
+                return href && title
+                    ? {
+                        href,
+                        title,
+                        pageNumber: null,
+                    }
+                    : null;
+            })
+            .filter(Boolean)
+        : [];
+    if (sectionEntries.length > chapters.length) {
+        return sectionEntries;
+    }
+    return chapters;
+};
+
 const injectBodyDatasetAttributes = (html, attributes) => {
     if (typeof html !== 'string' || !html.replace) {
         return html;
@@ -233,20 +291,25 @@ const injectBodyDatasetAttributes = (html, attributes) => {
 const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
-    if (body) {
-        body.classList.toggle('nav-hidden', normalized);
+    if (body?.classList?.contains?.('nav-hidden')) {
+        body.classList.remove('nav-hidden');
     }
     globalThis.reader?.navHUD?.setHideNavigationDueToScroll?.(normalized, source, {
         bridgeSource: source,
-        bodyClassApplied: body?.classList?.contains?.('nav-hidden') ?? null,
+        bodyClassApplied: false,
     });
-    postReaderLog('ebook.navigationVisibility.bridge', {
+    const bridgeState = {
         source,
         shouldHide: normalized,
         bodyHasNavHiddenClass: body?.classList?.contains?.('nav-hidden') ?? null,
         hudHideNavigationDueToScroll: !!globalThis.reader?.navHUD?.hideNavigationDueToScroll,
         hudNavHidden: !!globalThis.reader?.navHUD?.navHidden,
-    });
+    };
+    const bridgeKey = JSON.stringify(bridgeState);
+    if (globalThis.__manabiLastNavigationVisibilityBridgeKey !== bridgeKey) {
+        globalThis.__manabiLastNavigationVisibilityBridgeKey = bridgeKey;
+        postReaderLog('ebook.navigationVisibility.bridge', bridgeState);
+    }
     globalThis.reader?.queueLayoutDiagnostics?.('native-hide-bridge', {
         source,
         shouldHide: normalized,
@@ -256,6 +319,54 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
 
 window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
     return setNativeHideNavigationState(shouldHide, 'window.manabiSetHideNavigationDueToScroll');
+};
+
+const normalizeChromeInsetCSSValue = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return `${value}px`;
+    }
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed.length > 0 ? trimmed : '0px';
+    }
+    return '0px';
+};
+
+const applyStoredChromeInsets = (reason = 'unknown', rawInsets = globalThis.__manabiChromeInsets) => {
+    if (!rawInsets) {
+        return null;
+    }
+    const toolbarBottomOffset = normalizeChromeInsetCSSValue(rawInsets.toolbarBottomOffset);
+    const obscuredBottomInset = normalizeChromeInsetCSSValue(rawInsets.obscuredBottomInset);
+    const appliedInsets = {
+        toolbarBottomOffset,
+        obscuredBottomInset,
+    };
+    globalThis.__manabiChromeInsets = appliedInsets;
+    for (const target of [document.documentElement, document.body].filter(Boolean)) {
+        target.style.setProperty('--manabi-toolbar-bottom-offset', toolbarBottomOffset);
+        target.style.setProperty('--manabi-obscured-bottom-inset', obscuredBottomInset);
+    }
+    const chromeInsetsLog = {
+        reason,
+        toolbarBottomOffset,
+        obscuredBottomInset,
+        bodyReady: !!document.body,
+    };
+    const chromeInsetsKey = JSON.stringify({
+        toolbarBottomOffset,
+        obscuredBottomInset,
+        bodyReady: !!document.body,
+    });
+    if (globalThis.__manabiLastChromeInsetsLogKey !== chromeInsetsKey) {
+        globalThis.__manabiLastChromeInsetsLogKey = chromeInsetsKey;
+        postEPUBLog('ebook.chromeInsets.reapplied', chromeInsetsLog);
+    }
+    return appliedInsets;
+};
+
+window.manabiApplyChromeInsets = (rawInsets, reason = 'window.manabiApplyChromeInsets') => {
+    return applyStoredChromeInsets(reason, rawInsets);
 };
 
 const replaceTextLogKeys = new Set();
@@ -310,10 +421,29 @@ const summarizeElementLayout = (element) => {
         pointerEvents: style?.pointerEvents ?? null,
         overflowX: style?.overflowX ?? null,
         overflowY: style?.overflowY ?? null,
+        position: style?.position ?? null,
+        top: style?.top ?? null,
+        bottom: style?.bottom ?? null,
+        left: style?.left ?? null,
+        right: style?.right ?? null,
+        heightCSS: style?.height ?? null,
+        minHeightCSS: style?.minHeight ?? null,
+        maxHeightCSS: style?.maxHeight ?? null,
+        lineHeight: style?.lineHeight ?? null,
+        fontSize: style?.fontSize ?? null,
+        paddingTop: style?.paddingTop ?? null,
+        paddingBottom: style?.paddingBottom ?? null,
+        marginTop: style?.marginTop ?? null,
+        marginBottom: style?.marginBottom ?? null,
+        contain: style?.contain ?? null,
+        boxSizing: style?.boxSizing ?? null,
         text,
         clientWidth: element.clientWidth ?? null,
+        clientHeight: element.clientHeight ?? null,
         scrollWidth: element.scrollWidth ?? null,
+        scrollHeight: element.scrollHeight ?? null,
         offsetWidth: element instanceof HTMLElement ? element.offsetWidth : null,
+        offsetHeight: element instanceof HTMLElement ? element.offsetHeight : null,
         rect,
     };
 };
@@ -335,6 +465,41 @@ const summarizeFoliateViewLayout = (view) => {
         paginatorTop: summarizeElementLayout(paginatorTop),
         paginatorContainer: summarizeElementLayout(paginatorContainer),
     };
+};
+
+const postReaderVisibilityProbe = (stage, view = null, extra = null) => {
+    if (extra?.isCacheWarmer || view?.dataset?.isCache === 'true') {
+        return;
+    }
+    const readerStage = document.getElementById('reader-stage');
+    const liveView = summarizeFoliateViewLayout(view);
+    const paginatorContainerWidth = liveView?.paginatorContainer?.clientWidth ?? null;
+    const paginatorContainerHeight = liveView?.paginatorContainer?.clientHeight ?? null;
+    const shouldLog =
+        !liveView
+        || !liveView.paginator
+        || (typeof liveView?.clientWidth === 'number' && liveView.clientWidth <= 0)
+        || (typeof liveView?.clientHeight === 'number' && liveView.clientHeight <= 0)
+        || (typeof paginatorContainerWidth === 'number' && paginatorContainerWidth <= 0)
+        || (typeof paginatorContainerHeight === 'number' && paginatorContainerHeight <= 0);
+    const shouldLogAtStage =
+        stage === 'reader.documentLoad'
+        || !!extra?.documentURL;
+    if (!shouldLog || !shouldLogAtStage) {
+        return;
+    }
+    postEPUBLog('ebook.visibilityProbe', {
+        stage,
+        readyState: document.readyState,
+        childCount: readerStage?.children?.length ?? 0,
+        viewMissing: !liveView,
+        paginatorMissing: !liveView?.paginator,
+        viewWidth: liveView?.clientWidth ?? null,
+        viewHeight: liveView?.clientHeight ?? null,
+        pagerWidth: paginatorContainerWidth,
+        pagerHeight: paginatorContainerHeight,
+        extra,
+    });
 };
 
 const isDocumentLike = (value) =>
@@ -472,56 +637,6 @@ const collectVisibleSegmentNodes = (doc) => {
     };
 };
 
-const getPageClusterAxis = (doc) => {
-    const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
-    return isVertical ? 'block' : 'inline';
-};
-
-const clusterVisibleSegmentsByPage = (visibleSegments, axis = 'inline') => {
-    if (visibleSegments.length === 0) {
-        return [];
-    }
-    const tolerance = 20;
-    const startProp = axis === 'block' ? 'top' : 'left';
-    const endProp = axis === 'block' ? 'bottom' : 'right';
-    const sortedSegments = [...visibleSegments].sort((a, b) => a.rect[startProp] - b.rect[startProp]);
-    const clusters = [];
-    for (const segment of sortedSegments) {
-        const lastCluster = clusters[clusters.length - 1];
-        if (!lastCluster || segment.rect[startProp] > lastCluster.maxEnd + tolerance) {
-            clusters.push({
-                minStart: segment.rect[startProp],
-                maxEnd: segment.rect[endProp],
-                segments: [segment],
-            });
-            continue;
-        }
-        lastCluster.segments.push(segment);
-        lastCluster.minStart = Math.min(lastCluster.minStart, segment.rect[startProp]);
-        lastCluster.maxEnd = Math.max(lastCluster.maxEnd, segment.rect[endProp]);
-    }
-
-    while (clusters.length > 2) {
-        let mergeIndex = 0;
-        let smallestGap = Infinity;
-        for (let index = 0; index < clusters.length - 1; index += 1) {
-            const gap = clusters[index + 1].minStart - clusters[index].maxEnd;
-            if (gap < smallestGap) {
-                smallestGap = gap;
-                mergeIndex = index;
-            }
-        }
-        const current = clusters[mergeIndex];
-        const next = clusters[mergeIndex + 1];
-        clusters.splice(mergeIndex, 2, {
-            minStart: Math.min(current.minStart, next.minStart),
-            maxEnd: Math.max(current.maxEnd, next.maxEnd),
-            segments: [...current.segments, ...next.segments].sort((a, b) => a.rect[startProp] - b.rect[startProp]),
-        });
-    }
-    return clusters;
-};
-
 const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
@@ -534,74 +649,60 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
         missingIdentifierCount,
         outOfViewportCount,
     } = collectVisibleSegmentNodes(doc);
-    const clusterAxis = getPageClusterAxis(doc);
-    const pageClusters = clusterVisibleSegmentsByPage(visibleSegments, clusterAxis);
-    const pageCount = pageClusters.length;
+    const clusterAxis = !!doc?.body?.classList?.contains?.('reader-vertical-writing') ? 'block' : 'inline';
     let skippedMissingSearchStringCount = 0;
-    const states = pageClusters.map((cluster, clusterIndex) => {
-        const dedupedSegments = new Map();
-        const visibleSegmentIdentifiers = new Set();
-        const sentencesByIdentifier = new Map();
-        for (const item of cluster.segments) {
-            if (!dedupedSegments.has(item.segmentIdentifier)) {
-                const searchString = item.node.dataset?.jmdictSearchString || item.node.dataset?.jmnedictSearchString;
-                if (typeof searchString !== 'string' || searchString.length === 0) {
-                    skippedMissingSearchStringCount += 1;
-                    continue;
-                }
-                visibleSegmentIdentifiers.add(item.segmentIdentifier);
-                const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node);
-                dedupedSegments.set(item.segmentIdentifier, {
-                    jmdictEntryIds: parseEntryIDs(item.node.dataset?.jmdictEntryIds || '[]'),
-                    jmnedictEntryIds: parseEntryIDs(item.node.dataset?.jmnedictEntryIds || '[]'),
-                    searchString,
-                    displayText: item.node.textContent?.trim?.() || searchString,
-                    segmentIdentifier: item.segmentIdentifier,
-                    exampleSentence: sentenceHTML,
-                    exampleSentenceJMDictIDs: sentenceJMDictIDs,
-                });
+    const dedupedSegments = new Map();
+    const visibleSegmentIdentifiers = new Set();
+    const sentencesByIdentifier = new Map();
+    for (const item of visibleSegments) {
+        if (!dedupedSegments.has(item.segmentIdentifier)) {
+            const searchString = item.node.dataset?.jmdictSearchString || item.node.dataset?.jmnedictSearchString;
+            if (typeof searchString !== 'string' || searchString.length === 0) {
+                skippedMissingSearchStringCount += 1;
+                continue;
             }
-            if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
-                const sentenceNode = item.node.closest('manabi-sentence');
-                const allSegmentIdentifiers = Array.from(sentenceNode?.querySelectorAll?.('manabi-segment') || [])
-                    .map((segmentNode) => segmentIdentifierForNode(segmentNode))
-                    .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
-                sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifiers);
-            }
+            visibleSegmentIdentifiers.add(item.segmentIdentifier);
+            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node);
+            dedupedSegments.set(item.segmentIdentifier, {
+                jmdictEntryIds: parseEntryIDs(item.node.dataset?.jmdictEntryIds || '[]'),
+                jmnedictEntryIds: parseEntryIDs(item.node.dataset?.jmnedictEntryIds || '[]'),
+                searchString,
+                displayText: item.node.textContent?.trim?.() || searchString,
+                segmentIdentifier: item.segmentIdentifier,
+                exampleSentence: sentenceHTML,
+                exampleSentenceJMDictIDs: sentenceJMDictIDs,
+            });
         }
-        const unreadVisibleSegmentCount = Array.from(visibleSegmentIdentifiers)
-            .filter((segmentIdentifier) => !readSegmentIdentifiers.has(segmentIdentifier))
-            .length;
-        const sentenceIdentifiers = Array.from(sentencesByIdentifier.entries())
-            .filter(([, allSegmentIdentifiers]) => allSegmentIdentifiers.length > 0
-                && allSegmentIdentifiers.every((segmentIdentifier) =>
-                    readSegmentIdentifiers.has(segmentIdentifier)
-                    || visibleSegmentIdentifiers.has(segmentIdentifier)))
-            .map(([sentenceIdentifier]) => sentenceIdentifier);
-        const isRead = visibleSegmentIdentifiers.size > 0 && unreadVisibleSegmentCount === 0;
-        const sideLabel = pageCount === 2
-            ? (clusterAxis === 'block'
-                ? (clusterIndex === 0 ? 'Top Page' : 'Bottom Page')
-                : (clusterIndex === 0 ? 'Left Page' : 'Right Page'))
-            : 'Page';
-        const shortSideLabel = pageCount === 2
-            ? (clusterAxis === 'block'
-                ? (clusterIndex === 0 ? 'Top' : 'Bottom')
-                : (clusterIndex === 0 ? 'Left' : 'Right'))
-            : 'Read';
-        return {
-            id: `page-cluster-${clusterIndex}`,
-            payload: {
-                segments: Array.from(dedupedSegments.values()),
-                sentenceIdentifiers,
-            },
-            isRead,
-            unreadVisibleSegmentCount,
-            visibleSegmentCount: visibleSegmentIdentifiers.size,
-            fullLabel: isRead ? `${sideLabel} Read` : `Mark ${sideLabel} Read`,
-            shortLabel: isRead ? 'Read' : shortSideLabel,
-        };
-    }).filter((state) => state.payload.segments.length > 0);
+        if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
+            const sentenceNode = item.node.closest('manabi-sentence');
+            const allSegmentIdentifiers = Array.from(sentenceNode?.querySelectorAll?.('manabi-segment') || [])
+                .map((segmentNode) => segmentIdentifierForNode(segmentNode))
+                .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
+            sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifiers);
+        }
+    }
+    const unreadVisibleSegmentCount = Array.from(visibleSegmentIdentifiers)
+        .filter((segmentIdentifier) => !readSegmentIdentifiers.has(segmentIdentifier))
+        .length;
+    const sentenceIdentifiers = Array.from(sentencesByIdentifier.entries())
+        .filter(([, allSegmentIdentifiers]) => allSegmentIdentifiers.length > 0
+            && allSegmentIdentifiers.every((segmentIdentifier) =>
+                readSegmentIdentifiers.has(segmentIdentifier)
+                || visibleSegmentIdentifiers.has(segmentIdentifier)))
+        .map(([sentenceIdentifier]) => sentenceIdentifier);
+    const isRead = visibleSegmentIdentifiers.size > 0 && unreadVisibleSegmentCount === 0;
+    const states = dedupedSegments.size > 0 ? [{
+        id: 'visible-screen',
+        payload: {
+            segments: Array.from(dedupedSegments.values()),
+            sentenceIdentifiers,
+        },
+        isRead,
+        unreadVisibleSegmentCount,
+        visibleSegmentCount: visibleSegmentIdentifiers.size,
+        fullLabel: isRead ? 'Read' : 'Mark Read',
+        shortLabel: isRead ? 'Read' : 'Mark Read',
+    }] : [];
     return {
         states,
         diagnostics: {
@@ -615,7 +716,7 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
             missingIdentifierCount,
             outOfViewportCount,
             skippedMissingSearchStringCount,
-            clusterCount: pageClusters.length,
+            clusterCount: visibleSegments.length > 0 ? 1 : 0,
             stateCount: states.length,
             completedStateCount: states.filter((state) => state.isRead).length,
             readSegmentCount: readSegmentIdentifiers.size,
@@ -822,6 +923,11 @@ const getView = async (source, isCacheWarmer) => {
     view.style.pointerEvents = isCacheWarmer ? 'none' : 'auto';
     const readerStage = document.getElementById('reader-stage');
     (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
+    postReaderVisibilityProbe('getView:appended', view, {
+        isCacheWarmer: !!isCacheWarmer,
+        parentID: view.parentElement?.id ?? null,
+        parentTag: view.parentElement?.tagName ?? null,
+    });
     forwardShadowErrors(view.shadowRoot);
     if (isCacheWarmer) {
         view.style.display = 'none'
@@ -833,6 +939,11 @@ const getView = async (source, isCacheWarmer) => {
         view.style.pointerEvents = 'none'
     }
     await view.open(book, isCacheWarmer)
+    postReaderVisibilityProbe('getView:opened', view, {
+        isCacheWarmer: !!isCacheWarmer,
+        bookDir: book?.dir || null,
+        sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
+    });
     
     // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
     const paginator = view.shadowRoot?.querySelector('foliate-paginator');
@@ -850,6 +961,9 @@ const getView = async (source, isCacheWarmer) => {
         }
     `;
         paginator.shadowRoot.appendChild(style);
+        postReaderVisibilityProbe('getView:paginator-ready', view, {
+            isCacheWarmer: !!isCacheWarmer,
+        });
         
         const sideNavWidth = 32;
         document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
@@ -985,7 +1099,24 @@ class Reader {
         }
     }
     setLoadingIndicator(visible) {
-        document.body.classList.toggle('loading', !!visible);
+        const body = document.body;
+        if (!body) return;
+        const nextVisible = !!visible;
+        const previousVisible = body.classList.contains('loading');
+        body.classList.toggle('loading', nextVisible);
+        if (previousVisible !== nextVisible) {
+            postEPUBLog('ebook.loadingIndicator.state', {
+                visible: nextVisible,
+                previous: previousVisible,
+                bodyClassName: body.className || '',
+                navHiddenClass: body.classList.contains('nav-hidden'),
+                navHiddenScrollClass: document.getElementById('nav-bar')?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+                currentPageURL: window.location.href,
+                hasRenderer: !!this.view?.renderer,
+                hasLoadedLastPosition: !!this.hasLoadedLastPosition,
+                articleMarkedAsFinished: !!this.markedAsFinished,
+            });
+        }
     }
     #tocView
     #chevronFadeTimers = {
@@ -1003,6 +1134,7 @@ class Reader {
     pageTrackingRetryHandle = null;
     layoutDiagnosticsHandle = null;
     lastLayoutDiagnosticsKey = null;
+    lastLayoutSnapshot = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -1107,16 +1239,9 @@ class Reader {
         return false;
     }
     async buildGoToSheetSnapshot() {
-        const chapters = [];
-        const seenHrefs = new Set();
-        const tocEntries = flattenTOCEntries(this.view?.book?.toc ?? []);
-        for (const entry of tocEntries) {
-            const href = typeof entry?.href === 'string' ? entry.href : null;
-            const title = typeof entry?.label === 'string' ? entry.label.trim() : '';
-            if (!href || !title || seenHrefs.has(href)) {
-                continue;
-            }
-            seenHrefs.add(href);
+        const chapters = buildGoToSnapshotChapters(this.view?.book);
+        for (const entry of chapters) {
+            const href = entry.href;
             let pageNumber = null;
             try {
                 const progress = await this.view?.getNavigationProgressOf?.(href);
@@ -1127,18 +1252,15 @@ class Reader {
             } catch (error) {
                 postEPUBLog('ebook.goTo.snapshot.chapter.error', {
                     href,
-                    title,
+                    title: entry.title,
                     message: error?.message || String(error),
                 });
             }
-            chapters.push({
-                href,
-                title,
-                pageNumber,
-            });
+            entry.pageNumber = pageNumber;
         }
         const currentChapter = this.view?.renderer?.tocItem ?? this.view?.lastLocation?.tocItem ?? null;
         const snapshot = {
+            isRTL: !!this.isRTL,
             currentChapterHref: typeof currentChapter?.href === 'string' ? currentChapter.href : null,
             currentChapterTitle: typeof currentChapter?.label === 'string' ? currentChapter.label : null,
             currentPageNumber: this.navHUD?.lastPageMetricsSnapshot?.currentPageNumber ?? null,
@@ -1146,6 +1268,7 @@ class Reader {
             chapters,
         };
         postEPUBLog('ebook.goTo.snapshot', {
+            isRTL: snapshot.isRTL,
             chapterCount: chapters.length,
             currentChapterHref: snapshot.currentChapterHref,
             currentPageNumber: snapshot.currentPageNumber,
@@ -1154,6 +1277,7 @@ class Reader {
         return snapshot;
     }
     constructor() {
+        applyStoredChromeInsets('reader.constructor');
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
@@ -1196,7 +1320,6 @@ class Reader {
         });
         window.addEventListener('resize', () => this.#queueLayoutDiagnostics('window-resize'));
         window.visualViewport?.addEventListener?.('resize', () => this.#queueLayoutDiagnostics('visual-viewport-resize'));
-        window.visualViewport?.addEventListener?.('scroll', () => this.#queueLayoutDiagnostics('visual-viewport-scroll'));
     }
     #logPageTracking(event, details = {}) {
         postReaderLog(event, details);
@@ -1225,85 +1348,334 @@ class Reader {
             this.#logLayoutDiagnostics(reason, extra);
         });
     }
+    #formatTransition(before, after) {
+        return before === after ? null : `${before ?? 'nil'} -> ${after ?? 'nil'}`;
+    }
+    #formatBox(width, height) {
+        if (![width, height].some((value) => value !== null && value !== undefined)) {
+            return null;
+        }
+        return `${width ?? 'nil'}x${height ?? 'nil'}`;
+    }
+    #formatScrollBox(client, scroll) {
+        if (![client, scroll].some((value) => value !== null && value !== undefined)) {
+            return null;
+        }
+        return `${client ?? 'nil'}/${scroll ?? 'nil'}`;
+    }
+    #logLayoutTransition(reason, previousSnapshot, nextSnapshot) {
+        if (!previousSnapshot || !nextSnapshot) {
+            return;
+        }
+        const navToggle =
+            previousSnapshot.hideNavigationDueToScroll !== nextSnapshot.hideNavigationDueToScroll
+            || previousSnapshot.bodyNavHidden !== nextSnapshot.bodyNavHidden;
+        const pageMetricsChanged =
+            previousSnapshot.currentPageNumber !== nextSnapshot.currentPageNumber
+            || previousSnapshot.totalPages !== nextSnapshot.totalPages;
+        const paginatorChanged =
+            previousSnapshot.livePaginatorBox !== nextSnapshot.livePaginatorBox
+            || previousSnapshot.livePaginatorScrollBox !== nextSnapshot.livePaginatorScrollBox
+            || previousSnapshot.scrollingWidth !== nextSnapshot.scrollingWidth;
+        const insetsChanged =
+            previousSnapshot.cssInsets !== nextSnapshot.cssInsets
+            || previousSnapshot.navBarBottom !== nextSnapshot.navBarBottom;
+        if (!navToggle && !pageMetricsChanged && !paginatorChanged && !insetsChanged) {
+            return;
+        }
+        const transition = {
+            reason,
+            navToggle,
+            pageMetricsChanged,
+            paginatorChanged,
+            insetsChanged,
+            repaginationOnNavToggle: navToggle && previousSnapshot.totalPages !== nextSnapshot.totalPages,
+            overflowWhilePaginated: !!nextSnapshot.horizontalOverflowScrolling,
+            hideNavigationDueToScroll: this.#formatTransition(
+                previousSnapshot.hideNavigationDueToScroll,
+                nextSnapshot.hideNavigationDueToScroll,
+            ),
+            bodyNavHidden: this.#formatTransition(
+                previousSnapshot.bodyNavHidden,
+                nextSnapshot.bodyNavHidden,
+            ),
+            totalPages: this.#formatTransition(previousSnapshot.totalPages, nextSnapshot.totalPages),
+            currentPageNumber: this.#formatTransition(
+                previousSnapshot.currentPageNumber,
+                nextSnapshot.currentPageNumber,
+            ),
+            scrollingWidth: this.#formatTransition(
+                previousSnapshot.scrollingWidth,
+                nextSnapshot.scrollingWidth,
+            ),
+            paginatorBox: this.#formatTransition(
+                previousSnapshot.livePaginatorBox,
+                nextSnapshot.livePaginatorBox,
+            ),
+            paginatorScrollBox: this.#formatTransition(
+                previousSnapshot.livePaginatorScrollBox,
+                nextSnapshot.livePaginatorScrollBox,
+            ),
+            cssInsets: this.#formatTransition(previousSnapshot.cssInsets, nextSnapshot.cssInsets),
+            navBarBottom: this.#formatTransition(previousSnapshot.navBarBottom, nextSnapshot.navBarBottom),
+            paginatorViewportBottomClip: nextSnapshot.paginatorViewportBottomClip,
+            sectionProgressOffscreen: nextSnapshot.sectionProgressOffscreen,
+            hiddenOverlayMismatch: nextSnapshot.hiddenOverlayExpected && !nextSnapshot.hiddenOverlayVisible,
+        };
+        Object.keys(transition).forEach((key) => {
+            if (transition[key] === null || transition[key] === false) {
+                delete transition[key];
+            }
+        });
+        postReaderLog('ebook.layout.transition', transition);
+    }
     #logLayoutDiagnostics(reason = 'unknown', extra = null) {
         const body = document.body;
         const docEl = document.documentElement;
-        const viewport = window.visualViewport;
+        const bodyStyle = body ? window.getComputedStyle(body) : null;
+        const docElStyle = docEl ? window.getComputedStyle(docEl) : null;
         const scrollingElement = document.scrollingElement || docEl;
         const navBar = document.getElementById('nav-bar');
-        const navBottomRow = document.getElementById('nav-bottom-row');
-        const progressWrapper = document.getElementById('progress-wrapper');
         const pageTrackingContainer = document.getElementById('page-tracking-container');
         const pageTrackingButtons = document.getElementById('page-tracking-buttons');
         const firstPageReadButton = pageTrackingButtons?.querySelector?.('.page-read-button') || null;
+        const pageTrackingContainerRect = pageTrackingContainer?.getBoundingClientRect?.() || null;
+        const pageTrackingButtonsRect = pageTrackingButtons?.getBoundingClientRect?.() || null;
+        const firstPageReadButtonRect = firstPageReadButton?.getBoundingClientRect?.() || null;
+        const firstPageReadButtonStyle = firstPageReadButton ? window.getComputedStyle(firstPageReadButton) : null;
+        const pageTrackingContainerStyle = pageTrackingContainer ? window.getComputedStyle(pageTrackingContainer) : null;
+        const pageTrackingButtonsStyle = pageTrackingButtons ? window.getComputedStyle(pageTrackingButtons) : null;
         const readerStage = document.getElementById('reader-stage');
         const allFoliateViews = Array.from(document.querySelectorAll('foliate-view'));
         const liveFoliateView = allFoliateViews.find((view) => view?.dataset?.isCache !== 'true') || null;
         const cacheFoliateView = allFoliateViews.find((view) => view?.dataset?.isCache === 'true') || null;
+        const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
+        const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+        const navBarRect = navBar?.getBoundingClientRect?.() || null;
+        const livePaginatorRect = livePaginatorContainer?.getBoundingClientRect?.() || null;
+        const locationLabel = document.getElementById('nav-primary-text');
+        const hiddenOverlayLocationLabel = document.getElementById('nav-hidden-primary-text');
+        const hiddenOverlayPercentLabel = document.getElementById('nav-hidden-primary-percent');
+        const sectionProgressCenter = document.getElementById('nav-section-progress-center');
+        const currentPageMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
+        const bodyNavHidden = !!body?.classList?.contains?.('nav-hidden');
+        const hudNavHidden = !!this.navHUD?.navHidden;
+        const hiddenOverlayLocationRect = hiddenOverlayLocationLabel?.getBoundingClientRect?.() || null;
+        const hiddenOverlayPercentRect = hiddenOverlayPercentLabel?.getBoundingClientRect?.() || null;
+        const hiddenOverlayLocationStyle = hiddenOverlayLocationLabel ? window.getComputedStyle(hiddenOverlayLocationLabel) : null;
+        const hiddenOverlayPercentStyle = hiddenOverlayPercentLabel ? window.getComputedStyle(hiddenOverlayPercentLabel) : null;
+        const hiddenOverlayLocationVisible = !!(
+            hiddenOverlayLocationLabel
+            && !hiddenOverlayLocationLabel.hidden
+            && hiddenOverlayLocationLabel.offsetWidth > 0
+            && window.getComputedStyle(hiddenOverlayLocationLabel).opacity !== '0'
+        );
+        const hiddenOverlayPercentVisible = !!(
+            hiddenOverlayPercentLabel
+            && !hiddenOverlayPercentLabel.hidden
+            && hiddenOverlayPercentLabel.offsetWidth > 0
+            && window.getComputedStyle(hiddenOverlayPercentLabel).opacity !== '0'
+        );
+        const locationLabelCollapsed = !!(
+            locationLabel
+            && !locationLabel.hidden
+            && (locationLabel.textContent || '').trim().length > 0
+            && locationLabel.offsetWidth <= 0
+        );
+        const sectionProgressCenterViewportBottomGap = (() => {
+            if (!sectionProgressCenter) return null;
+            const rect = sectionProgressCenter.getBoundingClientRect();
+            return safeRound(window.innerHeight - rect.bottom);
+        })();
+        const sectionProgressOffscreen = typeof sectionProgressCenterViewportBottomGap === 'number'
+            && sectionProgressCenterViewportBottomGap >= (window.innerHeight - 1);
+        const hiddenOverlayVisible = hiddenOverlayLocationVisible || hiddenOverlayPercentVisible;
         const layoutSnapshot = {
             reason,
             extra,
-            pageURL: window.location?.href || null,
-            bodyClasses: body?.className || '',
-            navBarClasses: navBar?.className || '',
-            bodyDir: body?.getAttribute?.('dir') || null,
-            bookDir: body?.dataset?.bookDir || null,
             hideNavigationDueToScroll: !!this.navHUD?.hideNavigationDueToScroll,
-            navHidden: !!this.navHUD?.navHidden,
-            viewportWidth: safeRound(window.innerWidth),
-            viewportHeight: safeRound(window.innerHeight),
-            visualViewportWidth: safeRound(viewport?.width),
-            visualViewportHeight: safeRound(viewport?.height),
-            visualViewportOffsetLeft: safeRound(viewport?.offsetLeft),
-            visualViewportOffsetTop: safeRound(viewport?.offsetTop),
-            scrollX: safeRound(window.scrollX),
-            scrollY: safeRound(window.scrollY),
-            docClientWidth: docEl?.clientWidth ?? null,
-            docScrollWidth: docEl?.scrollWidth ?? null,
-            bodyClientWidth: body?.clientWidth ?? null,
-            bodyScrollWidth: body?.scrollWidth ?? null,
-            scrollingClientWidth: scrollingElement?.clientWidth ?? null,
-            scrollingScrollWidth: scrollingElement?.scrollWidth ?? null,
-            scrollingScrollLeft: safeRound(scrollingElement?.scrollLeft),
-            horizontalOverflowDocument: (docEl?.scrollWidth ?? 0) > (docEl?.clientWidth ?? 0) + 1,
-            horizontalOverflowBody: (body?.scrollWidth ?? 0) > (body?.clientWidth ?? 0) + 1,
+            bodyNavHidden,
+            hudNavHidden,
+            navVisibilityMismatch: bodyNavHidden !== hudNavHidden,
+            currentPageNumber: typeof currentPageMetrics?.currentPageNumber === 'number' ? currentPageMetrics.currentPageNumber : null,
+            totalPages: typeof currentPageMetrics?.totalPages === 'number' ? currentPageMetrics.totalPages : null,
+            viewport: this.#formatBox(safeRound(window.innerWidth), safeRound(window.innerHeight)),
+            scrollingWidth: this.#formatScrollBox(
+                scrollingElement?.clientWidth ?? null,
+                scrollingElement?.scrollWidth ?? null,
+            ),
             horizontalOverflowScrolling: (scrollingElement?.scrollWidth ?? 0) > (scrollingElement?.clientWidth ?? 0) + 1,
-            cssToolbarBottomOffset: window.getComputedStyle(body || docEl)?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || null,
-            cssObscuredBottomInset: window.getComputedStyle(body || docEl)?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || null,
-            navBarBottomComputed: navBar ? window.getComputedStyle(navBar).bottom : null,
-            navBarViewportBottomGap: navBar ? safeRound(window.innerHeight - navBar.getBoundingClientRect().bottom) : null,
-            readerStage: summarizeElementLayout(readerStage),
-            liveFoliateView: summarizeFoliateViewLayout(liveFoliateView),
-            cacheFoliateView: summarizeFoliateViewLayout(cacheFoliateView),
-            allFoliateViews: allFoliateViews.map((view, index) => ({
-                index,
-                ...summarizeFoliateViewLayout(view),
-            })),
-            liveFoliateViewCount: allFoliateViews.length,
-            navBar: summarizeElementLayout(navBar),
-            navBottomRow: summarizeElementLayout(navBottomRow),
-            progressWrapper: summarizeElementLayout(progressWrapper),
-            locationLabel: summarizeElementLayout(document.getElementById('nav-primary-text')),
-            percentLabel: summarizeElementLayout(document.getElementById('nav-primary-percent')),
-            hiddenOverlayLocationLabel: summarizeElementLayout(document.getElementById('nav-hidden-primary-text')),
-            hiddenOverlayPercentLabel: summarizeElementLayout(document.getElementById('nav-hidden-primary-percent')),
-            jumpBackButton: summarizeElementLayout(document.getElementById('nav-relocate-back')),
-            jumpForwardButton: summarizeElementLayout(document.getElementById('nav-relocate-forward')),
-            sectionProgressLeading: summarizeElementLayout(document.getElementById('nav-section-progress-leading')),
-            sectionProgressTrailing: summarizeElementLayout(document.getElementById('nav-section-progress-trailing')),
-            sectionProgressCenter: summarizeElementLayout(document.getElementById('nav-section-progress-center')),
-            pageTrackingContainer: summarizeElementLayout(pageTrackingContainer),
-            pageTrackingButtons: summarizeElementLayout(pageTrackingButtons),
-            firstPageReadButton: summarizeElementLayout(firstPageReadButton),
+            cssInsets: [
+                `toolbar=${(bodyStyle || docElStyle)?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || 'nil'}`,
+                `obscured=${(bodyStyle || docElStyle)?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || 'nil'}`,
+                `stage=${(bodyStyle || docElStyle)?.getPropertyValue('--manabi-reader-stage-bottom-inset')?.trim() || 'nil'}`,
+            ].join(' '),
+            navBarBottom: navBar ? window.getComputedStyle(navBar).bottom : null,
+            readerStageViewportBottomGap: readerStage ? safeRound(window.innerHeight - readerStage.getBoundingClientRect().bottom) : null,
+            paginatorBottomGapToToolbar: navBarRect && livePaginatorRect
+                ? safeRound(navBarRect.top - livePaginatorRect.bottom)
+                : null,
+            paginatorBottomOverlapWithToolbar: navBarRect && livePaginatorRect
+                ? Math.max(0, safeRound(livePaginatorRect.bottom - navBarRect.top))
+                : null,
+            livePaginatorBox: this.#formatBox(
+                livePaginatorContainer?.clientWidth ?? null,
+                livePaginatorContainer?.clientHeight ?? null,
+            ),
+            livePaginatorScrollBox: this.#formatScrollBox(
+                livePaginatorContainer?.clientWidth ?? null,
+                livePaginatorContainer?.scrollWidth ?? null,
+            ),
+            livePaginatorScrollHeightBox: this.#formatScrollBox(
+                livePaginatorContainer?.clientHeight ?? null,
+                livePaginatorContainer?.scrollHeight ?? null,
+            ),
+            paginatorViewportBottomGap: livePaginatorRect
+                ? safeRound(window.innerHeight - livePaginatorRect.bottom)
+                : null,
+            paginatorViewportBottomClip: livePaginatorRect
+                ? Math.max(0, safeRound(livePaginatorRect.bottom - window.innerHeight))
+                : null,
+            locationLabelCollapsed,
+            hiddenOverlayExpected: locationLabelCollapsed || !!this.navHUD?.hideNavigationDueToScroll,
+            hiddenOverlayVisible,
+            hiddenOverlayLocationVisible,
+            hiddenOverlayPercentVisible,
+            hiddenOverlayLocationHidden: hiddenOverlayLocationLabel?.hidden ?? null,
+            hiddenOverlayPercentHidden: hiddenOverlayPercentLabel?.hidden ?? null,
+            hiddenOverlayLocationDisplay: hiddenOverlayLocationStyle?.display ?? null,
+            hiddenOverlayLocationVisibility: hiddenOverlayLocationStyle?.visibility ?? null,
+            hiddenOverlayLocationOpacity: hiddenOverlayLocationStyle?.opacity ?? null,
+            hiddenOverlayPercentDisplay: hiddenOverlayPercentStyle?.display ?? null,
+            hiddenOverlayPercentVisibility: hiddenOverlayPercentStyle?.visibility ?? null,
+            hiddenOverlayPercentOpacity: hiddenOverlayPercentStyle?.opacity ?? null,
+            hiddenOverlayOwnedByMainDocument: !!(
+                hiddenOverlayLocationLabel
+                && hiddenOverlayLocationLabel.ownerDocument === document
+            ),
+            hiddenOverlayContainedByReaderStage: !!(
+                hiddenOverlayLocationLabel
+                && readerStage
+                && readerStage.contains(hiddenOverlayLocationLabel)
+            ),
+            hiddenOverlayLocationText: (hiddenOverlayLocationLabel?.textContent || '').trim(),
+            hiddenOverlayPercentText: (hiddenOverlayPercentLabel?.textContent || '').trim(),
+            hiddenOverlayLocationWidth: hiddenOverlayLocationLabel?.offsetWidth ?? null,
+            hiddenOverlayPercentWidth: hiddenOverlayPercentLabel?.offsetWidth ?? null,
+            hiddenOverlayLocationBottomGap: hiddenOverlayLocationRect
+                ? safeRound(window.innerHeight - hiddenOverlayLocationRect.bottom)
+                : null,
+            hiddenOverlayPercentBottomGap: hiddenOverlayPercentRect
+                ? safeRound(window.innerHeight - hiddenOverlayPercentRect.bottom)
+                : null,
+            locationLabelText: (locationLabel?.textContent || '').trim(),
+            locationLabelWidth: locationLabel?.offsetWidth ?? null,
+            sectionProgressCenterViewportBottomGap,
+            sectionProgressCenterBottomClip: (() => {
+                const element = sectionProgressCenter;
+                if (!element) return null;
+                const rect = element.getBoundingClientRect();
+                const navRect = navBar?.getBoundingClientRect?.();
+                if (!navRect) return null;
+                return safeRound(rect.bottom - navRect.bottom);
+            })(),
+            sectionProgressOffscreen,
+            pageTrackingVisible: !!(
+                pageTrackingContainer
+                && !pageTrackingContainer.hidden
+                && pageTrackingContainer.offsetWidth > 0
+                && pageTrackingButtons
+                && !pageTrackingButtons.hidden
+            ),
+            pageTrackingButtonCount: pageTrackingButtons?.childElementCount ?? 0,
+            pageTrackingContainerHidden: pageTrackingContainer?.hidden ?? null,
+            pageTrackingButtonsHidden: pageTrackingButtons?.hidden ?? null,
+            pageTrackingContainerDisplay: pageTrackingContainerStyle?.display ?? null,
+            pageTrackingContainerVisibility: pageTrackingContainerStyle?.visibility ?? null,
+            pageTrackingButtonsDisplay: pageTrackingButtonsStyle?.display ?? null,
+            pageTrackingButtonsVisibility: pageTrackingButtonsStyle?.visibility ?? null,
+            pageTrackingOwnedByMainDocument: !!(
+                pageTrackingContainer
+                && pageTrackingContainer.ownerDocument === document
+            ),
+            pageTrackingContainedByReaderStage: !!(
+                pageTrackingContainer
+                && readerStage
+                && readerStage.contains(pageTrackingContainer)
+            ),
+            pageTrackingContainedByFoliateView: !!(
+                pageTrackingContainer
+                && liveFoliateView
+                && liveFoliateView.contains(pageTrackingContainer)
+            ),
+            firstPageReadButtonVisible: !!(
+                firstPageReadButton
+                && !firstPageReadButton.hidden
+                && firstPageReadButton.offsetWidth > 0
+            ),
+            firstPageReadButtonHidden: firstPageReadButton?.hidden ?? null,
+            firstPageReadButtonOwnerDocumentIsMain: !!(
+                firstPageReadButton
+                && firstPageReadButton.ownerDocument === document
+            ),
+            pageTrackingContainerRect: pageTrackingContainerRect ? {
+                x: safeRound(pageTrackingContainerRect.x),
+                y: safeRound(pageTrackingContainerRect.y),
+                width: safeRound(pageTrackingContainerRect.width),
+                height: safeRound(pageTrackingContainerRect.height),
+            } : null,
+            pageTrackingButtonsRect: pageTrackingButtonsRect ? {
+                x: safeRound(pageTrackingButtonsRect.x),
+                y: safeRound(pageTrackingButtonsRect.y),
+                width: safeRound(pageTrackingButtonsRect.width),
+                height: safeRound(pageTrackingButtonsRect.height),
+            } : null,
+            firstPageReadButtonRect: firstPageReadButtonRect ? {
+                x: safeRound(firstPageReadButtonRect.x),
+                y: safeRound(firstPageReadButtonRect.y),
+                width: safeRound(firstPageReadButtonRect.width),
+                height: safeRound(firstPageReadButtonRect.height),
+            } : null,
+            firstPageReadButtonLabel: (firstPageReadButton?.textContent || '').trim(),
+            firstPageReadButtonDisplay: firstPageReadButtonStyle?.display ?? null,
+            firstPageReadButtonVisibility: firstPageReadButtonStyle?.visibility ?? null,
+            firstPageReadButtonOpacity: firstPageReadButtonStyle?.opacity ?? null,
+            firstPageReadButtonViewportVisible: !!(
+                firstPageReadButtonRect
+                && firstPageReadButtonRect.width > 1
+                && firstPageReadButtonRect.height > 1
+                && firstPageReadButtonRect.right > 0
+                && firstPageReadButtonRect.bottom > 0
+                && firstPageReadButtonRect.left < window.innerWidth
+                && firstPageReadButtonRect.top < window.innerHeight
+            ),
+            bodyLoading: !!body?.classList?.contains?.('loading'),
         };
+        const hasIssue =
+            layoutSnapshot.horizontalOverflowScrolling
+            || (layoutSnapshot.paginatorViewportBottomClip ?? 0) > 0
+            || (layoutSnapshot.paginatorBottomOverlapWithToolbar ?? 0) > 0
+            || layoutSnapshot.navVisibilityMismatch
+            || layoutSnapshot.sectionProgressOffscreen
+            || (layoutSnapshot.hiddenOverlayExpected && !layoutSnapshot.hiddenOverlayVisible);
+        const shouldLogSnapshot =
+            hasIssue
+            || reason === 'reader-open'
+            || reason === 'document-load'
+            || reason === 'native-hide-bridge'
+            || reason === 'relocate';
         const key = JSON.stringify(layoutSnapshot);
         if (key === this.lastLayoutDiagnosticsKey) {
             return;
         }
+        this.#logLayoutTransition(reason, this.lastLayoutSnapshot, layoutSnapshot);
+        this.lastLayoutSnapshot = layoutSnapshot;
         this.lastLayoutDiagnosticsKey = key;
-        postReaderLog('ebook.layout.snapshot', layoutSnapshot);
+        if (shouldLogSnapshot) {
+            postReaderLog('ebook.layout.snapshot', layoutSnapshot);
+        }
     }
-    #renderPageTrackingButtons() {
+    #renderPageTrackingButtons(reason = 'unspecified') {
         const container = document.getElementById('page-tracking-container');
         const buttonHost = document.getElementById('page-tracking-buttons');
         if (!(container instanceof HTMLElement) || !(buttonHost instanceof HTMLElement)) {
@@ -1329,11 +1701,24 @@ class Reader {
                     aria-label="${state.fullLabel}"
                     ${state.isRead || isBusy ? 'disabled' : ''}
                 >
-                    <span class="button-label full">${state.fullLabel}</span>
-                    <span class="button-label short">${state.shortLabel}</span>
+                    <span class="page-read-button-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                            <path d="M9.2 16.4 5.8 13l-1.4 1.4 4.8 4.8L19.6 8.8l-1.4-1.4z"></path>
+                        </svg>
+                    </span>
+                    <span class="sr-only">${state.fullLabel}</span>
                 </button>
             `;
         }).join('');
+        this.#logPageTracking('ebook.pageTracking.surfaceOwnership', {
+            reason,
+            stateCount: pageTrackingStates.length,
+            containerOwnedByMainDocument: container.ownerDocument === document,
+            containerContainedByReaderStage: !!document.getElementById('reader-stage')?.contains(container),
+            containerContainedByFoliateView: !!this.view?.contains?.(container),
+            buttonHostOwnedByMainDocument: buttonHost.ownerDocument === document,
+            firstButtonOwnedByMainDocument: buttonHost.querySelector('.page-read-button')?.ownerDocument === document,
+        });
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
@@ -1343,6 +1728,7 @@ class Reader {
         if (!this.view?.renderer) {
             return;
         }
+        await new Promise((resolve) => setTimeout(resolve, 180));
         const renderer = this.view.renderer;
         const isAtForwardSectionBoundary = await renderer.atEnd();
         if (isAtForwardSectionBoundary) {
@@ -1370,7 +1756,7 @@ class Reader {
             && globalThis.reader
             && globalThis.reader.hasLoadedLastPosition !== true;
         if (isRestorePending) {
-            const diagnosticsKey = `restore-pending:${retryCount}`;
+            const diagnosticsKey = `restore-pending:${reason}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
                 this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
@@ -1389,8 +1775,8 @@ class Reader {
         const doc = isDocumentLike(explicitDoc) ? explicitDoc : contents[0]?.doc;
         if (!isDocumentLike(doc)) {
             this.pageTrackingStates = [];
-            this.#renderPageTrackingButtons();
-            const diagnosticsKey = `no-document:${reason}:${contents.length}:${retryCount}`;
+            this.#renderPageTrackingButtons(reason);
+            const diagnosticsKey = `no-document:${reason}:${contents.length}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
                 this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
@@ -1424,7 +1810,7 @@ class Reader {
                 || diagnostics.viewportHeight <= 0
             );
         if (shouldRetryEmptyDocument) {
-            const diagnosticsKey = `empty-document:${reason}:${retryCount}:${diagnostics.documentURL || 'nil'}`;
+            const diagnosticsKey = `empty-document:${reason}:${diagnostics.documentURL || 'nil'}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
                 this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
@@ -1444,7 +1830,7 @@ class Reader {
             return;
         }
         this.pageTrackingStates = states;
-        this.#renderPageTrackingButtons();
+        this.#renderPageTrackingButtons(reason);
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -1461,9 +1847,17 @@ class Reader {
             return;
         }
         this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
+        const hasAnomaly =
+            diagnostics.stateCount === 0
+            || diagnostics.missingIdentifierCount > 0
+            || diagnostics.skippedMissingSearchStringCount > 0
+            || diagnostics.outOfViewportCount > 0;
+        if (!hasAnomaly) {
+            return;
+        }
         const event = diagnostics.stateCount === 0
             ? 'ebook.pageTracking.sync.empty'
-            : 'ebook.pageTracking.sync';
+            : 'ebook.pageTracking.sync.anomaly';
         this.#logPageTracking(event, {
             reason,
             documentURL: diagnostics.documentURL,
@@ -1539,7 +1933,7 @@ class Reader {
             sentenceIdentifierCount: pageTrackingState.payload.sentenceIdentifiers.length,
         });
         this.pageTrackingBusyStateIDs.add(stateID);
-        this.#renderPageTrackingButtons();
+        this.#renderPageTrackingButtons('mark-read-busy');
         window.webkit.messageHandlers.markSectionAsRead.postMessage(pageTrackingState.payload);
         const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
         optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
@@ -1560,9 +1954,17 @@ class Reader {
     }
     async open(file) {
         this.setLoadingIndicator(true);
+        const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now();
+        postReaderLog('ebook.readerOpen.begin', {
+            fileKind: file?.kind || 'nil',
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+        });
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
+        postReaderVisibilityProbe('reader.open:view-assigned', this.view, null);
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
@@ -1582,9 +1984,13 @@ class Reader {
         this.navHUD?.setIsRTL(this.isRTL);
         this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
+        applyStoredChromeInsets('reader.open');
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
+        postReaderVisibilityProbe('reader.open:nav-visible', this.view, {
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+        });
         this.#queueLayoutDiagnostics('reader-open', {
             isRTL: this.isRTL,
             bookDir: this.bookDir,
@@ -1775,11 +2181,6 @@ class Reader {
             }
         }
         
-        slider.style.setProperty('--value', slider.value);
-        slider.style.setProperty('--min', slider.min == '' ? '0' : slider.min);
-        slider.style.setProperty('--max', slider.max == '' ? '100' : slider.max);
-        slider.addEventListener('input', () => slider.style.setProperty('--value', slider.value));
-        
         // Percent jump input/button wiring
         const percentInput = document.getElementById('percent-jump-input');
         const percentButton = document.getElementById('percent-jump-button');
@@ -1839,6 +2240,10 @@ class Reader {
         })
         
         const toc = book.toc
+        postReaderLog('ebook.readerOpen.toc.start', {
+            hasTOC: !!toc,
+            tocCount: Array.isArray(toc) ? toc.length : 'nil',
+        });
         if (toc) {
             this.#tocView = createTOCView(toc, async (href) => {
                 await this.view.goTo(href).catch(e => console.error(e))
@@ -1846,13 +2251,50 @@ class Reader {
             })
             $('#toc-view').append(this.#tocView.element)
         }
+        postReaderLog('ebook.readerOpen.toc.end', {
+            hasTOCView: !!this.#tocView,
+        });
         
         // load and show highlights embedded in the file by Calibre
-        const bookmarks = await book.getCalibreBookmarks?.()
+        postReaderLog('ebook.readerOpen.calibreBookmarks.start', {
+            hasMethod: typeof book.getCalibreBookmarks === 'function',
+        });
+        let calibreBookmarksPendingLogged = false;
+        const calibreBookmarksPendingTimer = setTimeout(() => {
+            calibreBookmarksPendingLogged = true;
+            postReaderLog('ebook.readerOpen.calibreBookmarks.pending', {
+                elapsedMs: Math.round(
+                    (typeof performance !== 'undefined' && typeof performance.now === 'function'
+                        ? performance.now()
+                        : Date.now()) - readerOpenStartedAt
+                ),
+            });
+        }, 1000);
+        let bookmarks;
+        try {
+            bookmarks = await book.getCalibreBookmarks?.()
+        } catch (error) {
+            clearTimeout(calibreBookmarksPendingTimer);
+            postReaderLog('ebook.readerOpen.calibreBookmarks.error', {
+                message: error?.message || String(error),
+            });
+            throw error;
+        }
+        clearTimeout(calibreBookmarksPendingTimer);
+        postReaderLog('ebook.readerOpen.calibreBookmarks.end', {
+            pendingLogged: calibreBookmarksPendingLogged,
+            bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
+        });
         if (bookmarks) {
+            postReaderLog('ebook.readerOpen.calibreBookmarks.import.start', {
+                bookmarkCount: bookmarks.length,
+            });
             const {
                 fromCalibreHighlight
             } = await import('./epubcfi.js')
+            postReaderLog('ebook.readerOpen.calibreBookmarks.import.end', {
+                bookmarkCount: bookmarks.length,
+            });
             for (const obj of bookmarks) {
                 if (obj.type === 'highlight') {
                     const value = fromCalibreHighlight(obj)
@@ -1895,6 +2337,15 @@ class Reader {
                 if (annotation.note) alert(annotation.note)
                     })
         }
+        postReaderLog('ebook.readerOpen.end', {
+            elapsedMs: Math.round(
+                (typeof performance !== 'undefined' && typeof performance.now === 'function'
+                    ? performance.now()
+                    : Date.now()) - readerOpenStartedAt
+            ),
+            hasRenderer: !!this.view?.renderer,
+            bodyClassName: document.body?.className || 'nil',
+        });
     }
     
     async updateNavButtons() {
@@ -2015,18 +2466,24 @@ class Reader {
     }
     #onDidDisplay({}) {
         this.setLoadingIndicator(false);
+        applyStoredChromeInsets('reader.didDisplay');
+        postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
     #onLoad({
         detail: {
             doc
         }
     }) {
+        applyStoredChromeInsets('reader.documentLoad');
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
         requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2));
+        postReaderVisibilityProbe('reader.documentLoad', this.view, {
+            documentURL: doc?.location?.href || null,
+        });
         this.#queueLayoutDiagnostics('document-load', {
             documentURL: doc?.location?.href || null,
         });
@@ -2098,6 +2555,12 @@ class Reader {
         }
         
         await this.updateNavButtons();
+        postReaderVisibilityProbe('reader.relocate', this.view, {
+            reason: detail?.reason || null,
+            fraction: safeRound(detail?.fraction),
+            currentLocation: detail?.location?.current ?? null,
+            totalLocation: detail?.location?.total ?? null,
+        });
         this.#queueLayoutDiagnostics('relocate', {
             reason: detail?.reason || null,
             fraction: safeRound(detail?.fraction),
@@ -2520,6 +2983,7 @@ window.manabiToggleReaderTableOfContents = () => {
 
 window.manabiGetReaderGoToSheetSnapshot = async () => {
     return await globalThis.reader?.buildGoToSheetSnapshot?.() ?? {
+        isRTL: false,
         currentChapterHref: null,
         currentChapterTitle: null,
         currentPageNumber: null,

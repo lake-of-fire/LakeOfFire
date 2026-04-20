@@ -287,24 +287,7 @@ public extension ReaderContentProtocol {
         if displayAbsolutePublicationDate {
             return longDateFormatter.string(from: publicationDate)
         } else {
-            let interval = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .nanosecond], from: publicationDate, to: Date())
-            let intervalText: String
-            if let year = interval.year, year > 0 {
-                intervalText = "\(year) year\(year != 1 ? "s" : "")"
-            } else if let month = interval.month, month > 0 {
-                intervalText = "\(month) month\(month != 1 ? "s" : "")"
-            } else if let day = interval.day, day > 0 {
-                intervalText = "\(day) day\(day != 1 ? "s" : "")"
-            } else if let hour = interval.hour, hour > 0 {
-                intervalText = "\(hour) hour\(hour != 1 ? "s" : "")"
-            } else if let minute = interval.minute, minute > 0 {
-                intervalText = "\(minute) minute\(minute != 1 ? "s" : "")"
-            } else if let nanosecond = interval.nanosecond, nanosecond > 0 {
-                intervalText = "\(nanosecond / 1000000000) second\(nanosecond != 1000000000 ? "s" : "")"
-            } else {
-                return nil
-            }
-            return "\(intervalText) ago"
+            return ReaderDateFormatter.relativeString(from: publicationDate)
         }
     }
     

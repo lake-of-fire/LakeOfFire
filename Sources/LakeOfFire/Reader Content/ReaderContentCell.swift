@@ -308,7 +308,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var effectiveCardCellHeight: CGFloat {
-        appearance.maxCellHeight + 10
+        appearance.maxCellHeight
     }
 
     private var displayImageURL: URL? {
@@ -451,7 +451,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var titleLineLimit: Int {
         if appearance.maxCellHeight >= 110 {
-            return isProgressVisible ? 2 : 3
+            return 3
         }
         return 1
     }
