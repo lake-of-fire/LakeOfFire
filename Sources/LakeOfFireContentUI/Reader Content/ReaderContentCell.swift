@@ -53,7 +53,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         let imageURL = try await item.imageURLToDisplay()
         try await { @ReaderContentCellActor [weak self] in
             guard let self else { return }
-            let realm = try await Realm.open(configuration: config)
+            let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
                 try Task.checkCancellation()
                 let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
@@ -63,26 +63,32 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
                 let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
                 let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
-                let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
-                let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
+                let itemURL = item.url
+                let itemSourceIconURL = item.sourceIconURL
+                let feedEntry = item as? FeedEntry
+                let feed = feedEntry?.getFeed()
+                let feedShowsUnseenBadge = feed?.showsUnseenBadge ?? true
+                let feedTitle = feed?.title
+                let feedIconURL = feed?.iconUrl
+                let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
+                let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
                 let latestHistoryRecordLastVisitedAt: Date?
-                let feedShowsUnseenBadge: Bool
                 if item is FeedEntry {
-                    let feedEntry = item as? FeedEntry
-                    feedShowsUnseenBadge = feedEntry?.getFeed()?.showsUnseenBadge ?? true
                     if feedShowsUnseenBadge {
-                        let historyRealm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-                        latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: item.url, in: historyRealm)
+                        let historyRealm = try await Realm(
+                            configuration: ReaderContentLoader.historyRealmConfiguration,
+                            actor: ReaderContentCellActor.shared
+                        )
+                        latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
                     } else {
                         latestHistoryRecordLastVisitedAt = nil
                     }
                 } else {
                     latestHistoryRecordLastVisitedAt = nil
-                    feedShowsUnseenBadge = true
                 }
                 try Task.checkCancellation()
 
-                let sourceURL = item.url
+                let sourceURL = itemURL
                 var sourceTitle: String?
                 // TODO: Store and get site names from OpenGraph
                 var sourceIconURL: URL?
@@ -90,18 +96,24 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 if includeSource {
                     if sourceURL.isSnippetURL {
                         sourceTitle = "Snippet"
+                    } else if let feedTitle {
+                        sourceTitle = feedTitle
+                        sourceIconURL = feedIconURL ?? itemSourceIconURL
                     } else if sourceURL.isHTTP {
                         sourceTitle = sourceURL.host
-                        let readerRealm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+                        let readerRealm = try await Realm(
+                            configuration: ReaderContentLoader.feedEntryRealmConfiguration,
+                            actor: ReaderContentCellActor.shared
+                        )
                         try Task.checkCancellation()
                         
-                        if let feedEntry = item as? FeedEntry ?? readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
+                        if let feedEntry = readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
                             try Task.checkCancellation()
                             sourceTitle = feed.title
-                            sourceIconURL = feed.iconUrl
+                            sourceIconURL = feed.iconUrl ?? itemSourceIconURL
                         } else if let host = sourceURL.host {
                             sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-                            sourceIconURL = item.sourceIconURL
+                            sourceIconURL = itemSourceIconURL
                         }
                     }
                 }
@@ -123,7 +135,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         self.isFullArticleFinished = finished
                     } else {
                         self.readingProgress = nil
-                    self.isFullArticleFinished = nil
+                        self.isFullArticleFinished = nil
                     }
                     self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
                     self.feedShowsUnseenBadge = feedShowsUnseenBadge

@@ -276,12 +276,6 @@ fileprivate struct EBookEntriesResponse: Codable, Sendable {
     let entries: [ReaderPackageEntryMetadata]
 }
 
-fileprivate extension URL {
-    var ebookPathExtension: String {
-        NSString(string: absoluteString).pathExtension
-    }
-}
-
 @globalActor
 public actor EbookURLSchemeActor {
     public static let shared = EbookURLSchemeActor()
@@ -774,7 +768,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {
         guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
         let assetName = url.deletingPathExtension().lastPathComponent
-        let assetExtension = url.ebookPathExtension
+        let assetExtension = url.lakePathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
         let resolvedURL = Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
         if resolvedURL == nil, ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
@@ -858,7 +852,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {
-        switch url.ebookPathExtension.lowercased() {
+        switch url.lakePathExtension.lowercased() {
         case "js", "mjs":
             return "text/javascript"
         case "css":
@@ -870,7 +864,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         case "svg":
             return "image/svg+xml"
         default:
-            return UTType(filenameExtension: url.ebookPathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            return UTType(filenameExtension: url.lakePathExtension)?.preferredMIMEType ?? "application/octet-stream"
         }
     }
 }

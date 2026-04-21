@@ -4020,6 +4020,18 @@ export class Paginator extends HTMLElement {
         }
     }
 
+    _sampleSameDocumentPageTextSync(pageIndex) {
+        if (!Number.isFinite(pageIndex) || pageIndex < 0) return null
+        const liveRoot = this._getSameDocumentLiveRoot()
+        if (!(liveRoot instanceof HTMLElement)) return null
+        const pageNode = liveRoot.querySelector(`:scope > .manabi-page[data-manabi-page-index="${pageIndex}"]`)
+            || liveRoot.querySelector(`.manabi-page[data-manabi-page-index="${pageIndex}"]`)
+            || null
+        const rawText = pageNode?.textContent ?? ''
+        const normalized = String(rawText).replace(/\s+/g, ' ').trim()
+        return normalized ? normalized.slice(0, 180) : null
+    }
+
     async _getSameDocumentPreparedNavigationState(targetPageIndex, reason = 'same-document-navigation') {
         const target = Number.isFinite(targetPageIndex) ? Math.max(0, Math.floor(targetPageIndex)) : null
         const activeLayout = this._getActiveEbookSectionLayout()
@@ -4104,49 +4116,31 @@ export class Paginator extends HTMLElement {
             || liveRoot.querySelector(`.manabi-page[data-manabi-page-index="${resolvedPageIndex}"]`)
             || null
         const verticalAxis = this._isSameDocumentVerticalAxisSync()
-        const fallbackPageSpan = verticalAxis
-            ? (
-                Number.isFinite(targetPageNode?.offsetHeight) && targetPageNode.offsetHeight > 0
-                    ? targetPageNode.offsetHeight
-                    : (liveRoot.firstElementChild?.getBoundingClientRect?.().height || this.getBoundingClientRect?.().height || 0)
-            )
-            : (
-                Number.isFinite(targetPageNode?.offsetWidth) && targetPageNode.offsetWidth > 0
-                    ? targetPageNode.offsetWidth
-                    : (liveRoot.firstElementChild?.getBoundingClientRect?.().width || this.getBoundingClientRect?.().width || 0)
-            )
+        // Same-document paginated pages are always laid out along the physical X axis.
+        // Writing mode changes host semantics and content flow, but not the page-strip axis.
+        const fallbackPageSpan = (
+            Number.isFinite(targetPageNode?.offsetWidth) && targetPageNode.offsetWidth > 0
+                ? targetPageNode.offsetWidth
+                : (liveRoot.firstElementChild?.getBoundingClientRect?.().width || this.getBoundingClientRect?.().width || 0)
+        )
         const fallbackOffset = resolvedPageIndex * fallbackPageSpan
-        const targetOffset = verticalAxis
-            ? (Number.isFinite(targetPageNode?.offsetTop) ? targetPageNode.offsetTop : fallbackOffset)
-            : (Number.isFinite(targetPageNode?.offsetLeft) ? targetPageNode.offsetLeft : fallbackOffset)
+        const targetOffset = Number.isFinite(targetPageNode?.offsetLeft)
+            ? targetPageNode.offsetLeft
+            : fallbackOffset
         const sameDocumentContainer = document.getElementById('manabi-same-document-container')
         const sameDocumentViewport = document.getElementById('manabi-same-document-viewport')
         liveRoot.style.willChange = 'transform'
         liveRoot.style.transition = smooth ? 'transform 220ms ease-out' : 'none'
-        liveRoot.style.transform = verticalAxis
-            ? `translate3d(0, ${-targetOffset}px, 0)`
-            : `translate3d(${-targetOffset}px, 0, 0)`
+        liveRoot.style.transform = `translate3d(${-targetOffset}px, 0, 0)`
         liveRoot.dataset.manabiCurrentPageIndex = String(resolvedPageIndex)
         if (sameDocumentContainer instanceof HTMLElement) {
-            if (verticalAxis) {
-                sameDocumentContainer.scrollTop = targetOffset
-            } else {
-                sameDocumentContainer.scrollLeft = targetOffset
-            }
+            sameDocumentContainer.scrollLeft = targetOffset
         }
         if (sameDocumentViewport instanceof HTMLElement) {
-            if (verticalAxis) {
-                sameDocumentViewport.scrollTop = targetOffset
-            } else {
-                sameDocumentViewport.scrollLeft = targetOffset
-            }
+            sameDocumentViewport.scrollLeft = targetOffset
         }
         if (this._container instanceof HTMLElement) {
-            if (verticalAxis) {
-                this._container.scrollTop = targetOffset
-            } else {
-                this._container.scrollLeft = targetOffset
-            }
+            this._container.scrollLeft = targetOffset
         }
         this._sameDocumentCurrentPageIndex = resolvedPageIndex
         if (activeLayout && typeof activeLayout.setCurrentSourceAnchor === 'function') {
@@ -4164,7 +4158,8 @@ export class Paginator extends HTMLElement {
             reason,
             targetPageIndex: resolvedPageIndex,
             targetOffset,
-            axis: verticalAxis ? 'vertical' : 'horizontal',
+            axis: 'horizontal',
+            semanticAxis: verticalAxis ? 'vertical' : 'horizontal',
             appliedTransform: liveRoot.style.transform,
             datasetCurrentPageIndex: liveRoot.dataset.manabiCurrentPageIndex ?? null,
         })
@@ -4174,7 +4169,8 @@ export class Paginator extends HTMLElement {
             targetPage: resolvedPageIndex,
             targetOffset,
             fallbackOffset,
-            axis: verticalAxis ? 'vertical' : 'horizontal',
+            axis: 'horizontal',
+            semanticAxis: verticalAxis ? 'vertical' : 'horizontal',
             livePageCount: this._getSameDocumentResolvedPageCountSync(),
         })
         return true
@@ -6507,20 +6503,104 @@ export class Paginator extends HTMLElement {
     async next(distance) {
         return await this._turnPage(1, distance)
     }
-    async getTurnState() {
+    _getSameDocumentTurnStateSync() {
         const sameDocumentMode = this._usesSameDocumentPagePositioningSync()
+        if (!sameDocumentMode) {
+            return null
+        }
         let currentPage = null
         let pageCount = null
-        if (sameDocumentMode) {
-            const resolved = this._getSameDocumentResolvedNavigationStateSync()
-            currentPage = Number.isFinite(resolved?.pageIndex) ? resolved.pageIndex : null
-            pageCount = Number.isFinite(resolved?.pageCount) ? resolved.pageCount : null
-        } else {
-            currentPage = await this.page().catch(() => null)
-            pageCount = await this.pages().catch(() => null)
-            currentPage = Number.isFinite(currentPage) ? currentPage : null
-            pageCount = Number.isFinite(pageCount) ? pageCount : null
+        const resolved = this._getSameDocumentResolvedNavigationStateSync()
+        currentPage = Number.isFinite(resolved?.pageIndex) ? resolved.pageIndex : null
+        pageCount = Number.isFinite(resolved?.pageCount) ? resolved.pageCount : null
+        const currentSectionIndex = Number.isFinite(this._index) ? this._index : null
+        const currentSection = currentSectionIndex != null
+            ? (this.sections?.[currentSectionIndex] ?? null)
+            : null
+        const layoutMetrics = globalThis.manabiGetChunkLayoutMetrics?.() ?? null
+        const sampleForRange = range => {
+            try {
+                const text = range?.toString?.() ?? '';
+                const normalized = String(text).replace(/\s+/g, ' ').trim();
+                return normalized ? normalized.slice(0, 180) : null;
+            } catch {
+                return null;
+            }
         }
+        const layoutWritingMode = layoutMetrics?.writingMode
+            ?? globalThis.getComputedStyle?.(this._view?.document?.body ?? null)?.writingMode
+            ?? null
+        const layoutVisibleUnitAxis = layoutWritingMode?.startsWith?.('vertical') || this._vertical
+            ? 'vertical'
+            : 'horizontal'
+        const layoutVisibleUnitKind = typeof layoutMetrics?.visibleUnitKind === 'string'
+            ? layoutMetrics.visibleUnitKind
+            : 'singlePage'
+        const layoutVisiblePageCount = Number.isFinite(layoutMetrics?.visiblePageCount)
+            ? layoutMetrics.visiblePageCount
+            : 1
+        const pageProgressionDirection = this._vertical
+            ? (this._rtl ? 'rightToLeft' : 'leftToRight')
+            : (this._rtl ? 'rightToLeft' : 'leftToRight')
+        const canForward = Number.isFinite(currentPage) && Number.isFinite(pageCount)
+            ? currentPage < pageCount - 1 || this._adjacentIndex(1) != null
+            : this._adjacentIndex(1) != null
+        const canBackward = Number.isFinite(currentPage) && Number.isFinite(pageCount)
+            ? currentPage > 0 || this._adjacentIndex(-1) != null
+            : this._adjacentIndex(-1) != null
+        const forwardDestinationAvailability = canForward
+            ? (Number.isFinite(currentPage) && Number.isFinite(pageCount) && currentPage < pageCount - 1 ? 'second' : 'both')
+            : 'unavailable'
+        const backwardDestinationAvailability = canBackward
+            ? (Number.isFinite(currentPage) && currentPage > 0 ? 'first' : 'both')
+            : 'unavailable'
+        const currentPageTextSample = sameDocumentMode && Number.isFinite(currentPage)
+            ? this._sampleSameDocumentPageTextSync(currentPage)
+            : null
+        const diagnostics = globalThis.manabiSameDocumentHostTurnDiagnostics ?? null
+        const lastFastTurnResult = globalThis.__manabiLastFastTurnResult ?? null
+        return {
+            hasView: !!this._view,
+            hasRenderer: !!this._view?.renderer,
+            sameDocumentMode,
+            currentPage,
+            pageCount,
+            currentSectionIndex,
+            currentSectionHref: currentSection?.href ?? currentSection?.url ?? null,
+            canForward: !!canForward,
+            canBackward: !!canBackward,
+            pageProgressionDirection,
+            forwardDestinationAvailability,
+            backwardDestinationAvailability,
+            layoutVisibleUnitKind,
+            layoutVisibleUnitAxis,
+            layoutVisiblePageCount,
+            layoutWritingMode,
+            currentPageTextSample,
+            currentPageDisplayLabel: (
+                Number.isFinite(currentPage) && Number.isFinite(pageCount)
+                    ? `Page ${currentPage + 1} of ${pageCount}`
+                    : null
+            ),
+            sameDocumentHostTurnPhase: diagnostics?.phase ?? null,
+            sameDocumentHostTurnTargetPageIndex: Number.isFinite(diagnostics?.targetPageIndex)
+                ? diagnostics.targetPageIndex
+                : null,
+            sameDocumentHostTurnResult: diagnostics?.result ?? null,
+            lastFastTurnStatus: typeof lastFastTurnResult?.status === 'string'
+                ? lastFastTurnResult.status
+                : null,
+        }
+    }
+    async getTurnState() {
+        const sameDocumentState = this._getSameDocumentTurnStateSync()
+        if (sameDocumentState) {
+            return sameDocumentState
+        }
+        const currentPage = await this.page().catch(() => null)
+        const pageCount = await this.pages().catch(() => null)
+        const normalizedCurrentPage = Number.isFinite(currentPage) ? currentPage : null
+        const normalizedPageCount = Number.isFinite(pageCount) ? pageCount : null
         const currentSectionIndex = Number.isFinite(this._index) ? this._index : null
         const currentSection = currentSectionIndex != null
             ? (this.sections?.[currentSectionIndex] ?? null)
@@ -6532,28 +6612,50 @@ export class Paginator extends HTMLElement {
         const layoutVisibleUnitAxis = layoutWritingMode?.startsWith?.('vertical') || this._vertical
             ? 'vertical'
             : 'horizontal'
-        const canForward = Number.isFinite(currentPage) && Number.isFinite(pageCount)
-            ? currentPage < pageCount - 1 || this._adjacentIndex(1) != null
+        const layoutVisibleUnitKind = typeof layoutMetrics?.visibleUnitKind === 'string'
+            ? layoutMetrics.visibleUnitKind
+            : 'singlePage'
+        const layoutVisiblePageCount = Number.isFinite(layoutMetrics?.visiblePageCount)
+            ? layoutMetrics.visiblePageCount
+            : 1
+        const pageProgressionDirection = this._vertical
+            ? (this._rtl ? 'rightToLeft' : 'leftToRight')
+            : (this._rtl ? 'rightToLeft' : 'leftToRight')
+        const canForward = Number.isFinite(normalizedCurrentPage) && Number.isFinite(normalizedPageCount)
+            ? normalizedCurrentPage < normalizedPageCount - 1 || this._adjacentIndex(1) != null
             : this._adjacentIndex(1) != null
-        const canBackward = Number.isFinite(currentPage) && Number.isFinite(pageCount)
-            ? currentPage > 0 || this._adjacentIndex(-1) != null
+        const canBackward = Number.isFinite(normalizedCurrentPage) && Number.isFinite(normalizedPageCount)
+            ? normalizedCurrentPage > 0 || this._adjacentIndex(-1) != null
             : this._adjacentIndex(-1) != null
+        const forwardDestinationAvailability = canForward
+            ? (Number.isFinite(normalizedCurrentPage) && Number.isFinite(normalizedPageCount) && normalizedCurrentPage < normalizedPageCount - 1 ? 'second' : 'both')
+            : 'unavailable'
+        const backwardDestinationAvailability = canBackward
+            ? (Number.isFinite(normalizedCurrentPage) && normalizedCurrentPage > 0 ? 'first' : 'both')
+            : 'unavailable'
         const diagnostics = globalThis.manabiSameDocumentHostTurnDiagnostics ?? null
+        const lastFastTurnResult = globalThis.__manabiLastFastTurnResult ?? null
         return {
             hasView: !!this._view,
             hasRenderer: !!this._view?.renderer,
-            sameDocumentMode,
-            currentPage,
-            pageCount,
+            sameDocumentMode: false,
+            currentPage: normalizedCurrentPage,
+            pageCount: normalizedPageCount,
             currentSectionIndex,
             currentSectionHref: currentSection?.href ?? currentSection?.url ?? null,
             canForward: !!canForward,
             canBackward: !!canBackward,
+            pageProgressionDirection,
+            forwardDestinationAvailability,
+            backwardDestinationAvailability,
+            layoutVisibleUnitKind,
             layoutVisibleUnitAxis,
+            layoutVisiblePageCount,
             layoutWritingMode,
+            currentPageTextSample: null,
             currentPageDisplayLabel: (
-                Number.isFinite(currentPage) && Number.isFinite(pageCount)
-                    ? `Page ${currentPage + 1} of ${pageCount}`
+                Number.isFinite(normalizedCurrentPage) && Number.isFinite(normalizedPageCount)
+                    ? `Page ${normalizedCurrentPage + 1} of ${normalizedPageCount}`
                     : null
             ),
             sameDocumentHostTurnPhase: diagnostics?.phase ?? null,
@@ -6561,10 +6663,75 @@ export class Paginator extends HTMLElement {
                 ? diagnostics.targetPageIndex
                 : null,
             sameDocumentHostTurnResult: diagnostics?.result ?? null,
+            lastFastTurnStatus: typeof lastFastTurnResult?.status === 'string'
+                ? lastFastTurnResult.status
+                : null,
         }
     }
     async goToResolvedPage(pageIndex, reason = 'go-to-resolved-page') {
         const before = await this.getTurnState()
+        const buildDirectAfterState = (resolvedPageIndex, resolvedPageCount) => {
+            const currentSectionIndex = Number.isFinite(this._index) ? this._index : null
+            const currentSection = currentSectionIndex != null
+                ? (this.sections?.[currentSectionIndex] ?? null)
+                : null
+            const layoutMetrics = globalThis.manabiGetChunkLayoutMetrics?.() ?? null
+            const layoutWritingMode = layoutMetrics?.writingMode
+                ?? globalThis.getComputedStyle?.(this._view?.document?.body ?? null)?.writingMode
+                ?? before.layoutWritingMode
+                ?? null
+            const layoutVisibleUnitAxis = layoutWritingMode?.startsWith?.('vertical') || this._vertical
+                ? 'vertical'
+                : 'horizontal'
+            const pageProgressionDirection = this._rtl ? 'rightToLeft' : 'leftToRight'
+            const canForward = Number.isFinite(resolvedPageIndex) && Number.isFinite(resolvedPageCount)
+                ? resolvedPageIndex < resolvedPageCount - 1 || this._adjacentIndex(1) != null
+                : this._adjacentIndex(1) != null
+            const canBackward = Number.isFinite(resolvedPageIndex) && Number.isFinite(resolvedPageCount)
+                ? resolvedPageIndex > 0 || this._adjacentIndex(-1) != null
+                : this._adjacentIndex(-1) != null
+            const forwardDestinationAvailability = canForward
+                ? (Number.isFinite(resolvedPageIndex) && Number.isFinite(resolvedPageCount) && resolvedPageIndex < resolvedPageCount - 1 ? 'second' : 'both')
+                : 'unavailable'
+            const backwardDestinationAvailability = canBackward
+                ? (Number.isFinite(resolvedPageIndex) && resolvedPageIndex > 0 ? 'first' : 'both')
+                : 'unavailable'
+            const diagnostics = globalThis.manabiSameDocumentHostTurnDiagnostics ?? null
+            const lastFastTurnResult = globalThis.__manabiLastFastTurnResult ?? null
+            return {
+                ...before,
+                hasView: !!this._view,
+                hasRenderer: !!this._view?.renderer,
+                sameDocumentMode: true,
+                currentPage: resolvedPageIndex,
+                pageCount: resolvedPageCount,
+                currentSectionIndex,
+                currentSectionHref: currentSection?.href ?? currentSection?.url ?? null,
+                canForward: !!canForward,
+                canBackward: !!canBackward,
+                pageProgressionDirection,
+                forwardDestinationAvailability,
+                backwardDestinationAvailability,
+                layoutVisibleUnitAxis,
+                layoutWritingMode,
+                currentPageTextSample: Number.isFinite(resolvedPageIndex)
+                    ? this._sampleSameDocumentPageTextSync(resolvedPageIndex)
+                    : before.currentPageTextSample ?? null,
+                currentPageDisplayLabel: (
+                    Number.isFinite(resolvedPageIndex) && Number.isFinite(resolvedPageCount)
+                        ? `Page ${resolvedPageIndex + 1} of ${resolvedPageCount}`
+                        : null
+                ),
+                sameDocumentHostTurnPhase: diagnostics?.phase ?? null,
+                sameDocumentHostTurnTargetPageIndex: Number.isFinite(diagnostics?.targetPageIndex)
+                    ? diagnostics.targetPageIndex
+                    : null,
+                sameDocumentHostTurnResult: diagnostics?.result ?? null,
+                lastFastTurnStatus: typeof lastFastTurnResult?.status === 'string'
+                    ? lastFastTurnResult.status
+                    : null,
+            }
+        }
         const classifyMove = async (status, targetPageIndex = null, targetSectionIndex = null) => {
             const after = await this.getTurnState()
             const moved = (
@@ -6616,11 +6783,11 @@ export class Paginator extends HTMLElement {
                 targetSectionIndex: null,
             }
         }
-        const prepared = await this._getSameDocumentPreparedNavigationState(
-            requestedPageIndex,
-            reason
+        const preparedPageCount = (
+            Number.isFinite(before.pageCount) && before.pageCount > 0
+                ? before.pageCount
+                : this._getSameDocumentResolvedPageCountSync()
         )
-        const preparedPageCount = Number.isFinite(prepared?.pageCount) ? prepared.pageCount : before.pageCount
         const targetPageIndex = Math.max(0, Math.min(
             Math.max(0, (preparedPageCount ?? 1) - 1),
             requestedPageIndex
@@ -6630,14 +6797,24 @@ export class Paginator extends HTMLElement {
         }
         const positioned = await this._applySameDocumentPagePosition(targetPageIndex, {
             reason,
-            smooth: true,
+            smooth: false,
             resolvedPageCountOverride: preparedPageCount,
         })
         if (!positioned) {
             return await classifyMove('stalled', targetPageIndex, before.currentSectionIndex)
         }
-        await this._afterScroll(reason)
-        const result = await classifyMove('page', targetPageIndex, before.currentSectionIndex)
+        const after = buildDirectAfterState(targetPageIndex, preparedPageCount)
+        const result = {
+            direction: 'direct',
+            status: 'page',
+            moved: after.currentPage !== before.currentPage
+                || after.currentSectionIndex !== before.currentSectionIndex
+                || after.pageCount !== before.pageCount,
+            before,
+            after,
+            targetPageIndex,
+            targetSectionIndex: before.currentSectionIndex,
+        }
         setSameDocumentHostTurnDiagnostics({
             phase: result.moved ? 'host-turn-direct-page' : 'host-turn-direct-stalled',
             direction: 'direct',
@@ -6648,7 +6825,119 @@ export class Paginator extends HTMLElement {
         })
         return result
     }
+    performSameDocumentTurnSync(direction) {
+        const dir = direction === 'backward' ? -1 : 1
+        const before = this._getSameDocumentTurnStateSync()
+        if (!before) {
+            return null
+        }
+        if (!before.hasView) {
+            return {
+                direction,
+                status: 'no-view',
+                moved: false,
+                before,
+                after: before,
+                targetPageIndex: null,
+                targetSectionIndex: null,
+            }
+        }
+        const classifyMove = (status, targetPageIndex = null, targetSectionIndex = null) => {
+            const after = this._getSameDocumentTurnStateSync() ?? before
+            const moved = (
+                after.currentPage !== before.currentPage
+                || after.currentSectionIndex !== before.currentSectionIndex
+                || after.pageCount !== before.pageCount
+            )
+            return {
+                direction,
+                status,
+                moved,
+                before,
+                after,
+                targetPageIndex,
+                targetSectionIndex,
+            }
+        }
+
+        setSameDocumentHostTurnDiagnostics({
+            phase: 'host-turn-begin',
+            direction,
+            currentPageIndex: before.currentPage,
+            pageCount: before.pageCount,
+            targetPageIndex: null,
+            result: null,
+        })
+
+        if (before.sameDocumentMode && Number.isFinite(before.currentPage) && Number.isFinite(before.pageCount)) {
+            const targetPageIndex = Math.max(0, Math.min(before.pageCount - 1, before.currentPage + dir))
+            if (targetPageIndex !== before.currentPage) {
+                const positioned = this._applySameDocumentPagePositionSync(targetPageIndex, {
+                    reason: `perform-turn-${direction}`,
+                    smooth: false,
+                    resolvedPageCountOverride: before.pageCount,
+                })
+                if (positioned) {
+                    setSameDocumentHostTurnDiagnostics({
+                        phase: 'host-turn-complete',
+                        direction,
+                        currentPageIndex: targetPageIndex,
+                        pageCount: before.pageCount,
+                        targetPageIndex,
+                        result: 'page',
+                    })
+                    return {
+                        direction,
+                        status: 'page',
+                        moved: true,
+                        before,
+                        after: {
+                            ...before,
+                            currentPage: targetPageIndex,
+                            canForward: targetPageIndex < before.pageCount - 1 || this._adjacentIndex(1) != null,
+                            canBackward: targetPageIndex > 0 || this._adjacentIndex(-1) != null,
+                            forwardDestinationAvailability: targetPageIndex < before.pageCount - 1 ? 'second' : (this._adjacentIndex(1) != null ? 'both' : 'unavailable'),
+                            backwardDestinationAvailability: targetPageIndex > 0 ? 'first' : (this._adjacentIndex(-1) != null ? 'both' : 'unavailable'),
+                            currentPageTextSample: this._sampleSameDocumentPageTextSync(targetPageIndex),
+                            currentPageDisplayLabel: `Page ${targetPageIndex + 1} of ${before.pageCount}`,
+                            sameDocumentHostTurnPhase: 'host-turn-complete',
+                            sameDocumentHostTurnTargetPageIndex: targetPageIndex,
+                            sameDocumentHostTurnResult: 'page',
+                        },
+                        targetPageIndex,
+                        targetSectionIndex: before.currentSectionIndex ?? null,
+                    }
+                }
+                const result = {
+                    direction,
+                    status: 'stalled',
+                    moved: false,
+                    before,
+                    after: before,
+                    targetPageIndex,
+                    targetSectionIndex: before.currentSectionIndex ?? null,
+                }
+                setSameDocumentHostTurnDiagnostics({
+                    phase: 'host-turn-stalled',
+                    direction,
+                    currentPageIndex: before.currentPage,
+                    pageCount: before.pageCount,
+                    targetPageIndex,
+                    result: 'stalled',
+                })
+                return result
+            }
+            const targetSectionIndex = this._adjacentIndex(dir)
+            return classifyMove('blocked', targetPageIndex, targetSectionIndex)
+        }
+        return null
+    }
+
     async performSameDocumentTurn(direction) {
+        const syncResult = this.performSameDocumentTurnSync(direction)
+        if (syncResult) {
+            return syncResult
+        }
         const dir = direction === 'backward' ? -1 : 1
         const before = await this.getTurnState()
         if (!before.hasView) {
@@ -6678,74 +6967,6 @@ export class Paginator extends HTMLElement {
                 targetPageIndex,
                 targetSectionIndex,
             }
-        }
-
-        setSameDocumentHostTurnDiagnostics({
-            phase: 'host-turn-begin',
-            direction,
-            currentPageIndex: before.currentPage,
-            pageCount: before.pageCount,
-            targetPageIndex: null,
-            result: null,
-        })
-
-        if (before.sameDocumentMode && Number.isFinite(before.currentPage) && Number.isFinite(before.pageCount)) {
-            const prepared = await this._getSameDocumentPreparedNavigationState(
-                before.currentPage + dir,
-                `perform-turn-${direction}`
-            )
-            const preparedPageIndex = Number.isFinite(prepared?.pageIndex) ? prepared.pageIndex : before.currentPage
-            const preparedPageCount = Number.isFinite(prepared?.pageCount) ? prepared.pageCount : before.pageCount
-            const targetPageIndex = Math.max(0, Math.min(preparedPageCount - 1, preparedPageIndex + dir))
-            const targetSectionIndex = this._adjacentIndex(dir)
-            if (targetPageIndex !== before.currentPage) {
-                const pageResult = await this.goToResolvedPage(
-                    targetPageIndex,
-                    `perform-turn-${direction}`
-                )
-                if (pageResult?.moved) {
-                    setSameDocumentHostTurnDiagnostics({
-                        phase: 'host-turn-complete',
-                        direction,
-                        currentPageIndex: pageResult.after.currentPage,
-                        pageCount: pageResult.after.pageCount,
-                        targetPageIndex,
-                        result: 'page',
-                    })
-                    pageResult.direction = direction
-                    return pageResult
-                }
-            }
-            if (targetSectionIndex != null) {
-                const didNavigate = await this._goTo({
-                    index: targetSectionIndex,
-                    anchor: dir < 0 ? () => 1 : () => 0,
-                    reason: 'page',
-                })
-                if (didNavigate) {
-                    await wait(100)
-                    const result = await classifyMove('section', null, targetSectionIndex)
-                    setSameDocumentHostTurnDiagnostics({
-                        phase: result.moved ? 'host-turn-section' : 'host-turn-stalled',
-                        direction,
-                        currentPageIndex: result.after.currentPage,
-                        pageCount: result.after.pageCount,
-                        targetPageIndex: result.after.currentPage,
-                        result: result.moved ? 'section' : 'stalled',
-                    })
-                    return result
-                }
-            }
-            const result = await classifyMove('blocked', targetPageIndex, targetSectionIndex)
-            setSameDocumentHostTurnDiagnostics({
-                phase: 'host-turn-unavailable',
-                direction,
-                currentPageIndex: result.after.currentPage,
-                pageCount: result.after.pageCount,
-                targetPageIndex,
-                result: 'blocked',
-            })
-            return result
         }
 
         const didTurn = dir < 0

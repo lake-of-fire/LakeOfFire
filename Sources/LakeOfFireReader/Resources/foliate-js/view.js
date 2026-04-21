@@ -211,6 +211,15 @@ export class View extends HTMLElement {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
         this._isCacheWarmer = isCacheWarmer
+        const setOpenLoadState = state => {
+            if (
+                globalThis.reader?.view === this
+                && globalThis.manabiLoadEBookReady !== true
+            ) {
+                globalThis.manabiLoadEBookLastState = state
+            }
+            return state
+        }
         
         if (book.splitTOCHref && book.getTOCFragment) {
             const ids = book.sections.map(s => s.id)
@@ -225,41 +234,41 @@ export class View extends HTMLElement {
         
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
         if (this.isFixedLayout) {
-            globalThis.manabiLoadEBookLastState = 'view-open-fixed-layout-import-ready'
-            globalThis.manabiLoadEBookLastState = 'view-open-fixed-layout-pre-create-renderer'
+            setOpenLoadState('view-open-fixed-layout-import-ready')
+            setOpenLoadState('view-open-fixed-layout-pre-create-renderer')
             this.renderer = document.createElement('foliate-fxl')
         } else {
-            globalThis.manabiLoadEBookLastState = 'view-open-paginator-import-ready'
-            globalThis.manabiLoadEBookLastState = 'view-open-paginator-pre-create-renderer'
+            setOpenLoadState('view-open-paginator-import-ready')
+            setOpenLoadState('view-open-paginator-pre-create-renderer')
             this.renderer = document.createElement('foliate-paginator')
         }
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-created'
+        setOpenLoadState('view-open-renderer-created')
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.renderer.addEventListener('load', e => this._onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this._onRelocate(e.detail))
         // Overlayer support removed
         
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-open-called'
+        setOpenLoadState('view-open-renderer-open-called')
         this.renderer.open(book, isCacheWarmer)
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-pre-append'
+        setOpenLoadState('view-open-renderer-pre-append')
         this._root.append(this.renderer)
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-appended'
+        setOpenLoadState('view-open-renderer-appended')
         const rendererLoadPromise = new Promise(resolve => {
             const onLoad = () => {
-                globalThis.manabiLoadEBookLastState = 'view-open-renderer-load-event';
+                setOpenLoadState('view-open-renderer-load-event');
                 resolve('load');
             };
             const onRelocate = () => {
-                globalThis.manabiLoadEBookLastState = 'view-open-renderer-relocate-event';
+                setOpenLoadState('view-open-renderer-relocate-event');
                 resolve('relocate');
             };
             this.renderer.addEventListener('load', onLoad, { once: true })
             this.renderer.addEventListener('relocate', onRelocate, { once: true })
             setTimeout(() => resolve('timeout'), 15000)
         });
-        globalThis.manabiLoadEBookLastState = 'view-open-awaiting-renderer-event'
+        setOpenLoadState('view-open-awaiting-renderer-event')
         rendererLoadPromise.then(rendererReadyEvent => {
-            globalThis.manabiLoadEBookLastState = `view-open-renderer-event:${rendererReadyEvent}`
+            setOpenLoadState(`view-open-renderer-event:${rendererReadyEvent}`)
         })
     }
     close() {

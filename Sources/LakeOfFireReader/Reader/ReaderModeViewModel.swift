@@ -454,6 +454,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     private var loadStartTimes: [String: Date] = [:]
     private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
     private var activeRenderGenerationByURL: [String: UUID] = [:]
+    private var completedRenderGenerationByURL: [String: UUID] = [:]
     private var metadataRefreshTaskByURL: [String: Task<Void, Never>] = [:]
     private var metadataRefreshGenerationByURL: [String: UUID] = [:]
 
@@ -730,6 +731,16 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         activeRenderGenerationByURL[key]?.uuidString ?? "nil"
     }
 
+    private func renderGenerationDescription(for key: String) -> String {
+        if let activeGeneration = activeRenderGenerationByURL[key] {
+            return activeGeneration.uuidString
+        }
+        if let completedGeneration = completedRenderGenerationByURL[key] {
+            return completedGeneration.uuidString
+        }
+        return "nil"
+    }
+
     private func metadataRefreshGenerationDescription(for key: String) -> String {
         metadataRefreshGenerationByURL[key]?.uuidString ?? "nil"
     }
@@ -878,6 +889,13 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             )
             return
         }
+        completedRenderGenerationByURL[key] = generation
+        debugPrint(
+            "# READERLOAD stage=readerMode.renderGenerationHandoff",
+            "url=\(url.absoluteString)",
+            "reason=\(reason)",
+            "generation=\(generation.uuidString)"
+        )
         activeRenderTaskByURL.removeValue(forKey: key)
         activeRenderGenerationByURL.removeValue(forKey: key)
         debugPrint(
@@ -902,6 +920,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         task.cancel()
         activeRenderTaskByURL.removeValue(forKey: key)
         activeRenderGenerationByURL.removeValue(forKey: key)
+        completedRenderGenerationByURL.removeValue(forKey: key)
         debugPrint(
             "# READERPERF readerMode.render.singleFlight.cancel",
             "url=\(canonicalURL.absoluteString)",
@@ -921,6 +940,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             task?.cancel()
             activeRenderTaskByURL.removeValue(forKey: staleKey)
             activeRenderGenerationByURL.removeValue(forKey: staleKey)
+            completedRenderGenerationByURL.removeValue(forKey: staleKey)
             debugPrint(
                 "# READERPERF readerMode.render.singleFlight.cancel",
                 "url=\(requestedURL.absoluteString)",
@@ -967,6 +987,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
         activeRenderTaskByURL.removeValue(forKey: key)
         activeRenderGenerationByURL.removeValue(forKey: key)
+        completedRenderGenerationByURL.removeValue(forKey: key)
 
         let generation = UUID()
         activeRenderGenerationByURL[key] = generation
@@ -1585,13 +1606,17 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         let loadElapsed = Date().timeIntervalSince(loadStart)
         let hasReadableBody = readabilityBytes > 0
         expectedSyntheticReaderLoaderURL = nil
+        if let activeGeneration = activeRenderGenerationByURL[renderKey] {
+            completedRenderGenerationByURL[renderKey] = activeGeneration
+        }
         debugPrint(
             "# READERLOAD stage=readerMode.complete",
             "url=\(traceURL.absoluteString)",
             "elapsed=\(String(format: "%.3fs", loadElapsed))",
             "slow=\(loadElapsed >= 2.5)",
             "readabilityBytes=\(readabilityBytes)",
-            "hasReadableBody=\(hasReadableBody)"
+            "hasReadableBody=\(hasReadableBody)",
+            "renderGeneration=\(renderGenerationDescription(for: renderKey))"
         )
         debugPrint(
             "# READER readerMode.complete",
@@ -2436,6 +2461,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         logTrace(.metadataStart, url: url)
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let titleForDisplay = content.titleForDisplay
+        let primaryRecordKey = content.compoundKey
         let persistedHTMLSnapshot = content.html
         let imageLookupStartedAt = Date()
         logTrace(.imageLookupStart, url: url, details: "mode=deterministic.cachedRecord")
@@ -2600,7 +2626,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let propagateDefaultsStartedAt = Date()
             await propagateReaderModeDefaults(
                 for: url,
-                primaryRecord: content,
+                primaryRecordKey: primaryRecordKey,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle
@@ -4236,6 +4262,11 @@ extension ReaderModeViewModel {
                     style.href = stylesheetURL;
                     style.dataset.manabiInjectedFontFamily = family;
                     style.dataset.manabiFontSource = 'local-scheme';
+                    style.onload = () => clearGateTimeout();
+                    style.onerror = () => {
+                        clearGateTimeout();
+                        setFontPendingState(false);
+                    };
                     root.dataset.manabiInjectedFontFamily = family;
                     root.dataset.manabiFontInjected = '1';
                     return style;
@@ -4243,6 +4274,19 @@ extension ReaderModeViewModel {
                 globalThis.manabiReaderFontInjectionMode = 'local-scheme';
                 globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+                let gateTimeoutState = { value: null };
+                const clearGateTimeout = () => {
+                    if (gateTimeoutState.value) {
+                        clearTimeout(gateTimeoutState.value);
+                        gateTimeoutState.value = null;
+                    }
+                };
+                const scheduleGateTimeout = () => {
+                    clearGateTimeout();
+                    gateTimeoutState.value = setTimeout(() => {
+                        setFontPendingState(false);
+                    }, 4000);
+                };
                 const waitForFontReady = async (desiredFamily) => {
                     const fontSet = document.fonts;
                     if (!fontSet) return;
@@ -4265,6 +4309,7 @@ extension ReaderModeViewModel {
                         || globalThis.manabiHorizontalFontFamilyName
                         || 'YuKyokasho';
                     setFontPendingState(true);
+                    scheduleGateTimeout();
                     ensureReaderFontStyle(desiredFamily);
                     if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
                         window.manabiApplyDirectionalInjectedFont();
@@ -4274,8 +4319,10 @@ extension ReaderModeViewModel {
                         || desiredFamily
                         || null;
                     await waitForFontReady(resolvedFamily);
+                    clearGateTimeout();
                     setFontPendingState(false);
                 })().catch((e) => {
+                    clearGateTimeout();
                     setFontPendingState(false);
                     try { console.log('manabi font inject error', e); } catch (_) {}
                 });
@@ -4360,11 +4407,29 @@ extension ReaderModeViewModel {
                 if (desiredFamily) {
                     style.dataset.manabiInjectedFontFamily = desiredFamily;
                 }
+                style.onload = () => clearGateTimeout();
+                style.onerror = () => {
+                    clearGateTimeout();
+                    setFontPendingState(false);
+                };
                 (document.head || document.documentElement).appendChild(style);
                 postFontLoad('reinsertedFromCache', { cssBytes: css.length, mode: 'blob-link' });
                 return style;
             };
             globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+            let gateTimeoutState = { value: null };
+            const clearGateTimeout = () => {
+                if (gateTimeoutState.value) {
+                    clearTimeout(gateTimeoutState.value);
+                    gateTimeoutState.value = null;
+                }
+            };
+            const scheduleGateTimeout = () => {
+                clearGateTimeout();
+                gateTimeoutState.value = setTimeout(() => {
+                    setFontPendingState(false);
+                }, 4000);
+            };
             const waitForFontReady = async (desiredFamily) => {
                 const fontSet = document.fonts;
                 if (!fontSet) return;
@@ -4387,6 +4452,7 @@ extension ReaderModeViewModel {
                     || globalThis.manabiHorizontalFontFamilyName
                     || null;
                 setFontPendingState(true);
+                scheduleGateTimeout();
                 let style = ensureReaderFontStyle(desiredFamily);
                 if (!style) {
                     const css = atob(fontCSSBase64);
@@ -4400,6 +4466,11 @@ extension ReaderModeViewModel {
                     if (desiredFamily) {
                         style.dataset.manabiInjectedFontFamily = desiredFamily;
                     }
+                    style.onload = () => clearGateTimeout();
+                    style.onerror = () => {
+                        clearGateTimeout();
+                        setFontPendingState(false);
+                    };
                     (document.head || document.documentElement).appendChild(style);
                     root.dataset.manabiFontInjected = '1';
                     postFontLoad('inserted', { cssBytes: css.length, mode: 'blob-link' });
@@ -4433,12 +4504,14 @@ extension ReaderModeViewModel {
                     || desiredFamily
                     || null;
                 await waitForFontReady(resolvedFamily);
+                clearGateTimeout();
                 setFontPendingState(false);
                 postFontLoad('fontReady', {
                     family: resolvedFamily,
                     status: document.fonts?.status || 'unknown'
                 });
             })().catch((e) => {
+                clearGateTimeout();
                 setFontPendingState(false);
                 postFontLoad('error', { error: String(e) });
                 try { console.log('manabi font inject error', e); } catch (_) {}
@@ -4760,34 +4833,62 @@ private func shouldProcessReadabilityInSwift(
 }
 
 @MainActor
+private struct ReaderPrimaryMediaSnapshot {
+    let url: URL
+    let html: String?
+    let title: String
+    let author: String?
+    let primaryMediaPlaybackKind: ReaderPrimaryMediaKind?
+    let offlineMediaID: String?
+    let primaryMediaSourceURL: URL?
+}
+
+@MainActor
+private func makeReaderPrimaryMediaSnapshot(
+    for content: any ReaderContentProtocol
+) -> ReaderPrimaryMediaSnapshot {
+    ReaderPrimaryMediaSnapshot(
+        url: content.url,
+        html: content.html,
+        title: content.title,
+        author: content.author,
+        primaryMediaPlaybackKind: content.primaryMediaPlaybackKind,
+        offlineMediaID: content.offlineMediaID,
+        primaryMediaSourceURL: content.primaryMediaSourceURL
+    )
+}
+
+@MainActor
 private func locallyRetrievableReaderHTML(
     for content: any ReaderContentProtocol,
     readerFileManager: ReaderFileManager
 ) async throws -> String? {
+    let snapshot = makeReaderPrimaryMediaSnapshot(for: content)
     var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-    if html == nil, content.url.isSnippetURL {
-        html = content.html
+    if html == nil, snapshot.url.isSnippetURL {
+        html = snapshot.html
     }
     if let html {
         let trimmedHTML = html.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHTML.isEmpty else {
-            return await mediaOnlyReaderHTML(for: content)
+            return await mediaOnlyReaderHTML(for: snapshot)
         }
-        return await injectingPrimaryMediaIfNeeded(into: trimmedHTML, for: content)
+        return await injectingPrimaryMediaIfNeeded(into: trimmedHTML, snapshot: snapshot)
     }
-    return await mediaOnlyReaderHTML(for: content)
+    return await mediaOnlyReaderHTML(for: snapshot)
 }
 
+@MainActor
 private func injectingPrimaryMediaIfNeeded(
     into html: String,
-    for content: any ReaderContentProtocol
+    snapshot: ReaderPrimaryMediaSnapshot
 ) async -> String {
-    guard let mediaMarkup = await readerPrimaryMediaMarkup(for: content) else {
+    guard let mediaMarkup = await readerPrimaryMediaMarkup(for: snapshot) else {
         return html
     }
 
     if html.contains("manabi-primary-media"),
-       let primaryMediaSourceURL = content.primaryMediaSourceURL,
+       let primaryMediaSourceURL = snapshot.primaryMediaSourceURL,
        html.contains(primaryMediaSourceURL.absoluteString)
     {
         return html
@@ -4810,33 +4911,37 @@ private func injectingPrimaryMediaIfNeeded(
     return mediaMarkup + html
 }
 
-private func mediaOnlyReaderHTML(for content: any ReaderContentProtocol) async -> String? {
-    guard let mediaMarkup = await readerPrimaryMediaMarkup(for: content) else {
+@MainActor
+private func mediaOnlyReaderHTML(for snapshot: ReaderPrimaryMediaSnapshot) async -> String? {
+    let title = snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let contentURL = snapshot.url.canonicalReaderContentURL()
+    guard let mediaMarkup = await readerPrimaryMediaMarkup(for: snapshot) else {
         return nil
     }
 
-    let title = content.title.trimmingCharacters(in: .whitespacesAndNewlines)
     return buildCanonicalReadabilityHTML(
         title: title.isEmpty ? "Media" : title,
-        byline: content.author,
+        byline: snapshot.author ?? "",
         publishedTime: nil,
         content: mediaMarkup,
-        contentURL: content.url.canonicalReaderContentURL()
+        contentURL: contentURL
     )
 }
 
-private func readerPrimaryMediaMarkup(for content: any ReaderContentProtocol) async -> String? {
-    guard let mediaURL = await resolvedReaderPrimaryMediaURL(for: content) else {
+@MainActor
+private func readerPrimaryMediaMarkup(for snapshot: ReaderPrimaryMediaSnapshot) async -> String? {
+    let contentTitle = snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let mediaURL = await resolvedReaderPrimaryMediaURL(for: snapshot) else {
         return nil
     }
 
     let escapedSource = escapeReadabilityHTMLAttribute(mediaURL.absoluteString)
     let escapedTitle = escapeReadabilityHTMLAttribute(
-        content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Media" : content.title
+        contentTitle.isEmpty ? "Media" : contentTitle
     )
 
     let mediaTag: String
-    switch content.primaryMediaPlaybackKind {
+    switch snapshot.primaryMediaPlaybackKind {
     case .audio:
         mediaTag = """
         <audio class="manabi-primary-media-element" controls preload="metadata" src="\(escapedSource)">
@@ -4859,13 +4964,14 @@ private func readerPrimaryMediaMarkup(for content: any ReaderContentProtocol) as
     """
 }
 
-private func resolvedReaderPrimaryMediaURL(for content: any ReaderContentProtocol) async -> URL? {
-    if let offlineMediaID = content.offlineMediaID,
+@MainActor
+private func resolvedReaderPrimaryMediaURL(for snapshot: ReaderPrimaryMediaSnapshot) async -> URL? {
+    if let offlineMediaID = snapshot.offlineMediaID,
        let storedMedia = try? await WebMediaLibrary().storedMedia(id: offlineMediaID)
     {
         return storedMedia.localMediaURL
     }
-    return content.primaryMediaSourceURL
+    return snapshot.primaryMediaSourceURL
 }
 
 @ReaderViewModelActor
@@ -5087,19 +5193,18 @@ private func invalidateReaderModeCache(
 
 private func propagateReaderModeDefaults(
     for url: URL,
-    primaryRecord: any ReaderContentProtocol,
+    primaryRecordKey: String,
     readabilityHTML: String,
     fallbackTitle: String?,
     derivedTitle: String? = nil
 ) async {
-    let primaryKey = primaryRecord.compoundKey
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
     let isNativeReaderView = await MainActor.run { url.isNativeReaderView }
     _ = await Task { @RealmBackgroundActor in
         do {
             let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
             for record in relatedRecords {
-                guard record.compoundKey != primaryKey, let realm = record.realm else { continue }
+                guard record.compoundKey != primaryRecordKey, let realm = record.realm else { continue }
                 try await realm.asyncWrite {
                     record.isReaderModeByDefault = true
                     record.isReaderModeAvailable = false

@@ -299,7 +299,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
             let realm = try await Realm.open(configuration: configuration)
             guard let feedEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: compoundKey) else { return nil }
             if feedEntry.extractImageFromContent {
-                let legacyHTMLContent = htmlContent
+                let legacyHTMLContent = feedEntry.htmlContent
                 let ref = compoundKey
                 let existingImageURL = feedEntry.imageUrl
                 if let html = Self.contentToHTML(

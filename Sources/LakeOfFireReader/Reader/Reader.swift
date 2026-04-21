@@ -1286,6 +1286,7 @@ public final class ReaderPageTurnProbeModel: ObservableObject {
     private var refreshHandler: (() async -> ReaderPageTurnProbeSnapshot?)?
     private var turnStateHandler: (() async -> ReaderPageTurnFastState?)?
     private var fastTurnCommandHandler: ((ReaderPageTurnProbeCommand) async -> ReaderPageTurnFastTurnResult?)?
+    private var fastTurnAndWaitCommandHandler: ((ReaderPageTurnProbeCommand, UInt64) async -> ReaderPageTurnFastTurnResult?)?
     private var pageNavigationHandler: ((Int) async -> ReaderPageTurnFastTurnResult?)?
 
     public init() {}
@@ -1316,6 +1317,12 @@ public final class ReaderPageTurnProbeModel: ObservableObject {
         _ handler: @escaping (ReaderPageTurnProbeCommand) async -> ReaderPageTurnFastTurnResult?
     ) {
         fastTurnCommandHandler = handler
+    }
+
+    func bindFastTurnAndWaitCommandHandler(
+        _ handler: @escaping (ReaderPageTurnProbeCommand, UInt64) async -> ReaderPageTurnFastTurnResult?
+    ) {
+        fastTurnAndWaitCommandHandler = handler
     }
 
     func bindPageNavigationHandler(
@@ -1386,6 +1393,14 @@ public final class ReaderPageTurnProbeModel: ObservableObject {
     public func performFastTurn(_ command: ReaderPageTurnProbeCommand) async -> ReaderPageTurnFastTurnResult? {
         guard let fastTurnCommandHandler else { return nil }
         return await fastTurnCommandHandler(command)
+    }
+
+    public func performFastTurnAndWait(
+        _ command: ReaderPageTurnProbeCommand,
+        timeoutNanoseconds: UInt64
+    ) async -> ReaderPageTurnFastTurnResult? {
+        guard let fastTurnAndWaitCommandHandler else { return nil }
+        return await fastTurnAndWaitCommandHandler(command, timeoutNanoseconds)
     }
 
     public func goToResolvedPage(_ pageIndex: Int) async -> ReaderPageTurnFastTurnResult? {
@@ -1496,12 +1511,23 @@ public struct ReaderPageTurnFastState: Codable, Equatable, Sendable {
     public var currentSectionHref: String?
     public var canForward: Bool
     public var canBackward: Bool
+    public var pageProgressionDirection: String?
+    public var forwardDestinationAvailability: String?
+    public var backwardDestinationAvailability: String?
+    public var layoutVisibleUnitKind: String?
     public var layoutVisibleUnitAxis: String?
+    public var layoutVisiblePageCount: Int?
     public var layoutWritingMode: String?
+    public var currentPageTextSample: String?
     public var currentPageDisplayLabel: String?
+    public var currentPhysicalPageLabel: String?
+    public var pageLabelDisplayMode: String?
+    public var usesPhysicalPageLabels: Bool?
+    public var allowsMultipleLabelsInMultiUnitLayout: Bool?
     public var sameDocumentHostTurnPhase: String?
     public var sameDocumentHostTurnTargetPageIndex: Int?
     public var sameDocumentHostTurnResult: String?
+    public var lastFastTurnStatus: String?
 
     public init(
         hasView: Bool,
@@ -1513,12 +1539,23 @@ public struct ReaderPageTurnFastState: Codable, Equatable, Sendable {
         currentSectionHref: String? = nil,
         canForward: Bool = false,
         canBackward: Bool = false,
+        pageProgressionDirection: String? = nil,
+        forwardDestinationAvailability: String? = nil,
+        backwardDestinationAvailability: String? = nil,
+        layoutVisibleUnitKind: String? = nil,
         layoutVisibleUnitAxis: String? = nil,
+        layoutVisiblePageCount: Int? = nil,
         layoutWritingMode: String? = nil,
+        currentPageTextSample: String? = nil,
         currentPageDisplayLabel: String? = nil,
+        currentPhysicalPageLabel: String? = nil,
+        pageLabelDisplayMode: String? = nil,
+        usesPhysicalPageLabels: Bool? = nil,
+        allowsMultipleLabelsInMultiUnitLayout: Bool? = nil,
         sameDocumentHostTurnPhase: String? = nil,
         sameDocumentHostTurnTargetPageIndex: Int? = nil,
-        sameDocumentHostTurnResult: String? = nil
+        sameDocumentHostTurnResult: String? = nil,
+        lastFastTurnStatus: String? = nil
     ) {
         self.hasView = hasView
         self.hasRenderer = hasRenderer
@@ -1529,12 +1566,23 @@ public struct ReaderPageTurnFastState: Codable, Equatable, Sendable {
         self.currentSectionHref = currentSectionHref
         self.canForward = canForward
         self.canBackward = canBackward
+        self.pageProgressionDirection = pageProgressionDirection
+        self.forwardDestinationAvailability = forwardDestinationAvailability
+        self.backwardDestinationAvailability = backwardDestinationAvailability
+        self.layoutVisibleUnitKind = layoutVisibleUnitKind
         self.layoutVisibleUnitAxis = layoutVisibleUnitAxis
+        self.layoutVisiblePageCount = layoutVisiblePageCount
         self.layoutWritingMode = layoutWritingMode
+        self.currentPageTextSample = currentPageTextSample
         self.currentPageDisplayLabel = currentPageDisplayLabel
+        self.currentPhysicalPageLabel = currentPhysicalPageLabel
+        self.pageLabelDisplayMode = pageLabelDisplayMode
+        self.usesPhysicalPageLabels = usesPhysicalPageLabels
+        self.allowsMultipleLabelsInMultiUnitLayout = allowsMultipleLabelsInMultiUnitLayout
         self.sameDocumentHostTurnPhase = sameDocumentHostTurnPhase
         self.sameDocumentHostTurnTargetPageIndex = sameDocumentHostTurnTargetPageIndex
         self.sameDocumentHostTurnResult = sameDocumentHostTurnResult
+        self.lastFastTurnStatus = lastFastTurnStatus
     }
 }
 
@@ -3723,7 +3771,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         }
         if let fastBaselineState = await fetchFastTurnState(),
            fastBaselineState.sameDocumentMode,
-           let fastResult = await performFastTurn(direction),
+           let fastResult = await performFastTurnAndWait(
+                direction,
+                timeoutNanoseconds: 6_000_000_000
+           ),
            fastResult.status != "unavailable" {
             if fastResult.moved {
                 _ = await refreshNavigationStateBounded(
@@ -3822,10 +3873,12 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                         (async () => {
                           await renderer._applySameDocumentPagePosition(targetPageIndex, {
                             reason: 'host-turn-direct',
-                            smooth: true,
+                            smooth: false,
                             resolvedPageCountOverride: beforePageCount,
                           });
-                          await renderer._afterScroll('host-turn-direct');
+                          Promise.resolve()
+                            .then(() => renderer._afterScroll('host-turn-direct'))
+                            .catch(() => {});
                           return 'page';
                         })(),
                         new Promise(resolve => setTimeout(() => resolve('__host_turn_direct_timeout__'), 1500)),
@@ -5024,6 +5077,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                       sameDocumentHostTurnPageCount: globalThis.manabiSameDocumentHostTurnDiagnostics?.pageCount ?? null,
                       sameDocumentHostTurnDatasetCurrentPageIndex: globalThis.manabiSameDocumentHostTurnDiagnostics?.datasetCurrentPageIndex ?? null,
                       sameDocumentHostTurnResult: globalThis.manabiSameDocumentHostTurnDiagnostics?.result ?? null,
+                      lastFastTurnStatus: globalThis.__manabiLastFastTurnResult?.status ?? null,
                       probeError: "lightweight-fallback:\(evaluationError.domain):\(evaluationError.code):\(evaluationError.localizedDescription)".slice(0, 4000),
                     });
                   } catch (error) {
@@ -5622,13 +5676,78 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             ReaderPageTurnFastState.self,
             script: script,
             preferredFrameOverride: preferredFrameOverride,
-            timeoutNanoseconds: 2_000_000_000
+            timeoutNanoseconds: 2_000_000_000,
+            allowFrameFallback: false
         )
     }
 
     fileprivate func performFastTurn(
         _ direction: PageTurnDirection,
         preferredFrameOverride: WKFrameInfo? = nil
+    ) async -> ReaderPageTurnFastTurnResult? {
+        let script =
+        """
+        (() => {
+          const renderer = globalThis.reader?.view?.renderer;
+          if (
+            typeof renderer?.performSameDocumentTurnSync !== 'function'
+            && typeof renderer?.performSameDocumentTurn !== 'function'
+          ) {
+            return JSON.stringify({
+              direction: '\(direction.rawValue)',
+              status: 'unavailable',
+              moved: false,
+            });
+          }
+          if (typeof renderer?.performSameDocumentTurnSync === 'function') {
+            try {
+              globalThis.__manabiLastFastTurnResult = renderer.performSameDocumentTurnSync('\(direction.rawValue)') ?? {
+                direction: '\(direction.rawValue)',
+                status: 'nil',
+                moved: false,
+              };
+              return JSON.stringify(globalThis.__manabiLastFastTurnResult);
+            } catch (error) {
+              globalThis.__manabiLastFastTurnResult = {
+                direction: '\(direction.rawValue)',
+                status: `error:${String(error)}`,
+                moved: false,
+              };
+              return JSON.stringify(globalThis.__manabiLastFastTurnResult);
+            }
+          }
+          return Promise.resolve(renderer.performSameDocumentTurn('\(direction.rawValue)'))
+            .then(result => {
+              globalThis.__manabiLastFastTurnResult = result ?? {
+                direction: '\(direction.rawValue)',
+                status: 'nil',
+                moved: false,
+              };
+              return JSON.stringify(globalThis.__manabiLastFastTurnResult);
+            })
+            .catch(error => {
+              globalThis.__manabiLastFastTurnResult = {
+                direction: '\(direction.rawValue)',
+                status: `error:${String(error)}`,
+                moved: false,
+              };
+              return JSON.stringify(globalThis.__manabiLastFastTurnResult);
+            });
+        })();
+        """
+        return await decodeReaderPageTurnJSON(
+            ReaderPageTurnFastTurnResult.self,
+            script: script,
+            preferredFrameOverride: preferredFrameOverride,
+            timeoutNanoseconds: 3_000_000_000,
+            allowFrameFallback: false
+        )
+    }
+
+    fileprivate func performFastTurnAndWait(
+        _ direction: PageTurnDirection,
+        preferredFrameOverride: WKFrameInfo? = nil,
+        timeoutNanoseconds: UInt64
     ) async -> ReaderPageTurnFastTurnResult? {
         let script =
         """
@@ -5658,7 +5777,8 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             ReaderPageTurnFastTurnResult.self,
             script: script,
             preferredFrameOverride: preferredFrameOverride,
-            timeoutNanoseconds: isVertical ? 8_000_000_000 : 5_000_000_000
+            timeoutNanoseconds: timeoutNanoseconds,
+            allowFrameFallback: false
         )
     }
 
@@ -5677,24 +5797,35 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
               moved: false,
             });
           }
-          return Promise.resolve(renderer.goToResolvedPage(\(pageIndex), 'swift-go-to-resolved-page'))
-            .then(result => JSON.stringify(result ?? {
-              direction: 'direct',
-              status: 'nil',
-              moved: false,
-            }))
-            .catch(error => JSON.stringify({
-              direction: 'direct',
-              status: `error:${String(error)}`,
-              moved: false,
-            }));
+          Promise.resolve()
+            .then(() => renderer.goToResolvedPage(\(pageIndex), 'swift-go-to-resolved-page'))
+            .then(result => {
+              globalThis.__manabiLastFastTurnResult = result ?? {
+                direction: 'direct',
+                status: 'nil',
+                moved: false,
+              };
+            })
+            .catch(error => {
+              globalThis.__manabiLastFastTurnResult = {
+                direction: 'direct',
+                status: `error:${String(error)}`,
+                moved: false,
+              };
+            });
+          return JSON.stringify({
+            direction: 'direct',
+            status: 'accepted',
+            moved: false,
+          });
         })();
         """
         return await decodeReaderPageTurnJSON(
             ReaderPageTurnFastTurnResult.self,
             script: script,
             preferredFrameOverride: preferredFrameOverride,
-            timeoutNanoseconds: isVertical ? 8_000_000_000 : 5_000_000_000
+            timeoutNanoseconds: 2_000_000_000,
+            allowFrameFallback: false
         )
     }
 
@@ -5726,14 +5857,20 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         _ type: T.Type,
         script: String,
         preferredFrameOverride: WKFrameInfo? = nil,
-        timeoutNanoseconds: UInt64
+        timeoutNanoseconds: UInt64,
+        allowFrameFallback: Bool = true
     ) async -> T? {
         guard let scriptCaller, scriptCaller.hasAsyncCaller else { return nil }
         var lastData: Data?
-        for frame in readerPageTurnCandidateFrames(
-            preferredFrameOverride: preferredFrameOverride,
-            scriptCaller: scriptCaller
-        ) {
+        let candidateFrames: [WKFrameInfo?] = if allowFrameFallback {
+            readerPageTurnCandidateFrames(
+                preferredFrameOverride: preferredFrameOverride,
+                scriptCaller: scriptCaller
+            )
+        } else {
+            [preferredFrameOverride ?? readerPageTurnFrameInfo()]
+        }
+        for frame in candidateFrames {
             do {
                 guard let json = try await evaluateReaderPageTurnJavaScriptBounded(
                     script,
@@ -6634,6 +6771,12 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             }
             probeModel.bindFastTurnCommandHandler { command in
                 await handleFastProbeTurnCommand(command)
+            }
+            probeModel.bindFastTurnAndWaitCommandHandler { command, timeoutNanoseconds in
+                await bridge.performFastTurnAndWait(
+                    command == .hostBackwardTurn ? .backward : .forward,
+                    timeoutNanoseconds: timeoutNanoseconds
+                )
             }
             probeModel.bindPageNavigationHandler { pageIndex in
                 await handleFastProbePageNavigation(pageIndex)
@@ -7733,6 +7876,8 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         let resolvedHasView = bridge.hasView || (loadedViewerBool("loadedHasView") == true)
         let resolvedHasRenderer = bridge.hasRenderer || (loadedViewerBool("loadedHasRenderer") == true)
         let resolvedLoadEBookReady = bridge.loadEBookReady || (loadedViewerBool("loadedReady") == true)
+        let resolvedHasLivePageText =
+            !(bridge.currentPageTextSample?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let resolvedProductionTurnReady =
             readiness.isReady
             || (
@@ -7740,6 +7885,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
                     && resolvedHasRenderer
                     && bridge.hasSectionLayoutController
                     && resolvedLoadEBookReady
+                    && resolvedHasLivePageText
                     && resolvedPageCount > 0
             )
         let resolvedPageTurnReadinessPhase = resolvedProductionTurnReady
@@ -8315,7 +8461,18 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         case .hostBackwardTurn:
             .backward
         }
-        let availability = await bridge.destinationAvailability(for: direction)
+        let baselineState = await bridge.fetchFastTurnState()
+        let availability: PageTurnDestinationAvailability
+        if let baselineState {
+            availability = switch direction {
+            case .forward:
+                PageTurnDestinationAvailability(rawValue: baselineState.forwardDestinationAvailability ?? "") ?? .unavailable
+            case .backward:
+                PageTurnDestinationAvailability(rawValue: baselineState.backwardDestinationAvailability ?? "") ?? .unavailable
+            }
+        } else {
+            availability = await bridge.destinationAvailability(for: direction)
+        }
         guard availability != .unavailable else {
             bridge.publishAttemptedPastEndForDiagnostics(direction: direction)
             return ReaderPageTurnFastTurnResult(
@@ -8325,46 +8482,36 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             )
         }
 
-        let baselineState = await bridge.fetchFastTurnState()
-        if let fastResult = await bridge.performFastTurn(direction),
-           fastResult.status != "unavailable",
-           !fastResult.status.hasPrefix("error:") {
-            _ = await bridge.refreshNavigationState()
-            let publishedSnapshot = await makeProbeSnapshot()
-            probeModel.update(publishedSnapshot)
-            logProbeSnapshotIfEnabled(publishedSnapshot)
-            return fastResult
+        if let fastResult = await bridge.performFastTurn(direction) {
+            if fastResult.status != "unavailable",
+               !fastResult.status.hasPrefix("error:") {
+                return ReaderPageTurnFastTurnResult(
+                    direction: fastResult.direction,
+                    status: fastResult.status,
+                    moved: fastResult.moved,
+                    before: fastResult.before ?? baselineState,
+                    after: fastResult.after ?? baselineState,
+                    targetPageIndex: fastResult.targetPageIndex,
+                    targetSectionIndex: fastResult.targetSectionIndex
+                )
+            }
         }
 
-        do {
-            try await bridge.commitTurn(direction)
-            _ = await bridge.refreshNavigationState()
-            let publishedSnapshot = await makeProbeSnapshot()
-            probeModel.update(publishedSnapshot)
-            logProbeSnapshotIfEnabled(publishedSnapshot)
-            let afterState = await bridge.fetchFastTurnState()
-            let moved = {
-                guard let baselineState, let afterState else { return true }
-                return baselineState.currentPage != afterState.currentPage
-                    || baselineState.currentSectionIndex != afterState.currentSectionIndex
-                    || baselineState.pageCount != afterState.pageCount
-            }()
-            return ReaderPageTurnFastTurnResult(
-                direction: direction.rawValue,
-                status: moved ? "committed" : "stalled",
-                moved: moved,
-                before: baselineState,
-                after: afterState
-            )
-        } catch {
-            return ReaderPageTurnFastTurnResult(
-                direction: direction.rawValue,
-                status: "error:\(error.localizedDescription)",
-                moved: false,
-                before: baselineState,
-                after: await bridge.fetchFastTurnState()
-            )
+        Task { @MainActor in
+            do {
+                try await bridge.commitTurn(direction)
+            } catch {
+                return
+            }
         }
+
+        return ReaderPageTurnFastTurnResult(
+            direction: direction.rawValue,
+            status: "accepted",
+            moved: false,
+            before: baselineState,
+            after: baselineState
+        )
     }
 
     @MainActor
@@ -8398,10 +8545,12 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
 
         if let result = await bridge.goToResolvedPage(pageIndex),
            result.status != "unavailable" {
-            _ = await bridge.refreshNavigationState()
-            let publishedSnapshot = await makeProbeSnapshot()
-            probeModel.update(publishedSnapshot)
-            logProbeSnapshotIfEnabled(publishedSnapshot)
+            Task { @MainActor in
+                _ = await bridge.refreshNavigationState()
+                let publishedSnapshot = await makeProbeSnapshot()
+                probeModel.update(publishedSnapshot)
+                logProbeSnapshotIfEnabled(publishedSnapshot)
+            }
             return result
         }
 
