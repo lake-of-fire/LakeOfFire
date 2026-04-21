@@ -237,6 +237,11 @@ export class NavigationHUD {
             ? this.navContext.sections.filter(s => s.linear !== 'no').length
             : null;
         if (typeof linearCount === 'number' && linearCount > 0 && counts.size < linearCount) {
+            this._logPageNumberDiagnostic('cachewarmer.section-counts.skip-partial', {
+                receivedCount: counts.size,
+                linearCount,
+                receivedTotal: Array.from(counts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0),
+            });
             // Don't overwrite until all linear sections are known.
             logBug?.('pagecount:cachewarmer:skip-partial', {
                 received: counts.size,
@@ -244,6 +249,12 @@ export class NavigationHUD {
             });
             return;
         }
+        this._logPageNumberDiagnostic('cachewarmer.section-counts.apply', {
+            receivedCount: counts.size,
+            linearCount,
+            receivedTotal: Array.from(counts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0),
+            sectionCountsPreview: Array.from(counts.entries()).slice(0, 8).map(([index, count]) => ({ index, count })),
+        });
         logBug?.('pagecount:cachewarmer:apply', {
             received: counts.size,
             linearCount,
@@ -313,8 +324,25 @@ export class NavigationHUD {
                 }
             });
         }
+        logEPUBNav('nav.sections.received', {
+            sectionCount: Array.isArray(this.navContext?.sections) ? this.navContext.sections.length : 0,
+            linearSectionCount: this.linearSectionIndexes.size,
+            sectionMapSize: this.sectionIndexByHref.size,
+            preview: Array.isArray(this.navContext?.sections)
+                ? this.navContext.sections.slice(0, 8).map((section, idx) => ({
+                    index: idx,
+                    href: section?.href ?? null,
+                    normalizedHref: normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null),
+                    linear: section?.linear ?? null,
+                }))
+                : [],
+        });
         this.linearSectionCount = this.linearSectionIndexes.size || null;
         this._rebuildPageTargetSectionMetrics();
+        if (this.lastRelocateDetail) {
+            this._updateRendererSnapshotFromDetail(this.lastRelocateDetail);
+            this._updatePrimaryLine(this.lastRelocateDetail);
+        }
         this._toggleCompletionStack();
         this._updateSectionProgress();
         this._updateRelocateButtons();
@@ -325,6 +353,18 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
+        logEPUBNav('nav.visibility.scroll-toggle', {
+            source,
+            previous,
+            shouldHide: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            context,
+        });
         logNavHide('hud:set-hide', {
             shouldHide: this.hideNavigationDueToScroll,
             previous,
@@ -368,12 +408,23 @@ export class NavigationHUD {
 
     // External toggle for full nav hide (not the scroll HUD hide).
     setNavHiddenState(shouldHide) {
+        const previous = this.navHidden;
         this.navHidden = !!shouldHide;
         this._applyLabelVariant();
         const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
         if (descriptor) {
             this._updatePrimaryLine(descriptor);
         }
+        logEPUBNav('nav.visibility.hidden-toggle', {
+            previous,
+            shouldHide: this.navHidden,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+        });
         globalThis.reader?.queueLayoutDiagnostics?.('nav-hidden-state', {
             shouldHide: this.navHidden,
         });
@@ -510,6 +561,9 @@ export class NavigationHUD {
     
     async handleRelocate(detail) {
         if (!detail) return;
+        const previousSectionIndex = typeof this.lastRelocateDetail?.sectionIndex === 'number'
+            ? this.lastRelocateDetail.sectionIndex
+            : (typeof this.lastRelocateDetail?.index === 'number' ? this.lastRelocateDetail.index : null);
         const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locTotal != null && locTotal > 0) {
@@ -538,6 +592,19 @@ export class NavigationHUD {
         if (typeof detail.sectionIndex === 'number' && typeof detail.pageCount === 'number' && detail.pageCount > 0) {
             this.sectionPageCounts.set(detail.sectionIndex, detail.pageCount);
         }
+        logEPUBNav('nav.visibility.relocate', {
+            reason: detail?.reason ?? null,
+            previousSectionIndex,
+            nextSectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
+            sectionChanged: typeof previousSectionIndex === 'number' && typeof detail.sectionIndex === 'number'
+                ? previousSectionIndex !== detail.sectionIndex
+                : null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+        });
         logEBookPageNumLimited('nav:relocate:input', {
             sectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
             index: typeof detail.index === 'number' ? detail.index : null,
@@ -674,8 +741,20 @@ export class NavigationHUD {
         const desiredHide = barHidden || this.hideNavigationDueToScroll || this.navHidden;
         if (this.navPrimaryText?.dataset) {
             const next = desiredHide ? 'compact' : 'full';
-            if (this.navPrimaryText.dataset.labelVariant !== next) {
+            const previousVariant = this.navPrimaryText.dataset.labelVariant ?? null;
+            if (previousVariant !== next) {
                 this.navPrimaryText.dataset.labelVariant = next;
+                logEPUBNav('nav.visibility.variant-sync', {
+                    previousVariant,
+                    nextVariant: next,
+                    barHidden,
+                    hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+                    navHidden: this.navHidden,
+                    navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                    navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+                    primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+                    compactLabel: this.navPrimaryTextCompact?.textContent || '',
+                });
             }
         }
     }
@@ -884,6 +963,11 @@ export class NavigationHUD {
                 label: '',
                 totalPageCount: this.totalPageCount,
             };
+            this._logPageNumberDiagnostic('primary-label.blocked', {
+                reason: 'no-detail',
+                totalPageCount: this.totalPageCount,
+                fallbackTotalPageCount: this.fallbackTotalPageCount,
+            });
             return null;
         }
 
@@ -909,6 +993,15 @@ export class NavigationHUD {
                 totalSource: metrics.diag?.totalSource ?? null,
                 totalPageCount: this.totalPageCount,
             };
+            this._logPageNumberDiagnostic('primary-label.derived', {
+                label,
+                currentPageNumber,
+                totalPages,
+                currentPageSource: metrics.diag?.currentSource ?? null,
+                totalSource: metrics.diag?.totalSource ?? null,
+                sectionIndex: metrics.diag?.sectionIndex ?? null,
+                resolvedSectionHref: metrics.diag?.resolvedSectionHref ?? null,
+            });
             this.latestPrimaryLabel = label;
             return label;
         }
@@ -919,7 +1012,43 @@ export class NavigationHUD {
             source: 'no-page-metrics',
             label: '',
             totalPageCount: this.totalPageCount,
+            rawCurrentPageNumber: metrics?.diag?.rawCurrentPageNumber ?? null,
+            rawCurrentSource: metrics?.diag?.rawCurrentSource ?? null,
+            rawTotalPages: metrics?.diag?.rawTotalPages ?? null,
+            currentPageReady: metrics?.diag?.currentPageReady ?? false,
+            totalPagesReady: metrics?.diag?.totalPagesReady ?? false,
+            sectionIndex: metrics?.diag?.sectionIndex ?? null,
+            sectionIndexSource: metrics?.diag?.sectionIndexSource ?? null,
+            resolvedSectionHref: metrics?.diag?.resolvedSectionHref ?? null,
+            hasTrustedCurrentSectionCount: metrics?.diag?.hasTrustedCurrentSectionCount ?? false,
+            cacheWarmerHighestSectionIndex: metrics?.diag?.cacheWarmerHighestSectionIndex ?? null,
+            cacheWarmerReady: metrics?.diag?.cacheWarmerReady ?? false,
+            locationTotal: metrics?.diag?.locationTotal ?? null,
+            rendererSnapshotCurrent: metrics?.diag?.rendererSnapshotCurrent ?? null,
+            rendererSnapshotTotal: metrics?.diag?.rendererSnapshotTotal ?? null,
         };
+        this._logPageNumberDiagnostic('primary-label.blocked', {
+            reason: metrics == null
+                ? 'no-metrics'
+                : metrics.diag?.sectionIndex == null
+                    ? 'missing-section-index'
+                    : metrics.diag?.currentPageReady !== true
+                        ? 'current-page-not-ready'
+                        : 'label-empty',
+            rawCurrentPageNumber: metrics?.diag?.rawCurrentPageNumber ?? null,
+            rawCurrentSource: metrics?.diag?.rawCurrentSource ?? null,
+            rawTotalPages: metrics?.diag?.rawTotalPages ?? null,
+            currentPageReady: metrics?.diag?.currentPageReady ?? false,
+            totalPagesReady: metrics?.diag?.totalPagesReady ?? false,
+            sectionIndex: metrics?.diag?.sectionIndex ?? null,
+            sectionIndexSource: metrics?.diag?.sectionIndexSource ?? null,
+            resolvedSectionHref: metrics?.diag?.resolvedSectionHref ?? null,
+            hasTrustedCurrentSectionCount: metrics?.diag?.hasTrustedCurrentSectionCount ?? false,
+            cacheWarmerHighestSectionIndex: metrics?.diag?.cacheWarmerHighestSectionIndex ?? null,
+            cacheWarmerReady: metrics?.diag?.cacheWarmerReady ?? false,
+            totalPageCount: this.totalPageCount,
+            fallbackTotalPageCount: this.fallbackTotalPageCount,
+        });
         return null;
     }
 
@@ -1033,6 +1162,9 @@ export class NavigationHUD {
                 return true;
             }
             if (rawCurrentSource === 'section-offset') {
+                if (sectionIndex === 0) {
+                    return true;
+                }
                 return hasTrustedCurrentSectionCount && this._cacheWarmerHasReachedCurrentSection(sectionIndex);
             }
             return false;
@@ -1126,6 +1258,25 @@ export class NavigationHUD {
             totalSource: this.lastTotalSource ?? null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
         });
+        if (!currentPageReady || !totalPagesReady) {
+            this._logPageNumberDiagnostic('page-metrics.blocked', {
+                currentPageReady,
+                totalPagesReady,
+                rawCurrentPageNumber: rawCurrent,
+                rawCurrentSource,
+                rawTotalPages: rawTotal,
+                sectionIndex,
+                sectionIndexSource,
+                resolvedSectionHref,
+                hasTrustedCurrentSectionCount,
+                cacheWarmerFinished: this._cacheWarmerHasFinishedBook(),
+                cacheWarmerHighestSectionIndex,
+                sectionPageCountsSize: this.sectionPageCounts.size,
+                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                totalPageCount: this.totalPageCount,
+                fallbackTotalPageCount: this.fallbackTotalPageCount,
+            });
+        }
         return {
             currentPageNumber: adjustedCurrent,
             totalPages: adjustedTotal,
@@ -1141,10 +1292,26 @@ export class NavigationHUD {
             { source: 'renderer.tocItem.href', value: this.getRenderer?.()?.tocItem?.href },
             { source: 'last-location.tocItem.href', value: globalThis.reader?.view?.lastLocation?.tocItem?.href },
         ];
+        const hrefCandidateSummary = hrefCandidates.map((candidate) => {
+            const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
+            return {
+                source: candidate.source,
+                href: candidate.value ?? null,
+                normalizedHref,
+                mappedIndex: normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null,
+            };
+        });
         for (const candidate of hrefCandidates) {
             const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
             const indexFromHref = normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null;
             if (typeof indexFromHref === 'number' && indexFromHref >= 0) {
+                this._logPageNumberDiagnostic('section-index.resolved', {
+                    resolution: 'href',
+                    source: candidate.source,
+                    resolvedHref: normalizedHref,
+                    sectionIndex: indexFromHref,
+                    sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                });
                 return { index: indexFromHref, source: candidate.source, resolvedHref: normalizedHref };
             }
         }
@@ -1158,9 +1325,34 @@ export class NavigationHUD {
         ];
         for (const candidate of candidates) {
             if (typeof candidate.value === 'number' && candidate.value >= 0) {
+                this._logPageNumberDiagnostic('section-index.resolved', {
+                    resolution: 'numeric',
+                    source: candidate.source,
+                    resolvedHref: null,
+                    sectionIndex: candidate.value,
+                    sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                });
                 return { index: candidate.value, source: candidate.source, resolvedHref: null };
             }
         }
+        const hasSectionMetadata = (this.sectionIndexByHref?.size ?? 0) > 0
+            || (Array.isArray(this.navContext?.sections) && this.navContext.sections.length > 0);
+        if (!hasSectionMetadata) {
+            this._logPageNumberDiagnostic('section-index.pending-metadata', {
+                hrefCandidates: hrefCandidateSummary,
+                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                navSectionCount: Array.isArray(this.navContext?.sections) ? this.navContext.sections.length : 0,
+            });
+            return { index: null, source: 'none', resolvedHref: null };
+        }
+        this._logPageNumberDiagnostic('section-index.unresolved', {
+            hrefCandidates: hrefCandidateSummary,
+            numericCandidates: candidates.map((candidate) => ({
+                source: candidate.source,
+                value: typeof candidate.value === 'number' ? candidate.value : null,
+            })),
+            sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+        });
         return { index: null, source: 'none', resolvedHref: null };
     }
     

@@ -70,6 +70,24 @@ const postPageNumLog = (event, details = {}) => {
     }
 };
 
+const captureNavVisibilityState = () => {
+    const body = document.body;
+    const navBar = document.getElementById('nav-bar');
+    const navPrimaryText = document.getElementById('nav-primary-text');
+    return {
+        bodyNavHiddenClass: body?.classList?.contains?.('nav-hidden') ?? null,
+        navHiddenClass: navBar?.classList?.contains?.('nav-hidden') ?? null,
+        navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        hudHideNavigationDueToScroll: !!globalThis.reader?.navHUD?.hideNavigationDueToScroll,
+        hudNavHidden: !!globalThis.reader?.navHUD?.navHidden,
+        labelVariant: navPrimaryText?.dataset?.labelVariant ?? null,
+        primaryLabel: document.getElementById('nav-primary-text-full')?.textContent
+            || navPrimaryText?.textContent
+            || '',
+        compactLabel: document.getElementById('nav-primary-text-compact')?.textContent || '',
+    };
+};
+
 const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
 const replaceTextResultCache = new Map();
 const replaceTextInFlightCache = new Map();
@@ -656,6 +674,7 @@ const injectBodyDatasetAttributes = (html, attributes) => {
 const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
+    const before = captureNavVisibilityState();
     if (body?.classList?.contains?.('nav-hidden')) {
         body.classList.remove('nav-hidden');
     }
@@ -666,15 +685,19 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const bridgeState = {
         source,
         shouldHide: normalized,
-        bodyHasNavHiddenClass: body?.classList?.contains?.('nav-hidden') ?? null,
-        hudHideNavigationDueToScroll: !!globalThis.reader?.navHUD?.hideNavigationDueToScroll,
-        hudNavHidden: !!globalThis.reader?.navHUD?.navHidden,
+        ...captureNavVisibilityState(),
     };
     const bridgeKey = JSON.stringify(bridgeState);
     if (globalThis.__manabiLastNavigationVisibilityBridgeKey !== bridgeKey) {
         globalThis.__manabiLastNavigationVisibilityBridgeKey = bridgeKey;
         postReaderLog('ebook.navigationVisibility.bridge', bridgeState);
     }
+    postPageNumLog('nav.visibility.bridge', {
+        source,
+        shouldHide: normalized,
+        before,
+        after: captureNavVisibilityState(),
+    });
     globalThis.reader?.queueLayoutDiagnostics?.('native-hide-bridge', {
         source,
         shouldHide: normalized,
@@ -1611,7 +1634,9 @@ const getCSSForBookContent = ({
     }
     p, li, blockquote, dd {
         line-height: ${spacing};
-        text-align: ${justify ? 'justify' : 'start'};
+        text-align: start;
+        -webkit-text-align-last: auto;
+        text-align-last: auto;
         -webkit-hyphens: ${hyphenate ? 'auto' : 'manual'};
         hyphens: ${hyphenate ? 'auto' : 'manual'};
         -webkit-hyphenate-limit-before: 3;
@@ -1620,11 +1645,19 @@ const getCSSForBookContent = ({
         hanging-punctuation: allow-end last;
         widows: 2;
     }
+    /*
+       Neutralize book-provided body/p justification as well. Some EPUBs ship
+       text-align: justify on body/p, which causes punctuation spacing artifacts.
+    */
+    body, p, li, blockquote, dd {
+        text-align: start !important;
+        -webkit-text-align-last: auto !important;
+        text-align-last: auto !important;
+    }
     /* prevent the above from overriding the align attribute */
-    [align="left"] { text-align: left; }
-    [align="right"] { text-align: right; }
-    [align="center"] { text-align: center; }
-    [align="justify"] { text-align: justify; }
+    [align="left"] { text-align: left !important; }
+    [align="right"] { text-align: right !important; }
+    [align="center"] { text-align: center !important; }
 
     pre {
         white-space: pre-wrap !important;
@@ -3033,6 +3066,7 @@ class Reader {
     }
     
     async updateNavButtons() {
+        const navVisibilityBefore = captureNavVisibilityState();
         // Remove any nav-spinner left over from finish/restart click
         document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
             const btn = spinner.closest('button');
@@ -3113,6 +3147,35 @@ class Reader {
             showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
             sections: this.view?.book?.sections ?? [],
         });
+        postPageNumLog('nav.sections.handoff', {
+            sectionCount: Array.isArray(this.view?.book?.sections) ? this.view.book.sections.length : 0,
+            pageTargetCount: Array.isArray(this.navHUD?.pageTargets) ? this.navHUD.pageTargets.length : 0,
+            sectionPreview: Array.isArray(this.view?.book?.sections)
+                ? this.view.book.sections.slice(0, 8).map((section, idx) => ({
+                    index: idx,
+                    href: section?.href ?? null,
+                    linear: section?.linear ?? null,
+                }))
+                : [],
+        });
+        if (this.navHUD?.hideNavigationDueToScroll) {
+            this.navHUD.setHideNavigationDueToScroll(true, 'reader.updateNavButtons.reapply', {
+                atSectionStart,
+                atSectionEnd,
+                hasPrevSection,
+                hasNextSection,
+            });
+        }
+        postPageNumLog('nav.visibility.updateNavButtons', {
+            atSectionStart,
+            atSectionEnd,
+            hasPrevSection,
+            hasNextSection,
+            showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
+            showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
+            before: navVisibilityBefore,
+            after: captureNavVisibilityState(),
+        });
         this.#syncPageTrackingButtons('nav-buttons', null, 1);
         this.#queueLayoutDiagnostics('nav-buttons', {
             showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
@@ -3150,8 +3213,18 @@ class Reader {
         this.setLoadingIndicator(true);
     }
     #onDidDisplay({}) {
+        const navVisibilityBefore = captureNavVisibilityState();
         this.setLoadingIndicator(false);
         applyStoredChromeInsets('reader.didDisplay');
+        if (this.navHUD?.hideNavigationDueToScroll) {
+            this.navHUD.setHideNavigationDueToScroll(true, 'reader.didDisplay.reapply', {
+                stage: 'before-raf',
+            });
+        }
+        postPageNumLog('nav.visibility.did-display', {
+            before: navVisibilityBefore,
+            after: captureNavVisibilityState(),
+        });
         markEPUBPerf('did-display.first', {
             hasRenderer: !!this.view?.renderer,
         }, {

@@ -11,6 +11,60 @@ private let splitPunctuation = ParsingStrings([
     "＼","—","〜","～","〃","々","〆","ゝ","ゞ"
 ])
 
+private let apr20SpacingProbeCharacters: Set<Character> = ["「", "」", "。", "．"]
+
+private func apr20Visible(_ text: String) -> String {
+    text
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\n", with: "\\n")
+        .replacingOccurrences(of: "\r", with: "\\r")
+        .replacingOccurrences(of: "\t", with: "\\t")
+}
+
+private func apr20CharacterDescription(_ character: Character?) -> String {
+    guard let character else { return "<nil>" }
+    let scalarDescription = character.unicodeScalars
+        .map { String(format: "U+%04X", $0.value) }
+        .joined(separator: "+")
+    return "\(apr20Visible(String(character)))(\(scalarDescription))"
+}
+
+private func apr20ContainsSpacingProbe(_ text: String) -> Bool {
+    text.contains { apr20SpacingProbeCharacters.contains($0) }
+}
+
+private func apr20SpacingContexts(_ text: String, limit: Int = 8) -> String {
+    let characters = Array(text)
+    let matches = characters.enumerated().filter { apr20SpacingProbeCharacters.contains($0.element) }
+    guard !matches.isEmpty else { return "<none>" }
+    return matches.prefix(limit).map { index, character in
+        let start = max(0, index - 4)
+        let end = min(characters.count, index + 5)
+        let window = String(characters[start..<end])
+        let previousCharacter = index > 0 ? characters[index - 1] : nil
+        let nextCharacter = index + 1 < characters.count ? characters[index + 1] : nil
+        return [
+            "idx=\(index)",
+            "char=\(apr20CharacterDescription(character))",
+            "prev=\(apr20CharacterDescription(previousCharacter))",
+            "next=\(apr20CharacterDescription(nextCharacter))",
+            "window=\(apr20Visible(window))"
+        ].joined(separator: "|")
+    }.joined(separator: ";")
+}
+
+private func apr20Snippet(_ text: String, limit: Int = 240) -> String {
+    apr20Visible(String(text.prefix(limit)))
+}
+
+private func apr20Payload(_ text: String, limit: Int = 1600) -> String {
+    let visible = apr20Visible(text)
+    if visible.count <= limit {
+        return visible
+    }
+    return String(visible.prefix(limit)) + "...<truncated>"
+}
+
 internal extension URL {
     /// Backport of iOS 16+ `appending(queryItems:)` for iOS 15
     func appending(queryItems items: [URLQueryItem]) -> URL {
@@ -87,8 +141,18 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
         while nodeIdx < textNodes.count {
             var node = textNodes[nodeIdx]
             var offsetInNode = 0
-            
-            let nodeTextPreview = String(node.text().prefix(30))
+
+            if apr20ContainsSpacingProbe(node.text()) {
+                print(
+                    "# APR20",
+                    "ebook.preprocess.node",
+                    "nodeIndex=\(nodeIdx)",
+                    "charCount=\(node.text().count)",
+                    "utf8Count=\(node.text().utf8.count)",
+                    "text=\(apr20Snippet(node.text()))",
+                    "contexts=\(apr20SpacingContexts(node.text()))"
+                )
+            }
             // Attempt to insert as many sentinels as needed inside this node
             while charCount + (node.text().count - offsetInNode) >= nextThreshold {
                 let nodeText = node.text()
@@ -101,6 +165,31 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
                 let splitIndex = offsetInNode + splitOffset
                 // Sanity check
                 if splitIndex <= 0 || splitIndex >= nodeText.count { break }
+
+                if apr20ContainsSpacingProbe(nodeText) {
+                    let characters = Array(nodeText)
+                    let safeSplitIndex = min(max(splitIndex, 0), characters.count)
+                    let beforeText = String(characters.prefix(safeSplitIndex))
+                    let afterText = String(characters.suffix(characters.count - safeSplitIndex))
+                    let splitPreviousCharacter = safeSplitIndex > 0 ? characters[safeSplitIndex - 1] : nil
+                    let splitNextCharacter = safeSplitIndex < characters.count ? characters[safeSplitIndex] : nil
+                    print(
+                        "# APR20",
+                        "ebook.preprocess.split",
+                        "nodeIndex=\(nodeIdx)",
+                        "charCount=\(nodeText.count)",
+                        "utf8Count=\(nodeText.utf8.count)",
+                        "desiredOffset=\(desiredOffset)",
+                        "splitOffset=\(splitOffset)",
+                        "splitIndex=\(splitIndex)",
+                        "splitPrev=\(apr20CharacterDescription(splitPreviousCharacter))",
+                        "splitNext=\(apr20CharacterDescription(splitNextCharacter))",
+                        "before=\(apr20Snippet(beforeText, limit: 120))",
+                        "after=\(apr20Snippet(afterText, limit: 120))",
+                        "nodeText=\(apr20Payload(nodeText))",
+                        "contexts=\(apr20SpacingContexts(nodeText))"
+                    )
+                }
                 
                 // Split the text node
                 let newTextNode = try? node.splitText(splitIndex)
@@ -113,8 +202,6 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
                 
                 if let newTextNode = newTextNode {
                     _ = try? sentinel.after(newTextNode)
-                    // Debug new node
-                    let newPreview = String(newTextNode.text().prefix(30))
                     // Re-fetch text nodes to include the split part
                     textNodes = body.textNodes()
                     // Advance counters for next threshold
@@ -139,6 +226,15 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
             try sentinel.attr("id", "reader-sentinel-0")
             _ = try? body.prependChild(sentinel)
         }
+        if let bodyHtml = try? body.html(), apr20ContainsSpacingProbe(bodyHtml) {
+            print(
+                "# APR20",
+                "ebook.preprocess.output",
+                "sentinelCount=\(idx == 0 ? 1 : idx)",
+                "html=\(apr20Snippet(bodyHtml))",
+                "contexts=\(apr20SpacingContexts(bodyHtml))"
+            )
+        }
         return doc
     } catch {
         print(error)
@@ -162,6 +258,18 @@ internal func ebookTextProcessor(
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
     
     do {
+        if apr20ContainsSpacingProbe(content) {
+            print(
+                "# APR20",
+                "ebook.input",
+                "contentURL=\(contentURL.absoluteString)",
+                "sectionLocation=\(sectionLocation)",
+                "charCount=\(content.count)",
+                "utf8Count=\(content.utf8.count)",
+                "content=\(apr20Payload(content))",
+                "contexts=\(apr20SpacingContexts(content))"
+            )
+        }
         var doc: SwiftSoup.Document?
         
         if let processReadabilityContent {
@@ -204,6 +312,18 @@ internal func ebookTextProcessor(
         )
         
         var html = try doc.outerHtml()
+        if apr20ContainsSpacingProbe(html) {
+            print(
+                "# APR20",
+                "ebook.output.beforeProcessHTML",
+                "contentURL=\(contentURL.absoluteString)",
+                "sectionLocation=\(sectionLocation)",
+                "charCount=\(html.count)",
+                "utf8Count=\(html.utf8.count)",
+                "html=\(apr20Payload(html))",
+                "contexts=\(apr20SpacingContexts(html))"
+            )
+        }
         print(
             "# EPUB",
             "ebookTextProcessor.output",
@@ -221,6 +341,19 @@ internal func ebookTextProcessor(
                     isCacheWarmer
                 )
             }
+        }
+
+        if apr20ContainsSpacingProbe(html) {
+            print(
+                "# APR20",
+                "ebook.output.final",
+                "contentURL=\(contentURL.absoluteString)",
+                "sectionLocation=\(sectionLocation)",
+                "charCount=\(html.count)",
+                "utf8Count=\(html.utf8.count)",
+                "html=\(apr20Payload(html))",
+                "contexts=\(apr20SpacingContexts(html))"
+            )
         }
         
         return html
