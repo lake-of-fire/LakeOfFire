@@ -527,6 +527,11 @@ public struct ReaderContentLoader {
             }
             
             let historyRecord = HistoryRecord()
+            if !allowContentMatch {
+                let freshSnippetKey = UUID().uuidString.uppercased()
+                historyRecord.compoundKey = freshSnippetKey
+                historyRecord.url = snippetURL(key: freshSnippetKey) ?? historyRecord.url
+            }
             historyRecord.publicationDate = Date()
             historyRecord.content = data
             historyRecord.title = generatedTitle
@@ -534,9 +539,11 @@ public struct ReaderContentLoader {
             // isReaderModeByDefault used to be commented out... why?
             historyRecord.isReaderModeByDefault = true
             historyRecord.isDemoted = false
-            historyRecord.updateCompoundKey()
+            if allowContentMatch {
+                historyRecord.updateCompoundKey()
+                historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
+            }
             historyRecord.rssContainsFullContent = true
-            historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
 //            await historyRealm.asyncRefresh()
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)

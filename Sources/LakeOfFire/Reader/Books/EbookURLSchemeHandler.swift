@@ -114,7 +114,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
     }
 }
 
-fileprivate actor EBookProcessingActor {
+actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
     let ebookTextProcessor: EbookTextProcessor?
     let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
@@ -138,13 +138,6 @@ fileprivate actor EBookProcessingActor {
         text: String,
         isCacheWarmer: Bool
     ) async throws -> String {
-        // TODO: Consolidate sectionLocationURL creation with ebookTextProcessor's
-        let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: location)])
-        if isCacheWarmer, let ebookTextProcessorCacheHits, (try? await ebookTextProcessorCacheHits(sectionLocationURL, text)) ?? false {
-            // Bail early if we are already cached
-            return ""
-        }
-
         guard let ebookTextProcessor else {
             return text
         }

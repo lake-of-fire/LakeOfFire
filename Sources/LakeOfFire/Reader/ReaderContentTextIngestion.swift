@@ -37,10 +37,17 @@ extension ReaderContentLoader {
         let normalizedTypeIdentifier = typeIdentifier?.lowercased()
         let normalizedExtension = pathExtension?.lowercased()
 
+        let isPlainTextLikeMetadata =
+            (normalizedMimeType == nil || normalizedMimeType == plainTextMimeType)
+            && (normalizedTypeIdentifier == nil || normalizedTypeIdentifier == UTType.plainText.identifier.lowercased())
+
         if normalizedMimeType == htmlMimeType || normalizedTypeIdentifier == UTType.html.identifier.lowercased() {
             return .html
         }
         if normalizedMimeType == markdownMimeType || normalizedTypeIdentifier == markdownUTTypeIdentifier {
+            return .markdown
+        }
+        if markdownExtensions.contains(normalizedExtension ?? ""), isPlainTextLikeMetadata {
             return .markdown
         }
         if normalizedMimeType == plainTextMimeType || normalizedTypeIdentifier == UTType.plainText.identifier.lowercased() {
