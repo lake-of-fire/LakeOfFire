@@ -37,6 +37,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var sourceTitle: String?
     @Published var totalWordCount: Int?
     @Published var remainingTime: TimeInterval?
+    @Published var syncStatusPresentation: ReaderContentSyncStatusPresentation?
     // Continue Reading menu is driven by an injected provider in the environment.
 
     init() { }
@@ -72,6 +73,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let feedIconURL = feed?.iconUrl
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
                 let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
+                let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
                 let latestHistoryRecordLastVisitedAt: Date?
                 if item is FeedEntry {
                     if feedShowsUnseenBadge {
@@ -141,6 +143,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.feedShowsUnseenBadge = feedShowsUnseenBadge
                     self.totalWordCount = metadataResult?.totalWordCount
                     self.remainingTime = metadataResult?.remainingTime
+                    self.syncStatusPresentation = syncStatusPresentation
                 }()
                 // Continue Reading state is provided externally via environment provider.
             }
@@ -249,6 +252,33 @@ extension ReaderContentProtocol {
             thumbnailCornerRadius: thumbnailCornerRadius
         )
         readerContentCellView(appearance: appearance)
+    }
+}
+
+private struct ReaderContentSyncStatusLabel: View {
+    let presentation: ReaderContentSyncStatusPresentation
+    let iconOnly: Bool
+
+    var body: some View {
+        Group {
+            if presentation.imageIsSystemSymbol {
+                Label(presentation.title, systemImage: presentation.imageName)
+            } else {
+                Label {
+                    Text(presentation.title)
+                } icon: {
+                    Image(presentation.imageName)
+                        .renderingMode(.template)
+                }
+            }
+        }
+        .modifier {
+            if iconOnly {
+                $0.labelStyle(.iconOnly)
+            } else {
+                $0.labelStyle(.titleAndIcon)
+            }
+        }
     }
 }
 
@@ -667,6 +697,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .font(.callout)
                     .imageScale(.small)
                     .foregroundStyle(.secondary)
+            } else if let syncStatusPresentation = viewModel.syncStatusPresentation {
+                ReaderContentSyncStatusLabel(presentation: syncStatusPresentation, iconOnly: true)
+                    .font(.callout)
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -731,8 +766,21 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
         Menu {
             if let item = self.item as? ContentFile {
-                CloudDriveSyncStatusView(item: item)
-                    .labelStyle(.titleAndIcon)
+                let summaryTitle = item.url.absoluteString.contains("reader-file://file/load/icloud/") ? "Sync Status: iCloud" : "Sync Status: Local Only"
+                Label(summaryTitle, systemImage: item.url.absoluteString.contains("reader-file://file/load/icloud/") ? "icloud" : "internaldrive")
+                Divider()
+            } else if let syncStatusPresentation = viewModel.syncStatusPresentation {
+                ReaderContentSyncStatusLabel(
+                    presentation: .init(
+                        title: "Sync Status: \(syncStatusPresentation.title)",
+                        imageName: syncStatusPresentation.imageName,
+                        imageIsSystemSymbol: syncStatusPresentation.imageIsSystemSymbol
+                    ),
+                    iconOnly: false
+                )
+                Divider()
+            } else {
+                Label("Sync Status: Local Only", systemImage: "internaldrive")
                 Divider()
             }
 

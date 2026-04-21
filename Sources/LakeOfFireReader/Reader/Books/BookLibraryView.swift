@@ -142,13 +142,47 @@ public struct BookLibraryView: View {
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
-    @StateObject private var readerContentListViewModel = ReaderContentListViewModel<ContentFile>()
+    @StateObject private var readerContentListViewModel = ReaderContentListViewModel<Bookmark>()
     @AppStorage("BookLibraryView.editorsPicks.isExpanded") private var isEditorsPicksExpanded = true
     @State private var isMyBooksExpanded = true
 
     private var isMyBooksEmpty: Bool {
         readerContentListViewModel.hasLoadedBefore
         && readerContentListViewModel.filteredContents.isEmpty
+    }
+
+    @MainActor
+    private func reloadMyBooks() async {
+        let nativeFiles = (readerFileManager.files(ofTypes: viewModel.fileTypes) ?? []).filter { contentFile in
+            guard let fileFilter = viewModel.fileFilter else { return true }
+            return (try? fileFilter(contentFile)) ?? false
+        }
+
+        guard let realm = try? await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: MainActor.shared) else {
+            try? await readerContentListViewModel.load(contents: nativeFiles.map { $0 as Bookmark }, sortOrder: .createdAt)
+            return
+        }
+
+        let importedExternalBooks = Array(
+            realm.objects(Bookmark.self)
+                .where { !$0.isDeleted }
+        ).filter { bookmark in
+            bookmark.url.isReaderBookURL && !bookmark.url.isEBookURL
+        }
+
+        var combinedBooks = [Bookmark]()
+        combinedBooks.reserveCapacity(nativeFiles.count + importedExternalBooks.count)
+        combinedBooks.append(contentsOf: nativeFiles.map { $0 as Bookmark })
+        combinedBooks.append(contentsOf: importedExternalBooks)
+
+        let deduplicatedBooks = Dictionary(grouping: combinedBooks, by: \.compoundKey)
+            .values
+            .compactMap { $0.max(by: { $0.modifiedAt < $1.modifiedAt }) }
+
+        try? await readerContentListViewModel.load(
+            contents: deduplicatedBooks,
+            sortOrder: .createdAt
+        )
     }
 
     @ViewBuilder
@@ -182,7 +216,7 @@ public struct BookLibraryView: View {
         if isMyBooksEmpty {
             EmptyStateBoxView(
                 title: Text("Discover and add books"),
-                text: Text("Find books to add in the Editor's Picks section. Add your own books as long as you have the EPUB editions."),
+                text: Text("Find books to add in the Editor's Picks section, import your own EPUB editions, or link books from Ttsu Reader in User Data settings."),
                 systemImageName: "books.vertical"
             ) {
                 addEpubButton
@@ -255,37 +289,26 @@ public struct BookLibraryView: View {
         }
         .refreshable {
             await viewModel.fetchAllData()
+            await reloadMyBooks()
         }
         .task { @MainActor in
-            let fileFilter = viewModel.fileFilter
-            if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
-                try? await readerContentListViewModel.load(
-                    contents: files,
-                    contentFilter: { _, contentFile in
-                        guard let fileFilter else { return true }
-                        return try fileFilter(contentFile)
-                    },
-                    sortOrder: .createdAt,
-                )
-            }
+            await reloadMyBooks()
         }
         .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
             Task { @MainActor in
-                if let ebookFiles {
-                    try? await readerContentListViewModel.load(
-                        contents: ebookFiles,
-                        sortOrder: .createdAt
-                    )
+                if ebookFiles != nil {
+                    await reloadMyBooks()
                 }
             }
         }
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
-            viewModel.hasLocalFiles = !filteredFileIDs.isEmpty
+            let nativeFilteredFiles = readerContentListViewModel.filteredContents.compactMap { $0 as? ContentFile }
+            viewModel.hasLocalFiles = !nativeFilteredFiles.isEmpty
             guard let loadedFiles = viewModel.loadedFiles else { return }
             Task { @RealmBackgroundActor in
-                guard !filteredFileIDs.isEmpty, let realmConfiguration = await readerContentListViewModel.realmConfiguration else { return }
+                guard !nativeFilteredFiles.isEmpty, let realmConfiguration = await readerContentListViewModel.realmConfiguration else { return }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                try await loadedFiles(filteredFileIDs.compactMap { realm.object(ofType: ContentFile.self, forPrimaryKey: $0) })
+                try await loadedFiles(nativeFilteredFiles.compactMap { realm.object(ofType: ContentFile.self, forPrimaryKey: $0.compoundKey) })
             }
         }
     }

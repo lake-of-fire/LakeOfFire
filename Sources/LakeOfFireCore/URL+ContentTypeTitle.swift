@@ -46,7 +46,7 @@ public extension URL {
     }
 
     var contentKind: ContentKind {
-        if isEBookURL {
+        if isReaderBookURL {
             return .book
         }
         if isFileURL {

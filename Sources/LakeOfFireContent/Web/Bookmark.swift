@@ -39,7 +39,7 @@ private func logReaderParaBookmarkPayload(
     )
 }
 
-public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol, DeletableReaderContent {
+open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol, DeletableReaderContent {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
@@ -87,7 +87,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
-    public var locationBarTitle: String? {
+    open var locationBarTitle: String? {
         let url = url
         if url.isSnippetURL {
             return "Snippet: \(createdAt.formatted())"
@@ -111,17 +111,17 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
         return url.normalizedHost() ?? url.absoluteString
     }
     
-    public var displayAbsolutePublicationDate: Bool {
+    open var displayAbsolutePublicationDate: Bool {
         return isPhysicalMedia
     }
     
-    public func imageURLToDisplay() -> URL? {
+    open func imageURLToDisplay() -> URL? {
         return imageUrl
     }
     
     /// Used by subclasses of Bookmark
     @RealmBackgroundActor
-    public func configureBookmark(_ bookmark: Bookmark) {
+    open func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         let targetBookmarkID = bookmark.compoundKey
         Task { @RealmBackgroundActor in
@@ -137,24 +137,24 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
         }
     }
     
-    public var deleteActionTitle: String {
+    open var deleteActionTitle: String {
         "Remove from Saved for Later…"
     }
     
-    public var deletionConfirmationTitle: String {
+    open var deletionConfirmationTitle: String {
         return "Removal Confirmation"
     }
     
-    public var deletionConfirmationMessage: String {
+    open var deletionConfirmationMessage: String {
         return "Are you sure you want to remove from Saved for Later?"
     }
     
-    public var deletionConfirmationActionTitle: String {
+    open var deletionConfirmationActionTitle: String {
         return "Remove"
     }
 
     @MainActor
-    public func delete() async throws {
+    open func delete() async throws {
         let url = url
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
@@ -168,16 +168,16 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
             try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
         }()
     }
-}
 
-extension Bookmark: SyncSkippablePropertiesModel {
-    public func skipSyncingProperties() -> Set<String>? {
+    open func skipSyncingProperties() -> Set<String>? {
         if url.isFileURL || url.isHTTP || url.isReaderFileURL {
             return ["htmlContent", "content", "isReaderModeAvailable"]
         }
         return nil
     }
 }
+
+extension Bookmark: SyncSkippablePropertiesModel {}
 
 public extension Bookmark {
     static func get(forURL url: URL, realm: Realm) -> Self? {

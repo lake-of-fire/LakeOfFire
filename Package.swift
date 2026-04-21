@@ -285,7 +285,10 @@ let package = Package(
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
             ],
-            path: "Tests/LakeOfFireTests"
+            path: "Tests/LakeOfFireTests",
+            resources: [
+                .copy("Fixtures/Readability/mozilla-wikipedia-minerva.html"),
+            ]
         ),
     ]
 )

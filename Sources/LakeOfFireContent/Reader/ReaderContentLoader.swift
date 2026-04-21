@@ -29,6 +29,19 @@ public extension URL {
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+    public struct AdditionalContentProvider {
+        public let id: String
+        public let loadReferences: @Sendable @RealmBackgroundActor (URL) async throws -> [ContentReference]
+
+        public init(
+            id: String,
+            loadReferences: @escaping @Sendable @RealmBackgroundActor (URL) async throws -> [ContentReference]
+        ) {
+            self.id = id
+            self.loadReferences = loadReferences
+        }
+    }
+
     private static let diagnosticLocalFilePathQueryItemName = "diagnosticLocalFilePath"
     @MainActor
     private static var inFlightGetContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
@@ -89,6 +102,7 @@ public struct ReaderContentLoader {
     nonisolated(unsafe) public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    nonisolated(unsafe) public static var additionalContentProviders: [AdditionalContentProvider] = []
 
     private static func diagnosticStartupEbookLocalPath(for url: URL) -> String? {
         guard url.isEBookURL,
@@ -149,6 +163,15 @@ public struct ReaderContentLoader {
 
     private static func loadAllTaskKey(url: URL, skipContentFiles: Bool, skipFeedEntries: Bool) -> String {
         "\(url.absoluteString)|contentFiles:\(!skipContentFiles)|feedEntries:\(!skipFeedEntries)"
+    }
+
+    public static func registerAdditionalContentProvider(_ provider: AdditionalContentProvider) {
+        additionalContentProviders.removeAll { $0.id == provider.id }
+        additionalContentProviders.append(provider)
+    }
+
+    public static func unregisterAdditionalContentProvider(id: String) {
+        additionalContentProviders.removeAll { $0.id == id }
     }
 
     @RealmBackgroundActor
@@ -326,38 +349,11 @@ public struct ReaderContentLoader {
         }
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
-        try Task.checkCancellation()
-
-        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
-        await bookmarkRealm.asyncRefresh()
-        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
-        await historyRealm.asyncRefresh()
-
-        let contentFile: ContentFile? = if !skipContentFiles {
-            ContentFile.get(forURL: url, realm: bookmarkRealm)
-        } else {
-            nil
-        }
-        let history = HistoryRecord.get(forURL: url, realm: historyRealm)
-        let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
-
-        var feed: FeedEntry?
-        if !skipFeedEntries {
-            let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
-            await feedRealm.asyncRefresh()
-            let feeds = feedRealm.objects(FeedEntry.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-
-            if url.scheme == "https" {
-                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
-            } else if !url.isReaderFileURL {
-                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
-            }
-        }
-
-            let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
-            return candidates.compactMap(ContentReference.init(content:))
+            try await loadAllReferences(
+                url: url,
+                skipContentFiles: skipContentFiles,
+                skipFeedEntries: skipFeedEntries
+            )
         }
 
         inFlightLoadAllTasks[taskKey] = task
@@ -372,6 +368,75 @@ public struct ReaderContentLoader {
             "source=\(source)"
         )
         return try await resolveContentReferences(references)
+    }
+
+    @RealmBackgroundActor
+    private static func loadAllReferences(
+        url: URL,
+        skipContentFiles: Bool,
+        skipFeedEntries: Bool
+    ) async throws -> [ContentReference] {
+        try Task.checkCancellation()
+
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+        await bookmarkRealm.asyncRefresh()
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+        await historyRealm.asyncRefresh()
+
+        let contentFile: ContentFile?
+        if skipContentFiles {
+            contentFile = nil
+        } else {
+            contentFile = ContentFile.get(forURL: url, realm: bookmarkRealm)
+        }
+        let history = HistoryRecord.get(forURL: url, realm: historyRealm)
+        let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
+
+        var feed: FeedEntry?
+        if !skipFeedEntries {
+            let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
+            await feedRealm.asyncRefresh()
+            let feeds = feedRealm.objects(FeedEntry.self)
+                .where { !$0.isDeleted }
+                .sorted(by: \.createdAt, ascending: false)
+
+            if url.scheme == "https" {
+                let httpURL = url.settingScheme("http").absoluteString as CVarArg
+                let httpsURL = url.absoluteString as CVarArg
+                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", httpsURL, httpURL)).first
+            } else if !url.isReaderFileURL {
+                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+            }
+        }
+
+        var references = [ContentReference]()
+        if let contentFile,
+           let reference = ContentReference(content: contentFile) {
+            references.append(reference)
+        }
+        if let bookmark,
+           let reference = ContentReference(content: bookmark) {
+            references.append(reference)
+        }
+        if let history,
+           let reference = ContentReference(content: history) {
+            references.append(reference)
+        }
+        if let feed,
+           let reference = ContentReference(content: feed) {
+            references.append(reference)
+        }
+        for provider in additionalContentProviders {
+            references.append(contentsOf: try await provider.loadReferences(url))
+        }
+
+        var deduplicated = [String: ContentReference]()
+        for reference in references {
+            let realmIdentifier = reference.realmConfiguration.fileURL?.absoluteString ?? "default"
+            let key = "\(String(reflecting: reference.contentType))|\(reference.contentKey)|\(realmIdentifier)"
+            deduplicated[key] = reference
+        }
+        return Array(deduplicated.values)
     }
 
     @RealmBackgroundActor
@@ -446,18 +511,7 @@ public struct ReaderContentLoader {
         guard !canonicalURLs.isEmpty else { return }
 
         for canonicalURL in canonicalURLs {
-            let bookmarkRealm = try await Realm.open(configuration: bookmarkRealmConfiguration)
-            let historyRealm = try await Realm.open(configuration: historyRealmConfiguration)
-            let contentFile = ContentFile.get(forURL: canonicalURL, realm: bookmarkRealm)
-            let bookmark = Bookmark.get(forURL: canonicalURL, realm: bookmarkRealm)
-            let history = HistoryRecord.get(forURL: canonicalURL, realm: historyRealm)
-            let feedRealm = try await Realm.open(configuration: feedEntryRealmConfiguration)
-            let feed = feedRealm.objects(FeedEntry.self)
-                .where { !$0.isDeleted }
-                .filter(NSPredicate(format: "url == %@ OR url == %@", canonicalURL.absoluteString as CVarArg, canonicalURL.settingScheme("http").absoluteString as CVarArg))
-                .sorted(by: \.createdAt, ascending: false)
-                .first
-            let remainingOwners = [contentFile, bookmark, history, feed].compactMap { $0 as? (any ReaderContentProtocol) }
+            let remainingOwners = try await loadAll(url: canonicalURL)
             guard remainingOwners.isEmpty else { continue }
 
             let sharedRealm = try await Realm.open(configuration: feedEntryRealmConfiguration)
@@ -889,6 +943,15 @@ public struct ReaderContentLoader {
                     "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
                 )
             }
+        }
+
+        if contentHasLocallyRetrievableHTML,
+           let loaderURL = readerLoaderURL(for: contentURL),
+           !contentURL.isHTTP,
+           !contentURL.isReaderFileURL,
+           !contentURL.isSnippetURL,
+           !contentURL.isReaderURLLoaderURL {
+            return loaderURL
         }
 
         return content.url

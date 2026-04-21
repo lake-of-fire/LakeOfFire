@@ -238,6 +238,99 @@
             }
         }
     }
+
+    const wikimediaHostSuffixes = [
+        "mediawiki.org",
+        "wikibooks.org",
+        "wikidata.org",
+        "wikifunctions.org",
+        "wikimedia.org",
+        "wikinews.org",
+        "wikipedia.org",
+        "wikiquote.org",
+        "wikisource.org",
+        "wikiversity.org",
+        "wikivoyage.org",
+        "wiktionary.org",
+    ]
+
+    function hostMatchesSuffix(host, suffix) {
+        return host === suffix || host.endsWith("." + suffix)
+    }
+
+    function readabilityDocumentHost(uri, doc) {
+        const uriHost = (uri && typeof uri.host === "string") ? uri.host.trim().toLowerCase() : ""
+        if (uriHost) {
+            return uriHost
+        }
+
+        const baseURI = (doc && typeof doc.baseURI === "string") ? doc.baseURI : ""
+        if (!baseURI) {
+            return ""
+        }
+
+        try {
+            return new URL(baseURI).host.trim().toLowerCase()
+        } catch (_) {
+            return ""
+        }
+    }
+
+    function isWikimediaMinervaCollapsiblePage(uri, doc) {
+        if (!doc || typeof doc.querySelector !== "function") {
+            return false
+        }
+
+        const host = readabilityDocumentHost(uri, doc)
+        if (!host || !wikimediaHostSuffixes.some((suffix) => hostMatchesSuffix(host, suffix))) {
+            return false
+        }
+
+        return doc.querySelector("div.section-heading + section.collapsible-block") !== null
+    }
+
+    // Temporary Wikimedia Minerva workaround: move collapsible section headings into
+    // the adjacent section body so Readability evaluates heading and body together.
+    function normalizeWikimediaMinervaCollapsibleSections(doc) {
+        if (!doc || typeof doc.querySelectorAll !== "function") {
+            return
+        }
+
+        const sectionBlocks = doc.querySelectorAll("div.section-heading + section.collapsible-block")
+        for (const section of sectionBlocks) {
+            const headingWrapper = section.previousElementSibling
+            if (!headingWrapper || !headingWrapper.matches("div.section-heading")) {
+                continue
+            }
+
+            const sourceHeading = headingWrapper.querySelector("h1, h2, h3, h4, h5, h6")
+            const headingText = (sourceHeading && sourceHeading.textContent ? sourceHeading.textContent.trim() : "")
+            if (!sourceHeading || !headingText) {
+                continue
+            }
+
+            const normalizedHeading = doc.createElement(sourceHeading.tagName.toLowerCase())
+            normalizedHeading.textContent = headingText
+
+            const id = sourceHeading.getAttribute("id")
+            if (id) {
+                normalizedHeading.setAttribute("id", id)
+            }
+
+            const lang = sourceHeading.getAttribute("lang") || headingWrapper.getAttribute("lang")
+            if (lang) {
+                normalizedHeading.setAttribute("lang", lang)
+            }
+
+            const dir = sourceHeading.getAttribute("dir") || headingWrapper.getAttribute("dir")
+            if (dir) {
+                normalizedHeading.setAttribute("dir", dir)
+            }
+
+            section.prepend(normalizedHeading)
+            headingWrapper.remove()
+        }
+    }
     
     let manabi_readability = function () {
         const body = document.body
@@ -309,7 +402,11 @@
                     inputBytes: inputHTML ? inputHTML.length : 0,
                     inputPreview: previewText(inputHTML, 1024),
                 })
-                var article = new Readability(uri, documentClone, {
+                var parserInputClone = documentClone.cloneNode(true);
+                if (isWikimediaMinervaCollapsiblePage(uri, parserInputClone)) {
+                    normalizeWikimediaMinervaCollapsibleSections(parserInputClone);
+                }
+                var article = new Readability(uri, parserInputClone, {
                     // https://github.com/mozilla/gecko-dev/blob/246928d59c6c11e1c3b3b0a6b00534bfc075e3c4/toolkit/components/reader/ReaderMode.jsm#L21-L31
                 classesToPreserve: [
                     "caption", "emoji", "hidden", "invisible", "sr-only", "visually-hidden", "visuallyhidden", "wp-caption", "wp-caption-text", "wp-smiley"

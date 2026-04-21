@@ -2607,6 +2607,24 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "fallbackParse=\(String(format: "%.3fs", parseFallbackElapsed))"
                 ].joined(separator: " | ")
             )
+            if processorElapsed >= 2 {
+                debugPrint(
+                    "# APR20",
+                    "source=ReaderModeViewModel.readabilityProcessor.slow",
+                    "url=\(url.absoluteString)",
+                    "method=\(processorMethod)",
+                    "processorElapsed=\(String(format: "%.3f", processorElapsed))",
+                    "coreElapsed=\(String(format: "%.3f", processorCoreElapsed))",
+                    "preprocessCalls=\(preprocessSummary.callCount)",
+                    "preprocessTotal=\(String(format: "%.3f", preprocessSummary.totalElapsed))",
+                    "preprocessAvg=\(String(format: "%.3f", preprocessSummary.averageElapsed))",
+                    "preprocessMax=\(String(format: "%.3f", preprocessSummary.maxElapsed))",
+                    "preprocessSlowCalls=\(preprocessSummary.slowCallCount)",
+                    "fallbackParse=\(String(format: "%.3f", parseFallbackElapsed))",
+                    "inputBytes=\(readabilityBytes)",
+                    "inputChars=\(readabilityChars)"
+                )
+            }
 
             guard let doc else {
                 print("Error: Unexpectedly failed to receive doc")
@@ -4806,13 +4824,13 @@ private func prepareHTMLForDirectLoad(_ html: String) -> String {
     return updatedHTML
 }
 
-private enum SwiftReadabilityProcessingOutcome {
+private enum SwiftReadabilityProcessingOutcome: Sendable {
     case success(SwiftReadabilityProcessingResult)
     case unavailable(reason: String)
     case failed(reason: String)
 }
 
-private struct SwiftReadabilityProcessingResult {
+private struct SwiftReadabilityProcessingResult: Sendable {
     let outputHTML: String
     let publishedTime: String?
     let sanitizedContentBytes: Int
@@ -4987,64 +5005,128 @@ private func processReadabilityHTMLInSwift(
     guard !normalizedURL.isEBookURL else {
         return .unavailable(reason: "ebookURL")
     }
-    let normalizedHTML = ensureReadabilityBodyExists(html)
-    let options = SwiftReadability.ReadabilityOptions(
-        charThreshold: max(meaningfulContentMinChars, 1),
-        classesToPreserve: readabilityClassesToPreserve
-    )
-    let parser = SwiftReadability.Readability(html: normalizedHTML, url: normalizedURL, options: options)
-    guard let result = try? parser.parse() else {
-        if url.isSnippetURL,
-           let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                html: normalizedHTML,
-                contentURL: normalizedURL,
-                fallbackTitle: titleFromReadabilityHTML(normalizedHTML)
-           ) {
-            return .success(
-                SwiftReadabilityProcessingResult(
-                    outputHTML: snippetHTML,
-                    publishedTime: nil,
-                    sanitizedContentBytes: snippetHTML.utf8.count
+    return await Task.detached(priority: .userInitiated) {
+        let totalStartedAt = Date()
+        let normalizedHTML = ensureReadabilityBodyExists(html)
+        let normalizedHTMLBytes = normalizedHTML.utf8.count
+        let options = SwiftReadability.ReadabilityOptions(
+            charThreshold: max(meaningfulContentMinChars, 1),
+            classesToPreserve: readabilityClassesToPreserve
+        )
+        let parser = SwiftReadability.Readability(html: normalizedHTML, url: normalizedURL, options: options)
+        let parseStartedAt = Date()
+        guard let result = try? parser.parse() else {
+            let totalElapsed = Date().timeIntervalSince(totalStartedAt)
+            if totalElapsed >= 2 {
+                debugPrint(
+                    "# APR20",
+                    "source=ReaderModeViewModel.processReadabilityHTMLInSwift.slowFailure",
+                    "url=\(normalizedURL.absoluteString)",
+                    "htmlBytes=\(normalizedHTMLBytes)",
+                    "parseElapsed=\(String(format: "%.3f", Date().timeIntervalSince(parseStartedAt)))",
+                    "totalElapsed=\(String(format: "%.3f", totalElapsed))",
+                    "reason=parseReturnedNil"
                 )
+            }
+            if url.isSnippetURL,
+               let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+                    html: normalizedHTML,
+                    contentURL: normalizedURL,
+                    fallbackTitle: titleFromReadabilityHTML(normalizedHTML)
+               ) {
+                return .success(
+                    SwiftReadabilityProcessingResult(
+                        outputHTML: snippetHTML,
+                        publishedTime: nil,
+                        sanitizedContentBytes: snippetHTML.utf8.count
+                    )
+                )
+            }
+            return .failed(reason: "parseReturnedNil")
+        }
+        if !result.readerable {
+            debugPrint(
+                "# READER readability.swift.readerableFalse",
+                "url=\(normalizedURL.absoluteString)",
+                "length=\(result.length)"
             )
         }
-        return .failed(reason: "parseReturnedNil")
-    }
-    if !result.readerable {
-        debugPrint(
-            "# READER readability.swift.readerableFalse",
-            "url=\(normalizedURL.absoluteString)",
-            "length=\(result.length)"
-        )
-    }
-    let rawContent = result.content
-    guard !rawContent.isEmpty else {
-        return .failed(reason: "emptyContent")
-    }
-    let rawTitle = stripTemplateTagsForSanitize(result.title ?? "")
-    let rawByline = stripTemplateTagsForSanitize(result.byline ?? "")
-    let rawContentForSanitize = stripTemplateTagsForSanitize(rawContent)
-    let title = SwiftDOMPurify.DOMPurify.sanitize(rawTitle)
-    let byline = SwiftDOMPurify.DOMPurify.sanitize(rawByline)
-    let content = SwiftDOMPurify.DOMPurify.sanitize(rawContentForSanitize)
-    let outputHTML = buildCanonicalReadabilityHTML(
-        title: title,
-        byline: byline,
-        publishedTime: result.publishedTime,
-        content: content,
-        contentURL: normalizedURL
-    )
-    let contentBytes = content.utf8.count
-    if contentBytes == 0 {
-        return .failed(reason: "emptySanitizedContent")
-    }
-    return .success(
-        SwiftReadabilityProcessingResult(
-            outputHTML: outputHTML,
+        let parseElapsed = Date().timeIntervalSince(parseStartedAt)
+        let rawContent = result.content
+        guard !rawContent.isEmpty else {
+            let totalElapsed = Date().timeIntervalSince(totalStartedAt)
+            if totalElapsed >= 2 {
+                debugPrint(
+                    "# APR20",
+                    "source=ReaderModeViewModel.processReadabilityHTMLInSwift.slowFailure",
+                    "url=\(normalizedURL.absoluteString)",
+                    "htmlBytes=\(normalizedHTMLBytes)",
+                    "parseElapsed=\(String(format: "%.3f", parseElapsed))",
+                    "totalElapsed=\(String(format: "%.3f", totalElapsed))",
+                    "reason=emptyContent"
+                )
+            }
+            return .failed(reason: "emptyContent")
+        }
+        let rawTitle = stripTemplateTagsForSanitize(result.title ?? "")
+        let rawByline = stripTemplateTagsForSanitize(result.byline ?? "")
+        let rawContentForSanitize = stripTemplateTagsForSanitize(rawContent)
+        let sanitizeStartedAt = Date()
+        let title = SwiftDOMPurify.DOMPurify.sanitize(rawTitle)
+        let byline = SwiftDOMPurify.DOMPurify.sanitize(rawByline)
+        let content = SwiftDOMPurify.DOMPurify.sanitize(rawContentForSanitize)
+        let sanitizeElapsed = Date().timeIntervalSince(sanitizeStartedAt)
+        let outputBuildStartedAt = Date()
+        let outputHTML = buildCanonicalReadabilityHTML(
+            title: title,
+            byline: byline,
             publishedTime: result.publishedTime,
-            sanitizedContentBytes: contentBytes
+            content: content,
+            contentURL: normalizedURL
         )
-    )
+        let outputBuildElapsed = Date().timeIntervalSince(outputBuildStartedAt)
+        let contentBytes = content.utf8.count
+        if contentBytes == 0 {
+            let totalElapsed = Date().timeIntervalSince(totalStartedAt)
+            if totalElapsed >= 2 {
+                debugPrint(
+                    "# APR20",
+                    "source=ReaderModeViewModel.processReadabilityHTMLInSwift.slowFailure",
+                    "url=\(normalizedURL.absoluteString)",
+                    "htmlBytes=\(normalizedHTMLBytes)",
+                    "parseElapsed=\(String(format: "%.3f", parseElapsed))",
+                    "sanitizeElapsed=\(String(format: "%.3f", sanitizeElapsed))",
+                    "outputBuildElapsed=\(String(format: "%.3f", outputBuildElapsed))",
+                    "totalElapsed=\(String(format: "%.3f", totalElapsed))",
+                    "reason=emptySanitizedContent"
+                )
+            }
+            return .failed(reason: "emptySanitizedContent")
+        }
+        let totalElapsed = Date().timeIntervalSince(totalStartedAt)
+        if totalElapsed >= 2 {
+            debugPrint(
+                "# APR20",
+                "source=ReaderModeViewModel.processReadabilityHTMLInSwift.slowSuccess",
+                "url=\(normalizedURL.absoluteString)",
+                "htmlBytes=\(normalizedHTMLBytes)",
+                "parseElapsed=\(String(format: "%.3f", parseElapsed))",
+                "sanitizeElapsed=\(String(format: "%.3f", sanitizeElapsed))",
+                "outputBuildElapsed=\(String(format: "%.3f", outputBuildElapsed))",
+                "totalElapsed=\(String(format: "%.3f", totalElapsed))",
+                "readerable=\(result.readerable)",
+                "resultLength=\(result.length)",
+                "contentBytes=\(contentBytes)"
+            )
+        }
+        return .success(
+            SwiftReadabilityProcessingResult(
+                outputHTML: outputHTML,
+                publishedTime: result.publishedTime,
+                sanitizedContentBytes: contentBytes
+            )
+        )
+    }.value
 }
 
 private func canHaveReadabilityContent(for url: URL) -> Bool {

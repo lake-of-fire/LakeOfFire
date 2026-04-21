@@ -31,6 +31,15 @@ public actor ReaderContentReadingProgressLoader {
     nonisolated(unsafe) public static var readingProgressMetadataLoader: (@Sendable (URL) async throws -> ReaderContentProgressMetadata?)?
 }
 
+@globalActor
+public actor ReaderContentSyncStatusLoader {
+    public static let shared = ReaderContentSyncStatusLoader()
+
+    public init() { }
+
+    nonisolated(unsafe) public static var syncStatusLoader: (@Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?)?
+}
+
 public struct ReaderContentProgressMetadata: Sendable {
     public let totalWordCount: Int?
     public let remainingTime: TimeInterval?
@@ -38,6 +47,18 @@ public struct ReaderContentProgressMetadata: Sendable {
     public init(totalWordCount: Int?, remainingTime: TimeInterval?) {
         self.totalWordCount = totalWordCount
         self.remainingTime = remainingTime
+    }
+}
+
+public struct ReaderContentSyncStatusPresentation: Sendable {
+    public let title: String
+    public let imageName: String
+    public let imageIsSystemSymbol: Bool
+
+    public init(title: String, imageName: String, imageIsSystemSymbol: Bool = true) {
+        self.title = title
+        self.imageName = imageName
+        self.imageIsSystemSymbol = imageIsSystemSymbol
     }
 }
 
@@ -131,6 +152,12 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var locationBarTitle: String? { get }
 
     func imageURLToDisplay() async throws -> URL?
+    @MainActor
+    func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String?
+    var hasHTML: Bool { get }
+    var bookmarkInlineHTML: String? { get }
+    var bookmarkInlineContent: Data? { get }
+    var historyInlineContent: Data? { get }
     @RealmBackgroundActor
     func configureBookmark(_ bookmark: Bookmark)
 }
@@ -466,6 +493,18 @@ public extension ReaderContentProtocol {
         }
         return false
     }
+
+    var bookmarkInlineHTML: String? {
+        html
+    }
+
+    var bookmarkInlineContent: Data? {
+        content
+    }
+
+    var historyInlineContent: Data? {
+        content
+    }
     
     var needsClipboardIndicator: Bool {
         isFromClipboard || url.isSnippetURL
@@ -540,8 +579,8 @@ public extension ReaderContentProtocol {
         let compoundKey = compoundKey
         let url = url
         let title = title
-        let html = html
-        let content = content
+        let html = bookmarkInlineHTML
+        let content = bookmarkInlineContent
         let publicationDate = publicationDate
         let imageURL = imageUrl
         let sourceIconURL = sourceIconURL
@@ -617,6 +656,7 @@ public extension ReaderContentProtocol {
     func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
         var imageURL: URL?
         let ref = ThreadSafeReference(to: self)
+        let historyInlineContent = historyInlineContent
         if let config = realm?.configuration {
             imageURL = try await { @MainActor in
                 let realm = try await Realm(configuration: config, actor: MainActor.shared)
@@ -635,7 +675,7 @@ public extension ReaderContentProtocol {
                 record.isFromClipboard = isFromClipboard
                 record.rssContainsFullContent = rssContainsFullContent
                 if rssContainsFullContent {
-                    record.content = content
+                    record.content = historyInlineContent
                 }
                 record.isReaderModeByDefault = isReaderModeByDefault
                 record.isReaderModeAvailable = isReaderModeAvailable
@@ -646,7 +686,7 @@ public extension ReaderContentProtocol {
                 record.displayPublicationDate = displayPublicationDate
                 record.lastVisitedAt = Date()
                 record.isDeleted = false
-                if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
+                if self is Bookmark, let bookmark = self as? Bookmark {
                     record.configureBookmark(bookmark)
                 }
                 record.refreshChangeMetadata(explicitlyModified: true)
@@ -660,7 +700,7 @@ public extension ReaderContentProtocol {
             record.sourceIconURL = sourceIconURL
             record.rssContainsFullContent = rssContainsFullContent
             if rssContainsFullContent {
-                record.content = content
+                record.content = historyInlineContent
             }
             copyReaderMediaState(to: record)
             record.publicationDate = publicationDate
@@ -670,7 +710,7 @@ public extension ReaderContentProtocol {
             record.isReaderModeAvailable = isReaderModeAvailable
             record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
             record.lastVisitedAt = Date()
-            if objectSchema.objectClass == FeedEntry.self || objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
+            if self is FeedEntry || self is Bookmark, let bookmark = self as? Bookmark {
                 record.configureBookmark(bookmark)
             }
             record.updateCompoundKey()
