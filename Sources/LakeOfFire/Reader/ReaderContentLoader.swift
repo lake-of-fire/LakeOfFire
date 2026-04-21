@@ -583,6 +583,7 @@ public struct ReaderContentLoader {
     ) async throws -> URL? {
         let startedAt = Date()
         let contentURL = content.url
+        let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentURL)
         logReaderLoad(
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
@@ -634,6 +635,13 @@ public struct ReaderContentLoader {
                 "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
             return content.url
+        }
+
+        if let canonicalReaderBackingURL,
+           !contentURL.isReaderFileURL {
+            _ = try await readerFileManager.resolveReadableLocalURL(
+                forReaderBackingURL: canonicalReaderBackingURL
+            )
         }
 
         if contentURL.isReaderFileURL,

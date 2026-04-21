@@ -19,17 +19,39 @@ public enum DarkModeTheme: String, CaseIterable, Identifiable {
     public var id: String { self.rawValue }
 }
 
+public enum ReaderWidthMode: String, CaseIterable, Identifiable {
+    case standard
+    case fullWidth
+
+    public var id: String { self.rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .standard:
+            return "Standard"
+        case .fullWidth:
+            return "Full Width"
+        }
+    }
+}
+
 struct ReaderSettingsForm: View {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("readerWidthMode") private var readerWidthMode: ReaderWidthMode = .standard
     @AppStorage("appTint") private var appTint = Color.accentColor
     
     var body: some View {
         Form {
             Section("Display") {
                 Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
+                Picker("Reader Width", selection: $readerWidthMode) {
+                    ForEach(ReaderWidthMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
                 Picker("Light Mode Theme", selection: $lightModeTheme) {
                     ForEach(LightModeTheme.allCases) { theme in
                         Text(theme.rawValue.capitalized).tag(theme)

@@ -105,8 +105,13 @@ let package = Package(
         ),
         .testTarget(
             name: "LakeOfFireTests",
-            dependencies: ["LakeOfFire"],
-            path: "Tests/LakeOfFireTests"
+            dependencies: [
+                "LakeOfFire",
+            ],
+            path: "Tests/LakeOfFireTests",
+            resources: [
+                .copy("Fixtures/Readability/mozilla-wikipedia-minerva.html"),
+            ]
         ),
     ]
 )

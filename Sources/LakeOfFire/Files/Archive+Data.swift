@@ -247,9 +247,10 @@ public actor ReaderPackageEntrySourceCache {
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> CachedSource {
-        let cacheKey = readerFileURL.absoluteString
+        let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
+        let cacheKey = canonicalReaderBackingURL.absoluteString
         let localURL = try await Self.resolvedLocalURL(
-            forPackageURL: readerFileURL,
+            forPackageURL: canonicalReaderBackingURL,
             readerFileManager: readerFileManager
         )
         let freshnessToken = try Self.freshnessToken(for: localURL)
@@ -275,10 +276,13 @@ public actor ReaderPackageEntrySourceCache {
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> URL {
-        if try await readerFileManager.directoryExists(directoryURL: readerFileURL) {
-            return try readerFileManager.localDirectoryURL(forReaderFileURL: readerFileURL)
+        let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
+        let localURL = try await readerFileManager.resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
+        var isDirectory = ObjCBool(false)
+        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return localURL
         }
-        return try readerFileManager.localFileURL(forReaderFileURL: readerFileURL)
+        return localURL
     }
 
     private static func preparedSource(for localURL: URL, freshnessToken: String) throws -> ReaderPackageEntrySource {

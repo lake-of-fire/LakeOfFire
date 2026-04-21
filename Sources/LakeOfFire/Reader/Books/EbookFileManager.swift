@@ -52,6 +52,12 @@ public struct EbookFileManager {
                 else {
                     continue
                 }
+
+                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
+                      let syncStatus = try? await ReaderFileManager.shared.cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL),
+                      syncStatus == .availableLocally || syncStatus == .localOnly else {
+                    continue
+                }
                 
                 // Attempt to parse the EPUB for metadata + cover:
                 do {
@@ -81,7 +87,7 @@ public struct EbookFileManager {
                         }
                     }
                 } catch {
-                    Logger.shared.logger.error("EbookFileManager error: \(error)")
+                    continue
                 }
             }
             

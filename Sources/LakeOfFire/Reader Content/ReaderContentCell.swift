@@ -207,16 +207,16 @@ struct CloudDriveSyncStatusView: View {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
             return "File Missing"
-        case .notInUbiquityContainer:
+        case .localOnly:
             return "Local File"
+        case .cloudOnly:
+            return "In iCloud"
         case .downloading:
             return "Downloading from iCloud"
         case .uploading:
             return "Uploading to iCloud"
-        case .synced:
-            return "Synced with iCloud"
-        case .notSynced:
-            return "Not Synced with iCloud"
+        case .availableLocally:
+            return "Available Offline"
         case .loadingStatus:
             return nil
         }
@@ -226,16 +226,16 @@ struct CloudDriveSyncStatusView: View {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
             return "exclamationmark.icloud"
-        case .notInUbiquityContainer:
+        case .localOnly:
             return "icloud.slash"
+        case .cloudOnly:
+            return "icloud"
         case .downloading:
             return "icloud.and.arrow.down"
         case .uploading:
             return "icloud.and.arrow.up"
-        case .synced:
-            return "checkmark.icloud.fill"
-        case .notSynced:
-            return "xmark.icloud"
+        case .availableLocally:
+            return "checkmark.circle.fill"
         case .loadingStatus:
             return nil
         }
@@ -671,41 +671,88 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ViewBuilder
     private var controlsRow: some View {
         let deletable = item as? (any DeletableReaderContent)
-
-        Menu {
-            if let item = item as? ContentFile {
-                CloudDriveSyncStatusView(item: item)
-                    .labelStyle(.titleAndIcon)
-                Divider()
-            }
-
-            AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-            if let customMenuOptions {
-                customMenuOptions(self.item)
-            }
-
-            if let deletable {
-                Divider()
-                Button(role: .destructive) {
-                    readerContentListModalsModel.confirmDeletionOf = [deletable]
-                    readerContentListModalsModel.confirmDelete = true
-                } label: {
-                    Label(deletable.deleteActionTitle, systemImage: "trash")
+        if #available(iOS 16, macOS 13, *) {
+            Menu {
+                if let item = item as? ContentFile {
+                    CloudDriveSyncStatusView(item: item)
+                        .labelStyle(.titleAndIcon)
+                    Divider()
                 }
+
+                AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+                if let customMenuOptions {
+                    customMenuOptions(self.item)
+                }
+
+                if let deletable {
+                    Divider()
+                    Button(role: .destructive) {
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+                    } label: {
+                        Label(deletable.deleteActionTitle, systemImage: "trash")
+                    }
+                }
+            } label: {
+                Label("More Options", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
             }
-        } label: {
-            Label("More Options", systemImage: "ellipsis")
-                .labelStyle(.iconOnly)
-        }
-        .modifier {
-            if #available(iOS 16, macOS 13, *) {
-                $0.menuStyle(.button)
-            } else {
-                $0
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+        } else if #available(iOS 15, macOS 12, *) {
+            Menu {
+                if let item = item as? ContentFile {
+                    CloudDriveSyncStatusView(item: item)
+                        .labelStyle(.titleAndIcon)
+                    Divider()
+                }
+
+                AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+                if let customMenuOptions {
+                    customMenuOptions(self.item)
+                }
+
+                if let deletable {
+                    Divider()
+                    Button(role: .destructive) {
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+                    } label: {
+                        Label(deletable.deleteActionTitle, systemImage: "trash")
+                    }
+                }
+            } label: {
+                Label("More Options", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
+            }
+            .menuIndicator(.hidden)
+        } else {
+            Menu {
+                if let item = item as? ContentFile {
+                    CloudDriveSyncStatusView(item: item)
+                        .labelStyle(.titleAndIcon)
+                    Divider()
+                }
+
+                AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+                if let customMenuOptions {
+                    customMenuOptions(self.item)
+                }
+
+                if let deletable {
+                    Divider()
+                    Button(role: .destructive) {
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
+                    } label: {
+                        Label(deletable.deleteActionTitle, systemImage: "trash")
+                    }
+                }
+            } label: {
+                Label("More Options", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
             }
         }
-        .menuIndicator(.hidden)
     }
 
     @ViewBuilder

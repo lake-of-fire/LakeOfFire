@@ -68,29 +68,43 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Package (eg ZIP) subpath file
                 if let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
                    let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value {
-                    if zipArchiveExtensions.contains(url.pathExtension.lowercased()), let readerFileURL = url.deletingQuery, let archive = Archive(url: readerFileURL, accessMode: .read), let entry = archive[subpathValue], entry.type == .file {
-                        var imageData = Data()
-                        try archive.extract(entry, consumer: { imageData.append($0) })
-                        
-                        let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
-                        let response = HTTPURLResponse(
-                            url: url,
-                            mimeType: "image/\(subpathExtension)",
-                            expectedContentLength: imageData.count,
-                            textEncodingName: nil
+                    if zipArchiveExtensions.contains(url.pathExtension.lowercased()),
+                       let readerFileURL = url.deletingQuery,
+                       let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) {
+                        let localArchiveURL = try await readerFileManager.resolveReadableLocalURL(
+                            forReaderBackingURL: readerBackingURL
                         )
-                        await { @MainActor in
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didReceive(response)
-                                urlSchemeTask.didReceive(imageData)
-                                urlSchemeTask.didFinish()
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                return
-                            } else {
-                                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                            }
-                        }()
+                        if let archive = Archive(url: localArchiveURL, accessMode: .read),
+                           let entry = archive[subpathValue],
+                           entry.type == .file {
+                            var imageData = Data()
+                            try archive.extract(entry, consumer: { imageData.append($0) })
+
+                            let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
+                            let response = HTTPURLResponse(
+                                url: url,
+                                mimeType: "image/\(subpathExtension)",
+                                expectedContentLength: imageData.count,
+                                textEncodingName: nil
+                            )
+                            await { @MainActor in
+                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                    urlSchemeTask.didReceive(response)
+                                    urlSchemeTask.didReceive(imageData)
+                                    urlSchemeTask.didFinish()
+                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                    return
+                                } else {
+                                    urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                                }
+                            }()
+                            return
+                        }
                     }
+                    await { @MainActor in
+                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                    }()
+                    return
                 } else if let contentFile = try? await ReaderFileManager.get(fileURL: url), var data = try? await readerFileManager.read(fileURL: url) {
                     // File
                     var mimeType = contentFile.mimeType

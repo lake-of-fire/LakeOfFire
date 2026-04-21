@@ -68,6 +68,32 @@ func readerPaginationTrackingSettingsKey(
 }
 
 @MainActor
+func applyReaderWidthMode(
+    _ readerWidthMode: ReaderWidthMode,
+    reason: String,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    guard hasAsyncCaller else {
+        debugPrint("# EPUB  readerWidthMode.set.skip", "reason=\(reason)", "mode=\(readerWidthMode.rawValue)", "info=no asyncCaller")
+        return
+    }
+    do {
+        try await evaluateJavaScript(
+            """
+            if (document.body?.getAttribute('data-manabi-reader-width-mode') !== '\(readerWidthMode.rawValue)') {
+                document.body?.setAttribute('data-manabi-reader-width-mode', '\(readerWidthMode.rawValue)');
+            }
+            """,
+            true
+        )
+        await requestReaderTrackingSectionGeometryBake(reason: reason, evaluateJavaScript: evaluateJavaScript)
+    } catch {
+        print("Reader width mode update failed: \(error)")
+    }
+}
+
+@MainActor
 func syncReaderPaginationTrackingSettingsKey(
     readerFontSize: Double?,
     lightModeTheme: LightModeTheme,
@@ -146,6 +172,7 @@ func applyInitialReaderPresentationSettings(
     readerFontSize: Double?,
     lightModeTheme: LightModeTheme,
     darkModeTheme: DarkModeTheme,
+    readerWidthMode: ReaderWidthMode,
     hasAsyncCaller: Bool,
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
@@ -157,6 +184,28 @@ func applyInitialReaderPresentationSettings(
         hasAsyncCaller: hasAsyncCaller,
         evaluateJavaScript: evaluateJavaScript
     )
+    if readerFontSize == nil {
+        await applyReaderWidthMode(
+            readerWidthMode,
+            reason: "reader-width-initial",
+            hasAsyncCaller: hasAsyncCaller,
+            evaluateJavaScript: evaluateJavaScript
+        )
+    } else {
+        guard hasAsyncCaller else { return }
+        do {
+            try await evaluateJavaScript(
+                """
+                if (document.body?.getAttribute('data-manabi-reader-width-mode') !== '\(readerWidthMode.rawValue)') {
+                    document.body?.setAttribute('data-manabi-reader-width-mode', '\(readerWidthMode.rawValue)');
+                }
+                """,
+                true
+            )
+        } catch {
+            print("Initial reader width mode update failed: \(error)")
+        }
+    }
     if let readerFontSize {
         await applyReaderFontSize(
             readerFontSize,
@@ -338,6 +387,7 @@ fileprivate struct ThemeModifier: ViewModifier {
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("readerWidthMode") var readerWidthMode: ReaderWidthMode = .standard
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
 
     private func applyFontSize(_ size: Double, reason: String) async {
@@ -393,6 +443,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                     readerFontSize: readerFontSize,
                     lightModeTheme: lightModeTheme,
                     darkModeTheme: darkModeTheme,
+                    readerWidthMode: readerWidthMode,
                     hasAsyncCaller: scriptCaller.hasAsyncCaller
                 ) { js, duplicateInMultiTargetFrames in
                     _ = try await scriptCaller.evaluateJavaScript(
@@ -405,6 +456,20 @@ fileprivate struct ThemeModifier: ViewModifier {
                 guard let newValue else { return }
                 Task { @MainActor in
                     await applyFontSize(newValue, reason: "font-size-change")
+                }
+            }
+            .onChange(of: readerWidthMode) { newValue in
+                Task { @MainActor in
+                    await applyReaderWidthMode(
+                        newValue,
+                        reason: "reader-width-change",
+                        hasAsyncCaller: scriptCaller.hasAsyncCaller
+                    ) { js, duplicateInMultiTargetFrames in
+                        _ = try await scriptCaller.evaluateJavaScript(
+                            js,
+                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                        )
+                    }
                 }
             }
     }

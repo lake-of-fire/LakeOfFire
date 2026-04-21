@@ -43,29 +43,53 @@ public actor ReaderContentListActor: CachedRealmsActor {
 }
 
 @MainActor
+public enum ReaderContentListDeleteDialog: Identifiable {
+    case confirm(
+        items: [any DeletableReaderContent],
+        title: String,
+        message: String,
+        actionTitle: String
+    )
+    case error(title: String, message: String)
+
+    public var id: String {
+        switch self {
+        case .confirm(let items, let title, let message, let actionTitle):
+            let itemIDs = items.map { $0.compoundKey }.joined(separator: "|")
+            return "confirm:\(title)|\(message)|\(actionTitle)|\(itemIDs)"
+        case .error(let title, let message):
+            return "error:\(title)|\(message)"
+        }
+    }
+}
+
+@MainActor
 public class ReaderContentListModalsModel: ObservableObject {
-    @Published var confirmDelete: Bool = false
-    @Published var confirmDeletionOf: [(any DeletableReaderContent)]? {
-        didSet { refreshDeletionTexts() }
-    }
-    @Published var deletionConfirmationTitle: String = "Are you sure?"
-    @Published var deletionConfirmationMessage: String = "Do you really want to delete?"
-    @Published var deletionConfirmationActionTitle: String = "Delete"
+    @Published var deleteDialog: ReaderContentListDeleteDialog?
 
-    public init() {
-        refreshDeletionTexts()
-    }
+    public init() { }
 
-    private func refreshDeletionTexts() {
-        guard let first = confirmDeletionOf?.first else {
-            deletionConfirmationTitle = "Are you sure?"
-            deletionConfirmationMessage = "Do you really want to delete?"
-            deletionConfirmationActionTitle = "Delete"
+    func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
+        guard let first = items.first else {
+            deleteDialog = nil
             return
         }
-        deletionConfirmationTitle = first.deletionConfirmationTitle
-        deletionConfirmationMessage = first.deletionConfirmationMessage
-        deletionConfirmationActionTitle = first.deletionConfirmationActionTitle
+        deleteDialog = .confirm(
+            items: items,
+            title: first.deletionConfirmationTitle,
+            message: first.deletionConfirmationMessage,
+            actionTitle: first.deletionConfirmationActionTitle
+        )
+    }
+
+    func presentDeleteError(for error: Error) {
+        let alert = ReaderFileOperationMessageMapper.deleteAlert(for: error)
+            ?? ("Delete Failed", error.localizedDescription)
+        deleteDialog = .error(title: alert.title, message: alert.message)
+    }
+
+    func clearDeleteDialog() {
+        deleteDialog = nil
     }
 }
 
@@ -79,49 +103,77 @@ struct ReaderContentListSheetsModifier: ViewModifier {
         let hostID = ObjectIdentifier(readerContentListModalsModel)
         let logPrefix = "# DELETEMODAL [\(origin)] host=\(hostID)"
         content
-            .onChange(of: readerContentListModalsModel.confirmDelete) { newValue in
-                debugPrint("\(logPrefix) confirmDelete changed -> \(newValue) isActive=\(isActive)")
+            .onReceive(readerContentListModalsModel.$deleteDialog) { newValue in
+                debugPrint("\(logPrefix) deleteDialog updated \(String(describing: newValue))")
             }
-            .onReceive(readerContentListModalsModel.$confirmDeletionOf) { newValue in
-                debugPrint("\(logPrefix) confirmDeletionOf updated count=\(newValue?.count ?? 0)")
-            }
-            .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: Binding<Bool>(
+            .alert(item: Binding<ReaderContentListDeleteDialog?>(
                 get: {
-                    readerContentListModalsModel.confirmDelete && isActive
+                    guard isActive else { return nil }
+                    return readerContentListModalsModel.deleteDialog
                 },
                 set: { newValue in
-                    debugPrint("\(logPrefix) SHEET SET", newValue)
+                    debugPrint("\(logPrefix) SHEET SET \(String(describing: newValue))")
                     if isActive {
-                        Task { @MainActor in
-                            readerContentListModalsModel.confirmDelete = newValue
-                        }
-                    } else {
-                        debugPrint("\(logPrefix) ignoring set newValue=\(newValue) because isActive=false")
+                        readerContentListModalsModel.deleteDialog = newValue
                     }
                 }
-            ), actions: {
-                Button("Cancel", role: .cancel) {
-                    debugPrint("\(logPrefix) cancel tapped")
-                    readerContentListModalsModel.confirmDeletionOf = nil
-                }
-                .modifier {
-                    if #available(iOS 26, macOS 26, *) { $0.tint(.primary) } else { $0 }
-                }
-                Button(readerContentListModalsModel.deletionConfirmationActionTitle, role: .destructive) {
-                    guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
-                    debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
-                    Task { @MainActor in
-                        for item in items {
-                            try await item.delete()
+            )) { dialog in
+                switch dialog {
+                case .confirm(let items, let title, let message, let actionTitle):
+                    return Alert(
+                        title: Text(title),
+                        message: Text(message),
+                        primaryButton: .destructive(Text(actionTitle)) {
+                            debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
+                            Task { @MainActor in
+                                do {
+                                    try await preflightDeleteBatch(items)
+                                    for item in items {
+                                        try await item.delete()
+                                    }
+                                    readerContentListModalsModel.clearDeleteDialog()
+                                } catch {
+                                    debugPrint("\(logPrefix) delete failed \(error.localizedDescription)")
+                                    readerContentListModalsModel.presentDeleteError(for: error)
+                                }
+                            }
+                        },
+                        secondaryButton: .cancel {
+                            debugPrint("\(logPrefix) cancel tapped")
+                            readerContentListModalsModel.clearDeleteDialog()
                         }
-                    }
+                    )
+                case .error(let title, let message):
+                    return Alert(
+                        title: Text(title),
+                        message: Text(message),
+                        dismissButton: .default(Text("OK")) {
+                            readerContentListModalsModel.clearDeleteDialog()
+                        }
+                    )
                 }
-            }, message: {
-                Text(readerContentListModalsModel.deletionConfirmationMessage)
-            })
+            }
             .onAppear {
                 debugPrint("\(logPrefix) sheets modifier appear isActive=\(isActive)")
             }
+    }
+}
+
+@MainActor
+private func preflightDeleteBatch(_ items: [any DeletableReaderContent]) async throws {
+    for case let contentFile as ContentFile in items {
+        guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
+            continue
+        }
+        let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
+        switch eligibility {
+        case .allowed:
+            continue
+        case .blockedCloudOnly:
+            throw ReaderFileDeleteError.blockedCloudOnly
+        case .blockedLoadingStatus:
+            throw ReaderFileDeleteError.blockedLoadingStatus
+        }
     }
 }
 
@@ -197,6 +249,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    @AppStorage("errorMessage") private var errorMessage = ""
 
     func body(content: Content) -> some View {
         let shouldSyncToReader = enabled && onSelection == nil
@@ -270,6 +323,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                             readerModeViewModel: readerModeViewModel
                         )
                     } catch {
+                        errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
                         logReaderLoad(
                             "stage=contentList.selectionDispatchFailed selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) error=\(error.localizedDescription)"
                         )
@@ -582,6 +636,18 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
 
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 120
 
+    private var isDeleteBlockedByStatus: Bool {
+        guard content is ContentFile else {
+            return false
+        }
+        switch cloudDriveSyncStatusModel.status {
+        case .cloudOnly, .loadingStatus:
+            return true
+        default:
+            return false
+        }
+    }
+
     @ViewBuilder
     private func cell(item: C) -> some View {
         HStack(spacing: 0) {
@@ -697,7 +763,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
 #if os(iOS)
-        .deleteDisabled((content as? any DeletableReaderContent) == nil)
+        .deleteDisabled((content as? any DeletableReaderContent) == nil || isDeleteBlockedByStatus)
         .swipeActions {
             if let deletable = content as? any DeletableReaderContent {
                 Button {
@@ -706,19 +772,17 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                             do {
                                 try await onRequestDelete(self.content)
                             } catch {
-                                print(error)
+                                readerContentListModalsModel.presentDeleteError(for: error)
                             }
                         }
                     } else {
-                        readerContentListModalsModel.confirmDeletionOf = [deletable]
-                        if readerContentListModalsModel.confirmDeletionOf != nil {
-                            readerContentListModalsModel.confirmDelete = true
-                        }
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
                     }
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
                 .tint(.red)
+                .disabled(isDeleteBlockedByStatus)
             }
         }
 #endif
@@ -731,16 +795,16 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                             do {
                                 try await onRequestDelete(self.content)
                             } catch {
-                                print(error)
+                                readerContentListModalsModel.presentDeleteError(for: error)
                             }
                         }
                     } else {
-                        readerContentListModalsModel.confirmDeletionOf = [deletable]
-                        readerContentListModalsModel.confirmDelete = true
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
                     }
                 } label: {
                     Label(deletable.deleteActionTitle, systemImage: "trash")
                 }
+                .disabled(isDeleteBlockedByStatus)
             }
         }
 #endif
@@ -763,6 +827,17 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .task { @MainActor in
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
+            guard let contentFile = content as? ContentFile,
+                  let requestedURLString = notification.object as? String,
+                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
+                  readerBackingURL.absoluteString == requestedURLString else {
+                return
+            }
+            Task { @MainActor in
+                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
             }
         }
     }
@@ -850,6 +925,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @Environment(\.editMode) private var editMode
 #endif
     @State private var multiSelection = Set<String>()
+    @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
+    @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
 
     private var showEmptyState: Bool {
         !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
@@ -867,7 +944,22 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     private var isDeletionToolbarButtonDisabled: Bool {
-        multiSelection.isEmpty
+        guard !multiSelection.isEmpty else {
+            return true
+        }
+        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
+            guard multiSelection.contains(content.compoundKey) else { return nil }
+            return content as? ContentFile
+        }
+        guard !selectedContentFiles.isEmpty else {
+            return false
+        }
+        guard selectedContentFiles.allSatisfy({ deleteEligibilityByContentKey[$0.compoundKey] != nil }) else {
+            return true
+        }
+        return selectedContentFiles.contains {
+            deleteEligibilityByContentKey[$0.compoundKey] != .allowed
+        }
     }
 
     private var showsHeaderSection: Bool {
@@ -894,6 +986,32 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         guard let onDelete else { return nil }
         return { content in
             try await onDelete([content])
+        }
+    }
+
+    private func refreshDeleteEligibilityCache() {
+        deleteEligibilityRefreshTask?.cancel()
+        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
+            guard multiSelection.contains(content.compoundKey) else { return nil }
+            return content as? ContentFile
+        }
+        guard !selectedContentFiles.isEmpty else {
+            deleteEligibilityByContentKey = [:]
+            return
+        }
+        deleteEligibilityRefreshTask = Task { @MainActor in
+            var nextEligibility = [String: ReaderFileDeleteEligibility]()
+            for contentFile in selectedContentFiles {
+                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
+                    continue
+                }
+                let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
+                if Task.isCancelled {
+                    return
+                }
+                nextEligibility[contentFile.compoundKey] = eligibility
+            }
+            deleteEligibilityByContentKey = nextEligibility
         }
     }
 
@@ -1001,6 +1119,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
                     refreshGrouping()
+                    refreshDeleteEligibilityCache()
+                }
+                .onChange(of: multiSelection) { _ in
+                    refreshDeleteEligibilityCache()
                 }
         }
         .readerContentSelectionSync(
@@ -1021,12 +1143,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         do {
                             try await onDelete(selected)
                         } catch {
-                            print(error)
+                            readerContentListModalsModel.presentDeleteError(for: error)
                         }
                     }
                 } else if let selected = selected as? [any DeletableReaderContent] {
-                    readerContentListModalsModel.confirmDeletionOf = selected
-                    readerContentListModalsModel.confirmDelete = true
+                    readerContentListModalsModel.presentDeleteConfirmation(for: selected)
                 }
             } label: {
                 if #available(iOS 26, *), allowEditing {

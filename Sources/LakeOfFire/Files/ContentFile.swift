@@ -31,18 +31,13 @@ extension ContentFile: DeletableReaderContent {
     @MainActor
     public func delete() async throws {
         try await ReaderFileManager.shared.delete(readerFileURL: url)
-        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
-        try await { @RealmBackgroundActor in
-            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-            try await content.realm?.asyncWrite {
-                content.isDeleted = true
-                content.refreshChangeMetadata(explicitlyModified: true)
-            }
-        }()
     }
     
     @MainActor
     func cloudDriveSyncStatus() async throws -> CloudDriveSyncStatus {
-        return try await ReaderFileManager.shared.cloudDriveSyncStatus(readerFileURL: url)
+        guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: url) else {
+            return .fileMissing
+        }
+        return try await ReaderFileManager.shared.cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL)
     }
 }

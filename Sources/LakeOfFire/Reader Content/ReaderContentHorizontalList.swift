@@ -32,6 +32,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @Environment(\.stackListStyle) private var stackListStyle
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    @AppStorage("errorMessage") private var errorMessage = ""
 
     @State private var measuredPhysicalCoverWidth: CGFloat?
 
@@ -101,6 +102,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                         readerModeViewModel: readerModeViewModel
                     )
                 } catch {
+                    errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
                     debugPrint("Failed to load reader content from horizontal list", error)
                 }
                 if contentSelection.wrappedValue == selection {
@@ -147,6 +149,17 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         .task { @MainActor in
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
+            guard let contentFile = content as? ContentFile,
+                  let requestedURLString = notification.object as? String,
+                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
+                  readerBackingURL.absoluteString == requestedURLString else {
+                return
+            }
+            Task { @MainActor in
+                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
             }
         }
         .onPreferenceChange(ReaderContentBookCoverRenderedWidthPreferenceKey.self) { width in

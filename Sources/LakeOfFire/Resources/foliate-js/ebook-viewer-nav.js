@@ -105,6 +105,15 @@ const getRendererContentHref = (renderer) => {
     }
 };
 
+const deriveLocationIndexFromFraction = (fraction, total) => {
+    if (typeof fraction !== 'number' || !isFinite(fraction)) return null;
+    if (typeof total !== 'number' || !isFinite(total) || total <= 0) return null;
+    const clampedFraction = Math.max(0, Math.min(1, fraction));
+    const clampedTotal = Math.max(1, Math.round(total));
+    if (clampedTotal <= 1) return 0;
+    return Math.max(0, Math.min(clampedTotal - 1, Math.floor(clampedFraction * (clampedTotal - 1))));
+};
+
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
     for (const item of items) {
@@ -377,6 +386,16 @@ export class NavigationHUD {
                 sectionCountsPreview: Array.from(cachedCounts.entries()).slice(0, 8).map(([index, count]) => ({ index, count })),
             });
             this.setSectionPageCountsFromCache(cachedCounts);
+        } else {
+            this._logPageNumberDiagnostic('cachewarmer.section-counts.handoff-missing', {
+                linearCount: this.linearSectionCount,
+                hasGlobalCountsArray: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts),
+                globalCountsLength: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts)
+                    ? globalThis.__manabiCacheWarmerSectionPageCounts.length
+                    : null,
+                cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
+                cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
+            });
         }
         this._rebuildPageTargetSectionMetrics();
         if (this.lastRelocateDetail) {
@@ -472,6 +491,10 @@ export class NavigationHUD {
 
     getCurrentDescriptor() {
         return this._cloneDescriptor(this.currentLocationDescriptor);
+    }
+
+    getCurrentLocationDescriptor() {
+        return this.getCurrentDescriptor();
     }
 
     beginProgressScrubSession(originDescriptor) {
@@ -1012,44 +1035,51 @@ export class NavigationHUD {
         }
 
         const metrics = this._computePageMetrics(detail);
-        if (metrics?.currentPageNumber != null) {
-            const currentPageNumber = metrics.currentPageNumber;
-            const metricsTotal = metrics.totalPages;
-            const totalPages = (
-                typeof metricsTotal === 'number' && metricsTotal > 1
-                    ? metricsTotal
-                    : null
-            );
-            const label = totalPages != null
-                ? `${currentPageNumber} of ${totalPages}`
-                : `${currentPageNumber}`;
+        const rawLocationCurrent = typeof detail.location?.current === 'number'
+            ? detail.location.current
+            : null;
+        const locationTotal = typeof detail.location?.total === 'number'
+            ? detail.location.total
+            : null;
+        const locationCurrent = rawLocationCurrent != null
+            ? (this._makeLocationDescriptor(detail)?.location?.current ?? rawLocationCurrent)
+            : null;
+        if (locationCurrent != null) {
+            const currentLocationNumber = Math.max(1, Math.round(locationCurrent) + 1);
+            const label = typeof locationTotal === 'number' && locationTotal > 0
+                ? `Loc ${currentLocationNumber} of ${Math.max(1, Math.round(locationTotal))}`
+                : `Loc ${currentLocationNumber}`;
+            const source = 'location';
             this.lastPrimaryLabelDiagnostics = {
-                source: 'page-metrics',
+                source,
                 label,
-                currentPageNumber,
-                totalPages,
-                currentPageSource: metrics.diag?.currentSource ?? null,
-                sectionIndex: metrics.diag?.sectionIndex ?? null,
-                totalSource: metrics.diag?.totalSource ?? null,
+                currentPageNumber: currentLocationNumber,
+                totalPages: locationTotal,
+                currentPageSource: 'location-global',
+                sectionIndex: metrics?.diag?.sectionIndex ?? null,
+                totalSource: 'location-global',
                 totalPageCount: this.totalPageCount,
+                locationTotal,
             };
-            this._logPageNumberDiagnostic('primary-label.derived', {
+            this._logPageNumberDiagnostic('primary-label.location', {
                 label,
-                currentPageNumber,
-                totalPages,
-                currentPageSource: metrics.diag?.currentSource ?? null,
-                totalSource: metrics.diag?.totalSource ?? null,
-                sectionIndex: metrics.diag?.sectionIndex ?? null,
-                resolvedSectionHref: metrics.diag?.resolvedSectionHref ?? null,
+                currentLocationNumber,
+                locationCurrent,
+                rawLocationCurrent,
+                locationTotal,
+                source,
+                fraction: typeof detail?.fraction === 'number' ? Number(detail.fraction.toFixed(6)) : null,
+                sectionIndex: metrics?.diag?.sectionIndex ?? null,
+                sectionIndexSource: metrics?.diag?.sectionIndexSource ?? null,
             });
             this.latestPrimaryLabel = label;
             return label;
         }
 
-        // If no page metrics are available yet, we won't show a label.
+        // Do not show guessed or fallback labels in the location slot.
         this.latestPrimaryLabel = '';
         this.lastPrimaryLabelDiagnostics = {
-            source: 'no-page-metrics',
+            source: 'location-pending',
             label: '',
             totalPageCount: this.totalPageCount,
             rawCurrentPageNumber: metrics?.diag?.rawCurrentPageNumber ?? null,
@@ -1068,13 +1098,9 @@ export class NavigationHUD {
             rendererSnapshotTotal: metrics?.diag?.rendererSnapshotTotal ?? null,
         };
         this._logPageNumberDiagnostic('primary-label.blocked', {
-            reason: metrics == null
-                ? 'no-metrics'
-                : metrics.diag?.sectionIndex == null
-                    ? 'missing-section-index'
-                    : metrics.diag?.currentPageReady !== true
-                        ? 'current-page-not-ready'
-                        : 'label-empty',
+            reason: rawLocationCurrent == null
+                ? 'location-current-pending'
+                : 'label-empty',
             rawCurrentPageNumber: metrics?.diag?.rawCurrentPageNumber ?? null,
             rawCurrentSource: metrics?.diag?.rawCurrentSource ?? null,
             rawTotalPages: metrics?.diag?.rawTotalPages ?? null,
@@ -1095,6 +1121,10 @@ export class NavigationHUD {
     _condensePrimaryLabel(label) {
         if (typeof label !== 'string') return '';
         const normalized = label.replace(/\s+/g, ' ').trim();
+        const locationMatch = normalized.match(/^Loc\s+(\d+)(?:\s+of\s+\d+)?$/i);
+        if (locationMatch) {
+            return `Loc ${locationMatch[1]}`;
+        }
         const pageMatch = normalized.match(/^Page\s*(\d+)(?:\s+of\s+\d+)?$/i);
         if (pageMatch) {
             return pageMatch[1];
@@ -1206,6 +1236,11 @@ export class NavigationHUD {
             && this.sectionPageCounts.get(sectionIndex) > 0;
         const cacheWarmerFinished = this._cacheWarmerHasFinishedBook();
         const cacheWarmerHighestSectionIndex = this._cacheWarmerHighestSectionIndex();
+        const provisionalLocationGlobalMismatch =
+            rawCurrentSource === 'location-global'
+            && normalizedSectionIndex != null
+            && normalizedSectionIndex > 0
+            && rawCurrent === 1;
         const currentPageReady = rawCurrent != null && (() => {
             if (rawCurrentSource === 'page-target' || rawCurrentSource === 'page-target-section-offset') {
                 return true;
@@ -1214,7 +1249,7 @@ export class NavigationHUD {
                 return sectionOffset != null;
             }
             if (rawCurrentSource === 'location-global') {
-                return normalizedSectionIndex != null;
+                return normalizedSectionIndex === 0;
             }
             return false;
         })();
@@ -1275,6 +1310,59 @@ export class NavigationHUD {
             currentPageNumber: adjustedCurrent ?? null,
             totalPages: adjustedTotal ?? null,
         };
+        if (provisionalLocationGlobalMismatch) {
+            this._logPageNumberDiagnostic('page-metrics.provisional-mismatch', {
+                message: 'section is nonzero but provisional location-global page still resolves to 1',
+                currentPageNumber: rawCurrent,
+                currentPageSource: rawCurrentSource,
+                totalPages: adjustedTotal ?? null,
+                sectionIndex,
+                sectionIndexSource,
+                sectionOffset,
+                pageTargetSectionOffset,
+                locationIndex,
+                locationTotal,
+                rawCurrentPageNumber: rawCurrent,
+                rawCurrentSource,
+                hasTrustedCurrentSectionCount,
+                cacheWarmerHighestSectionIndex,
+                sectionPageCountsSize: this.sectionPageCounts.size,
+                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+            });
+        }
+        if (
+            rawCurrentSource === 'location-global'
+            && normalizedSectionIndex != null
+            && normalizedSectionIndex > 0
+            && sectionOffset == null
+        ) {
+            const missingPriorSectionIndexes = [];
+            for (let i = 0; i < normalizedSectionIndex; i += 1) {
+                const count = this.sectionPageCounts.get(i);
+                if (!(typeof count === 'number' && count > 0)) {
+                    missingPriorSectionIndexes.push(i);
+                }
+            }
+            this._logPageNumberDiagnostic('page-metrics.root-cause', {
+                message: 'nonzero section lacks prior-section counts, so section offset cannot be computed yet',
+                sectionIndex,
+                sectionIndexSource,
+                currentPageNumber: rawCurrent,
+                currentPageSource: rawCurrentSource,
+                totalPages: adjustedTotal ?? null,
+                missingPriorSectionIndexes,
+                knownCountsPreview: Array.from(this.sectionPageCounts.entries())
+                    .sort((a, b) => a[0] - b[0])
+                    .slice(0, 8)
+                    .map(([index, total]) => ({ index, count: total })),
+                cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
+                cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
+                hasGlobalCountsArray: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts),
+                globalCountsLength: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts)
+                    ? globalThis.__manabiCacheWarmerSectionPageCounts.length
+                    : null,
+            });
+        }
         const scrubFraction = this._scrubberFractionFromMetrics({
             current: adjustedCurrent,
             total: adjustedTotal,
@@ -1721,15 +1809,37 @@ export class NavigationHUD {
     
     _makeLocationDescriptor(detail) {
         if (!detail) return null;
-        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
+        const rawLocCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
+        const derivedLocCurrent = deriveLocationIndexFromFraction(fraction, locTotal);
+        let locCurrent = rawLocCurrent;
+        if (derivedLocCurrent != null) {
+            if (locCurrent == null) {
+                locCurrent = derivedLocCurrent;
+            } else {
+                const drift = Math.abs(locCurrent - derivedLocCurrent);
+                const staleAtStart = locCurrent === 0 && derivedLocCurrent > 0;
+                if (drift > 1 || staleAtStart) {
+                    logEBookPageNumLimited('nav:location.normalize', {
+                        reason: staleAtStart ? 'stale-zero-current' : 'fraction-drift',
+                        rawCurrent: rawLocCurrent,
+                        derivedCurrent: derivedLocCurrent,
+                        fraction: typeof fraction === 'number' ? Number(fraction.toFixed(6)) : null,
+                        total: locTotal,
+                        cfi: detail.cfi ?? null,
+                    });
+                    locCurrent = derivedLocCurrent;
+                }
+            }
+        }
         const location = (locCurrent != null || locTotal != null)
             ? { current: locCurrent, total: locTotal }
             : null;
         const locationTotalHint = locTotal != null ? locTotal : (this.lastKnownLocationTotal ?? null);
         return {
             cfi: detail.cfi ?? null,
-            fraction: typeof detail.fraction === 'number' ? detail.fraction : null,
+            fraction,
             pageItemKey: detail.pageItem ? ensurePageKey(detail.pageItem) : null,
             pageLabel: typeof detail.pageItem?.label === 'string' ? detail.pageItem.label : null,
             location,
@@ -1745,7 +1855,7 @@ export class NavigationHUD {
         const location = hasTotal
             ? {
                 total: clampedTotal,
-                current: Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1)),
+                current: deriveLocationIndexFromFraction(fraction, clampedTotal),
             }
             : null;
         return {
@@ -2064,6 +2174,17 @@ export class NavigationHUD {
             if (typeof count === 'number' && count > 0) {
                 sum += count;
             } else {
+                this._logPageNumberDiagnostic('section-offset.blocked', {
+                    requestedSectionIndex: sectionIndex,
+                    missingSectionIndex: i,
+                    knownCountsPreview: Array.from(this.sectionPageCounts.entries())
+                        .sort((a, b) => a[0] - b[0])
+                        .slice(0, 8)
+                        .map(([index, total]) => ({ index, count: total })),
+                    linearCount: this.linearSectionCount ?? null,
+                    cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
+                    cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
+                });
                 return null;
             }
         }

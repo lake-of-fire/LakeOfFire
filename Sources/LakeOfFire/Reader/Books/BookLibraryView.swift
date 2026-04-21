@@ -89,13 +89,17 @@ fileprivate struct EditorsPicksView: View {
                     onSelected: { wasAlreadyDownloaded in
                         guard wasAlreadyDownloaded else { return }
                         Task { @MainActor in
-                            try await viewModel.open(
-                                publication: publication,
-                                readerFileManager: ReaderFileManager.shared,
-                                readerPageURL: readerContent.pageURL,
-                                navigator: navigator,
-                                readerModeViewModel: readerModeViewModel
-                            )
+                            do {
+                                try await viewModel.open(
+                                    publication: publication,
+                                    readerFileManager: ReaderFileManager.shared,
+                                    readerPageURL: readerContent.pageURL,
+                                    navigator: navigator,
+                                    readerModeViewModel: readerModeViewModel
+                                )
+                            } catch {
+                                viewModel.errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
+                            }
                         }
                     },
                     onNavigateToReader: viewModel.onNavigateToReader

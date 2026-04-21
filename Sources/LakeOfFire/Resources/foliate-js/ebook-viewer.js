@@ -70,6 +70,41 @@ const postPageNumLog = (event, details = {}) => {
     }
 };
 
+const MANABI_RESTORE_LOCATOR_PREFIX = 'manabi-loc-v1:';
+
+const makeSyntheticRestoreLocator = ({ sectionIndex, localSectionIndex, rendererTotal }) => {
+    if (![sectionIndex, localSectionIndex, rendererTotal].every((value) => Number.isFinite(value))) {
+        return null;
+    }
+    const normalizedSectionIndex = Math.max(0, Math.round(sectionIndex));
+    const normalizedRendererTotal = Math.max(1, Math.round(rendererTotal));
+    const normalizedLocalSectionIndex = Math.max(
+        0,
+        Math.min(normalizedRendererTotal - 1, Math.round(localSectionIndex))
+    );
+    return `${MANABI_RESTORE_LOCATOR_PREFIX}${normalizedSectionIndex}:${normalizedLocalSectionIndex}:${normalizedRendererTotal}`;
+};
+
+const parseSyntheticRestoreLocator = (value) => {
+    if (typeof value !== 'string' || !value.startsWith(MANABI_RESTORE_LOCATOR_PREFIX)) return null;
+    const parts = value.slice(MANABI_RESTORE_LOCATOR_PREFIX.length).split(':');
+    if (parts.length !== 3) return null;
+    const [sectionIndexRaw, localSectionIndexRaw, rendererTotalRaw] = parts.map((part) => Number(part));
+    if (![sectionIndexRaw, localSectionIndexRaw, rendererTotalRaw].every((value) => Number.isFinite(value))) {
+        return null;
+    }
+    const sectionIndex = Math.max(0, Math.round(sectionIndexRaw));
+    const rendererTotal = Math.max(1, Math.round(rendererTotalRaw));
+    const localSectionIndex = Math.max(0, Math.min(rendererTotal - 1, Math.round(localSectionIndexRaw)));
+    const fractionInSection = rendererTotal > 1 ? localSectionIndex / (rendererTotal - 1) : 0;
+    return {
+        sectionIndex,
+        localSectionIndex,
+        rendererTotal,
+        fractionInSection,
+    };
+};
+
 const captureNavVisibilityState = () => {
     const body = document.body;
     const navBar = document.getElementById('nav-bar');
@@ -1762,6 +1797,8 @@ class Reader {
     layoutDiagnosticsHandle = null;
     lastLayoutDiagnosticsKey = null;
     lastLayoutSnapshot = null;
+    lastCFIPersistenceObservation = null;
+    unstableCFIs = new Set();
     style = {
         spacing: 1.4,
         justify: true,
@@ -1826,96 +1863,74 @@ class Reader {
         await this.view.goToFraction(fraction);
         return true;
     }
-    async goToPageNumber(pageNumber, source = 'unknown') {
+    async goToLocationNumber(locationNumber, source = 'unknown') {
         if (!this.view) {
             return false;
         }
-        const numericPageNumber = Number(pageNumber);
-        const pageTargetCount = Array.isArray(this.navHUD?.pageTargets) ? this.navHUD.pageTargets.length : 0;
-        const totalPages = this.navHUD?.lastPageMetricsSnapshot?.totalPages
-            ?? this.navHUD?.totalPageCount
-            ?? this.navHUD?.fallbackTotalPageCount
+        const numericLocationNumber = Number(locationNumber);
+        const locationTotalHint = this.navHUD?.getLocationTotalHint?.()
+            ?? this.navHUD?.currentLocationDescriptor?.locationTotalHint
+            ?? this.navHUD?.lastPrimaryLabelDiagnostics?.locationTotal
             ?? null;
-        const fallbackTotalPages = this.navHUD?.fallbackTotalPageCount ?? null;
-        const currentPageNumber = this.navHUD?.lastPageMetricsSnapshot?.currentPageNumber ?? null;
-        if (!Number.isFinite(numericPageNumber)) {
+        if (!Number.isFinite(numericLocationNumber)) {
             return false;
         }
-        const maxPageNumber = typeof totalPages === 'number' && totalPages > 0
-            ? totalPages
-            : Math.max(1, Math.round(numericPageNumber));
-        const clampedPageNumber = Math.max(1, Math.min(maxPageNumber, Math.round(numericPageNumber)));
-        const pageTarget = this.navHUD?.pageTargets?.[clampedPageNumber - 1] ?? null;
-        const fraction = typeof totalPages === 'number' && totalPages > 1
-            ? (clampedPageNumber - 1) / (totalPages - 1)
-            : null;
-        postPageNumLog('goto.page.request', {
+        const maxLocationNumber = typeof locationTotalHint === 'number' && locationTotalHint > 0
+            ? Math.max(1, Math.round(locationTotalHint))
+            : Math.max(1, Math.round(numericLocationNumber));
+        const clampedLocationNumber = Math.max(1, Math.min(maxLocationNumber, Math.round(numericLocationNumber)));
+        const fraction = maxLocationNumber > 1
+            ? (clampedLocationNumber - 1) / (maxLocationNumber - 1)
+            : 0;
+        postPageNumLog('goto.location.request', {
             source,
-            pageNumber: clampedPageNumber,
-            totalPages,
-            fallbackTotalPages,
-            currentPageNumber,
-            currentPageSource: this.navHUD?.lastPageMetricsSnapshot?.currentPageSource ?? null,
-            currentPageReady: this.navHUD?.lastPageMetricsSnapshot?.currentPageReady ?? null,
-            totalPageSource: this.navHUD?.lastPageMetricsSnapshot?.totalSource ?? null,
-            totalPagesReady: this.navHUD?.lastPageMetricsSnapshot?.totalPagesReady ?? null,
-            pageTargetCount,
-            hasPageTarget: !!pageTarget,
-            targetHref: typeof pageTarget?.href === 'string' ? pageTarget.href : null,
-            fraction: fraction != null ? safeRound(fraction, 6) : null,
+            locationNumber: clampedLocationNumber,
+            locationTotal: maxLocationNumber,
+            fraction: safeRound(fraction, 6),
             isRTL: !!this.isRTL,
         });
-        if (typeof pageTarget?.href === 'string' && pageTarget.href) {
-            await this.view.goTo(pageTarget.href);
-            return true;
-        }
-        if (fraction != null) {
-            await this.view.goToFraction(fraction);
-            return true;
-        }
-        if (clampedPageNumber <= 1) {
-            await this.view.goToFraction(0);
-            return true;
-        }
-        return false;
+        await this.view.goToFraction(fraction);
+        return true;
+    }
+    async goToPageNumber(pageNumber, source = 'unknown') {
+        return await this.goToLocationNumber(pageNumber, source);
     }
     async buildGoToSheetSnapshot() {
         const chapters = buildGoToSnapshotChapters(this.view?.book);
         const linearSectionEntries = buildLinearSectionEntries(this.view?.book);
         const snapshotMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
-        const fallbackTotalPages = this.navHUD?.fallbackTotalPageCount ?? null;
-        const totalPageCount = this.navHUD?.totalPageCount ?? null;
-        const pageTargets = Array.isArray(this.navHUD?.pageTargets) ? this.navHUD.pageTargets : [];
+        const currentLocationDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
+        const currentLocationRaw = typeof currentLocationDescriptor?.location?.current === 'number'
+            ? currentLocationDescriptor.location.current
+            : null;
+        const totalLocations = typeof currentLocationDescriptor?.locationTotalHint === 'number'
+            ? currentLocationDescriptor.locationTotalHint
+            : (this.navHUD?.getLocationTotalHint?.() ?? null);
+        const totalLocationCount = typeof totalLocations === 'number' && totalLocations > 0
+            ? Math.max(1, Math.round(totalLocations))
+            : null;
+        const linearHrefIndex = new Map(
+            linearSectionEntries
+                .map((entry, index) => [normalizeSpineHref(entry?.href), index])
+                .filter(([href]) => !!href)
+        );
         for (const entry of chapters) {
             const href = entry.href;
             let pageNumber = null;
             let pageNumberSource = null;
             const normalizedHref = normalizeSpineHref(href);
-            if (normalizedHref) {
-                const pageTargetIndex = pageTargets.findIndex((pageTarget) => {
-                    const candidateHref = normalizeSpineHref(pageTarget?.href);
-                    return candidateHref != null && candidateHref === normalizedHref;
-                });
-                if (pageTargetIndex >= 0) {
-                    pageNumber = pageTargetIndex + 1;
-                    pageNumberSource = 'page-targets';
+            const linearIndex = normalizedHref != null ? (linearHrefIndex.get(normalizedHref) ?? null) : null;
+            if (linearIndex != null && totalLocationCount != null) {
+                if (linearSectionEntries.length <= 1) {
+                    pageNumber = 1;
+                } else {
+                    const fraction = linearIndex / Math.max(linearSectionEntries.length - 1, 1);
+                    pageNumber = Math.max(1, Math.min(
+                        totalLocationCount,
+                        Math.round(fraction * Math.max(totalLocationCount - 1, 0)) + 1,
+                    ));
                 }
-            }
-            try {
-                if (pageNumber == null) {
-                    const progress = await this.view?.getNavigationProgressOf?.(href);
-                    const metrics = progress ? this.navHUD?._computePageMetrics?.(progress) : null;
-                    if (typeof metrics?.currentPageNumber === 'number' && metrics.currentPageNumber > 0) {
-                        pageNumber = metrics.currentPageNumber;
-                        pageNumberSource = 'navigation-progress';
-                    }
-                }
-            } catch (error) {
-                postEPUBLog('ebook.goTo.snapshot.chapter.error', {
-                    href,
-                    title: entry.title,
-                    message: error?.message || String(error),
-                });
+                pageNumberSource = 'linear-section-estimate';
             }
             entry.pageNumber = pageNumber;
             entry.pageNumberSource = pageNumberSource;
@@ -1963,25 +1978,28 @@ class Reader {
         const currentChapterPageNumber = typeof currentChapterEntry?.pageNumber === 'number'
             ? currentChapterEntry.pageNumber
             : null;
-        const rawCurrentPageNumber = typeof snapshotMetrics?.currentPageNumber === 'number'
-            ? snapshotMetrics.currentPageNumber
+        const currentChapterPageNumberSource = typeof currentChapterEntry?.pageNumberSource === 'string'
+            ? currentChapterEntry.pageNumberSource
             : null;
-        const currentPageNumber = Math.max(rawCurrentPageNumber ?? 0, currentChapterPageNumber ?? 0) || null;
+        const rawCurrentPageNumber = currentLocationRaw != null
+            ? Math.max(1, Math.round(currentLocationRaw) + 1)
+            : null;
+        const shouldApplyChapterFloor =
+            rawCurrentPageNumber == null
+            && currentChapterPageNumber != null;
+        const currentPageNumber = shouldApplyChapterFloor
+            ? currentChapterPageNumber
+            : rawCurrentPageNumber;
         const currentPageNumberSource = currentPageNumber == null
             ? null
             : (
-                rawCurrentPageNumber != null && currentChapterPageNumber != null && currentPageNumber !== rawCurrentPageNumber
-                    ? 'page-metrics+chapter-floor'
-                    : rawCurrentPageNumber != null
-                        ? 'page-metrics'
-                        : currentChapterPageNumber != null
-                            ? 'chapter-floor'
-                            : null
+                rawCurrentPageNumber != null
+                    ? 'location'
+                    : currentChapterPageNumber != null
+                        ? 'chapter-floor'
+                        : null
             );
-        const totalPages = snapshotMetrics?.totalPages
-            ?? fallbackTotalPages
-            ?? totalPageCount
-            ?? null;
+        const totalPages = totalLocationCount;
         const snapshot = {
             isRTL: !!this.isRTL,
             currentChapterHref,
@@ -1999,7 +2017,7 @@ class Reader {
             chapters,
         };
         if (
-            rawCurrentPageNumber != null &&
+            shouldApplyChapterFloor &&
             currentChapterPageNumber != null &&
             currentPageNumber !== rawCurrentPageNumber
         ) {
@@ -2008,6 +2026,7 @@ class Reader {
                 adjustedCurrentPageNumber: currentPageNumber,
                 currentChapterHref,
                 currentChapterPageNumber,
+                currentChapterPageNumberSource,
             });
         }
         postPageNumLog('goto.snapshot', {
@@ -2024,17 +2043,18 @@ class Reader {
             currentSectionHref,
             normalizedCurrentSectionHref,
             currentChapterPageNumber,
+            currentChapterPageNumberSource,
             currentPageNumber: snapshot.currentPageNumber,
             rawCurrentPageNumber,
             currentPageSource: snapshotMetrics?.currentPageSource ?? currentPageNumberSource ?? null,
-            currentPageReady: snapshotMetrics?.currentPageReady ?? null,
+            currentPageReady: rawCurrentPageNumber != null,
             totalPages: snapshot.totalPages,
-            totalPageSource: snapshotMetrics?.totalSource ?? null,
-            totalPagesReady: snapshotMetrics?.totalPagesReady ?? null,
-            snapshotTotalPages: snapshotMetrics?.totalPages ?? null,
-            fallbackTotalPages,
-            pageTargetTotalPages: totalPageCount,
-            pageTargetCount: pageTargets.length,
+            totalPageSource: 'location-global',
+            totalPagesReady: totalLocationCount != null,
+            snapshotTotalPages: totalLocationCount,
+            fallbackTotalPages: null,
+            pageTargetTotalPages: null,
+            pageTargetCount: 0,
             chapterPreview: chapters.slice(0, 8).map((entry) => ({
                 href: entry.href,
                 title: entry.title,
@@ -2052,7 +2072,7 @@ class Reader {
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
         });
         this.scheduleGoToPageNumber = debounce((pageNumber) => {
-            this.goToPageNumber(pageNumber, 'schedule-page-number')
+            this.goToLocationNumber(pageNumber, 'schedule-location-number')
                 .catch((error) => console.error(error));
         }, 120);
         this.scheduleGoToFraction = debounce((fraction) => {
@@ -2649,8 +2669,10 @@ class Reader {
             fileKind: file?.kind || 'nil',
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
         });
-        
+
         this.hasLoadedLastPosition = false
+        this.lastCFIPersistenceObservation = null;
+        this.unstableCFIs.clear();
         this.view = await getView(file, false)
         markEPUBPerf('view.ready', {
             hasRenderer: !!this.view?.renderer,
@@ -3401,12 +3423,18 @@ class Reader {
         const scrubFraction = this.navHUD?.getScrubberFraction(detail) ?? null;
         const effectiveFraction = Number.isFinite(scrubFraction) ? scrubFraction : fraction;
         const pageMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
-        const currentPageNumber = typeof pageMetrics?.currentPageNumber === 'number'
-            ? pageMetrics.currentPageNumber
+        const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
+        const currentPageNumber = typeof primaryLabelDiagnostics?.currentPageNumber === 'number'
+            ? primaryLabelDiagnostics.currentPageNumber
+            : (typeof pageMetrics?.currentPageNumber === 'number'
+                ? pageMetrics.currentPageNumber
+                : null);
+        const totalPages = typeof primaryLabelDiagnostics?.totalPages === 'number'
+            ? primaryLabelDiagnostics.totalPages
             : null;
-        const totalPages = typeof pageMetrics?.totalPages === 'number'
+        const effectiveTotalPages = totalPages ?? (typeof pageMetrics?.totalPages === 'number'
             ? pageMetrics.totalPages
-            : null;
+            : null);
         const sectionIndex = typeof pageMetrics?.sectionIndex === 'number'
             ? pageMetrics.sectionIndex
             : (
@@ -3414,26 +3442,96 @@ class Reader {
                     ? detail.sectionIndex
                     : (typeof detail?.index === 'number' ? detail.index : null)
             );
+        const localSectionIndex = typeof pageMetrics?.localSectionIndex === 'number'
+            ? pageMetrics.localSectionIndex
+            : null;
+        const rendererTotal = typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
+            ? this.navHUD.rendererPageSnapshot.total
+            : null;
+        const sectionBaseCFI = typeof sectionIndex === 'number'
+            ? (this.view?.book?.sections?.[sectionIndex]?.cfi ?? null)
+            : null;
+        const cfiLooksSectionBase = typeof cfi === 'string'
+            && !!cfi
+            && typeof sectionBaseCFI === 'string'
+            && cfi === sectionBaseCFI;
+        const hasPageScopedObservation = typeof sectionIndex === 'number'
+            && typeof localSectionIndex === 'number';
+        const priorCFIObservation = this.lastCFIPersistenceObservation;
+        let didMarkCFIUnstable = false;
+        let cfiIsUnstableAcrossPages = typeof cfi === 'string'
+            && !!cfi
+            && this.unstableCFIs.has(cfi);
+        if (!cfiIsUnstableAcrossPages
+            && typeof cfi === 'string'
+            && !!cfi
+            && hasPageScopedObservation
+            && priorCFIObservation?.cfi === cfi
+            && (priorCFIObservation.sectionIndex !== sectionIndex
+                || priorCFIObservation.localSectionIndex !== localSectionIndex)) {
+            this.unstableCFIs.add(cfi);
+            cfiIsUnstableAcrossPages = true;
+            didMarkCFIUnstable = true;
+        }
+        this.lastCFIPersistenceObservation = typeof cfi === 'string' && !!cfi && hasPageScopedObservation
+            ? {
+                cfi,
+                sectionIndex,
+                localSectionIndex,
+                rendererTotal: typeof rendererTotal === 'number' ? rendererTotal : null,
+            }
+            : null;
+        const syntheticRestoreLocator = makeSyntheticRestoreLocator({
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal,
+        });
+        const shouldPreferSyntheticRestoreLocator = !!syntheticRestoreLocator
+            && (cfiLooksSectionBase || !cfi || cfiIsUnstableAcrossPages);
+        const persistedLocator = shouldPreferSyntheticRestoreLocator
+            ? syntheticRestoreLocator
+            : cfi;
         // (removed: setting tocView currentHref here)
         
         if (this.hasLoadedLastPosition) {
+            if (didMarkCFIUnstable) {
+                postPageNumLog('bridge.updateReadingProgress.cfi-unstable', {
+                    rawCFI: cfi ?? null,
+                    sectionIndex,
+                    localSectionIndex,
+                    previousSectionIndex: priorCFIObservation?.sectionIndex ?? null,
+                    previousLocalSectionIndex: priorCFIObservation?.localSectionIndex ?? null,
+                    rendererTotal,
+                    syntheticRestoreLocator,
+                });
+            }
             postPageNumLog('bridge.updateReadingProgress', {
                 reason: reason ?? null,
                 fraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
                 currentPageNumber,
-                currentPageSource: pageMetrics?.currentPageSource ?? null,
-                currentPageReady: pageMetrics?.currentPageReady ?? null,
-                totalPages,
-                totalPageSource: pageMetrics?.totalSource ?? null,
-                totalPagesReady: pageMetrics?.totalPagesReady ?? null,
+                currentPageSource: primaryLabelDiagnostics?.currentPageSource ?? pageMetrics?.currentPageSource ?? null,
+                currentPageReady: primaryLabelDiagnostics?.source === 'location' ? true : (pageMetrics?.currentPageReady ?? null),
+                totalPages: effectiveTotalPages,
+                totalPageSource: primaryLabelDiagnostics?.totalSource ?? pageMetrics?.totalSource ?? null,
+                totalPagesReady: primaryLabelDiagnostics?.source === 'location'
+                    ? effectiveTotalPages != null
+                    : (pageMetrics?.totalPagesReady ?? null),
                 sectionIndex,
+                localSectionIndex,
+                rendererTotal,
+                rawCFI: cfi ?? null,
+                sectionBaseCFI,
+                cfiLooksSectionBase,
+                cfiIsUnstableAcrossPages,
+                syntheticRestoreLocator,
+                persistedLocator,
             });
             this.#postUpdateReadingProgressMessage({
                 fraction,
-                cfi,
+                cfi: persistedLocator,
                 reason,
                 currentPageNumber,
-                totalPages,
+                totalPages: effectiveTotalPages,
                 sectionIndex,
             })
         }
@@ -3588,6 +3686,7 @@ class CacheWarmer {
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
         this.sectionPageCounts = new Map()
+        this.lastCaptureBeginSignature = null
     }
     destroy() {
         if (this.view) {
@@ -3600,6 +3699,7 @@ class CacheWarmer {
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
         this.sectionPageCounts = new Map()
+        this.lastCaptureBeginSignature = null
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
@@ -3729,18 +3829,64 @@ class CacheWarmer {
         }
     }
 
-    async #captureSectionPageCount(sectionIndex, sectionHref, reason) {
+    async #captureSectionPageCount(sectionIndex, sectionHref, reason, attempt = 0) {
         const renderer = this.view?.renderer;
-        postPageNumLog('cacheWarmer.capture.begin', {
+        const captureStartedAt = performanceNowMs();
+        const contentsCount = Array.isArray(renderer?.getContents?.()) ? renderer.getContents().length : 0;
+        const rendererCurrentIndex = typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null;
+        const retryDelayMs = 120;
+        const scheduleRetry = (extra = {}) => {
+            const nextAttempt = attempt + 1;
+            postPageNumLog('cacheWarmer.capture.retry', {
+                reason,
+                sectionIndex,
+                sectionHref,
+                attempt,
+                nextAttempt,
+                retryDelayMs,
+                currentIndex: rendererCurrentIndex,
+                contentsCount,
+                scrolled: renderer?.scrolled ?? null,
+                ...extra,
+            });
+            if (nextAttempt <= 12) {
+                setTimeout(() => {
+                    this.#captureSectionPageCount(sectionIndex, sectionHref, reason, nextAttempt)
+                        .catch((error) => {
+                            postPageNumLog('cacheWarmer.capture.retry.error', {
+                                reason,
+                                sectionIndex,
+                                sectionHref,
+                                attempt: nextAttempt,
+                                message: error?.message || String(error),
+                            });
+                        });
+                }, retryDelayMs);
+            } else {
+                postPageNumLog('cacheWarmer.capture.retry.giveup', {
+                    reason,
+                    sectionIndex,
+                    sectionHref,
+                    attempt,
+                    currentIndex: rendererCurrentIndex,
+                    contentsCount,
+                    scrolled: renderer?.scrolled ?? null,
+                    ...extra,
+                });
+            }
+        };
+        const captureBeginPayload = {
             reason,
             sectionIndex,
             sectionHref,
             hasRenderer: !!renderer,
             hasPageFn: typeof renderer?.page === 'function',
             hasPagesFn: typeof renderer?.pages === 'function',
+            contentsCount,
+            currentIndex: rendererCurrentIndex,
             navHUDReady: !!globalThis.reader?.navHUD,
-        });
-        postEPUBLog('ebook.perf.cache-warmer.capture.begin', {
+        };
+        const captureBeginPerfPayload = {
             reason,
             sectionIndex,
             sectionHref,
@@ -3749,17 +3895,21 @@ class CacheWarmer {
             hasPagesFn: typeof renderer?.pages === 'function',
             navHUDReady: !!globalThis.reader?.navHUD,
             ...captureEPUBOverlapState(),
+        };
+        const captureBeginSignature = JSON.stringify({
+            ...captureBeginPayload,
+            cacheWarmerHighestSectionIndex: captureBeginPerfPayload.cacheWarmerHighestSectionIndex ?? null,
+            cacheWarmerOpenInFlight: captureBeginPerfPayload.cacheWarmerOpenInFlight ?? null,
+            cacheWarmerReady: captureBeginPerfPayload.cacheWarmerReady ?? null,
+            inflightReplaceTextCount: captureBeginPerfPayload.inflightReplaceTextCount ?? null,
+            inflightCacheWarmerReplaceTextCount: captureBeginPerfPayload.inflightCacheWarmerReplaceTextCount ?? null,
         });
-        postReplaceTextPerfLog('cache-warmer.capture.begin', {
-            reason,
-            sectionIndex,
-            sectionHref,
-            hasRenderer: !!renderer,
-            hasPageFn: typeof renderer?.page === 'function',
-            hasPagesFn: typeof renderer?.pages === 'function',
-            navHUDReady: !!globalThis.reader?.navHUD,
-            ...captureEPUBOverlapState(),
-        });
+        if (captureBeginSignature !== this.lastCaptureBeginSignature) {
+            this.lastCaptureBeginSignature = captureBeginSignature;
+            postPageNumLog('cacheWarmer.capture.begin', captureBeginPayload);
+            postEPUBLog('ebook.perf.cache-warmer.capture.begin', captureBeginPerfPayload);
+            postReplaceTextPerfLog('cache-warmer.capture.begin', captureBeginPerfPayload);
+        }
         if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
             postPageNumLog('cacheWarmer.rendererPageInfo.unavailable', {
                 reason,
@@ -3777,7 +3927,31 @@ class CacheWarmer {
             return;
         }
         try {
+            let captureStillPending = true;
+            const pendingTimeoutMs = 1500;
+            const pendingTimer = setTimeout(() => {
+                if (!captureStillPending) return;
+                postPageNumLog('cacheWarmer.capture.pending', {
+                    reason,
+                    sectionIndex,
+                    sectionHref,
+                    elapsedMs: safeRound(performanceNowMs() - captureStartedAt, 1),
+                    currentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
+                    hasContents: Array.isArray(renderer?.getContents?.()) ? renderer.getContents().length : null,
+                    scrolled: renderer?.scrolled ?? null,
+                });
+            }, pendingTimeoutMs);
             const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
+            captureStillPending = false;
+            clearTimeout(pendingTimer);
+            postPageNumLog('cacheWarmer.capture.settled', {
+                reason,
+                sectionIndex,
+                sectionHref,
+                elapsedMs: safeRound(performanceNowMs() - captureStartedAt, 1),
+                pageStatus: pageResult.status,
+                pagesStatus: pagesResult.status,
+            });
             if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
                 postPageNumLog('cacheWarmer.rendererPageInfo.rejected', {
                     reason,
@@ -3835,7 +4009,18 @@ class CacheWarmer {
             const pageCount = typeof normalized?.total === 'number' && normalized.total > 0
                 ? normalized.total
                 : null;
-            if (sectionIndex == null || pageCount == null) return;
+            if (pageCount == null) {
+                scheduleRetry({
+                    pageStatus: pageResult.status,
+                    pagesStatus: pagesResult.status,
+                    rawPage: pageResult.status === 'fulfilled' ? pageResult.value : null,
+                    rawTotal: pagesResult.status === 'fulfilled' ? pagesResult.value : null,
+                    normalizedCurrent: normalized?.current ?? null,
+                    normalizedTotal: normalized?.total ?? null,
+                });
+                return;
+            }
+            if (sectionIndex == null) return;
             const previous = this.sectionPageCounts.get(sectionIndex) ?? null;
             if (previous === pageCount) return;
             this.sectionPageCounts.set(sectionIndex, pageCount);
@@ -3860,7 +4045,7 @@ class CacheWarmer {
             });
         }
     }
-    
+
     async #onLoad({
         detail: {
             doc,
@@ -4212,20 +4397,112 @@ window.loadLastPosition = async ({
                 setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
             }),
         ]);
+    const waitForFrames = async (count = 2) => {
+        for (let index = 0; index < count; index += 1) {
+            await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        }
+    };
+    const captureRestoreState = (stage, extra = {}) => {
+        const detail = globalThis.reader?.view?.lastLocation ?? null;
+        const currentFraction = typeof detail?.fraction === 'number' ? detail.fraction : null;
+        const locationCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
+        const locationTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        const sectionIndex = typeof detail?.section?.current === 'number'
+            ? detail.section.current
+            : (typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null);
+        postPageNumLog('restore.last-position', {
+            stage,
+            requestedHasCFI: typeof cfi === 'string' && cfi.length > 0,
+            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
+            landedFraction: typeof currentFraction === 'number' ? safeRound(currentFraction, 6) : null,
+            landedSectionIndex: sectionIndex,
+            landedLocationCurrent: locationCurrent,
+            landedLocationTotal: locationTotal,
+            landedCFI: detail?.cfi ?? null,
+            ...extra,
+        });
+        return {
+            detail,
+            currentFraction,
+            locationCurrent,
+            locationTotal,
+            sectionIndex,
+        };
+    };
     postReaderLog('ebook.viewer.loadLastPosition.start', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? fractionalCompletion : 'nil',
+    });
+    postPageNumLog('restore.request', {
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
+        fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
     });
     markEPUBPerf('restore.start', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 4) : 'nil',
     });
     const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
-    if (cfi.length > 0) {
+    const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
+        if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
+            return;
+        }
+        const delta = Math.abs(restoreState.currentFraction - fractionalCompletion);
+        if (delta <= 0.01) {
+            return;
+        }
+        postPageNumLog('restore.reconcile.fraction', {
+            reason,
+            drift: safeRound(delta, 6),
+            fromFraction: safeRound(restoreState.currentFraction, 6),
+            toFraction: safeRound(fractionalCompletion, 6),
+            sectionIndex: restoreState.sectionIndex,
+        });
+        await globalThis.reader.view.goToFraction(fractionalCompletion);
+        await waitForFrames(2);
+        captureRestoreState(stageOnReconcile, {
+            drift: safeRound(delta, 6),
+        });
+    };
+    const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
+    if (syntheticRestoreLocator) {
+        postReaderLog('ebook.viewer.loadLastPosition.path', {
+            mode: 'synthetic-locator',
+            sectionIndex: syntheticRestoreLocator.sectionIndex,
+            localSectionIndex: syntheticRestoreLocator.localSectionIndex,
+            rendererTotal: syntheticRestoreLocator.rendererTotal,
+            fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
+        });
+        postPageNumLog('restore.synthetic-locator', {
+            sectionIndex: syntheticRestoreLocator.sectionIndex,
+            localSectionIndex: syntheticRestoreLocator.localSectionIndex,
+            rendererTotal: syntheticRestoreLocator.rendererTotal,
+            fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
+        });
+        await globalThis.reader.view.renderer.goTo({
+            index: syntheticRestoreLocator.sectionIndex,
+            anchor: syntheticRestoreLocator.fractionInSection,
+        });
+        await waitForFrames(2);
+        const syntheticState = captureRestoreState('after-synthetic-locator', {
+            sectionIndex: syntheticRestoreLocator.sectionIndex,
+            localSectionIndex: syntheticRestoreLocator.localSectionIndex,
+            rendererTotal: syntheticRestoreLocator.rendererTotal,
+        });
+        await reconcileRestoreFractionIfNeeded(
+            syntheticState,
+            'synthetic-locator-fraction-drift',
+            'after-synthetic-locator-fraction-reconcile',
+        );
+    } else if (cfi.length > 0) {
         postReaderLog('ebook.viewer.loadLastPosition.path', {
             mode: 'cfi',
         });
         await globalThis.reader.view.goTo(cfi).catch(async e => {
+            postPageNumLog('restore.cfi.error', {
+                message: e?.message || String(e),
+                fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
+            });
             postReaderLog('ebook.viewer.loadLastPosition.goToError', {
                 hasCFI: true,
                 message: e?.message || String(e),
@@ -4237,14 +4514,27 @@ window.loadLastPosition = async ({
                 });
                 await globalThis.reader.view.goToFraction(fractionalCompletion)
             }
-        })
+        });
+        await waitForFrames(2);
+        const cfiState = captureRestoreState('after-cfi');
+        await reconcileRestoreFractionIfNeeded(
+            cfiState,
+            'cfi-fraction-drift',
+            'after-cfi-fraction-reconcile',
+        );
     } else if (hasFractionalCompletion) {
         postReaderLog('ebook.viewer.loadLastPosition.path', {
             mode: 'fraction',
         });
         try {
             await globalThis.reader.view.goToFraction(fractionalCompletion);
+            await waitForFrames(2);
+            captureRestoreState('after-fraction');
         } catch (error) {
+            postPageNumLog('restore.fraction.error', {
+                message: error?.message || String(error),
+                fallback: 'default-next',
+            });
             postReaderLog('ebook.viewer.loadLastPosition.goToError', {
                 hasCFI: false,
                 mode: 'fraction',
@@ -4265,6 +4555,8 @@ window.loadLastPosition = async ({
             postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
                 mode: 'default-next',
             });
+            await waitForFrames(2);
+            captureRestoreState('after-default-next-fallback');
         }
     } else {
         postReaderLog('ebook.viewer.loadLastPosition.path', {
@@ -4284,8 +4576,11 @@ window.loadLastPosition = async ({
         postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
             mode: 'default-next',
         });
+        await waitForFrames(2);
+        captureRestoreState('after-default-next');
     }
     globalThis.reader.hasLoadedLastPosition = true
+    captureRestoreState('done');
     postReaderLog('ebook.viewer.loadLastPosition.done', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
     });
@@ -4340,6 +4635,14 @@ window.manabiScheduleReaderPageGoTo = (pageNumber) => {
 
 window.manabiGoToReaderPage = async (pageNumber) => {
     return await globalThis.reader?.goToPageNumber?.(pageNumber, 'window.manabiGoToReaderPage');
+}
+
+window.manabiScheduleReaderLocationGoTo = (locationNumber) => {
+    globalThis.reader?.scheduleGoToPageNumber?.(locationNumber);
+}
+
+window.manabiGoToReaderLocation = async (locationNumber) => {
+    return await globalThis.reader?.goToLocationNumber?.(locationNumber, 'window.manabiGoToReaderLocation');
 }
 
 window.manabiGoToReaderPercent = async (percent) => {

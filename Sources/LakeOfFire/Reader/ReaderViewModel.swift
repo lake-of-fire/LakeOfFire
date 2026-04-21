@@ -26,6 +26,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("readerWidthMode") private var readerWidthMode: ReaderWidthMode = .standard
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -202,6 +203,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 }
                 if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
                     document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+                }
+                if (document.body?.getAttribute('data-manabi-reader-width-mode') !== '\(readerWidthMode.rawValue)') {
+                    document.body?.setAttribute('data-manabi-reader-width-mode', '\(readerWidthMode.rawValue)');
                 }
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)

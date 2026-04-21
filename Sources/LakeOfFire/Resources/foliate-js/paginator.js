@@ -318,8 +318,6 @@ class View {
 
                     await afterLoad?.(doc)
 
-                    //                    this.#iframe.style.display = 'none'
-
                     const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
                     const direction = await getDirection({ bodylessStyle, bodylessDoc });
                     this.#vertical = direction.vertical;
@@ -329,17 +327,11 @@ class View {
 
                     this.#contentRange.selectNodeContents(doc.body)
 
-                    //                    console.log("load()... beforerender call")
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
                     })
-                    //                    console.log("load()... beforerender call'd")
-                    //                    this.#iframe.style.display = 'block'
-
-                    //                    console.log("load()... render call")
                     await this.render(layout)
-                    //                    console.log("load()... render call'd")
 
                     this.#resizeObserver.observe(doc.body)
 
@@ -1189,7 +1181,6 @@ export class Paginator extends HTMLElement {
     }
     async sizes() {
         //        await this.#awaitDirection();
-
         if (this.#isCacheWarmer) return 0
         if (/*true || */this.#cachedSizes === null) {
             return new Promise(resolve => {

@@ -168,6 +168,9 @@ internal func buildCanonicalReadabilityHTML(
 ) -> String {
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
+    let readerWidthMode = ReaderWidthMode(
+        rawValue: UserDefaults.standard.string(forKey: "readerWidthMode") ?? ReaderWidthMode.standard.rawValue
+    ) ?? .standard
     let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
@@ -228,7 +231,7 @@ internal func buildCanonicalReadabilityHTML(
             \(titleSuppressionCSS)</style>
             <title>\(resolvedTitle)</title>
         </head>
-        <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
+        <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" data-manabi-reader-width-mode="\(readerWidthMode.rawValue)" \(availabilityAttributes)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(resolvedTitle)</h1>
                 <div id="reader-byline-container">
@@ -3472,6 +3475,9 @@ nonisolated public func processForReaderMode(
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
             let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
+            let readerWidthMode = ReaderWidthMode(
+                rawValue: UserDefaults.standard.string(forKey: "readerWidthMode") ?? ReaderWidthMode.standard.rawValue
+            ) ?? .standard
             
             var bodyStyle = "font-size: \(readerFontSize)px"
             if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
@@ -3480,6 +3486,7 @@ nonisolated public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
+            _ = try? bodyTag.attr("data-manabi-reader-width-mode", readerWidthMode.rawValue)
             debugPrint(
                 "# READERLOAD stage=readerMode.processForReaderMode.bodyAttributes",
                 "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(bodyAttributesStartedAt)))s"
