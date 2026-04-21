@@ -8,9 +8,7 @@ const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
-    'nav:total-pages-gate',
     'nav:section-counts-state',
-    'nav:page-metrics',
     'nav:relocate:input',
     'relocate',
     'relocate:label',
@@ -111,7 +109,7 @@ const deriveLocationIndexFromFraction = (fraction, total) => {
     const clampedFraction = Math.max(0, Math.min(1, fraction));
     const clampedTotal = Math.max(1, Math.round(total));
     if (clampedTotal <= 1) return 0;
-    return Math.max(0, Math.min(clampedTotal - 1, Math.floor(clampedFraction * (clampedTotal - 1))));
+    return Math.max(0, Math.min(clampedTotal - 1, Math.round(clampedFraction * (clampedTotal - 1))));
 };
 
 const flattenPageTargets = (items, collector = []) => {
@@ -206,8 +204,6 @@ export class NavigationHUD {
         this.fallbackTotalPageCount = null;
         this.lastTotalSource = null;
         this.lastTotalPagesSnapshot = null;
-        this.lastTotalPagesGateSnapshot = null;
-        this.lastPageMetricsSnapshot = null;
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
@@ -270,41 +266,8 @@ export class NavigationHUD {
     }
 
     setSectionPageCountsFromCache(counts) {
-        if (!(counts instanceof Map) || counts.size === 0) return;
-        const linearCount = Array.isArray(this.navContext?.sections)
-            ? this.navContext.sections.filter(s => s.linear !== 'no').length
-            : null;
-        const isPartial = typeof linearCount === 'number' && linearCount > 0 && counts.size < linearCount;
-        this._logPageNumberDiagnostic('cachewarmer.section-counts.apply', {
-            receivedCount: counts.size,
-            linearCount,
-            isPartial,
-            receivedTotal: Array.from(counts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0),
-            sectionCountsPreview: Array.from(counts.entries()).slice(0, 8).map(([index, count]) => ({ index, count })),
-        });
-        logBug?.('pagecount:cachewarmer:apply', {
-            received: counts.size,
-            linearCount,
-            isPartial,
-            total: Array.from(counts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0),
-        });
-        counts.forEach((count, index) => {
-            if (typeof count === 'number' && count > 0 && Number.isInteger(index) && index >= 0) {
-                this.sectionPageCounts.set(index, count);
-            }
-        });
-        const total = Array.from(counts.values()).reduce((acc, v) => acc + (Number.isFinite(v) && v > 0 ? v : 0), 0);
-        if (total > 0 && !isPartial) {
-            this.fallbackTotalPageCount = total;
-            this.fallbackTotalPageCountSource = 'cachewarmer';
-            this.lastTotalSource = 'cachewarmer';
-        }
-        if (this.lastRelocateDetail) {
-            this._updateRendererSnapshotFromDetail(this.lastRelocateDetail);
-            this._updatePrimaryLine(this.lastRelocateDetail);
-        }
-        this._updateSectionProgress({ refreshSnapshot: false });
-        this._updateRelocateButtons();
+        // Cache-warmer page counts are intentionally ignored. The visible label is location-driven.
+        return;
     }
 
     setPageTargets(pageList) {
@@ -370,33 +333,6 @@ export class NavigationHUD {
                 : [],
         });
         this.linearSectionCount = this.linearSectionIndexes.size || null;
-        const cachedCounts = Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts)
-            ? new Map(globalThis.__manabiCacheWarmerSectionPageCounts.filter(entry =>
-                Array.isArray(entry)
-                && entry.length >= 2
-                && typeof entry[0] === 'number'
-                && typeof entry[1] === 'number'
-                && entry[1] > 0
-            ))
-            : null;
-        if (cachedCounts?.size) {
-            this._logPageNumberDiagnostic('cachewarmer.section-counts.handoff', {
-                receivedCount: cachedCounts.size,
-                linearCount: this.linearSectionCount,
-                sectionCountsPreview: Array.from(cachedCounts.entries()).slice(0, 8).map(([index, count]) => ({ index, count })),
-            });
-            this.setSectionPageCountsFromCache(cachedCounts);
-        } else {
-            this._logPageNumberDiagnostic('cachewarmer.section-counts.handoff-missing', {
-                linearCount: this.linearSectionCount,
-                hasGlobalCountsArray: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts),
-                globalCountsLength: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts)
-                    ? globalThis.__manabiCacheWarmerSectionPageCounts.length
-                    : null,
-                cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
-                cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
-            });
-        }
         this._rebuildPageTargetSectionMetrics();
         if (this.lastRelocateDetail) {
             this._updateRendererSnapshotFromDetail(this.lastRelocateDetail);
@@ -747,7 +683,7 @@ export class NavigationHUD {
             : '';
         const condensed = normalizedRaw ? this._condensePrimaryLabel(normalizedRaw) : '';
 
-        // Full shows the current page and total; compact/hidden shows only the current page.
+        // Full/compact/hidden all show percent-only progress.
         fullLabelTarget.textContent = normalizedRaw || condensed;
         compactLabelTarget.textContent = condensed || normalizedRaw;
         if (overlayLabelTarget) {
@@ -770,8 +706,7 @@ export class NavigationHUD {
             hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
             labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
             source: this.lastPrimaryLabelDiagnostics?.source ?? null,
-            current: this.lastPrimaryLabelDiagnostics?.currentPageNumber ?? null,
-            total: this.lastPrimaryLabelDiagnostics?.totalPages ?? null,
+            currentPercent: this.lastPrimaryLabelDiagnostics?.currentPercent ?? null,
             rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
@@ -782,11 +717,8 @@ export class NavigationHUD {
             hiddenOverlayLabel: overlayLabelTarget?.textContent || '',
             labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
             source: this.lastPrimaryLabelDiagnostics?.source ?? null,
-            currentPageNumber: this.lastPrimaryLabelDiagnostics?.currentPageNumber ?? null,
-            currentPageSource: this.lastPrimaryLabelDiagnostics?.currentPageSource ?? null,
-            totalPages: this.lastPrimaryLabelDiagnostics?.totalPages ?? null,
-            totalSource: this.lastPrimaryLabelDiagnostics?.totalSource ?? null,
-            fallbackTotalPages: this.fallbackTotalPageCount ?? null,
+            currentPercent: this.lastPrimaryLabelDiagnostics?.currentPercent ?? null,
+            fraction: this.lastPrimaryLabelDiagnostics?.fraction ?? null,
             pageTargetCount: this.totalPageCount || null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             navHidden: this.navHidden,
@@ -976,10 +908,13 @@ export class NavigationHUD {
     }
 
     getPageEstimate(detail) {
-        const metrics = this._computePageMetrics(detail);
-        if (!metrics) return null;
-        const current = typeof metrics.currentPageNumber === 'number' ? metrics.currentPageNumber : null;
-        const total = typeof metrics.totalPages === 'number' ? metrics.totalPages : null;
+        const descriptor = this._makeLocationDescriptor(detail);
+        const current = typeof descriptor?.location?.current === 'number'
+            ? Math.max(1, Math.round(descriptor.location.current) + 1)
+            : null;
+        const total = typeof descriptor?.location?.total === 'number'
+            ? Math.max(1, Math.round(descriptor.location.total))
+            : null;
         if (current == null && total == null) return null;
         return { current, total };
     }
@@ -992,11 +927,15 @@ export class NavigationHUD {
 
     getScrubberFraction(detail = null) {
         if (detail) {
-            const metrics = this._computePageMetrics(detail);
+            const descriptor = this._makeLocationDescriptor(detail);
             const computed = this.lastScrubberFraction
                 ?? this._scrubberFractionFromMetrics({
-                    current: metrics?.currentPageNumber,
-                    total: metrics?.totalPages,
+                    current: typeof descriptor?.location?.current === 'number'
+                        ? Math.max(1, Math.round(descriptor.location.current) + 1)
+                        : null,
+                    total: typeof descriptor?.location?.total === 'number'
+                        ? Math.max(1, Math.round(descriptor.location.total))
+                        : null,
                     fallbackFraction: typeof detail.fraction === 'number' ? detail.fraction : null,
                 });
             if (computed != null) {
@@ -1034,84 +973,53 @@ export class NavigationHUD {
             return null;
         }
 
-        const metrics = this._computePageMetrics(detail);
-        const rawLocationCurrent = typeof detail.location?.current === 'number'
-            ? detail.location.current
-            : null;
-        const locationTotal = typeof detail.location?.total === 'number'
-            ? detail.location.total
-            : null;
-        const locationCurrent = rawLocationCurrent != null
-            ? (this._makeLocationDescriptor(detail)?.location?.current ?? rawLocationCurrent)
-            : null;
-        if (locationCurrent != null) {
-            const currentLocationNumber = Math.max(1, Math.round(locationCurrent) + 1);
-            const label = typeof locationTotal === 'number' && locationTotal > 0
-                ? `Loc ${currentLocationNumber} of ${Math.max(1, Math.round(locationTotal))}`
-                : `Loc ${currentLocationNumber}`;
-            const source = 'location';
+        const {
+            index: sectionIndex,
+            source: sectionIndexSource,
+            resolvedHref: resolvedSectionHref,
+        } = this._resolveSectionIndex(detail);
+        const fraction = this._fractionForPercent(detail);
+        if (typeof fraction === 'number' && Number.isFinite(fraction)) {
+            const clampedFraction = Math.max(0, Math.min(1, fraction));
+            const currentPercent = safeRound(clampedFraction * 100, 1);
+            const label = this.formatPercent(clampedFraction);
+            const source = 'percent';
             this.lastPrimaryLabelDiagnostics = {
                 source,
                 label,
-                currentPageNumber: currentLocationNumber,
-                totalPages: locationTotal,
-                currentPageSource: 'location-global',
-                sectionIndex: metrics?.diag?.sectionIndex ?? null,
-                totalSource: 'location-global',
+                sectionIndex,
                 totalPageCount: this.totalPageCount,
-                locationTotal,
+                currentPercent,
+                fraction: safeRound(clampedFraction, 6),
             };
-            this._logPageNumberDiagnostic('primary-label.location', {
+            this._logPageNumberDiagnostic('primary-label.percent', {
                 label,
-                currentLocationNumber,
-                locationCurrent,
-                rawLocationCurrent,
-                locationTotal,
+                currentPercent,
                 source,
-                fraction: typeof detail?.fraction === 'number' ? Number(detail.fraction.toFixed(6)) : null,
-                sectionIndex: metrics?.diag?.sectionIndex ?? null,
-                sectionIndexSource: metrics?.diag?.sectionIndexSource ?? null,
+                fraction: safeRound(clampedFraction, 6),
+                sectionIndex,
+                sectionIndexSource,
+                resolvedSectionHref,
             });
             this.latestPrimaryLabel = label;
             return label;
         }
 
-        // Do not show guessed or fallback labels in the location slot.
+        // Do not show guessed or fallback labels in the progress slot.
         this.latestPrimaryLabel = '';
         this.lastPrimaryLabelDiagnostics = {
-            source: 'location-pending',
+            source: 'percent-pending',
             label: '',
             totalPageCount: this.totalPageCount,
-            rawCurrentPageNumber: metrics?.diag?.rawCurrentPageNumber ?? null,
-            rawCurrentSource: metrics?.diag?.rawCurrentSource ?? null,
-            rawTotalPages: metrics?.diag?.rawTotalPages ?? null,
-            currentPageReady: metrics?.diag?.currentPageReady ?? false,
-            totalPagesReady: metrics?.diag?.totalPagesReady ?? false,
-            sectionIndex: metrics?.diag?.sectionIndex ?? null,
-            sectionIndexSource: metrics?.diag?.sectionIndexSource ?? null,
-            resolvedSectionHref: metrics?.diag?.resolvedSectionHref ?? null,
-            hasTrustedCurrentSectionCount: metrics?.diag?.hasTrustedCurrentSectionCount ?? false,
-            cacheWarmerHighestSectionIndex: metrics?.diag?.cacheWarmerHighestSectionIndex ?? null,
-            cacheWarmerReady: metrics?.diag?.cacheWarmerReady ?? false,
-            locationTotal: metrics?.diag?.locationTotal ?? null,
-            rendererSnapshotCurrent: metrics?.diag?.rendererSnapshotCurrent ?? null,
-            rendererSnapshotTotal: metrics?.diag?.rendererSnapshotTotal ?? null,
+            sectionIndex,
+            sectionIndexSource,
+            resolvedSectionHref,
         };
         this._logPageNumberDiagnostic('primary-label.blocked', {
-            reason: rawLocationCurrent == null
-                ? 'location-current-pending'
-                : 'label-empty',
-            rawCurrentPageNumber: metrics?.diag?.rawCurrentPageNumber ?? null,
-            rawCurrentSource: metrics?.diag?.rawCurrentSource ?? null,
-            rawTotalPages: metrics?.diag?.rawTotalPages ?? null,
-            currentPageReady: metrics?.diag?.currentPageReady ?? false,
-            totalPagesReady: metrics?.diag?.totalPagesReady ?? false,
-            sectionIndex: metrics?.diag?.sectionIndex ?? null,
-            sectionIndexSource: metrics?.diag?.sectionIndexSource ?? null,
-            resolvedSectionHref: metrics?.diag?.resolvedSectionHref ?? null,
-            hasTrustedCurrentSectionCount: metrics?.diag?.hasTrustedCurrentSectionCount ?? false,
-            cacheWarmerHighestSectionIndex: metrics?.diag?.cacheWarmerHighestSectionIndex ?? null,
-            cacheWarmerReady: metrics?.diag?.cacheWarmerReady ?? false,
+            reason: 'percent-pending',
+            sectionIndex,
+            sectionIndexSource,
+            resolvedSectionHref,
             totalPageCount: this.totalPageCount,
             fallbackTotalPageCount: this.fallbackTotalPageCount,
         });
@@ -1120,348 +1028,7 @@ export class NavigationHUD {
 
     _condensePrimaryLabel(label) {
         if (typeof label !== 'string') return '';
-        const normalized = label.replace(/\s+/g, ' ').trim();
-        const locationMatch = normalized.match(/^Loc\s+(\d+)(?:\s+of\s+\d+)?$/i);
-        if (locationMatch) {
-            return `Loc ${locationMatch[1]}`;
-        }
-        const pageMatch = normalized.match(/^Page\s*(\d+)(?:\s+of\s+\d+)?$/i);
-        if (pageMatch) {
-            return pageMatch[1];
-        }
-        const totalMatch = normalized.match(/^(\d+)\s+of\s+\d+$/i);
-        if (totalMatch) {
-            return totalMatch[1];
-        }
-        // Otherwise strip any "of <total>" suffix (allowing for varied whitespace/non-breaking spaces).
-        const trimmed = normalized.replace(/\s*of\s+.*$/i, '').trim();
-        return trimmed || normalized;
-    }
-
-    _computePageMetrics(detail) {
-        if (!detail) return null;
-        const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
-        const pageItem = detail.pageItem ?? null;
-        const pageItemLabel = typeof pageItem?.label === 'string' ? pageItem.label : null;
-        const pageItemKey = pageItem ? ensurePageKey(pageItem) : null;
-        const pageIndex = this._resolvePageIndex(pageItem);
-        const {
-            index: sectionIndex,
-            source: sectionIndexSource,
-            resolvedHref: resolvedSectionHref,
-        } = this._resolveSectionIndex(detail);
-        const locationCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
-        const locationTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
-        const detailPageNumber = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
-        const detailPageCount = typeof detail.pageCount === 'number' ? detail.pageCount : null;
-        const totalPagesRaw = this._currentTotalPages({
-            detail,
-            detailPageCount,
-            sectionIndex,
-        });
-        const approxSectionIndexFromFraction =
-            typeof detailPageCount === 'number' && detailPageCount > 0
-                ? this._pageIndexFromFraction(fraction, detailPageCount)
-                : null;
-        const approxGlobalIndexFromFraction = this._globalPageIndexFromFraction(fraction, totalPagesRaw);
-        const locationIndex = locationCurrent != null ? locationCurrent : null;
-        const rendererIndex = this._rendererSnapshotIndex();
-        const detailIndex = detailPageNumber != null ? detailPageNumber - 1 : null;
-        const localSectionIndex = [detailIndex, rendererIndex, approxSectionIndexFromFraction]
-            .find(index => typeof index === 'number' && index >= 0);
-        const sectionPageNumber = localSectionIndex != null ? localSectionIndex + 1 : null;
-
-        if (sectionIndex != null && detailPageCount != null) {
-            this.lastSectionIndexSeen = sectionIndex;
-            this.sectionPageCounts.set(sectionIndex, detailPageCount);
-        }
-        const sectionCountsState = this._sectionCountsState();
-        const sectionOffset = sectionIndex != null ? this._sectionOffset(sectionIndex) : null;
-        const pageTargetSectionOffset = sectionIndex != null ? this._pageTargetSectionOffset(sectionIndex) : null;
-        const sectionsTotal = this.sectionPageCounts.size > 0
-            ? Array.from(this.sectionPageCounts.values()).reduce((acc, value) => acc + (typeof value === 'number' && value > 0 ? value : 0), 0)
-            : null;
-
-        const globalIndexFromPageTargetSectionOffset =
-            pageTargetSectionOffset != null && localSectionIndex != null
-                ? pageTargetSectionOffset + localSectionIndex
-                : null;
-        const globalIndexFromSectionOffset =
-            sectionOffset != null && localSectionIndex != null
-                ? sectionOffset + localSectionIndex
-                : null;
-        const globalIndexFromLocation =
-            totalPagesRaw != null
-            && locationTotal != null
-            && locationTotal === totalPagesRaw
-            && locationIndex != null
-                ? locationIndex
-                : null;
-        const globalIndex = [
-            pageIndex,
-            globalIndexFromPageTargetSectionOffset,
-            globalIndexFromSectionOffset,
-            globalIndexFromLocation,
-            approxGlobalIndexFromFraction,
-            sectionIndex == null ? detailIndex : null,
-        ].find(index => typeof index === 'number' && index >= 0);
-        const rawCurrent = globalIndex != null
-            ? globalIndex + 1
-            : (sectionPageNumber != null ? sectionPageNumber : null);
-        const rawCurrentSource =
-            pageIndex != null
-                ? 'page-target'
-                : globalIndexFromPageTargetSectionOffset != null
-                    ? 'page-target-section-offset'
-                    : globalIndexFromSectionOffset != null
-                        ? 'section-offset'
-                        : globalIndexFromLocation != null
-                            ? 'location-global'
-                            : approxGlobalIndexFromFraction != null
-                                ? 'fraction-global'
-                                : sectionIndex == null && detailIndex != null
-                                    ? 'detail-global'
-                                    : sectionPageNumber != null
-                                        ? 'section-local'
-                                        : null;
-        const normalizedSectionIndex =
-            sectionIndex == null
-                ? null
-                : Number.isFinite(Number(sectionIndex))
-                    ? Number(sectionIndex)
-                    : null;
-        const hasTrustedCurrentSectionCount =
-            sectionIndex != null
-            && typeof this.sectionPageCounts.get(sectionIndex) === 'number'
-            && this.sectionPageCounts.get(sectionIndex) > 0;
-        const cacheWarmerFinished = this._cacheWarmerHasFinishedBook();
-        const cacheWarmerHighestSectionIndex = this._cacheWarmerHighestSectionIndex();
-        const provisionalLocationGlobalMismatch =
-            rawCurrentSource === 'location-global'
-            && normalizedSectionIndex != null
-            && normalizedSectionIndex > 0
-            && rawCurrent === 1;
-        const currentPageReady = rawCurrent != null && (() => {
-            if (rawCurrentSource === 'page-target' || rawCurrentSource === 'page-target-section-offset') {
-                return true;
-            }
-            if (rawCurrentSource === 'section-offset') {
-                return sectionOffset != null;
-            }
-            if (rawCurrentSource === 'location-global') {
-                return normalizedSectionIndex === 0;
-            }
-            return false;
-        })();
-        const adjustedCurrent = currentPageReady ? rawCurrent : null;
-        const adjustedCurrentSource = currentPageReady ? rawCurrentSource : null;
-        const rawTotal = totalPagesRaw != null ? totalPagesRaw : null;
-        const totalPagesReady = rawTotal != null && (
-            cacheWarmerFinished
-            || this.lastTotalSource === 'location-global'
-        );
-        const adjustedTotal = totalPagesReady ? rawTotal : null;
-        const totalPagesBlockedReason =
-            rawTotal == null
-                ? 'missing-raw-total'
-                : !totalPagesReady
-                    ? 'cachewarmer-not-finished'
-                    : null;
-        const diag = {
-            fraction,
-            pageItemKey,
-            pageItemLabel,
-            pageIndexFromItem: pageIndex,
-            approxSectionIndexFromFraction,
-            approxGlobalIndexFromFraction,
-            locationCurrent,
-            locationTotal,
-            localSectionIndex,
-            globalIndex,
-            sectionIndex,
-            normalizedSectionIndex,
-            sectionOffset,
-            resolvedSectionHref,
-            pageTargetSectionOffset,
-            sectionPageNumber,
-            sectionPageCount: detailPageCount,
-            detailPageNumber,
-            detailPageCount,
-            totalPageCount: this.totalPageCount,
-            fallbackTotalPageCount: this.fallbackTotalPageCount,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-            rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
-            rawCurrentPageNumber: rawCurrent,
-            rawCurrentSource,
-            rawTotalPages: rawTotal,
-            effectiveTotalPages: adjustedTotal ?? null,
-            totalSource: totalPagesReady ? (this.lastTotalSource ?? null) : null,
-            rawTotalSource: this.lastTotalSource ?? null,
-            currentSource: adjustedCurrentSource,
-            currentPageReady,
-            hasTrustedCurrentSectionCount,
-            totalPagesReady,
-            totalPagesBlockedReason,
-            cacheWarmerReady: cacheWarmerFinished,
-            cacheWarmerHighestSectionIndex,
-            sectionIndexSource,
-            resolvedSectionHref,
-            currentPageNumber: adjustedCurrent ?? null,
-            totalPages: adjustedTotal ?? null,
-        };
-        if (provisionalLocationGlobalMismatch) {
-            this._logPageNumberDiagnostic('page-metrics.provisional-mismatch', {
-                message: 'section is nonzero but provisional location-global page still resolves to 1',
-                currentPageNumber: rawCurrent,
-                currentPageSource: rawCurrentSource,
-                totalPages: adjustedTotal ?? null,
-                sectionIndex,
-                sectionIndexSource,
-                sectionOffset,
-                pageTargetSectionOffset,
-                locationIndex,
-                locationTotal,
-                rawCurrentPageNumber: rawCurrent,
-                rawCurrentSource,
-                hasTrustedCurrentSectionCount,
-                cacheWarmerHighestSectionIndex,
-                sectionPageCountsSize: this.sectionPageCounts.size,
-                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
-            });
-        }
-        if (
-            rawCurrentSource === 'location-global'
-            && normalizedSectionIndex != null
-            && normalizedSectionIndex > 0
-            && sectionOffset == null
-        ) {
-            const missingPriorSectionIndexes = [];
-            for (let i = 0; i < normalizedSectionIndex; i += 1) {
-                const count = this.sectionPageCounts.get(i);
-                if (!(typeof count === 'number' && count > 0)) {
-                    missingPriorSectionIndexes.push(i);
-                }
-            }
-            this._logPageNumberDiagnostic('page-metrics.root-cause', {
-                message: 'nonzero section lacks prior-section counts, so section offset cannot be computed yet',
-                sectionIndex,
-                sectionIndexSource,
-                currentPageNumber: rawCurrent,
-                currentPageSource: rawCurrentSource,
-                totalPages: adjustedTotal ?? null,
-                missingPriorSectionIndexes,
-                knownCountsPreview: Array.from(this.sectionPageCounts.entries())
-                    .sort((a, b) => a[0] - b[0])
-                    .slice(0, 8)
-                    .map(([index, total]) => ({ index, count: total })),
-                cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
-                cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
-                hasGlobalCountsArray: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts),
-                globalCountsLength: Array.isArray(globalThis.__manabiCacheWarmerSectionPageCounts)
-                    ? globalThis.__manabiCacheWarmerSectionPageCounts.length
-                    : null,
-            });
-        }
-        const scrubFraction = this._scrubberFractionFromMetrics({
-            current: adjustedCurrent,
-            total: adjustedTotal,
-            fallbackFraction: fraction,
-        });
-        if (scrubFraction != null) {
-            this.lastScrubberFraction = scrubFraction;
-        }
-        this._logPageMetrics({
-            fraction: fraction != null ? Number(fraction.toFixed(6)) : null,
-            pageItemKey,
-            pageItemLabel,
-            pageIndexFromItem: pageIndex,
-            approxSectionIndexFromFraction,
-            approxGlobalIndexFromFraction,
-            locationIndex: locationCurrent,
-            rendererIndex,
-            localSectionIndex,
-            globalIndex,
-            sectionIndex,
-            sectionIndexSource,
-            sectionOffset,
-            pageTargetSectionOffset,
-            currentPageNumber: adjustedCurrent,
-            currentPageSource: adjustedCurrentSource,
-            totalPages: adjustedTotal,
-            rawCurrentPageNumber: rawCurrent,
-            rawCurrentSource,
-            rawTotalPages: rawTotal,
-            currentPageReady,
-            totalPagesReady,
-            totalPagesBlockedReason,
-            cacheWarmerReady: cacheWarmerFinished,
-            cacheWarmerHighestSectionIndex,
-            totalPageCount: this.totalPageCount,
-            rendererTotal: this.rendererPageSnapshot?.total ?? null,
-            fallbackTotalPageCount: this.fallbackTotalPageCount,
-            fallbackTotalPageCountSource: this.fallbackTotalPageCountSource ?? null,
-            sectionsTotal,
-            sectionCountsComplete: sectionCountsState.complete,
-            sectionCountsFilledLinear: sectionCountsState.filledLinear,
-            linearSectionCount: sectionCountsState.linearCount,
-            locationTotal,
-            detailPageNumber,
-            detailPageCount,
-            totalSource: this.lastTotalSource ?? null,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-        });
-        this._logTotalPagesGate({
-            rawTotalPages: rawTotal,
-            rawTotalSource: this.lastTotalSource ?? null,
-            totalPagesReady,
-            totalPagesBlockedReason,
-            cacheWarmerFinished,
-            cacheWarmerHighestSectionIndex,
-            fallbackTotalPageCount: this.fallbackTotalPageCount,
-            fallbackTotalPageCountSource: this.fallbackTotalPageCountSource ?? null,
-            totalPageCount: this.totalPageCount,
-            sectionsTotal,
-            sectionCountsComplete: sectionCountsState.complete,
-            sectionCountsFilledLinear: sectionCountsState.filledLinear,
-            linearSectionCount: sectionCountsState.linearCount,
-            missingLinearSectionIndexesPreview: sectionCountsState.missingLinearSectionIndexesPreview,
-            sectionIndex,
-            resolvedSectionHref,
-        });
-        if (!currentPageReady || !totalPagesReady) {
-            this._logPageNumberDiagnostic('page-metrics.blocked', {
-                currentPageReady,
-                totalPagesReady,
-                rawCurrentPageNumber: rawCurrent,
-                rawCurrentSource,
-                rawTotalPages: rawTotal,
-                rawTotalSource: this.lastTotalSource ?? null,
-                totalPagesBlockedReason,
-                sectionIndex,
-                sectionIndexSource,
-                resolvedSectionHref,
-                hasTrustedCurrentSectionCount,
-                cacheWarmerFinished,
-                cacheWarmerHighestSectionIndex,
-                sectionPageCountsSize: this.sectionPageCounts.size,
-                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
-                totalPageCount: this.totalPageCount,
-                fallbackTotalPageCount: this.fallbackTotalPageCount,
-                fallbackTotalPageCountSource: this.fallbackTotalPageCountSource ?? null,
-                sectionCountsComplete: sectionCountsState.complete,
-                sectionCountsFilledLinear: sectionCountsState.filledLinear,
-                linearSectionCount: sectionCountsState.linearCount,
-                missingLinearSectionIndexesPreview: sectionCountsState.missingLinearSectionIndexesPreview,
-            });
-        }
-        return {
-            currentPageNumber: adjustedCurrent,
-            totalPages: adjustedTotal,
-            sectionIndex,
-            pageItemLabel,
-            diag,
-        };
+        return label.replace(/\s+/g, ' ').trim();
     }
 
     _resolveSectionIndex(detail) {
@@ -2025,16 +1592,12 @@ export class NavigationHUD {
     _logPageScrub(_event, _payload = {}) {}
 
     _logJumpDiagnostic(event, payload = {}) {
-        const pageNumber = typeof this.lastPrimaryLabelDiagnostics?.currentPageNumber === 'number'
-            ? this.lastPrimaryLabelDiagnostics.currentPageNumber
-            : null;
-        const pageTotal = typeof this.lastPrimaryLabelDiagnostics?.totalPages === 'number'
-            ? this.lastPrimaryLabelDiagnostics.totalPages
+        const currentPercent = typeof this.lastPrimaryLabelDiagnostics?.currentPercent === 'number'
+            ? this.lastPrimaryLabelDiagnostics.currentPercent
             : null;
         const context = {
             timestamp: Date.now(),
-            pageNumber,
-            pageTotal,
+            currentPercent,
             ...payload,
         };
         const cleanedEntries = Object.entries(context).filter(([, value]) => value !== undefined && value !== null);
@@ -2286,113 +1849,6 @@ export class NavigationHUD {
         return best?.total ?? null;
     }
 
-    _logPageMetrics(payload) {
-        const epsilon = 0.00001;
-        const prev = this.lastPageMetricsSnapshot;
-        const hasChanged =
-            !prev ||
-            prev.currentPageNumber !== payload.currentPageNumber ||
-            prev.totalPages !== payload.totalPages ||
-            prev.globalIndex !== payload.globalIndex ||
-            prev.localSectionIndex !== payload.localSectionIndex ||
-            prev.currentPageSource !== payload.currentPageSource ||
-            prev.currentPageReady !== payload.currentPageReady ||
-            prev.totalPagesReady !== payload.totalPagesReady ||
-            prev.totalSource !== payload.totalSource ||
-            prev.sectionOffset !== payload.sectionOffset ||
-            prev.sectionIndex !== payload.sectionIndex ||
-            (typeof payload.fraction === 'number' && typeof prev?.fraction === 'number'
-                ? Math.abs(payload.fraction - prev.fraction) > epsilon
-                : payload.fraction !== prev?.fraction);
-        if (!hasChanged) return;
-        this.lastPageMetricsSnapshot = {
-            currentPageNumber: payload.currentPageNumber,
-            totalPages: payload.totalPages,
-            globalIndex: payload.globalIndex ?? null,
-            localSectionIndex: payload.localSectionIndex ?? null,
-            currentPageSource: payload.currentPageSource ?? null,
-            currentPageReady: !!payload.currentPageReady,
-            totalPagesReady: !!payload.totalPagesReady,
-            rawCurrentPageNumber: payload.rawCurrentPageNumber ?? null,
-            rawCurrentSource: payload.rawCurrentSource ?? null,
-            rawTotalPages: payload.rawTotalPages ?? null,
-            totalSource: payload.totalSource ?? null,
-            sectionOffset: payload.sectionOffset ?? null,
-            sectionIndex: payload.sectionIndex ?? null,
-            sectionIndexSource: payload.sectionIndexSource ?? null,
-            resolvedSectionHref: payload.resolvedSectionHref ?? null,
-            fraction: payload.fraction ?? null,
-        };
-        logEBookPageNumLimited('nav:page-metrics', payload);
-        logEPUBNav('page.metrics', {
-            currentPageNumber: payload.currentPageNumber ?? null,
-            currentPageSource: payload.currentPageSource ?? null,
-            currentPageReady: !!payload.currentPageReady,
-            totalPages: payload.totalPages ?? null,
-            totalPagesReady: !!payload.totalPagesReady,
-            rawCurrentPageNumber: payload.rawCurrentPageNumber ?? null,
-            rawCurrentSource: payload.rawCurrentSource ?? null,
-            rawTotalPages: payload.rawTotalPages ?? null,
-            sectionIndex: payload.sectionIndex ?? null,
-            sectionIndexSource: payload.sectionIndexSource ?? null,
-            resolvedSectionHref: payload.resolvedSectionHref ?? null,
-            sectionOffset: payload.sectionOffset ?? null,
-            pageTargetSectionOffset: payload.pageTargetSectionOffset ?? null,
-            globalIndex: payload.globalIndex ?? null,
-            localSectionIndex: payload.localSectionIndex ?? null,
-            detailPageNumber: payload.detailPageNumber ?? null,
-            detailPageCount: payload.detailPageCount ?? null,
-            pageIndexFromItem: payload.pageIndexFromItem ?? null,
-            rendererIndex: payload.rendererIndex ?? null,
-            locationIndex: payload.locationIndex ?? null,
-            totalSource: payload.totalSource ?? null,
-            cacheWarmerReady: !!payload.cacheWarmerReady,
-            cacheWarmerHighestSectionIndex: payload.cacheWarmerHighestSectionIndex ?? null,
-            totalPageCount: payload.totalPageCount ?? null,
-            fallbackTotalPageCount: payload.fallbackTotalPageCount ?? null,
-            sectionsTotal: payload.sectionsTotal ?? null,
-            locationTotal: payload.locationTotal ?? null,
-            fraction: payload.fraction ?? null,
-        });
-    }
-
-    _logTotalPagesGate(payload) {
-        const snapshot = {
-            rawTotalPages: payload.rawTotalPages ?? null,
-            rawTotalSource: payload.rawTotalSource ?? null,
-            totalPagesReady: !!payload.totalPagesReady,
-            totalPagesBlockedReason: payload.totalPagesBlockedReason ?? null,
-            cacheWarmerFinished: !!payload.cacheWarmerFinished,
-            cacheWarmerHighestSectionIndex: payload.cacheWarmerHighestSectionIndex ?? null,
-            fallbackTotalPageCount: payload.fallbackTotalPageCount ?? null,
-            fallbackTotalPageCountSource: payload.fallbackTotalPageCountSource ?? null,
-            totalPageCount: payload.totalPageCount ?? null,
-            sectionsTotal: payload.sectionsTotal ?? null,
-            sectionCountsComplete: !!payload.sectionCountsComplete,
-            sectionCountsFilledLinear: payload.sectionCountsFilledLinear ?? null,
-            linearSectionCount: payload.linearSectionCount ?? null,
-            sectionIndex: payload.sectionIndex ?? null,
-            resolvedSectionHref: payload.resolvedSectionHref ?? null,
-        };
-        const prev = this.lastTotalPagesGateSnapshot;
-        const changed = !prev
-            || Object.keys(snapshot).some(key => snapshot[key] !== prev[key])
-            || JSON.stringify(payload.missingLinearSectionIndexesPreview ?? []) !== JSON.stringify(prev?.missingLinearSectionIndexesPreview ?? []);
-        if (!changed) return;
-        this.lastTotalPagesGateSnapshot = {
-            ...snapshot,
-            missingLinearSectionIndexesPreview: payload.missingLinearSectionIndexesPreview ?? [],
-        };
-        logEBookPageNumLimited('nav:total-pages-gate', {
-            ...snapshot,
-            missingLinearSectionIndexesPreview: payload.missingLinearSectionIndexesPreview ?? [],
-        });
-        logEPUBNav('total-pages.gate', {
-            ...snapshot,
-            missingLinearSectionIndexesPreview: payload.missingLinearSectionIndexesPreview ?? [],
-        });
-    }
-
     _updateFallbackTotalPages(total, source = 'unknown') {
         if (typeof total !== 'number' || total <= 0) return;
         if (!['page-targets', 'sections', 'cachewarmer'].includes(source)) return;
@@ -2409,21 +1865,17 @@ export class NavigationHUD {
 
     _labelForDescriptor(descriptor) {
         if (!descriptor) return '';
-        const derivedTotal = this.lastPrimaryLabelDiagnostics?.totalPages
-            ?? this.lastPageMetricsSnapshot?.totalPages
-            ?? null;
-        if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
-            const clampedTotal = Math.max(1, derivedTotal);
-            const idx = Math.round(Math.max(0, Math.min(1, descriptor.fraction)) * (clampedTotal - 1));
-            return `${idx + 1}`;
+        const descriptorFraction = typeof descriptor.fraction === 'number'
+            ? Math.max(0, Math.min(1, descriptor.fraction))
+            : null;
+        if (descriptorFraction != null) {
+            return this.formatPercent(descriptorFraction);
         }
-        const currentPageNumber = this.lastPrimaryLabelDiagnostics?.currentPageNumber
-            ?? this.lastPageMetricsSnapshot?.currentPageNumber
-            ?? null;
-        if (typeof currentPageNumber === 'number' && currentPageNumber > 0) {
-            return `${currentPageNumber}`;
+        const currentPercent = this.lastPrimaryLabelDiagnostics?.currentPercent ?? null;
+        if (typeof currentPercent === 'number') {
+            return `${Number.isInteger(currentPercent) ? currentPercent : currentPercent.toFixed(1)}%`;
         }
-        // No page info; leave label empty.
+        // No progress info; leave label empty.
         return '';
     }
     

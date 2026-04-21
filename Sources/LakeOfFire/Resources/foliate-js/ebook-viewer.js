@@ -1898,16 +1898,14 @@ class Reader {
     async buildGoToSheetSnapshot() {
         const chapters = buildGoToSnapshotChapters(this.view?.book);
         const linearSectionEntries = buildLinearSectionEntries(this.view?.book);
-        const snapshotMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
         const currentLocationDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
-        const currentLocationRaw = typeof currentLocationDescriptor?.location?.current === 'number'
-            ? currentLocationDescriptor.location.current
-            : null;
-        const totalLocations = typeof currentLocationDescriptor?.locationTotalHint === 'number'
-            ? currentLocationDescriptor.locationTotalHint
-            : (this.navHUD?.getLocationTotalHint?.() ?? null);
-        const totalLocationCount = typeof totalLocations === 'number' && totalLocations > 0
-            ? Math.max(1, Math.round(totalLocations))
+        const currentFraction = typeof currentLocationDescriptor?.fraction === 'number'
+            ? Math.max(0, Math.min(1, currentLocationDescriptor.fraction))
+            : (typeof this.navHUD?._fractionForPercent?.(this.navHUD?.lastRelocateDetail ?? null) === 'number'
+                ? Math.max(0, Math.min(1, this.navHUD._fractionForPercent(this.navHUD.lastRelocateDetail)))
+                : null);
+        const currentPercent = currentFraction != null
+            ? safeRound(currentFraction * 100, 1)
             : null;
         const linearHrefIndex = new Map(
             linearSectionEntries
@@ -1916,24 +1914,21 @@ class Reader {
         );
         for (const entry of chapters) {
             const href = entry.href;
-            let pageNumber = null;
-            let pageNumberSource = null;
+            let percent = null;
+            let percentSource = null;
             const normalizedHref = normalizeSpineHref(href);
             const linearIndex = normalizedHref != null ? (linearHrefIndex.get(normalizedHref) ?? null) : null;
-            if (linearIndex != null && totalLocationCount != null) {
+            if (linearIndex != null) {
                 if (linearSectionEntries.length <= 1) {
-                    pageNumber = 1;
+                    percent = 0;
                 } else {
                     const fraction = linearIndex / Math.max(linearSectionEntries.length - 1, 1);
-                    pageNumber = Math.max(1, Math.min(
-                        totalLocationCount,
-                        Math.round(fraction * Math.max(totalLocationCount - 1, 0)) + 1,
-                    ));
+                    percent = safeRound(Math.max(0, Math.min(1, fraction)) * 100, 1);
                 }
-                pageNumberSource = 'linear-section-estimate';
+                percentSource = 'linear-section-estimate';
             }
-            entry.pageNumber = pageNumber;
-            entry.pageNumberSource = pageNumberSource;
+            entry.percent = percent;
+            entry.percentSource = percentSource;
         }
         const relocateSectionIndex = typeof this.navHUD?.lastRelocateDetail?.sectionIndex === 'number'
             ? this.navHUD.lastRelocateDetail.sectionIndex
@@ -1948,7 +1943,7 @@ class Reader {
                 return null;
             }
         })();
-        const resolvedSectionIndex = this.navHUD?._resolveSectionIndex?.(snapshotMetrics ?? this.navHUD?.lastRelocateDetail ?? {}) ?? {
+        const resolvedSectionIndex = this.navHUD?._resolveSectionIndex?.(this.navHUD?.lastRelocateDetail ?? {}) ?? {
             index: null,
             source: 'nav-hud-unavailable',
         };
@@ -1975,60 +1970,26 @@ class Reader {
         const currentChapterEntry = normalizedCurrentChapterHref
             ? chapters.find((entry) => normalizeSpineHref(entry.href) === normalizedCurrentChapterHref)
             : null;
-        const currentChapterPageNumber = typeof currentChapterEntry?.pageNumber === 'number'
-            ? currentChapterEntry.pageNumber
+        const currentChapterPercent = typeof currentChapterEntry?.percent === 'number'
+            ? currentChapterEntry.percent
             : null;
-        const currentChapterPageNumberSource = typeof currentChapterEntry?.pageNumberSource === 'string'
-            ? currentChapterEntry.pageNumberSource
+        const currentChapterPercentSource = typeof currentChapterEntry?.percentSource === 'string'
+            ? currentChapterEntry.percentSource
             : null;
-        const rawCurrentPageNumber = currentLocationRaw != null
-            ? Math.max(1, Math.round(currentLocationRaw) + 1)
-            : null;
-        const shouldApplyChapterFloor =
-            rawCurrentPageNumber == null
-            && currentChapterPageNumber != null;
-        const currentPageNumber = shouldApplyChapterFloor
-            ? currentChapterPageNumber
-            : rawCurrentPageNumber;
-        const currentPageNumberSource = currentPageNumber == null
-            ? null
-            : (
-                rawCurrentPageNumber != null
-                    ? 'location'
-                    : currentChapterPageNumber != null
-                        ? 'chapter-floor'
-                        : null
-            );
-        const totalPages = totalLocationCount;
         const snapshot = {
             isRTL: !!this.isRTL,
             currentChapterHref,
             currentChapterTitle: typeof currentSectionEntry?.title === 'string'
                 ? currentSectionEntry.title
                 : (typeof currentChapter?.label === 'string' ? currentChapter.label : null),
-            currentPageNumber,
-            totalPages,
+            currentPercent,
             currentSectionIndex,
             currentSectionIndexSource: resolvedSectionIndex?.source ?? null,
-            snapshotSectionIndex: snapshotMetrics?.sectionIndex ?? null,
             navLastSectionIndexSeen: this.navHUD?.lastSectionIndexSeen ?? null,
             currentSectionHref,
             normalizedCurrentSectionHref,
             chapters,
         };
-        if (
-            shouldApplyChapterFloor &&
-            currentChapterPageNumber != null &&
-            currentPageNumber !== rawCurrentPageNumber
-        ) {
-            postPageNumLog('goto.snapshot.currentPageAdjusted', {
-                rawCurrentPageNumber,
-                adjustedCurrentPageNumber: currentPageNumber,
-                currentChapterHref,
-                currentChapterPageNumber,
-                currentChapterPageNumberSource,
-            });
-        }
         postPageNumLog('goto.snapshot', {
             isRTL: snapshot.isRTL,
             chapterCount: chapters.length,
@@ -2038,28 +1999,18 @@ class Reader {
             currentSectionIndexSource: resolvedSectionIndex?.source ?? null,
             rendererCurrentIndex,
             relocateSectionIndex,
-            snapshotSectionIndex: snapshotMetrics?.sectionIndex ?? null,
             navLastSectionIndexSeen: this.navHUD?.lastSectionIndexSeen ?? null,
             currentSectionHref,
             normalizedCurrentSectionHref,
-            currentChapterPageNumber,
-            currentChapterPageNumberSource,
-            currentPageNumber: snapshot.currentPageNumber,
-            rawCurrentPageNumber,
-            currentPageSource: snapshotMetrics?.currentPageSource ?? currentPageNumberSource ?? null,
-            currentPageReady: rawCurrentPageNumber != null,
-            totalPages: snapshot.totalPages,
-            totalPageSource: 'location-global',
-            totalPagesReady: totalLocationCount != null,
-            snapshotTotalPages: totalLocationCount,
-            fallbackTotalPages: null,
-            pageTargetTotalPages: null,
-            pageTargetCount: 0,
+            currentChapterPercent,
+            currentChapterPercentSource,
+            currentPercent: snapshot.currentPercent,
+            currentPercentReady: currentPercent != null,
             chapterPreview: chapters.slice(0, 8).map((entry) => ({
                 href: entry.href,
                 title: entry.title,
-                pageNumber: entry.pageNumber,
-                pageNumberSource: entry.pageNumberSource ?? null,
+                percent: entry.percent,
+                percentSource: entry.percentSource ?? null,
             })),
         });
         return snapshot;
@@ -2292,12 +2243,11 @@ class Reader {
         const frameBottom = Number.isFinite(visibleFrameRect?.bottom) ? visibleFrameRect.bottom : null;
         const documentBottom = Number.isFinite(visibleDocumentRect?.bottom) ? visibleDocumentRect.bottom : null;
         const bodyBottom = Number.isFinite(visibleBodyRect?.bottom) ? visibleBodyRect.bottom : null;
-        const currentPageMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
+        const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const layoutSnapshot = {
             reason,
             extra,
-            currentPageNumber: typeof currentPageMetrics?.currentPageNumber === 'number' ? currentPageMetrics.currentPageNumber : null,
-            totalPages: typeof currentPageMetrics?.totalPages === 'number' ? currentPageMetrics.totalPages : null,
+            currentPercent: typeof primaryLabelDiagnostics?.currentPercent === 'number' ? primaryLabelDiagnostics.currentPercent : null,
             cssInsets: [
                 `toolbar=${computedStyle?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || 'nil'}`,
                 `obscured=${computedStyle?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || 'nil'}`,
@@ -2353,17 +2303,14 @@ class Reader {
             bodyLoading: !!body?.classList?.contains?.('loading'),
         };
         if (!layoutSnapshot.bodyLoading
-            && typeof layoutSnapshot.currentPageNumber === 'number'
-            && typeof layoutSnapshot.totalPages === 'number'
-            && layoutSnapshot.totalPages > 0
+            && typeof layoutSnapshot.currentPercent === 'number'
             && typeof livePaginatorContainer?.clientWidth === 'number'
             && livePaginatorContainer.clientWidth > 0
             && typeof livePaginatorContainer?.clientHeight === 'number'
             && livePaginatorContainer.clientHeight > 0) {
             markEPUBPerf('layout.ready.first', {
                 reason,
-                currentPageNumber: layoutSnapshot.currentPageNumber,
-                totalPages: layoutSnapshot.totalPages,
+                currentPercent: layoutSnapshot.currentPercent,
                 livePaginatorBox: layoutSnapshot.livePaginatorBox,
                 cssInsets: layoutSnapshot.cssInsets,
             }, {
@@ -3422,28 +3369,16 @@ class Reader {
         await this.navHUD?.handleRelocate(detail);
         const scrubFraction = this.navHUD?.getScrubberFraction(detail) ?? null;
         const effectiveFraction = Number.isFinite(scrubFraction) ? scrubFraction : fraction;
-        const pageMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
-        const currentPageNumber = typeof primaryLabelDiagnostics?.currentPageNumber === 'number'
-            ? primaryLabelDiagnostics.currentPageNumber
-            : (typeof pageMetrics?.currentPageNumber === 'number'
-                ? pageMetrics.currentPageNumber
-                : null);
-        const totalPages = typeof primaryLabelDiagnostics?.totalPages === 'number'
-            ? primaryLabelDiagnostics.totalPages
+        const currentPercent = typeof primaryLabelDiagnostics?.currentPercent === 'number'
+            ? primaryLabelDiagnostics.currentPercent
             : null;
-        const effectiveTotalPages = totalPages ?? (typeof pageMetrics?.totalPages === 'number'
-            ? pageMetrics.totalPages
-            : null);
-        const sectionIndex = typeof pageMetrics?.sectionIndex === 'number'
-            ? pageMetrics.sectionIndex
-            : (
-                typeof detail?.sectionIndex === 'number'
-                    ? detail.sectionIndex
-                    : (typeof detail?.index === 'number' ? detail.index : null)
-            );
-        const localSectionIndex = typeof pageMetrics?.localSectionIndex === 'number'
-            ? pageMetrics.localSectionIndex
+        const sectionIndex =
+            typeof detail?.sectionIndex === 'number'
+                ? detail.sectionIndex
+                : (typeof detail?.index === 'number' ? detail.index : null);
+        const localSectionIndex = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+            ? Math.max(0, this.navHUD.rendererPageSnapshot.current - 1)
             : null;
         const rendererTotal = typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
             ? this.navHUD.rendererPageSnapshot.total
@@ -3508,14 +3443,7 @@ class Reader {
             postPageNumLog('bridge.updateReadingProgress', {
                 reason: reason ?? null,
                 fraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
-                currentPageNumber,
-                currentPageSource: primaryLabelDiagnostics?.currentPageSource ?? pageMetrics?.currentPageSource ?? null,
-                currentPageReady: primaryLabelDiagnostics?.source === 'location' ? true : (pageMetrics?.currentPageReady ?? null),
-                totalPages: effectiveTotalPages,
-                totalPageSource: primaryLabelDiagnostics?.totalSource ?? pageMetrics?.totalSource ?? null,
-                totalPagesReady: primaryLabelDiagnostics?.source === 'location'
-                    ? effectiveTotalPages != null
-                    : (pageMetrics?.totalPagesReady ?? null),
+                currentPercent,
                 sectionIndex,
                 localSectionIndex,
                 rendererTotal,
@@ -3530,8 +3458,8 @@ class Reader {
                 fraction,
                 cfi: persistedLocator,
                 reason,
-                currentPageNumber,
-                totalPages: effectiveTotalPages,
+                currentPageNumber: null,
+                totalPages: null,
                 sectionIndex,
             })
         }
@@ -3540,44 +3468,26 @@ class Reader {
         markEPUBPerf('relocate.first', {
             reason: detail?.reason || null,
             fraction: safeRound(detail?.fraction),
-            currentPageNumber,
-            totalPages,
+            currentPercent,
             currentLocation: detail?.location?.current ?? null,
             totalLocation: detail?.location?.total ?? null,
         }, {
             once: true,
             anchor: 'did-display.first',
         });
-        if (typeof currentPageNumber === 'number' || typeof totalPages === 'number') {
+        if (typeof currentPercent === 'number') {
             postReplaceTextPerfLog('relocate.first', {
                 reason: detail?.reason || null,
                 fraction: safeRound(detail?.fraction),
-                currentPageNumber,
-                totalPages,
+                currentPercent,
                 currentLocation: detail?.location?.current ?? null,
                 totalLocation: detail?.location?.total ?? null,
                 ...captureEPUBOverlapState(),
             });
         }
-        if (typeof currentPageNumber === 'number' && typeof totalPages === 'number' && totalPages > 0) {
-            markEPUBPerf('page-metrics.first', {
-                reason: detail?.reason || null,
-                currentPageNumber,
-                totalPages,
-            }, {
-                once: true,
-            });
-            postReplaceTextPerfLog('page-metrics.first', {
-                reason: detail?.reason || null,
-                currentPageNumber,
-                totalPages,
-                ...captureEPUBOverlapState(),
-            });
-        }
         this.#queueLayoutDiagnostics('relocate', {
             reason: detail?.reason || null,
-            currentPageNumber,
-            totalPages,
+            currentPercent,
         });
         postReaderVisibilityProbe('reader.relocate', this.view, {
             reason: detail?.reason || null,
@@ -3685,8 +3595,6 @@ class CacheWarmer {
         this.view
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
-        this.sectionPageCounts = new Map()
-        this.lastCaptureBeginSignature = null
     }
     destroy() {
         if (this.view) {
@@ -3698,12 +3606,9 @@ class CacheWarmer {
         }
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
-        this.sectionPageCounts = new Map()
-        this.lastCaptureBeginSignature = null
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
-        globalThis.__manabiCacheWarmerSectionPageCounts = [];
     }
     async open(file) {
         this.destroy()
@@ -3711,7 +3616,6 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
-        globalThis.__manabiCacheWarmerSectionPageCounts = [];
         globalThis.__manabiDeferredCacheWarmerLogged = false;
         postEPUBLog('ebook.perf.cache-warmer.open.begin', {
             sourceKind: file?.kind || 'nil',
@@ -3759,291 +3663,48 @@ class CacheWarmer {
         }
     }
 
-    #normalizeRendererPageInfo(rawPage, rawTotal, renderer) {
-        if (rawPage == null && rawTotal == null) return null;
-        const numericPage = Number(rawPage);
-        const numericTotal = Number(rawTotal);
-        const totalBase = Number.isFinite(numericTotal) ? Math.max(1, Math.round(numericTotal)) : null;
-        const currentBase = Number.isFinite(numericPage) ? Math.max(1, Math.round(numericPage)) : 1;
-        const current = totalBase ? Math.max(1, Math.min(totalBase, currentBase)) : currentBase;
-        if (!Number.isFinite(current)) return null;
-        const scrolled = renderer?.scrolled ?? null;
-        const isPaginated = renderer && scrolled === false;
-        if (MANABI_NAV_SENTINEL_ADJUST_ENABLED && isPaginated && totalBase && totalBase > 2) {
-            const textTotal = Math.max(1, totalBase - 2);
-            const textCurrent = Math.max(1, Math.min(textTotal, current));
-            return {
-                current: textCurrent,
-                total: textTotal,
-                rawCurrent: current,
-                rawTotal: totalBase,
-                scrolled,
-            };
-        }
-        return {
-            current,
-            total: totalBase,
-            rawCurrent: current,
-            rawTotal: totalBase,
-            scrolled,
-        };
-    }
-
-    #publishSectionPageCounts(reason, {
-        sectionIndex = null,
-        sectionHref = null,
-        pageCount = null,
-    } = {}) {
-        const countsEntries = Array.from(this.sectionPageCounts.entries())
-            .sort((a, b) => a[0] - b[0]);
-        globalThis.__manabiCacheWarmerSectionPageCounts = countsEntries;
-        const navHUD = globalThis.reader?.navHUD ?? null;
-        const countsMap = new Map(countsEntries);
-        postPageNumLog('cacheWarmer.sectionPageCounts.publish', {
-            reason,
+    #finalizeSectionAdvance(advanceState, trigger) {
+        if (!advanceState) return;
+        const {
             sectionIndex,
             sectionHref,
-            pageCount,
-            countSize: countsEntries.length,
-            countsPreview: countsEntries.slice(0, 8).map(([index, total]) => ({ index, count: total })),
-            navHUDReady: !!navHUD,
-            cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
-        });
-        if (navHUD?.setSectionPageCountsFromCache) {
-            navHUD.setSectionPageCountsFromCache(countsMap);
-            postPageNumLog('cacheWarmer.sectionPageCounts.navApply', {
-                reason,
+            atEnd,
+            location,
+        } = advanceState;
+        if (!atEnd) {
+            window.webkit.messageHandlers.ebookCacheWarmerReadyToLoadNextSection.postMessage({
+                topWindowURL: window.top.location.href,
+            })
+            postPageNumLog('cacheWarmer.readyToLoadNextSection.post', {
+                trigger,
                 sectionIndex,
                 sectionHref,
-                pageCount,
-                countSize: countsEntries.length,
             });
-        } else {
-            postPageNumLog('cacheWarmer.sectionPageCounts.navMissing', {
-                reason,
+            postEPUBLog('ebook.perf.cache-warmer.readyToLoadNextSection.post', {
+                trigger,
                 sectionIndex,
                 sectionHref,
-                pageCount,
-                countSize: countsEntries.length,
-            });
-        }
-    }
-
-    async #captureSectionPageCount(sectionIndex, sectionHref, reason, attempt = 0) {
-        const renderer = this.view?.renderer;
-        const captureStartedAt = performanceNowMs();
-        const contentsCount = Array.isArray(renderer?.getContents?.()) ? renderer.getContents().length : 0;
-        const rendererCurrentIndex = typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null;
-        const retryDelayMs = 120;
-        const scheduleRetry = (extra = {}) => {
-            const nextAttempt = attempt + 1;
-            postPageNumLog('cacheWarmer.capture.retry', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                attempt,
-                nextAttempt,
-                retryDelayMs,
-                currentIndex: rendererCurrentIndex,
-                contentsCount,
-                scrolled: renderer?.scrolled ?? null,
-                ...extra,
-            });
-            if (nextAttempt <= 12) {
-                setTimeout(() => {
-                    this.#captureSectionPageCount(sectionIndex, sectionHref, reason, nextAttempt)
-                        .catch((error) => {
-                            postPageNumLog('cacheWarmer.capture.retry.error', {
-                                reason,
-                                sectionIndex,
-                                sectionHref,
-                                attempt: nextAttempt,
-                                message: error?.message || String(error),
-                            });
-                        });
-                }, retryDelayMs);
-            } else {
-                postPageNumLog('cacheWarmer.capture.retry.giveup', {
-                    reason,
-                    sectionIndex,
-                    sectionHref,
-                    attempt,
-                    currentIndex: rendererCurrentIndex,
-                    contentsCount,
-                    scrolled: renderer?.scrolled ?? null,
-                    ...extra,
-                });
-            }
-        };
-        const captureBeginPayload = {
-            reason,
-            sectionIndex,
-            sectionHref,
-            hasRenderer: !!renderer,
-            hasPageFn: typeof renderer?.page === 'function',
-            hasPagesFn: typeof renderer?.pages === 'function',
-            contentsCount,
-            currentIndex: rendererCurrentIndex,
-            navHUDReady: !!globalThis.reader?.navHUD,
-        };
-        const captureBeginPerfPayload = {
-            reason,
-            sectionIndex,
-            sectionHref,
-            hasRenderer: !!renderer,
-            hasPageFn: typeof renderer?.page === 'function',
-            hasPagesFn: typeof renderer?.pages === 'function',
-            navHUDReady: !!globalThis.reader?.navHUD,
-            ...captureEPUBOverlapState(),
-        };
-        const captureBeginSignature = JSON.stringify({
-            ...captureBeginPayload,
-            cacheWarmerHighestSectionIndex: captureBeginPerfPayload.cacheWarmerHighestSectionIndex ?? null,
-            cacheWarmerOpenInFlight: captureBeginPerfPayload.cacheWarmerOpenInFlight ?? null,
-            cacheWarmerReady: captureBeginPerfPayload.cacheWarmerReady ?? null,
-            inflightReplaceTextCount: captureBeginPerfPayload.inflightReplaceTextCount ?? null,
-            inflightCacheWarmerReplaceTextCount: captureBeginPerfPayload.inflightCacheWarmerReplaceTextCount ?? null,
-        });
-        if (captureBeginSignature !== this.lastCaptureBeginSignature) {
-            this.lastCaptureBeginSignature = captureBeginSignature;
-            postPageNumLog('cacheWarmer.capture.begin', captureBeginPayload);
-            postEPUBLog('ebook.perf.cache-warmer.capture.begin', captureBeginPerfPayload);
-            postReplaceTextPerfLog('cache-warmer.capture.begin', captureBeginPerfPayload);
-        }
-        if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
-            postPageNumLog('cacheWarmer.rendererPageInfo.unavailable', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                hasRenderer: !!renderer,
-            });
-            postEPUBLog('ebook.perf.cache-warmer.rendererPageInfo.unavailable', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                hasRenderer: !!renderer,
                 ...captureEPUBOverlapState(),
             });
             return;
         }
-        try {
-            let captureStillPending = true;
-            const pendingTimeoutMs = 1500;
-            const pendingTimer = setTimeout(() => {
-                if (!captureStillPending) return;
-                postPageNumLog('cacheWarmer.capture.pending', {
-                    reason,
-                    sectionIndex,
-                    sectionHref,
-                    elapsedMs: safeRound(performanceNowMs() - captureStartedAt, 1),
-                    currentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
-                    hasContents: Array.isArray(renderer?.getContents?.()) ? renderer.getContents().length : null,
-                    scrolled: renderer?.scrolled ?? null,
-                });
-            }, pendingTimeoutMs);
-            const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
-            captureStillPending = false;
-            clearTimeout(pendingTimer);
-            postPageNumLog('cacheWarmer.capture.settled', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                elapsedMs: safeRound(performanceNowMs() - captureStartedAt, 1),
-                pageStatus: pageResult.status,
-                pagesStatus: pagesResult.status,
-            });
-            if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
-                postPageNumLog('cacheWarmer.rendererPageInfo.rejected', {
-                    reason,
-                    sectionIndex,
-                    sectionHref,
-                    pageStatus: pageResult.status,
-                    pagesStatus: pagesResult.status,
-                });
-                postEPUBLog('ebook.perf.cache-warmer.rendererPageInfo.rejected', {
-                    reason,
-                    sectionIndex,
-                    sectionHref,
-                    pageStatus: pageResult.status,
-                    pagesStatus: pagesResult.status,
-                    ...captureEPUBOverlapState(),
-                });
-                return;
-            }
-            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
-            postPageNumLog('cacheWarmer.rendererPageInfo', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                rawPage: pageResult.value,
-                rawTotal: pagesResult.value,
-                current: normalized?.current ?? null,
-                total: normalized?.total ?? null,
-                rawCurrent: normalized?.rawCurrent ?? null,
-                scrolled: normalized?.scrolled ?? null,
-            });
-            postEPUBLog('ebook.perf.cache-warmer.rendererPageInfo', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                rawPage: pageResult.value,
-                rawTotal: pagesResult.value,
-                current: normalized?.current ?? null,
-                total: normalized?.total ?? null,
-                rawCurrent: normalized?.rawCurrent ?? null,
-                scrolled: normalized?.scrolled ?? null,
-                ...captureEPUBOverlapState(),
-            });
-            postReplaceTextPerfLog('cache-warmer.rendererPageInfo', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                rawPage: pageResult.value,
-                rawTotal: pagesResult.value,
-                current: normalized?.current ?? null,
-                total: normalized?.total ?? null,
-                rawCurrent: normalized?.rawCurrent ?? null,
-                scrolled: normalized?.scrolled ?? null,
-                ...captureEPUBOverlapState(),
-            });
-            const pageCount = typeof normalized?.total === 'number' && normalized.total > 0
-                ? normalized.total
-                : null;
-            if (pageCount == null) {
-                scheduleRetry({
-                    pageStatus: pageResult.status,
-                    pagesStatus: pagesResult.status,
-                    rawPage: pageResult.status === 'fulfilled' ? pageResult.value : null,
-                    rawTotal: pagesResult.status === 'fulfilled' ? pagesResult.value : null,
-                    normalizedCurrent: normalized?.current ?? null,
-                    normalizedTotal: normalized?.total ?? null,
-                });
-                return;
-            }
-            if (sectionIndex == null) return;
-            const previous = this.sectionPageCounts.get(sectionIndex) ?? null;
-            if (previous === pageCount) return;
-            this.sectionPageCounts.set(sectionIndex, pageCount);
-            this.#publishSectionPageCounts(reason, {
-                sectionIndex,
-                sectionHref,
-                pageCount,
-            });
-        } catch (error) {
-            postPageNumLog('cacheWarmer.rendererPageInfo.error', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                message: error?.message || String(error),
-            });
-            postEPUBLog('ebook.perf.cache-warmer.rendererPageInfo.error', {
-                reason,
-                sectionIndex,
-                sectionHref,
-                message: error?.message || String(error),
-                ...captureEPUBOverlapState(),
-            });
-        }
+        globalThis.__manabiCacheWarmerFinished = true;
+        postEPUBLog('ebook.perf.cache-warmer.finished', {
+            sectionURL: location,
+            sectionIndex,
+            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+            uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+            trigger,
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('cache-warmer.finished', {
+            sectionURL: location,
+            sectionIndex,
+            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+            uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+            trigger,
+            ...captureEPUBOverlapState(),
+        });
     }
 
     async #onLoad({
@@ -4077,7 +3738,6 @@ class CacheWarmer {
             sentenceCount: sentenceNodes.length,
             segmentCount: segmentNodes.length,
             navHUDReady: !!globalThis.reader?.navHUD,
-            currentCountsSize: this.sectionPageCounts.size,
         });
         postEPUBLog('ebook.perf.cache-warmer.onLoad.begin', {
             sectionIndex: Number.isInteger(index) ? index : null,
@@ -4088,7 +3748,6 @@ class CacheWarmer {
             sentenceCount: sentenceNodes.length,
             segmentCount: segmentNodes.length,
             navHUDReady: !!globalThis.reader?.navHUD,
-            currentCountsSize: this.sectionPageCounts.size,
             ...captureEPUBOverlapState(),
         });
         postReaderLog('ebook.cacheWarmer.sectionLoaded', {
@@ -4132,20 +3791,6 @@ class CacheWarmer {
             segmentCount: segmentNodes.length,
         }, {
             once: true,
-        });
-        await this.#captureSectionPageCount(Number.isInteger(index) ? index : null, sectionHref, 'load');
-        postPageNumLog('cacheWarmer.onLoad.afterCapture', {
-            sectionIndex: Number.isInteger(index) ? index : null,
-            sectionHref,
-            countsSize: this.sectionPageCounts.size,
-            countsPreview: Array.from(this.sectionPageCounts.entries()).slice(0, 8).map(([sectionIndex, total]) => ({ sectionIndex, total })),
-        });
-        postEPUBLog('ebook.perf.cache-warmer.onLoad.afterCapture', {
-            sectionIndex: Number.isInteger(index) ? index : null,
-            sectionHref,
-            countsSize: this.sectionPageCounts.size,
-            countsPreview: Array.from(this.sectionPageCounts.entries()).slice(0, 8).map(([sectionIndex, total]) => ({ sectionIndex, total })),
-            ...captureEPUBOverlapState(),
         });
         for (const sentenceNode of sentenceNodes) {
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
@@ -4196,50 +3841,20 @@ class CacheWarmer {
             sectionIndex: Number.isInteger(index) ? index : null,
             sectionHref,
             atEnd,
-            countsSize: this.sectionPageCounts.size,
         });
         postEPUBLog('ebook.perf.cache-warmer.atEnd', {
             sectionIndex: Number.isInteger(index) ? index : null,
             sectionHref,
             atEnd,
-            countsSize: this.sectionPageCounts.size,
             ...captureEPUBOverlapState(),
         });
-        if (!atEnd) {
-            window.webkit.messageHandlers.ebookCacheWarmerReadyToLoadNextSection.postMessage({
-                topWindowURL: window.top.location.href,
-            })
-            postPageNumLog('cacheWarmer.readyToLoadNextSection.post', {
-                sectionIndex: Number.isInteger(index) ? index : null,
-                sectionHref,
-            });
-            postEPUBLog('ebook.perf.cache-warmer.readyToLoadNextSection.post', {
-                sectionIndex: Number.isInteger(index) ? index : null,
-                sectionHref,
-                ...captureEPUBOverlapState(),
-            });
-        } else {
-            globalThis.__manabiCacheWarmerFinished = true;
-            this.#publishSectionPageCounts('finished', {
-                sectionIndex: Number.isInteger(index) ? index : null,
-                sectionHref,
-                pageCount: this.sectionPageCounts.get(index) ?? null,
-            });
-            postEPUBLog('ebook.perf.cache-warmer.finished', {
-                sectionURL: location,
-                sectionIndex: Number.isInteger(index) ? index : null,
-                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
-                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
-                ...captureEPUBOverlapState(),
-            });
-            postReplaceTextPerfLog('cache-warmer.finished', {
-                sectionURL: location,
-                sectionIndex: Number.isInteger(index) ? index : null,
-                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
-                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
-                ...captureEPUBOverlapState(),
-            });
-        }
+        const sectionAdvance = {
+            sectionIndex: Number.isInteger(index) ? index : null,
+            sectionHref,
+            atEnd,
+            location,
+        };
+        this.#finalizeSectionAdvance(sectionAdvance, 'load');
     }
     
     //    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
@@ -4623,8 +4238,7 @@ window.manabiGetReaderGoToSheetSnapshot = async () => {
         isRTL: false,
         currentChapterHref: null,
         currentChapterTitle: null,
-        currentPageNumber: null,
-        totalPages: null,
+        currentPercent: null,
         chapters: [],
     };
 }
@@ -4655,6 +4269,14 @@ window.manabiGoToReaderHref = async (href) => {
 
 window.manabiScheduleReaderFractionGoTo = (fraction) => {
     globalThis.reader?.scheduleGoToFraction?.(fraction);
+}
+
+window.manabiScheduleReaderPercentGoTo = (percent) => {
+    const numericPercent = Number(percent);
+    if (!Number.isFinite(numericPercent)) {
+        return;
+    }
+    globalThis.reader?.scheduleGoToFraction?.(numericPercent / 100);
 }
 
 window.manabiOpenReaderGoToSheet = (source = 'window.manabiOpenReaderGoToSheet') => {

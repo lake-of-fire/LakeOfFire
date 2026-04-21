@@ -19,20 +19,45 @@ public enum DarkModeTheme: String, CaseIterable, Identifiable {
     public var id: String { self.rawValue }
 }
 
-public enum ReaderWidthMode: String, CaseIterable, Identifiable {
-    case standard
-    case fullWidth
+private let readerAdaptiveWidthStartFontSize: Double = 24
+private let readerAdaptiveWidthFullWidthFontSize: Double = 34
+private let readerAdaptiveWidthStandardMaxWidthEm: Double = 40
+private let readerAdaptiveWidthExpandedMaxWidthEm: Double = 56
 
-    public var id: String { self.rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .standard:
-            return "Standard"
-        case .fullWidth:
-            return "Full Width"
-        }
+public func readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: Double?) -> String {
+    guard let readerFontSize else {
+        return "\(Int(readerAdaptiveWidthStandardMaxWidthEm))em"
     }
+
+    if readerFontSize >= readerAdaptiveWidthFullWidthFontSize {
+        return "none"
+    }
+
+    let maxWidthEm: Double
+    if readerFontSize > readerAdaptiveWidthStartFontSize {
+        let progress = min(
+            max(
+                (readerFontSize - readerAdaptiveWidthStartFontSize)
+                    / (readerAdaptiveWidthFullWidthFontSize - readerAdaptiveWidthStartFontSize),
+                0
+            ),
+            1
+        )
+        maxWidthEm = readerAdaptiveWidthStandardMaxWidthEm
+            + (readerAdaptiveWidthExpandedMaxWidthEm - readerAdaptiveWidthStandardMaxWidthEm) * progress
+    } else {
+        maxWidthEm = readerAdaptiveWidthStandardMaxWidthEm
+    }
+
+    let roundedMaxWidthEm = (maxWidthEm * 100).rounded() / 100
+    if abs(roundedMaxWidthEm - roundedMaxWidthEm.rounded()) < 0.001 {
+        return "\(Int(roundedMaxWidthEm.rounded()))em"
+    }
+    return "\(roundedMaxWidthEm)em"
+}
+
+public func readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: Double?) -> String {
+    "--manabi-reader-max-width-override: \(readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize));"
 }
 
 struct ReaderSettingsForm: View {
@@ -40,18 +65,12 @@ struct ReaderSettingsForm: View {
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
-    @AppStorage("readerWidthMode") private var readerWidthMode: ReaderWidthMode = .standard
     @AppStorage("appTint") private var appTint = Color.accentColor
     
     var body: some View {
         Form {
             Section("Display") {
                 Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
-                Picker("Reader Width", selection: $readerWidthMode) {
-                    ForEach(ReaderWidthMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
                 Picker("Light Mode Theme", selection: $lightModeTheme) {
                     ForEach(LightModeTheme.allCases) { theme in
                         Text(theme.rawValue.capitalized).tag(theme)

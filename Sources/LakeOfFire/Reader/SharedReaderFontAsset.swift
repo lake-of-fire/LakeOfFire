@@ -10,10 +10,8 @@ private func sharedReaderFontLog(
         .joined(separator: " ")
     if payload.isEmpty {
         print("# EPUB", "sharedReaderFont.\(stage)")
-        print("# APR20", "sharedReaderFont.\(stage)")
     } else {
         print("# EPUB", "sharedReaderFont.\(stage)", payload)
-        print("# APR20", "sharedReaderFont.\(stage)", payload)
     }
 }
 

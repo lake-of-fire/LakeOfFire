@@ -168,9 +168,7 @@ internal func buildCanonicalReadabilityHTML(
 ) -> String {
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
-    let readerWidthMode = ReaderWidthMode(
-        rawValue: UserDefaults.standard.string(forKey: "readerWidthMode") ?? ReaderWidthMode.standard.rawValue
-    ) ?? .standard
+    let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
     let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
@@ -182,6 +180,7 @@ internal func buildCanonicalReadabilityHTML(
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
     let bodyStyle = ManabiSystemUIFontCSS.cssDeclarations(from: ManabiSystemUIFontCSS.fallbackSizeMap())
+        + readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
     let titleSuppressionCSS = """
     body.\(suppressionBodyClass) #reader-title {
         display: none !important;
@@ -231,7 +230,7 @@ internal func buildCanonicalReadabilityHTML(
             \(titleSuppressionCSS)</style>
             <title>\(resolvedTitle)</title>
         </head>
-        <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" data-manabi-reader-width-mode="\(readerWidthMode.rawValue)" \(availabilityAttributes)>
+        <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(resolvedTitle)</h1>
                 <div id="reader-byline-container">
@@ -1332,7 +1331,6 @@ public class ReaderModeViewModel: ObservableObject {
         guard #available(iOS 16.4, macOS 14, *) else { return }
         guard pageURL.absoluteString.hasPrefix("blob:ebook://")
                 || !sharedReaderFontUsesLocalScheme(for: pageURL) else {
-            print("# APR20", "font.injectSharedFontIfNeeded.skipShell", "pageURL=\(pageURL.absoluteString)")
             return
         }
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
@@ -1403,16 +1401,6 @@ public class ReaderModeViewModel: ObservableObject {
                     style.dataset.manabiFontSource = 'local-scheme';
                     root.dataset.manabiInjectedFontFamily = family;
                     root.dataset.manabiFontInjected = '1';
-                    try {
-                        const webkitPrint = window.webkit?.messageHandlers?.print;
-                        webkitPrint?.postMessage?.({
-                            message: '# APR20 font.localScheme.ensureReaderFontStyle',
-                            href: window.location.href,
-                            family,
-                            stylesheetURL,
-                            existingStyleTag: Boolean(document.getElementById('manabi-custom-fonts-inline')),
-                        });
-                    } catch (_) {}
                     style.onload = () => postLog('stylesheetLoaded mode=local-scheme family=' + family + ' href=' + window.location.href);
                     style.onerror = () => {
                         postLog('stylesheetError mode=local-scheme family=' + family + ' href=' + window.location.href);
@@ -3475,18 +3463,14 @@ nonisolated public func processForReaderMode(
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
             let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
-            let readerWidthMode = ReaderWidthMode(
-                rawValue: UserDefaults.standard.string(forKey: "readerWidthMode") ?? ReaderWidthMode.standard.rawValue
-            ) ?? .standard
             
-            var bodyStyle = "font-size: \(readerFontSize)px"
+            var bodyStyle = "font-size: \(readerFontSize)px; \(readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize))"
             if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
                 bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
             }
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
-            _ = try? bodyTag.attr("data-manabi-reader-width-mode", readerWidthMode.rawValue)
             debugPrint(
                 "# READERLOAD stage=readerMode.processForReaderMode.bodyAttributes",
                 "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(bodyAttributesStartedAt)))s"
