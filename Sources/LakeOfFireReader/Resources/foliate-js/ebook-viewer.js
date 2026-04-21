@@ -1115,7 +1115,9 @@ color: lightblue;
 }
 p, li, blockquote, dd {
 line-height: ${spacing};
-text-align: ${justify ? 'justify' : 'start'};
+text-align: start;
+-webkit-text-align-last: auto;
+text-align-last: auto;
 -webkit-hyphens: ${hyphenate ? 'auto' : 'manual'};
 hyphens: ${hyphenate ? 'auto' : 'manual'};
 -webkit-hyphenate-limit-before: 3;
@@ -1124,11 +1126,19 @@ hyphens: ${hyphenate ? 'auto' : 'manual'};
 hanging-punctuation: allow-end last;
 widows: 2;
 }
+/*
+   Neutralize book-provided body/p justification as well. Some EPUBs ship
+   text-align: justify on body/p, which causes punctuation spacing artifacts.
+*/
+body, p, li, blockquote, dd {
+text-align: start !important;
+-webkit-text-align-last: auto !important;
+text-align-last: auto !important;
+}
 /* prevent the above from overriding the align attribute */
-[align="left"] { text-align: left; }
-[align="right"] { text-align: right; }
-[align="center"] { text-align: center; }
-[align="justify"] { text-align: justify; }
+[align="left"] { text-align: left !important; }
+[align="right"] { text-align: right !important; }
+[align="center"] { text-align: center !important; }
 
 pre {
 white-space: pre-wrap !important;
