@@ -13,6 +13,19 @@ const CSS_DEFAULTS = {
 };
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+const manabiPerfNow = () =>
+    globalThis.__manabiPerformanceNowMs?.()
+        ?? (typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now());
+const manabiRound = (value, digits = 1) =>
+    globalThis.__manabiSafeRound?.(value, digits)
+        ?? (typeof value === 'number' && Number.isFinite(value)
+            ? Number(value.toFixed(digits))
+            : null);
+const markPaginatorPerf = (stage, details = {}, options = {}) => {
+    globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
+};
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
@@ -991,6 +1004,15 @@ export class Paginator extends HTMLElement {
         //        this.#background.style.background = background
 
         this.style.display = 'block'
+        if (!this.#isCacheWarmer) {
+            markPaginatorPerf('before-render.visible', {
+                vertical,
+                verticalRTL,
+                rtl,
+            }, {
+                once: true,
+            });
+        }
 
         const {
             width,
@@ -1863,6 +1885,14 @@ export class Paginator extends HTMLElement {
     async #display(promise) {
         //            console.log("#display...")
         this.#setLoading(true)
+        const displayStartedAt = manabiPerfNow();
+        if (!this.#isCacheWarmer) {
+            markPaginatorPerf('display.start', {
+                currentIndex: this.#index,
+            }, {
+                once: true,
+            });
+        }
         const {
             index,
             src,
@@ -1870,6 +1900,17 @@ export class Paginator extends HTMLElement {
             onLoad,
             select
         } = await promise
+        if (!this.#isCacheWarmer) {
+            markPaginatorPerf('display.resolved', {
+                targetIndex: index,
+                hasSource: !!src,
+                anchorKind: typeof anchor === 'function'
+                    ? 'function'
+                    : (anchor instanceof Range ? 'range' : typeof anchor),
+            }, {
+                once: true,
+            });
+        }
 
         //            console.log("#display...awaited promise")
         this.#index = index
@@ -1919,8 +1960,22 @@ export class Paginator extends HTMLElement {
                 this.#scrolledToAnchorOnLoad = false
 
                 //                console.log("#display... await load")
+                if (!this.#isCacheWarmer) {
+                    markPaginatorPerf('view.load.start', {
+                        targetIndex: index,
+                    }, {
+                        once: true,
+                    });
+                }
                 await view.load(src, afterLoad, beforeRender)
                 //                console.log("#display... awaited load")
+                if (!this.#isCacheWarmer) {
+                    markPaginatorPerf('view.load.end', {
+                        targetIndex: index,
+                    }, {
+                        once: true,
+                    });
+                }
                 this.#view = view
 
                 // Reset chevrons when loading new section
@@ -1938,11 +1993,35 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display... call scroll to anchor")
 
+        const scrollToAnchorStartedAt = manabiPerfNow();
+        if (!this.#isCacheWarmer) {
+            markPaginatorPerf('scroll-to-anchor.start', {
+                targetIndex: index,
+            }, {
+                once: true,
+            });
+        }
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
         //            console.log("#display... scrolledToAnchorOnLoad = true")
+        if (!this.#isCacheWarmer) {
+            markPaginatorPerf('scroll-to-anchor.end', {
+                targetIndex: index,
+                elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
+            }, {
+                once: true,
+            });
+        }
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
+        if (!this.#isCacheWarmer) {
+            markPaginatorPerf('did-display.dispatch', {
+                targetIndex: index,
+                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+            }, {
+                once: true,
+            });
+        }
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
     }

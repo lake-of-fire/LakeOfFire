@@ -1327,6 +1327,11 @@ public class ReaderModeViewModel: ObservableObject {
         guard pageURL.absoluteString != "about:blank" else { return }
         guard !pageURL.isReaderURLLoaderURL else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
+        guard pageURL.absoluteString.hasPrefix("blob:ebook://")
+                || !sharedReaderFontUsesLocalScheme(for: pageURL) else {
+            print("# APR20", "font.injectSharedFontIfNeeded.skipShell", "pageURL=\(pageURL.absoluteString)")
+            return
+        }
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             logSharedReaderFontInjectionDecision(
                 mode: .localScheme,
@@ -1395,6 +1400,16 @@ public class ReaderModeViewModel: ObservableObject {
                     style.dataset.manabiFontSource = 'local-scheme';
                     root.dataset.manabiInjectedFontFamily = family;
                     root.dataset.manabiFontInjected = '1';
+                    try {
+                        const webkitPrint = window.webkit?.messageHandlers?.print;
+                        webkitPrint?.postMessage?.({
+                            message: '# APR20 font.localScheme.ensureReaderFontStyle',
+                            href: window.location.href,
+                            family,
+                            stylesheetURL,
+                            existingStyleTag: Boolean(document.getElementById('manabi-custom-fonts-inline')),
+                        });
+                    } catch (_) {}
                     style.onload = () => postLog('stylesheetLoaded mode=local-scheme family=' + family + ' href=' + window.location.href);
                     style.onerror = () => {
                         postLog('stylesheetError mode=local-scheme family=' + family + ' href=' + window.location.href);

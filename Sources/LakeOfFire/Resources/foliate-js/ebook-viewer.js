@@ -50,11 +50,134 @@ function forwardShadowErrors(root) {
     });
 }
 
+const postReplaceTextPerfLog = (event, details = {}) => {
+    if (window.webkit?.messageHandlers?.print) {
+        window.webkit.messageHandlers.print.postMessage({
+            prefix: '# REPLACETEXT',
+            event,
+            ...details,
+        });
+    }
+};
+
+const postPageNumLog = (event, details = {}) => {
+    const payload = { event, ...details };
+    const line = `# PAGENUM ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
+const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
+const replaceTextResultCache = new Map();
+const replaceTextInFlightCache = new Map();
+
+const fingerprintReplaceTextInput = (text) => {
+    if (typeof text !== 'string') return 'invalid';
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${text.length}:${(hash >>> 0).toString(16)}`;
+};
+
+const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer }) => {
+    return `${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
+};
+
+const rememberReplaceTextResult = (key, value) => {
+    replaceTextResultCache.delete(key);
+    replaceTextResultCache.set(key, value);
+    while (replaceTextResultCache.size > REPLACE_TEXT_RESULT_CACHE_LIMIT) {
+        const oldestKey = replaceTextResultCache.keys().next().value;
+        replaceTextResultCache.delete(oldestKey);
+    }
+};
+
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
         return text;
     }
+    const cacheKey = makeReplaceTextCacheKey({
+        href,
+        text,
+        isCacheWarmer: !!isCacheWarmer,
+    });
+    if (replaceTextResultCache.has(cacheKey)) {
+        const cachedHTML = replaceTextResultCache.get(cacheKey);
+        replaceTextResultCache.delete(cacheKey);
+        replaceTextResultCache.set(cacheKey, cachedHTML);
+        postEPUBLog('ebook.perf.replace-text.cache-hit', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            responseTextLength: typeof cachedHTML === 'string' ? cachedHTML.length : null,
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('cache-hit', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            responseTextLength: typeof cachedHTML === 'string' ? cachedHTML.length : null,
+            ...captureEPUBOverlapState(),
+        });
+        return cachedHTML;
+    }
+    if (replaceTextInFlightCache.has(cacheKey)) {
+        const cacheWaitStartedAt = performanceNowMs();
+        postEPUBLog('ebook.perf.replace-text.cache-wait', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('cache-wait', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            ...captureEPUBOverlapState(),
+        });
+        const html = await replaceTextInFlightCache.get(cacheKey);
+        postReplaceTextPerfLog('cache-wait-resolved', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            waitElapsedMs: safeRound(performanceNowMs() - cacheWaitStartedAt, 1),
+            responseTextLength: typeof html === 'string' ? html.length : null,
+            ...captureEPUBOverlapState(),
+        });
+        return html;
+    }
+    const run = async () => {
+    const replaceTextStartedAt = performanceNowMs();
+    globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
+    if (isCacheWarmer) {
+        globalThis.__manabiInflightCacheWarmerReplaceTextCount = (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
+    }
+    postEPUBLog('ebook.perf.replace-text.start', {
+        href,
+        mediaType,
+        isCacheWarmer: !!isCacheWarmer,
+        requestTextLength: typeof text === 'string' ? text.length : null,
+        ...captureEPUBOverlapState(),
+    });
+    postReplaceTextPerfLog('start', {
+        href,
+        mediaType,
+        isCacheWarmer: !!isCacheWarmer,
+        cacheKey,
+        requestTextLength: typeof text === 'string' ? text.length : null,
+        ...captureEPUBOverlapState(),
+    });
     const headers = {
         "Content-Type": mediaType,
         "X-Replaced-Text-Location": href,
@@ -71,10 +194,34 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         body: text
     })
     try {
+        postEPUBLog('ebook.perf.replace-text.response', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            status: response.status,
+            responseOk: response.ok,
+            headersElapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('response', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            status: response.status,
+            responseOk: response.ok,
+            headersElapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            ...captureEPUBOverlapState(),
+        });
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
+        const bodyReadStartedAt = performanceNowMs();
         let html = await response.text()
+        const bodyReadElapsedMs = safeRound(performanceNowMs() - bodyReadStartedAt, 1);
+        const responseTextLength = html.length;
+        const transformStartedAt = performanceNowMs();
         postReaderLog('ebook.replaceText.responseSummary', {
             href,
             isCacheWarmer: !!isCacheWarmer,
@@ -89,6 +236,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
             'data-manabi-source-href': href,
         });
+        const transformElapsedMs = safeRound(performanceNowMs() - transformStartedAt, 1);
         logReplaceTextOnce(
             sentenceCount > 0 || segmentCount > 0
                 ? 'ebook.replaceText.processed'
@@ -102,6 +250,62 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 segmentCount,
             },
         );
+        postEPUBLog('ebook.perf.replace-text.end', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            status: response.status,
+            sentenceCount,
+            segmentCount,
+            responseTextLength: html.length,
+            responseBodyReadMs: bodyReadElapsedMs,
+            responseTransformMs: transformElapsedMs,
+            inputToOutputRatio: typeof text === 'string' && text.length > 0
+                ? safeRound(html.length / text.length, 3)
+                : null,
+            responseExpansionRatio: responseTextLength > 0
+                ? safeRound(html.length / responseTextLength, 3)
+                : null,
+            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('end', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            status: response.status,
+            sentenceCount,
+            segmentCount,
+            requestTextLength: typeof text === 'string' ? text.length : null,
+            responseTextLength: html.length,
+            responseBodyReadMs: bodyReadElapsedMs,
+            responseTransformMs: transformElapsedMs,
+            networkElapsedMs: safeRound((performanceNowMs() - replaceTextStartedAt) - (bodyReadElapsedMs ?? 0) - (transformElapsedMs ?? 0), 1),
+            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            inputToOutputRatio: typeof text === 'string' && text.length > 0
+                ? safeRound(html.length / text.length, 3)
+                : null,
+            ...captureEPUBOverlapState(),
+        });
+        if (!isCacheWarmer) {
+            markEPUBPerf('replace-text.first-non-cache', {
+                href,
+                sentenceCount,
+                segmentCount,
+                responseBodyReadMs: bodyReadElapsedMs,
+                responseTransformMs: transformElapsedMs,
+                responseTextLength,
+                inputToOutputRatio: typeof text === 'string' && text.length > 0
+                    ? safeRound(html.length / text.length, 3)
+                    : null,
+                elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+                ...captureEPUBOverlapState(),
+            }, {
+                once: true,
+            });
+        }
+        rememberReplaceTextResult(cacheKey, html);
         return html
     } catch (error) {
         logReplaceTextOnce('ebook.replaceText.error', {
@@ -110,8 +314,38 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             isCacheWarmer: !!isCacheWarmer,
             reason: error?.message || String(error),
         });
+        postEPUBLog('ebook.perf.replace-text.error', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            message: error?.message || String(error),
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('error', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            cacheKey,
+            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
+            message: error?.message || String(error),
+            ...captureEPUBOverlapState(),
+        });
         console.error("Error replacing text:", error)
         return text
+    } finally {
+        globalThis.__manabiInflightReplaceTextCount = Math.max(0, (globalThis.__manabiInflightReplaceTextCount ?? 1) - 1);
+        if (isCacheWarmer) {
+            globalThis.__manabiInflightCacheWarmerReplaceTextCount = Math.max(0, (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 1) - 1);
+        }
+    }
+    };
+    const promise = run();
+    replaceTextInFlightCache.set(cacheKey, promise);
+    try {
+        return await promise;
+    } finally {
+        replaceTextInFlightCache.delete(cacheKey);
     }
 }
 
@@ -175,6 +409,101 @@ const postEPUBLog = (event, details = {}) => {
     }
 };
 
+const isCacheWarmerDocument = (doc) => doc?.body?.dataset?.isCacheWarmer === 'true';
+
+const captureEPUBOverlapState = () => ({
+    inflightReplaceTextCount: globalThis.__manabiInflightReplaceTextCount ?? 0,
+    inflightCacheWarmerReplaceTextCount: globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0,
+    cacheWarmerOpenInFlight: !!globalThis.__manabiCacheWarmerOpenInFlight,
+    cacheWarmerReady: !!globalThis.__manabiCacheWarmerReady,
+    cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
+    cacheWarmerHighestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+});
+
+const summarizeDocumentFontState = (doc) => ({
+    fontStatus: doc?.fonts?.status ?? 'unsupported',
+    hasFontsAPI: !!doc?.fonts,
+    readyState: doc?.readyState ?? 'nil',
+    isCacheWarmerDocument: isCacheWarmerDocument(doc),
+});
+
+const cacheWarmerSourceForCurrentBook = () => {
+    return window.ebookSource
+        || makeFileSource(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname));
+};
+
+const isForegroundReaderIdle = () => {
+    const bodyLoading = !!document.body?.classList?.contains?.('loading');
+    return !!globalThis.reader?.hasLoadedLastPosition
+        && !bodyLoading
+        && (globalThis.__manabiInflightReplaceTextCount ?? 0) === 0
+        && !globalThis.__manabiCacheWarmerOpenInFlight
+        && !globalThis.__manabiCacheWarmerReady;
+};
+
+const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
+    if (globalThis.__manabiCacheWarmerOpenPromise) {
+        return await globalThis.__manabiCacheWarmerOpenPromise;
+    }
+    if (!isForegroundReaderIdle()) {
+        const retryDelayMs = Math.min(250 + (attempt * 150), 1500);
+        clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
+        globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
+            void maybeOpenDeferredCacheWarmer(attempt + 1);
+        }, retryDelayMs);
+        if (!globalThis.__manabiDeferredCacheWarmerLogged) {
+            globalThis.__manabiDeferredCacheWarmerLogged = true;
+            postEPUBLog('ebook.perf.cache-warmer.deferred', {
+                attempt,
+                retryDelayMs,
+                bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                ...captureEPUBOverlapState(),
+            });
+            postReplaceTextPerfLog('cache-warmer.deferred', {
+                attempt,
+                retryDelayMs,
+                bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                ...captureEPUBOverlapState(),
+            });
+        }
+        return;
+    }
+    const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
+    const openPromise = (async () => {
+        await window.cacheWarmer.open(cacheWarmerSource);
+        markEPUBPerf('cache-warmer.opened', {
+            sourceKind: cacheWarmerSource?.kind || 'nil',
+        });
+    })();
+    globalThis.__manabiCacheWarmerOpenPromise = openPromise;
+    try {
+        await openPromise;
+    } finally {
+        globalThis.__manabiCacheWarmerOpenPromise = null;
+    }
+};
+
+const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 600) => {
+    if (globalThis.__manabiCacheWarmerReady || globalThis.__manabiCacheWarmerOpenInFlight) {
+        return;
+    }
+    clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
+    globalThis.__manabiDeferredCacheWarmerLogged = false;
+    postEPUBLog('ebook.perf.cache-warmer.schedule', {
+        reason,
+        delayMs,
+        ...captureEPUBOverlapState(),
+    });
+    postReplaceTextPerfLog('cache-warmer.schedule', {
+        reason,
+        delayMs,
+        ...captureEPUBOverlapState(),
+    });
+    globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
+        void maybeOpenDeferredCacheWarmer(0);
+    }, delayMs);
+};
+
 const postOpenReaderGoToSheetRequest = (source, targetID = null) => {
     postEPUBLog('ebook.goToSheet.request', {
         source,
@@ -228,29 +557,25 @@ const fallbackSectionTitle = (href, index) => {
     return `Section ${index + 1}`;
 };
 
-const buildGoToSnapshotChapters = (book) => {
-    const chapters = [];
-    const seenHrefs = new Set();
+const isLikelyMetadataSectionHref = (href) => {
+    if (typeof href !== 'string' || !href) {
+        return false;
+    }
+    const lastSegment = href.split('/').pop() || href;
+    const withoutExtension = lastSegment.replace(/\.[^/.]+$/, '').trim();
+    return /^(title|cover|nav|toc|contents?)$/i.test(withoutExtension);
+};
+
+const buildLinearSectionEntries = (book) => {
     const tocEntries = flattenTOCEntries(book?.toc ?? []);
     const tocTitleByHref = new Map();
     for (const entry of tocEntries) {
         const href = typeof entry?.href === 'string' ? entry.href : null;
         const title = typeof entry?.label === 'string' ? entry.label.trim() : '';
-        if (!href || !title) {
+        if (!href || !title || tocTitleByHref.has(href)) {
             continue;
         }
-        if (!tocTitleByHref.has(href)) {
-            tocTitleByHref.set(href, title);
-        }
-        if (seenHrefs.has(href)) {
-            continue;
-        }
-        seenHrefs.add(href);
-        chapters.push({
-            href,
-            title,
-            pageNumber: null,
-        });
+        tocTitleByHref.set(href, title);
     }
     const sectionEntries = Array.isArray(book?.sections)
         ? book.sections
@@ -268,10 +593,50 @@ const buildGoToSnapshotChapters = (book) => {
             })
             .filter(Boolean)
         : [];
-    if (sectionEntries.length > chapters.length) {
-        return sectionEntries;
+    const contentSectionEntries = sectionEntries.filter((entry) => !isLikelyMetadataSectionHref(entry?.href));
+    if (contentSectionEntries.length === 1) {
+        const onlyContentSection = contentSectionEntries[0];
+        if (onlyContentSection && /^Section \d+$/i.test(onlyContentSection.title)) {
+            onlyContentSection.title = 'Main Content';
+        }
+    }
+    return sectionEntries;
+};
+
+const buildGoToSnapshotChapters = (book) => {
+    const chapters = [];
+    const seenHrefs = new Set();
+    const tocEntries = flattenTOCEntries(book?.toc ?? []);
+    for (const entry of tocEntries) {
+        const href = typeof entry?.href === 'string' ? entry.href : null;
+        const title = typeof entry?.label === 'string' ? entry.label.trim() : '';
+        if (!href || !title || seenHrefs.has(href)) {
+            continue;
+        }
+        seenHrefs.add(href);
+        chapters.push({
+            href,
+            title,
+            pageNumber: null,
+        });
+    }
+    const sectionEntries = buildLinearSectionEntries(book);
+    for (const entry of sectionEntries) {
+        if (!entry?.href || !entry?.title || seenHrefs.has(entry.href)) {
+            continue;
+        }
+        seenHrefs.add(entry.href);
+        chapters.push(entry);
     }
     return chapters;
+};
+
+const normalizeSpineHref = (href) => {
+    if (typeof href !== 'string') return null;
+    const trimmed = href.trim();
+    if (!trimmed) return null;
+    const hashIndex = trimmed.indexOf('#');
+    return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
 };
 
 const injectBodyDatasetAttributes = (html, attributes) => {
@@ -332,42 +697,255 @@ const normalizeChromeInsetCSSValue = (value) => {
     return '0px';
 };
 
-const applyStoredChromeInsets = (reason = 'unknown', rawInsets = globalThis.__manabiChromeInsets) => {
-    if (!rawInsets) {
+const parseChromeInsetPixelValue = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value !== 'string') {
+        return Number.NEGATIVE_INFINITY;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+        return Number.NEGATIVE_INFINITY;
+    }
+    const numeric = Number.parseFloat(trimmed);
+    return Number.isFinite(numeric) ? numeric : Number.NEGATIVE_INFINITY;
+};
+
+const createDefaultChromeInsetState = () => ({
+    toolbarBottomOffset: '0px',
+    obscuredBottomInset: '0px',
+    source: 'default',
+    revision: 0,
+});
+
+const normalizeChromeInsetState = (rawState, fallbackSource = 'unknown') => {
+    const normalizedState = {
+        toolbarBottomOffset: normalizeChromeInsetCSSValue(rawState?.toolbarBottomOffset),
+        obscuredBottomInset: normalizeChromeInsetCSSValue(rawState?.obscuredBottomInset),
+        source: typeof rawState?.source === 'string' && rawState.source.trim().length > 0
+            ? rawState.source.trim()
+            : fallbackSource,
+        revision: Number.isFinite(rawState?.revision)
+            ? rawState.revision
+            : null,
+    };
+    return normalizedState;
+};
+
+const getStoredChromeInsetState = () =>
+    normalizeChromeInsetState(globalThis.__manabiChromeInsets, 'stored');
+
+const readChromeInsetStateFromWindow = (targetWindow, fallbackSource) => {
+    try {
+        if (!targetWindow) return null;
+        return normalizeChromeInsetState(targetWindow.__manabiChromeInsets, fallbackSource);
+    } catch {
         return null;
     }
-    const toolbarBottomOffset = normalizeChromeInsetCSSValue(rawInsets.toolbarBottomOffset);
-    const obscuredBottomInset = normalizeChromeInsetCSSValue(rawInsets.obscuredBottomInset);
-    const appliedInsets = {
-        toolbarBottomOffset,
-        obscuredBottomInset,
-    };
-    globalThis.__manabiChromeInsets = appliedInsets;
-    for (const target of [document.documentElement, document.body].filter(Boolean)) {
-        target.style.setProperty('--manabi-toolbar-bottom-offset', toolbarBottomOffset);
-        target.style.setProperty('--manabi-obscured-bottom-inset', obscuredBottomInset);
+};
+
+const readLastPositiveChromeInsetStateFromWindow = (targetWindow, fallbackSource) => {
+    try {
+        if (!targetWindow) return null;
+        return normalizeChromeInsetState(targetWindow.__manabiLastPositiveChromeInsets, fallbackSource);
+    } catch {
+        return null;
     }
+};
+
+const getAncestorChromeInsetState = () => {
+    const candidates = [];
+    try {
+        if (window.parent && window.parent !== window) {
+            candidates.push(readChromeInsetStateFromWindow(window.parent, 'parent-stored'));
+            candidates.push(readLastPositiveChromeInsetStateFromWindow(window.parent, 'parent-stored-positive'));
+        }
+    } catch {}
+    try {
+        if (window.top && window.top !== window.parent && window.top !== window) {
+            candidates.push(readChromeInsetStateFromWindow(window.top, 'top-stored'));
+            candidates.push(readLastPositiveChromeInsetStateFromWindow(window.top, 'top-stored-positive'));
+        }
+    } catch {}
+    for (const candidate of candidates.filter(Boolean)) {
+        if (
+            parseChromeInsetPixelValue(candidate.toolbarBottomOffset) > 0 ||
+            parseChromeInsetPixelValue(candidate.obscuredBottomInset) > 0
+        ) {
+            return candidate;
+        }
+    }
+    return null;
+};
+
+const getStoredPositiveChromeInsetState = () => {
+    const currentState = getStoredChromeInsetState();
+    if (
+        parseChromeInsetPixelValue(currentState.toolbarBottomOffset) > 0 ||
+        parseChromeInsetPixelValue(currentState.obscuredBottomInset) > 0
+    ) {
+        return currentState;
+    }
+    const localPositiveState = normalizeChromeInsetState(globalThis.__manabiLastPositiveChromeInsets, 'stored-positive');
+    if (
+        parseChromeInsetPixelValue(localPositiveState.toolbarBottomOffset) > 0 ||
+        parseChromeInsetPixelValue(localPositiveState.obscuredBottomInset) > 0
+    ) {
+        return localPositiveState;
+    }
+    return getAncestorChromeInsetState()
+        ?? localPositiveState;
+};
+
+const getNextChromeInsetRevision = () => {
+    const currentRevision = Number.isFinite(globalThis.__manabiChromeInsetsRevision)
+        ? globalThis.__manabiChromeInsetsRevision
+        : 0;
+    const nextRevision = currentRevision + 1;
+    globalThis.__manabiChromeInsetsRevision = nextRevision;
+    return nextRevision;
+};
+
+const applyResolvedChromeInsetState = (state) => {
+    for (const target of [document.documentElement, document.body].filter(Boolean)) {
+        target.style.setProperty('--manabi-toolbar-bottom-offset', state.toolbarBottomOffset);
+        target.style.setProperty('--manabi-obscured-bottom-inset', state.obscuredBottomInset);
+    }
+};
+
+const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
+    const previousState = getStoredChromeInsetState();
+    const storedPositiveState = getStoredPositiveChromeInsetState();
+    const ancestorPositiveState = getAncestorChromeInsetState();
+    let nextState = incomingState
+        ? normalizeChromeInsetState(incomingState, reason)
+        : previousState;
+
+    if (!Number.isFinite(nextState.revision)) {
+        nextState.revision = incomingState ? getNextChromeInsetRevision() : previousState.revision;
+    } else {
+        globalThis.__manabiChromeInsetsRevision = Math.max(
+            Number.isFinite(globalThis.__manabiChromeInsetsRevision) ? globalThis.__manabiChromeInsetsRevision : 0,
+            nextState.revision,
+        );
+    }
+
+    if (!incomingState && !Number.isFinite(nextState.revision)) {
+        nextState = createDefaultChromeInsetState();
+    }
+
+    const shouldInheritPositiveAncestorState =
+        !incomingState &&
+        parseChromeInsetPixelValue(nextState.toolbarBottomOffset) === 0 &&
+        parseChromeInsetPixelValue(nextState.obscuredBottomInset) === 0 &&
+        !!ancestorPositiveState &&
+        (
+            parseChromeInsetPixelValue(ancestorPositiveState.toolbarBottomOffset) > 0 ||
+            parseChromeInsetPixelValue(ancestorPositiveState.obscuredBottomInset) > 0
+        );
+
+    if (shouldInheritPositiveAncestorState) {
+        nextState = {
+            ...ancestorPositiveState,
+            source: `${ancestorPositiveState.source}->inherited`,
+        };
+    }
+
+    const incomingWouldZeroPositiveState =
+        !!incomingState &&
+        parseChromeInsetPixelValue(nextState.toolbarBottomOffset) === 0 &&
+        parseChromeInsetPixelValue(nextState.obscuredBottomInset) === 0 &&
+        (
+            parseChromeInsetPixelValue(storedPositiveState.toolbarBottomOffset) > 0 ||
+            parseChromeInsetPixelValue(storedPositiveState.obscuredBottomInset) > 0
+        );
+
+    if (incomingWouldZeroPositiveState) {
+        const shortOverwriteLog = {
+            reason,
+            message: 'preserved existing non-zero inset over zero candidate',
+            attemptedToolbarBottomOffset: nextState.toolbarBottomOffset,
+            attemptedObscuredBottomInset: nextState.obscuredBottomInset,
+            lastPositiveToolbarBottomOffset: storedPositiveState.toolbarBottomOffset,
+            lastPositiveObscuredBottomInset: storedPositiveState.obscuredBottomInset,
+            attemptedSource: nextState.source,
+            attemptedRevision: nextState.revision,
+        };
+        const overwriteLog = {
+            reason,
+            attemptedState: nextState,
+            previousState,
+            storedPositiveState,
+        };
+        const overwriteKey = JSON.stringify(overwriteLog);
+        if (globalThis.__manabiLastChromeInsetsOverwriteLogKey !== overwriteKey) {
+            globalThis.__manabiLastChromeInsetsOverwriteLogKey = overwriteKey;
+            postEPUBLog('ebook.chromeInsets.zeroOverwriteSummary', shortOverwriteLog);
+            postEPUBLog('ebook.chromeInsets.zeroOverwriteAttempt', overwriteLog);
+        }
+    }
+
+    globalThis.__manabiChromeInsets = nextState;
+    if (
+        parseChromeInsetPixelValue(nextState.toolbarBottomOffset) > 0 ||
+        parseChromeInsetPixelValue(nextState.obscuredBottomInset) > 0
+    ) {
+        globalThis.__manabiLastPositiveChromeInsets = nextState;
+    }
+    applyResolvedChromeInsetState(nextState);
+
     const chromeInsetsLog = {
         reason,
-        toolbarBottomOffset,
-        obscuredBottomInset,
+        locationHref: globalThis.location?.href ?? null,
+        topLocationHref: (() => {
+            try {
+                return window.top?.location?.href ?? null;
+            } catch {
+                return null;
+            }
+        })(),
+        isTopWindow: (() => {
+            try {
+                return window.top === window;
+            } catch {
+                return null;
+            }
+        })(),
+        toolbarBottomOffset: nextState.toolbarBottomOffset,
+        obscuredBottomInset: nextState.obscuredBottomInset,
+        source: nextState.source,
+        revision: nextState.revision,
+        inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
+        inheritedAncestorToolbarBottomOffset: shouldInheritPositiveAncestorState ? ancestorPositiveState?.toolbarBottomOffset ?? null : null,
+        inheritedAncestorObscuredBottomInset: shouldInheritPositiveAncestorState ? ancestorPositiveState?.obscuredBottomInset ?? null : null,
+        ancestorPositiveToolbarBottomOffset: ancestorPositiveState?.toolbarBottomOffset ?? null,
+        ancestorPositiveObscuredBottomInset: ancestorPositiveState?.obscuredBottomInset ?? null,
+        ancestorPositiveSource: ancestorPositiveState?.source ?? null,
+        incomingState: incomingState ? normalizeChromeInsetState(incomingState, reason) : null,
+        previousState,
         bodyReady: !!document.body,
     };
-    const chromeInsetsKey = JSON.stringify({
-        toolbarBottomOffset,
-        obscuredBottomInset,
-        bodyReady: !!document.body,
-    });
-    if (globalThis.__manabiLastChromeInsetsLogKey !== chromeInsetsKey) {
+    const shouldLogChromeInsets = !!globalThis.manabiVerboseLayout;
+    const chromeInsetsKey = shouldLogChromeInsets ? JSON.stringify(chromeInsetsLog) : null;
+    if (shouldLogChromeInsets && globalThis.__manabiLastChromeInsetsLogKey !== chromeInsetsKey) {
         globalThis.__manabiLastChromeInsetsLogKey = chromeInsetsKey;
         postEPUBLog('ebook.chromeInsets.reapplied', chromeInsetsLog);
     }
-    return appliedInsets;
+    return nextState;
 };
 
-window.manabiApplyChromeInsets = (rawInsets, reason = 'window.manabiApplyChromeInsets') => {
-    return applyStoredChromeInsets(reason, rawInsets);
+window.manabiApplyChromeInsets = (rawState, reason = 'window.manabiApplyChromeInsets') => {
+    return applyStoredChromeInsets(reason, rawState);
 };
+
+document.addEventListener('DOMContentLoaded', () => {
+    applyStoredChromeInsets('dom-content-loaded');
+});
+
+window.addEventListener('load', () => {
+    applyStoredChromeInsets('window-load');
+});
 
 const replaceTextLogKeys = new Set();
 const logReplaceTextOnce = (event, details = {}) => {
@@ -390,6 +968,71 @@ const safeRound = (value, digits = 1) =>
     typeof value === 'number' && Number.isFinite(value)
         ? Number(value.toFixed(digits))
         : null;
+
+const performanceNowMs = () =>
+    typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+
+let currentEPUBPerfSession = null;
+let nextEPUBPerfSessionID = 1;
+
+const beginEPUBPerfSession = (details = {}) => {
+    const startedAt = performanceNowMs();
+    currentEPUBPerfSession = {
+        id: nextEPUBPerfSessionID++,
+        startedAt,
+        lastAt: startedAt,
+        marks: new Map([['start', startedAt]]),
+        onceKeys: new Set(),
+    };
+    postEPUBLog('ebook.perf.session.begin', {
+        sessionID: currentEPUBPerfSession.id,
+        ...details,
+    });
+    return currentEPUBPerfSession;
+};
+
+const markEPUBPerf = (stage, details = {}, options = {}) => {
+    const session = currentEPUBPerfSession;
+    if (!session || typeof stage !== 'string' || stage.length === 0) {
+        return;
+    }
+    const {
+        once = false,
+        key = stage,
+        anchor = null,
+    } = options;
+    const onceKey = `${session.id}:${key}`;
+    if (once && session.onceKeys.has(onceKey)) {
+        return;
+    }
+    const now = performanceNowMs();
+    const anchorAt = typeof anchor === 'string'
+        ? (session.marks.get(anchor) ?? null)
+        : null;
+    const payload = {
+        sessionID: session.id,
+        sinceStartMs: safeRound(now - session.startedAt, 1),
+        sinceLastMs: safeRound(now - session.lastAt, 1),
+        ...details,
+    };
+    if (anchorAt !== null) {
+        payload.anchorStage = anchor;
+        payload.sinceAnchorMs = safeRound(now - anchorAt, 1);
+    }
+    postEPUBLog(`ebook.perf.${stage}`, payload);
+    session.lastAt = now;
+    session.marks.set(stage, now);
+    if (once) {
+        session.onceKeys.add(onceKey);
+    }
+};
+
+globalThis.__manabiPostEPUBLog = postEPUBLog;
+globalThis.__manabiMarkEPUBPerf = markEPUBPerf;
+globalThis.__manabiPerformanceNowMs = performanceNowMs;
+globalThis.__manabiSafeRound = safeRound;
 
 const summarizeRect = (rect) => {
     if (!rect) return null;
@@ -448,59 +1091,9 @@ const summarizeElementLayout = (element) => {
     };
 };
 
-const summarizeFoliateViewLayout = (view) => {
-    const summary = summarizeElementLayout(view);
-    if (!summary) {
-        return null;
-    }
-    const paginator = view.shadowRoot?.querySelector?.('foliate-paginator') || null;
-    const paginatorTop = paginator?.shadowRoot?.getElementById?.('top') || null;
-    const paginatorContainer = paginator?.shadowRoot?.getElementById?.('container') || null;
-    return {
-        ...summary,
-        parentTag: view.parentElement?.tagName ?? null,
-        parentID: view.parentElement?.id ?? null,
-        datasetIsCache: view.dataset?.isCache ?? null,
-        paginator: summarizeElementLayout(paginator),
-        paginatorTop: summarizeElementLayout(paginatorTop),
-        paginatorContainer: summarizeElementLayout(paginatorContainer),
-    };
-};
+const summarizeFoliateViewLayout = (_view) => null;
 
-const postReaderVisibilityProbe = (stage, view = null, extra = null) => {
-    if (extra?.isCacheWarmer || view?.dataset?.isCache === 'true') {
-        return;
-    }
-    const readerStage = document.getElementById('reader-stage');
-    const liveView = summarizeFoliateViewLayout(view);
-    const paginatorContainerWidth = liveView?.paginatorContainer?.clientWidth ?? null;
-    const paginatorContainerHeight = liveView?.paginatorContainer?.clientHeight ?? null;
-    const shouldLog =
-        !liveView
-        || !liveView.paginator
-        || (typeof liveView?.clientWidth === 'number' && liveView.clientWidth <= 0)
-        || (typeof liveView?.clientHeight === 'number' && liveView.clientHeight <= 0)
-        || (typeof paginatorContainerWidth === 'number' && paginatorContainerWidth <= 0)
-        || (typeof paginatorContainerHeight === 'number' && paginatorContainerHeight <= 0);
-    const shouldLogAtStage =
-        stage === 'reader.documentLoad'
-        || !!extra?.documentURL;
-    if (!shouldLog || !shouldLogAtStage) {
-        return;
-    }
-    postEPUBLog('ebook.visibilityProbe', {
-        stage,
-        readyState: document.readyState,
-        childCount: readerStage?.children?.length ?? 0,
-        viewMissing: !liveView,
-        paginatorMissing: !liveView?.paginator,
-        viewWidth: liveView?.clientWidth ?? null,
-        viewHeight: liveView?.clientHeight ?? null,
-        pagerWidth: paginatorContainerWidth,
-        pagerHeight: paginatorContainerHeight,
-        extra,
-    });
-};
+const postReaderVisibilityProbe = (_stage, _view = null, _extra = null) => {};
 
 const isDocumentLike = (value) =>
     !!value
@@ -781,11 +1374,18 @@ const readNativeEntryBlob = async (response) => {
 }
 
 const makeNativeEpubLoader = async (url, isCacheWarmer) => {
+    const loaderStartedAt = performanceNowMs();
     const { entries: rawEntries = [] } = await fetchNativeEntries(url)
     const entries = rawEntries.map(entry => ({
         filename: entry.path,
         uncompressedSize: entry.size ?? 0,
     }))
+    postEPUBLog('ebook.perf.native-loader.ready', {
+        sourceURL: url,
+        isCacheWarmer: !!isCacheWarmer,
+        entryCount: entries.length,
+        elapsedMs: safeRound(performanceNowMs() - loaderStartedAt, 1),
+    });
     const sizeMap = new Map(entries.map(entry => [entry.filename, entry.uncompressedSize]))
     const entryNames = new Set(entries.map(entry => entry.filename))
     const replaceText = makeReplaceText(isCacheWarmer)
@@ -812,6 +1412,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
 }
 
 const makeZipLoader = async (file, isCacheWarmer) => {
+    const loaderStartedAt = performanceNowMs();
     const {
         configure,
         ZipReader,
@@ -825,6 +1426,12 @@ const makeZipLoader = async (file, isCacheWarmer) => {
     })
     const reader = new ZipReader(new BlobReader(file))
     const entries = await reader.getEntries()
+    postEPUBLog('ebook.perf.zip-loader.ready', {
+        fileName: file?.name || 'nil',
+        isCacheWarmer: !!isCacheWarmer,
+        entryCount: entries.length,
+        elapsedMs: safeRound(performanceNowMs() - loaderStartedAt, 1),
+    });
     const map = new Map(entries.map(entry => [entry.filename, entry]))
     const load = f => (name, ...args) =>
     map.has(name) ? f(map.get(name), ...args) : null
@@ -1102,21 +1709,7 @@ class Reader {
         const body = document.body;
         if (!body) return;
         const nextVisible = !!visible;
-        const previousVisible = body.classList.contains('loading');
         body.classList.toggle('loading', nextVisible);
-        if (previousVisible !== nextVisible) {
-            postEPUBLog('ebook.loadingIndicator.state', {
-                visible: nextVisible,
-                previous: previousVisible,
-                bodyClassName: body.className || '',
-                navHiddenClass: body.classList.contains('nav-hidden'),
-                navHiddenScrollClass: document.getElementById('nav-bar')?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-                currentPageURL: window.location.href,
-                hasRenderer: !!this.view?.renderer,
-                hasLoadedLastPosition: !!this.hasLoadedLastPosition,
-                articleMarkedAsFinished: !!this.markedAsFinished,
-            });
-        }
     }
     #tocView
     #chevronFadeTimers = {
@@ -1125,6 +1718,7 @@ class Reader {
     }
     hasLoadedLastPosition = false
     markedAsFinished = false;
+    showingCompletionButtons = false;
     lastPercentValue = null;
     articleReadingProgress = normalizeArticleReadingProgress();
     pageTrackingStates = [];
@@ -1204,10 +1798,13 @@ class Reader {
             return false;
         }
         const numericPageNumber = Number(pageNumber);
+        const pageTargetCount = Array.isArray(this.navHUD?.pageTargets) ? this.navHUD.pageTargets.length : 0;
         const totalPages = this.navHUD?.lastPageMetricsSnapshot?.totalPages
             ?? this.navHUD?.totalPageCount
             ?? this.navHUD?.fallbackTotalPageCount
             ?? null;
+        const fallbackTotalPages = this.navHUD?.fallbackTotalPageCount ?? null;
+        const currentPageNumber = this.navHUD?.lastPageMetricsSnapshot?.currentPageNumber ?? null;
         if (!Number.isFinite(numericPageNumber)) {
             return false;
         }
@@ -1216,19 +1813,30 @@ class Reader {
             : Math.max(1, Math.round(numericPageNumber));
         const clampedPageNumber = Math.max(1, Math.min(maxPageNumber, Math.round(numericPageNumber)));
         const pageTarget = this.navHUD?.pageTargets?.[clampedPageNumber - 1] ?? null;
-        postEPUBLog('ebook.goTo.page.request', {
+        const fraction = typeof totalPages === 'number' && totalPages > 1
+            ? (clampedPageNumber - 1) / (totalPages - 1)
+            : null;
+        postPageNumLog('goto.page.request', {
             source,
             pageNumber: clampedPageNumber,
             totalPages,
+            fallbackTotalPages,
+            currentPageNumber,
+            currentPageSource: this.navHUD?.lastPageMetricsSnapshot?.currentPageSource ?? null,
+            currentPageReady: this.navHUD?.lastPageMetricsSnapshot?.currentPageReady ?? null,
+            totalPageSource: this.navHUD?.lastPageMetricsSnapshot?.totalSource ?? null,
+            totalPagesReady: this.navHUD?.lastPageMetricsSnapshot?.totalPagesReady ?? null,
+            pageTargetCount,
             hasPageTarget: !!pageTarget,
             targetHref: typeof pageTarget?.href === 'string' ? pageTarget.href : null,
+            fraction: fraction != null ? safeRound(fraction, 6) : null,
+            isRTL: !!this.isRTL,
         });
         if (typeof pageTarget?.href === 'string' && pageTarget.href) {
             await this.view.goTo(pageTarget.href);
             return true;
         }
-        if (typeof totalPages === 'number' && totalPages > 1) {
-            const fraction = (clampedPageNumber - 1) / (totalPages - 1);
+        if (fraction != null) {
             await this.view.goToFraction(fraction);
             return true;
         }
@@ -1240,14 +1848,34 @@ class Reader {
     }
     async buildGoToSheetSnapshot() {
         const chapters = buildGoToSnapshotChapters(this.view?.book);
+        const linearSectionEntries = buildLinearSectionEntries(this.view?.book);
+        const snapshotMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
+        const fallbackTotalPages = this.navHUD?.fallbackTotalPageCount ?? null;
+        const totalPageCount = this.navHUD?.totalPageCount ?? null;
+        const pageTargets = Array.isArray(this.navHUD?.pageTargets) ? this.navHUD.pageTargets : [];
         for (const entry of chapters) {
             const href = entry.href;
             let pageNumber = null;
+            let pageNumberSource = null;
+            const normalizedHref = normalizeSpineHref(href);
+            if (normalizedHref) {
+                const pageTargetIndex = pageTargets.findIndex((pageTarget) => {
+                    const candidateHref = normalizeSpineHref(pageTarget?.href);
+                    return candidateHref != null && candidateHref === normalizedHref;
+                });
+                if (pageTargetIndex >= 0) {
+                    pageNumber = pageTargetIndex + 1;
+                    pageNumberSource = 'page-targets';
+                }
+            }
             try {
-                const progress = await this.view?.getNavigationProgressOf?.(href);
-                const metrics = progress ? this.navHUD?._computePageMetrics?.(progress) : null;
-                if (typeof metrics?.currentPageNumber === 'number' && metrics.currentPageNumber > 0) {
-                    pageNumber = metrics.currentPageNumber;
+                if (pageNumber == null) {
+                    const progress = await this.view?.getNavigationProgressOf?.(href);
+                    const metrics = progress ? this.navHUD?._computePageMetrics?.(progress) : null;
+                    if (typeof metrics?.currentPageNumber === 'number' && metrics.currentPageNumber > 0) {
+                        pageNumber = metrics.currentPageNumber;
+                        pageNumberSource = 'navigation-progress';
+                    }
                 }
             } catch (error) {
                 postEPUBLog('ebook.goTo.snapshot.chapter.error', {
@@ -1257,22 +1885,129 @@ class Reader {
                 });
             }
             entry.pageNumber = pageNumber;
+            entry.pageNumberSource = pageNumberSource;
         }
-        const currentChapter = this.view?.renderer?.tocItem ?? this.view?.lastLocation?.tocItem ?? null;
+        const relocateSectionIndex = typeof this.navHUD?.lastRelocateDetail?.sectionIndex === 'number'
+            ? this.navHUD.lastRelocateDetail.sectionIndex
+            : (typeof this.navHUD?.lastRelocateDetail?.index === 'number'
+                ? this.navHUD.lastRelocateDetail.index
+                : null);
+        const rendererCurrentIndex = (() => {
+            try {
+                const currentIndex = this.view?.renderer?.currentIndex;
+                return typeof currentIndex === 'number' ? currentIndex : null;
+            } catch (_) {
+                return null;
+            }
+        })();
+        const resolvedSectionIndex = this.navHUD?._resolveSectionIndex?.(snapshotMetrics ?? this.navHUD?.lastRelocateDetail ?? {}) ?? {
+            index: null,
+            source: 'nav-hud-unavailable',
+        };
+        const currentSectionIndex = typeof resolvedSectionIndex?.index === 'number'
+            ? resolvedSectionIndex.index
+            : null;
+        const currentSection = currentSectionIndex != null
+            ? this.view?.book?.sections?.[currentSectionIndex] ?? null
+            : null;
+        const currentSectionHref = typeof currentSection?.id === 'string'
+            ? currentSection.id
+            : null;
+        const normalizedCurrentSectionHref = normalizeSpineHref(currentSectionHref);
+        const currentSectionEntry = normalizedCurrentSectionHref
+            ? linearSectionEntries.find((entry) => normalizeSpineHref(entry.href) === normalizedCurrentSectionHref) ?? null
+            : null;
+        const currentChapter = currentSectionEntry
+            ? null
+            : (this.view?.renderer?.tocItem ?? this.view?.lastLocation?.tocItem ?? null);
+        const currentChapterHref = typeof currentSectionEntry?.href === 'string'
+            ? currentSectionEntry.href
+            : (currentSectionHref ?? (typeof currentChapter?.href === 'string' ? currentChapter.href : null));
+        const normalizedCurrentChapterHref = normalizeSpineHref(currentChapterHref);
+        const currentChapterEntry = normalizedCurrentChapterHref
+            ? chapters.find((entry) => normalizeSpineHref(entry.href) === normalizedCurrentChapterHref)
+            : null;
+        const currentChapterPageNumber = typeof currentChapterEntry?.pageNumber === 'number'
+            ? currentChapterEntry.pageNumber
+            : null;
+        const rawCurrentPageNumber = typeof snapshotMetrics?.currentPageNumber === 'number'
+            ? snapshotMetrics.currentPageNumber
+            : null;
+        const currentPageNumber = Math.max(rawCurrentPageNumber ?? 0, currentChapterPageNumber ?? 0) || null;
+        const currentPageNumberSource = currentPageNumber == null
+            ? null
+            : (
+                rawCurrentPageNumber != null && currentChapterPageNumber != null && currentPageNumber !== rawCurrentPageNumber
+                    ? 'page-metrics+chapter-floor'
+                    : rawCurrentPageNumber != null
+                        ? 'page-metrics'
+                        : currentChapterPageNumber != null
+                            ? 'chapter-floor'
+                            : null
+            );
+        const totalPages = snapshotMetrics?.totalPages
+            ?? fallbackTotalPages
+            ?? totalPageCount
+            ?? null;
         const snapshot = {
             isRTL: !!this.isRTL,
-            currentChapterHref: typeof currentChapter?.href === 'string' ? currentChapter.href : null,
-            currentChapterTitle: typeof currentChapter?.label === 'string' ? currentChapter.label : null,
-            currentPageNumber: this.navHUD?.lastPageMetricsSnapshot?.currentPageNumber ?? null,
-            totalPages: this.navHUD?.lastPageMetricsSnapshot?.totalPages ?? null,
+            currentChapterHref,
+            currentChapterTitle: typeof currentSectionEntry?.title === 'string'
+                ? currentSectionEntry.title
+                : (typeof currentChapter?.label === 'string' ? currentChapter.label : null),
+            currentPageNumber,
+            totalPages,
+            currentSectionIndex,
+            currentSectionIndexSource: resolvedSectionIndex?.source ?? null,
+            snapshotSectionIndex: snapshotMetrics?.sectionIndex ?? null,
+            navLastSectionIndexSeen: this.navHUD?.lastSectionIndexSeen ?? null,
+            currentSectionHref,
+            normalizedCurrentSectionHref,
             chapters,
         };
-        postEPUBLog('ebook.goTo.snapshot', {
+        if (
+            rawCurrentPageNumber != null &&
+            currentChapterPageNumber != null &&
+            currentPageNumber !== rawCurrentPageNumber
+        ) {
+            postPageNumLog('goto.snapshot.currentPageAdjusted', {
+                rawCurrentPageNumber,
+                adjustedCurrentPageNumber: currentPageNumber,
+                currentChapterHref,
+                currentChapterPageNumber,
+            });
+        }
+        postPageNumLog('goto.snapshot', {
             isRTL: snapshot.isRTL,
             chapterCount: chapters.length,
             currentChapterHref: snapshot.currentChapterHref,
+            currentChapterTitle: snapshot.currentChapterTitle,
+            currentSectionIndex,
+            currentSectionIndexSource: resolvedSectionIndex?.source ?? null,
+            rendererCurrentIndex,
+            relocateSectionIndex,
+            snapshotSectionIndex: snapshotMetrics?.sectionIndex ?? null,
+            navLastSectionIndexSeen: this.navHUD?.lastSectionIndexSeen ?? null,
+            currentSectionHref,
+            normalizedCurrentSectionHref,
+            currentChapterPageNumber,
             currentPageNumber: snapshot.currentPageNumber,
+            rawCurrentPageNumber,
+            currentPageSource: snapshotMetrics?.currentPageSource ?? currentPageNumberSource ?? null,
+            currentPageReady: snapshotMetrics?.currentPageReady ?? null,
             totalPages: snapshot.totalPages,
+            totalPageSource: snapshotMetrics?.totalSource ?? null,
+            totalPagesReady: snapshotMetrics?.totalPagesReady ?? null,
+            snapshotTotalPages: snapshotMetrics?.totalPages ?? null,
+            fallbackTotalPages,
+            pageTargetTotalPages: totalPageCount,
+            pageTargetCount: pageTargets.length,
+            chapterPreview: chapters.slice(0, 8).map((entry) => ({
+                href: entry.href,
+                title: entry.title,
+                pageNumber: entry.pageNumber,
+                pageNumberSource: entry.pageNumberSource ?? null,
+            })),
         });
         return snapshot;
     }
@@ -1363,316 +2098,240 @@ class Reader {
         }
         return `${client ?? 'nil'}/${scroll ?? 'nil'}`;
     }
-    #logLayoutTransition(reason, previousSnapshot, nextSnapshot) {
-        if (!previousSnapshot || !nextSnapshot) {
-            return;
+    #formatRect(rect) {
+        if (!rect) {
+            return null;
         }
-        const navToggle =
-            previousSnapshot.hideNavigationDueToScroll !== nextSnapshot.hideNavigationDueToScroll
-            || previousSnapshot.bodyNavHidden !== nextSnapshot.bodyNavHidden;
-        const pageMetricsChanged =
-            previousSnapshot.currentPageNumber !== nextSnapshot.currentPageNumber
-            || previousSnapshot.totalPages !== nextSnapshot.totalPages;
-        const paginatorChanged =
-            previousSnapshot.livePaginatorBox !== nextSnapshot.livePaginatorBox
-            || previousSnapshot.livePaginatorScrollBox !== nextSnapshot.livePaginatorScrollBox
-            || previousSnapshot.scrollingWidth !== nextSnapshot.scrollingWidth;
-        const insetsChanged =
-            previousSnapshot.cssInsets !== nextSnapshot.cssInsets
-            || previousSnapshot.navBarBottom !== nextSnapshot.navBarBottom;
-        if (!navToggle && !pageMetricsChanged && !paginatorChanged && !insetsChanged) {
-            return;
+        const x = Number.isFinite(rect.left) ? safeRound(rect.left, 1) : null;
+        const y = Number.isFinite(rect.top) ? safeRound(rect.top, 1) : null;
+        const width = Number.isFinite(rect.width) ? safeRound(rect.width, 1) : null;
+        const height = Number.isFinite(rect.height) ? safeRound(rect.height, 1) : null;
+        if (![x, y, width, height].some((value) => value !== null)) {
+            return null;
         }
-        const transition = {
-            reason,
-            navToggle,
-            pageMetricsChanged,
-            paginatorChanged,
-            insetsChanged,
-            repaginationOnNavToggle: navToggle && previousSnapshot.totalPages !== nextSnapshot.totalPages,
-            overflowWhilePaginated: !!nextSnapshot.horizontalOverflowScrolling,
-            hideNavigationDueToScroll: this.#formatTransition(
-                previousSnapshot.hideNavigationDueToScroll,
-                nextSnapshot.hideNavigationDueToScroll,
-            ),
-            bodyNavHidden: this.#formatTransition(
-                previousSnapshot.bodyNavHidden,
-                nextSnapshot.bodyNavHidden,
-            ),
-            totalPages: this.#formatTransition(previousSnapshot.totalPages, nextSnapshot.totalPages),
-            currentPageNumber: this.#formatTransition(
-                previousSnapshot.currentPageNumber,
-                nextSnapshot.currentPageNumber,
-            ),
-            scrollingWidth: this.#formatTransition(
-                previousSnapshot.scrollingWidth,
-                nextSnapshot.scrollingWidth,
-            ),
-            paginatorBox: this.#formatTransition(
-                previousSnapshot.livePaginatorBox,
-                nextSnapshot.livePaginatorBox,
-            ),
-            paginatorScrollBox: this.#formatTransition(
-                previousSnapshot.livePaginatorScrollBox,
-                nextSnapshot.livePaginatorScrollBox,
-            ),
-            cssInsets: this.#formatTransition(previousSnapshot.cssInsets, nextSnapshot.cssInsets),
-            navBarBottom: this.#formatTransition(previousSnapshot.navBarBottom, nextSnapshot.navBarBottom),
-            paginatorViewportBottomClip: nextSnapshot.paginatorViewportBottomClip,
-            sectionProgressOffscreen: nextSnapshot.sectionProgressOffscreen,
-            hiddenOverlayMismatch: nextSnapshot.hiddenOverlayExpected && !nextSnapshot.hiddenOverlayVisible,
-        };
-        Object.keys(transition).forEach((key) => {
-            if (transition[key] === null || transition[key] === false) {
-                delete transition[key];
-            }
-        });
-        postReaderLog('ebook.layout.transition', transition);
+        return `x=${x ?? 'nil'} y=${y ?? 'nil'} w=${width ?? 'nil'} h=${height ?? 'nil'}`;
     }
+    #logLayoutTransition(_reason, _previousSnapshot, _nextSnapshot) {}
     #logLayoutDiagnostics(reason = 'unknown', extra = null) {
         const body = document.body;
         const docEl = document.documentElement;
-        const bodyStyle = body ? window.getComputedStyle(body) : null;
-        const docElStyle = docEl ? window.getComputedStyle(docEl) : null;
-        const scrollingElement = document.scrollingElement || docEl;
-        const navBar = document.getElementById('nav-bar');
-        const pageTrackingContainer = document.getElementById('page-tracking-container');
-        const pageTrackingButtons = document.getElementById('page-tracking-buttons');
-        const firstPageReadButton = pageTrackingButtons?.querySelector?.('.page-read-button') || null;
-        const pageTrackingContainerRect = pageTrackingContainer?.getBoundingClientRect?.() || null;
-        const pageTrackingButtonsRect = pageTrackingButtons?.getBoundingClientRect?.() || null;
-        const firstPageReadButtonRect = firstPageReadButton?.getBoundingClientRect?.() || null;
-        const firstPageReadButtonStyle = firstPageReadButton ? window.getComputedStyle(firstPageReadButton) : null;
-        const pageTrackingContainerStyle = pageTrackingContainer ? window.getComputedStyle(pageTrackingContainer) : null;
-        const pageTrackingButtonsStyle = pageTrackingButtons ? window.getComputedStyle(pageTrackingButtons) : null;
-        const readerStage = document.getElementById('reader-stage');
-        const allFoliateViews = Array.from(document.querySelectorAll('foliate-view'));
-        const liveFoliateView = allFoliateViews.find((view) => view?.dataset?.isCache !== 'true') || null;
-        const cacheFoliateView = allFoliateViews.find((view) => view?.dataset?.isCache === 'true') || null;
+        const computedStyle = window.getComputedStyle(body || docEl);
+        const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
+            .find((view) => view?.dataset?.isCache !== 'true') || null;
         const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
         const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
-        const navBarRect = navBar?.getBoundingClientRect?.() || null;
-        const livePaginatorRect = livePaginatorContainer?.getBoundingClientRect?.() || null;
-        const locationLabel = document.getElementById('nav-primary-text');
-        const hiddenOverlayLocationLabel = document.getElementById('nav-hidden-primary-text');
-        const hiddenOverlayPercentLabel = document.getElementById('nav-hidden-primary-percent');
-        const sectionProgressCenter = document.getElementById('nav-section-progress-center');
+        const navBar = document.getElementById('nav-bar');
+        const readerStage = document.getElementById('reader-stage');
+        const navBarRect = navBar?.getBoundingClientRect?.() ?? null;
+        const readerStageRect = readerStage?.getBoundingClientRect?.() ?? null;
+        const liveFoliateViewRect = liveFoliateView?.getBoundingClientRect?.() ?? null;
+        const livePaginatorRect = livePaginator?.getBoundingClientRect?.() ?? null;
+        let visibleFrameRect = null;
+        let visibleDocumentRect = null;
+        let visibleBodyRect = null;
+        let visibleTextRect = null;
+        let firstVisibleTextRect = null;
+        let lastVisibleTextRect = null;
+        let visibleTextRectCount = null;
+        let iframeWritingMode = null;
+        let iframeBodyScrollBox = null;
+        let iframeBodyClientBox = null;
+        let iframeMargins = null;
+        let iframePadding = null;
+        try {
+            const visibleFrame = Array.from(livePaginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []).find((frame) => {
+                const rect = frame?.getBoundingClientRect?.();
+                return rect && rect.width > 0 && rect.height > 0;
+            }) ?? null;
+            if (visibleFrame) {
+                const frameRect = visibleFrame.getBoundingClientRect();
+                visibleFrameRect = frameRect;
+                const frameDoc = visibleFrame.contentDocument ?? null;
+                const frameDocEl = frameDoc?.documentElement ?? null;
+                const frameBody = frameDoc?.body ?? null;
+                const frameView = visibleFrame.contentWindow ?? null;
+                const frameBodyStyle = frameBody && frameView ? frameView.getComputedStyle(frameBody) : null;
+                iframeWritingMode = frameBodyStyle?.writingMode ?? null;
+                iframeMargins = frameBodyStyle
+                    ? `m=${frameBodyStyle.marginTop}/${frameBodyStyle.marginRight}/${frameBodyStyle.marginBottom}/${frameBodyStyle.marginLeft}`
+                    : null;
+                iframePadding = frameBodyStyle
+                    ? `p=${frameBodyStyle.paddingTop}/${frameBodyStyle.paddingRight}/${frameBodyStyle.paddingBottom}/${frameBodyStyle.paddingLeft}`
+                    : null;
+                iframeBodyScrollBox = this.#formatScrollBox(frameBody?.clientHeight ?? null, frameBody?.scrollHeight ?? null);
+                iframeBodyClientBox = this.#formatBox(frameBody?.clientWidth ?? null, frameBody?.clientHeight ?? null);
+                if (frameDocEl) {
+                    const rect = frameDocEl.getBoundingClientRect();
+                    visibleDocumentRect = {
+                        left: frameRect.left + rect.left,
+                        top: frameRect.top + rect.top,
+                        width: rect.width,
+                        height: rect.height,
+                        bottom: frameRect.top + rect.bottom,
+                    };
+                }
+                if (frameBody) {
+                    const rect = frameBody.getBoundingClientRect();
+                    visibleBodyRect = {
+                        left: frameRect.left + rect.left,
+                        top: frameRect.top + rect.top,
+                        width: rect.width,
+                        height: rect.height,
+                        bottom: frameRect.top + rect.bottom,
+                    };
+                    const range = frameDoc?.createRange?.();
+                    if (range) {
+                        range.selectNodeContents(frameBody);
+                        const rects = Array.from(range.getClientRects?.() ?? []).filter((rect) => rect.width > 0 && rect.height > 0);
+                        if (rects.length > 0) {
+                            visibleTextRectCount = rects.length;
+                            const union = rects.reduce((acc, rect) => ({
+                                left: Math.min(acc.left, rect.left),
+                                top: Math.min(acc.top, rect.top),
+                                right: Math.max(acc.right, rect.right),
+                                bottom: Math.max(acc.bottom, rect.bottom),
+                            }), {
+                                left: rects[0].left,
+                                top: rects[0].top,
+                                right: rects[0].right,
+                                bottom: rects[0].bottom,
+                            });
+                            visibleTextRect = {
+                                left: frameRect.left + union.left,
+                                top: frameRect.top + union.top,
+                                width: union.right - union.left,
+                                height: union.bottom - union.top,
+                                bottom: frameRect.top + union.bottom,
+                            };
+                            const rectsByTop = [...rects].sort((a, b) => (a.top - b.top) || (a.left - b.left));
+                            const rectsByBottom = [...rects].sort((a, b) => (b.bottom - a.bottom) || (b.right - a.right));
+                            const firstRect = rectsByTop[0];
+                            const lastRect = rectsByBottom[0];
+                            if (firstRect) {
+                                firstVisibleTextRect = {
+                                    left: frameRect.left + firstRect.left,
+                                    top: frameRect.top + firstRect.top,
+                                    width: firstRect.width,
+                                    height: firstRect.height,
+                                    bottom: frameRect.top + firstRect.bottom,
+                                };
+                            }
+                            if (lastRect) {
+                                lastVisibleTextRect = {
+                                    left: frameRect.left + lastRect.left,
+                                    top: frameRect.top + lastRect.top,
+                                    width: lastRect.width,
+                                    height: lastRect.height,
+                                    bottom: frameRect.top + lastRect.bottom,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_error) {
+            // best-effort diagnostics only
+        }
+        const visibleTextBottom = Number.isFinite(visibleTextRect?.bottom) ? visibleTextRect.bottom : null;
+        const lastVisibleTextBottom = Number.isFinite(lastVisibleTextRect?.bottom) ? lastVisibleTextRect.bottom : null;
+        const navBarTop = Number.isFinite(navBarRect?.top) ? navBarRect.top : null;
+        const readerStageBottom = Number.isFinite(readerStageRect?.bottom) ? readerStageRect.bottom : null;
+        const frameBottom = Number.isFinite(visibleFrameRect?.bottom) ? visibleFrameRect.bottom : null;
+        const documentBottom = Number.isFinite(visibleDocumentRect?.bottom) ? visibleDocumentRect.bottom : null;
+        const bodyBottom = Number.isFinite(visibleBodyRect?.bottom) ? visibleBodyRect.bottom : null;
         const currentPageMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
-        const bodyNavHidden = !!body?.classList?.contains?.('nav-hidden');
-        const hudNavHidden = !!this.navHUD?.navHidden;
-        const hiddenOverlayLocationRect = hiddenOverlayLocationLabel?.getBoundingClientRect?.() || null;
-        const hiddenOverlayPercentRect = hiddenOverlayPercentLabel?.getBoundingClientRect?.() || null;
-        const hiddenOverlayLocationStyle = hiddenOverlayLocationLabel ? window.getComputedStyle(hiddenOverlayLocationLabel) : null;
-        const hiddenOverlayPercentStyle = hiddenOverlayPercentLabel ? window.getComputedStyle(hiddenOverlayPercentLabel) : null;
-        const hiddenOverlayLocationVisible = !!(
-            hiddenOverlayLocationLabel
-            && !hiddenOverlayLocationLabel.hidden
-            && hiddenOverlayLocationLabel.offsetWidth > 0
-            && window.getComputedStyle(hiddenOverlayLocationLabel).opacity !== '0'
-        );
-        const hiddenOverlayPercentVisible = !!(
-            hiddenOverlayPercentLabel
-            && !hiddenOverlayPercentLabel.hidden
-            && hiddenOverlayPercentLabel.offsetWidth > 0
-            && window.getComputedStyle(hiddenOverlayPercentLabel).opacity !== '0'
-        );
-        const locationLabelCollapsed = !!(
-            locationLabel
-            && !locationLabel.hidden
-            && (locationLabel.textContent || '').trim().length > 0
-            && locationLabel.offsetWidth <= 0
-        );
-        const sectionProgressCenterViewportBottomGap = (() => {
-            if (!sectionProgressCenter) return null;
-            const rect = sectionProgressCenter.getBoundingClientRect();
-            return safeRound(window.innerHeight - rect.bottom);
-        })();
-        const sectionProgressOffscreen = typeof sectionProgressCenterViewportBottomGap === 'number'
-            && sectionProgressCenterViewportBottomGap >= (window.innerHeight - 1);
-        const hiddenOverlayVisible = hiddenOverlayLocationVisible || hiddenOverlayPercentVisible;
         const layoutSnapshot = {
             reason,
             extra,
-            hideNavigationDueToScroll: !!this.navHUD?.hideNavigationDueToScroll,
-            bodyNavHidden,
-            hudNavHidden,
-            navVisibilityMismatch: bodyNavHidden !== hudNavHidden,
             currentPageNumber: typeof currentPageMetrics?.currentPageNumber === 'number' ? currentPageMetrics.currentPageNumber : null,
             totalPages: typeof currentPageMetrics?.totalPages === 'number' ? currentPageMetrics.totalPages : null,
-            viewport: this.#formatBox(safeRound(window.innerWidth), safeRound(window.innerHeight)),
-            scrollingWidth: this.#formatScrollBox(
-                scrollingElement?.clientWidth ?? null,
-                scrollingElement?.scrollWidth ?? null,
-            ),
-            horizontalOverflowScrolling: (scrollingElement?.scrollWidth ?? 0) > (scrollingElement?.clientWidth ?? 0) + 1,
             cssInsets: [
-                `toolbar=${(bodyStyle || docElStyle)?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || 'nil'}`,
-                `obscured=${(bodyStyle || docElStyle)?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || 'nil'}`,
-                `stage=${(bodyStyle || docElStyle)?.getPropertyValue('--manabi-reader-stage-bottom-inset')?.trim() || 'nil'}`,
+                `toolbar=${computedStyle?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || 'nil'}`,
+                `obscured=${computedStyle?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || 'nil'}`,
+                `stage=${computedStyle?.getPropertyValue('--manabi-reader-stage-bottom-inset')?.trim() || 'nil'}`,
             ].join(' '),
-            navBarBottom: navBar ? window.getComputedStyle(navBar).bottom : null,
-            readerStageViewportBottomGap: readerStage ? safeRound(window.innerHeight - readerStage.getBoundingClientRect().bottom) : null,
-            paginatorBottomGapToToolbar: navBarRect && livePaginatorRect
-                ? safeRound(navBarRect.top - livePaginatorRect.bottom)
-                : null,
-            paginatorBottomOverlapWithToolbar: navBarRect && livePaginatorRect
-                ? Math.max(0, safeRound(livePaginatorRect.bottom - navBarRect.top))
-                : null,
             livePaginatorBox: this.#formatBox(
                 livePaginatorContainer?.clientWidth ?? null,
                 livePaginatorContainer?.clientHeight ?? null,
             ),
-            livePaginatorScrollBox: this.#formatScrollBox(
-                livePaginatorContainer?.clientWidth ?? null,
-                livePaginatorContainer?.scrollWidth ?? null,
-            ),
-            livePaginatorScrollHeightBox: this.#formatScrollBox(
-                livePaginatorContainer?.clientHeight ?? null,
-                livePaginatorContainer?.scrollHeight ?? null,
-            ),
-            paginatorViewportBottomGap: livePaginatorRect
-                ? safeRound(window.innerHeight - livePaginatorRect.bottom)
+            navBarRect: this.#formatRect(navBarRect),
+            readerStageRect: this.#formatRect(readerStageRect),
+            liveFoliateViewRect: this.#formatRect(liveFoliateViewRect),
+            livePaginatorRect: this.#formatRect(livePaginatorRect),
+            visibleFrameRect: this.#formatRect(visibleFrameRect),
+            visibleDocumentRect: this.#formatRect(visibleDocumentRect),
+            visibleBodyRect: this.#formatRect(visibleBodyRect),
+            visibleTextRect: this.#formatRect(visibleTextRect),
+            firstVisibleTextRect: this.#formatRect(firstVisibleTextRect),
+            lastVisibleTextRect: this.#formatRect(lastVisibleTextRect),
+            visibleTextRectCount,
+            toolbarGapPx: visibleTextBottom != null && navBarTop != null
+                ? safeRound(navBarTop - visibleTextBottom, 1)
                 : null,
-            paginatorViewportBottomClip: livePaginatorRect
-                ? Math.max(0, safeRound(livePaginatorRect.bottom - window.innerHeight))
+            toolbarGapLastRectPx: lastVisibleTextBottom != null && navBarTop != null
+                ? safeRound(navBarTop - lastVisibleTextBottom, 1)
                 : null,
-            locationLabelCollapsed,
-            hiddenOverlayExpected: locationLabelCollapsed || !!this.navHUD?.hideNavigationDueToScroll,
-            hiddenOverlayVisible,
-            hiddenOverlayLocationVisible,
-            hiddenOverlayPercentVisible,
-            hiddenOverlayLocationHidden: hiddenOverlayLocationLabel?.hidden ?? null,
-            hiddenOverlayPercentHidden: hiddenOverlayPercentLabel?.hidden ?? null,
-            hiddenOverlayLocationDisplay: hiddenOverlayLocationStyle?.display ?? null,
-            hiddenOverlayLocationVisibility: hiddenOverlayLocationStyle?.visibility ?? null,
-            hiddenOverlayLocationOpacity: hiddenOverlayLocationStyle?.opacity ?? null,
-            hiddenOverlayPercentDisplay: hiddenOverlayPercentStyle?.display ?? null,
-            hiddenOverlayPercentVisibility: hiddenOverlayPercentStyle?.visibility ?? null,
-            hiddenOverlayPercentOpacity: hiddenOverlayPercentStyle?.opacity ?? null,
-            hiddenOverlayOwnedByMainDocument: !!(
-                hiddenOverlayLocationLabel
-                && hiddenOverlayLocationLabel.ownerDocument === document
-            ),
-            hiddenOverlayContainedByReaderStage: !!(
-                hiddenOverlayLocationLabel
-                && readerStage
-                && readerStage.contains(hiddenOverlayLocationLabel)
-            ),
-            hiddenOverlayLocationText: (hiddenOverlayLocationLabel?.textContent || '').trim(),
-            hiddenOverlayPercentText: (hiddenOverlayPercentLabel?.textContent || '').trim(),
-            hiddenOverlayLocationWidth: hiddenOverlayLocationLabel?.offsetWidth ?? null,
-            hiddenOverlayPercentWidth: hiddenOverlayPercentLabel?.offsetWidth ?? null,
-            hiddenOverlayLocationBottomGap: hiddenOverlayLocationRect
-                ? safeRound(window.innerHeight - hiddenOverlayLocationRect.bottom)
+            stageGapPx: visibleTextBottom != null && readerStageBottom != null
+                ? safeRound(readerStageBottom - visibleTextBottom, 1)
                 : null,
-            hiddenOverlayPercentBottomGap: hiddenOverlayPercentRect
-                ? safeRound(window.innerHeight - hiddenOverlayPercentRect.bottom)
+            frameBottomToTextBottomPx: frameBottom != null && visibleTextBottom != null
+                ? safeRound(frameBottom - visibleTextBottom, 1)
                 : null,
-            locationLabelText: (locationLabel?.textContent || '').trim(),
-            locationLabelWidth: locationLabel?.offsetWidth ?? null,
-            sectionProgressCenterViewportBottomGap,
-            sectionProgressCenterBottomClip: (() => {
-                const element = sectionProgressCenter;
-                if (!element) return null;
-                const rect = element.getBoundingClientRect();
-                const navRect = navBar?.getBoundingClientRect?.();
-                if (!navRect) return null;
-                return safeRound(rect.bottom - navRect.bottom);
-            })(),
-            sectionProgressOffscreen,
-            pageTrackingVisible: !!(
-                pageTrackingContainer
-                && !pageTrackingContainer.hidden
-                && pageTrackingContainer.offsetWidth > 0
-                && pageTrackingButtons
-                && !pageTrackingButtons.hidden
-            ),
-            pageTrackingButtonCount: pageTrackingButtons?.childElementCount ?? 0,
-            pageTrackingContainerHidden: pageTrackingContainer?.hidden ?? null,
-            pageTrackingButtonsHidden: pageTrackingButtons?.hidden ?? null,
-            pageTrackingContainerDisplay: pageTrackingContainerStyle?.display ?? null,
-            pageTrackingContainerVisibility: pageTrackingContainerStyle?.visibility ?? null,
-            pageTrackingButtonsDisplay: pageTrackingButtonsStyle?.display ?? null,
-            pageTrackingButtonsVisibility: pageTrackingButtonsStyle?.visibility ?? null,
-            pageTrackingOwnedByMainDocument: !!(
-                pageTrackingContainer
-                && pageTrackingContainer.ownerDocument === document
-            ),
-            pageTrackingContainedByReaderStage: !!(
-                pageTrackingContainer
-                && readerStage
-                && readerStage.contains(pageTrackingContainer)
-            ),
-            pageTrackingContainedByFoliateView: !!(
-                pageTrackingContainer
-                && liveFoliateView
-                && liveFoliateView.contains(pageTrackingContainer)
-            ),
-            firstPageReadButtonVisible: !!(
-                firstPageReadButton
-                && !firstPageReadButton.hidden
-                && firstPageReadButton.offsetWidth > 0
-            ),
-            firstPageReadButtonHidden: firstPageReadButton?.hidden ?? null,
-            firstPageReadButtonOwnerDocumentIsMain: !!(
-                firstPageReadButton
-                && firstPageReadButton.ownerDocument === document
-            ),
-            pageTrackingContainerRect: pageTrackingContainerRect ? {
-                x: safeRound(pageTrackingContainerRect.x),
-                y: safeRound(pageTrackingContainerRect.y),
-                width: safeRound(pageTrackingContainerRect.width),
-                height: safeRound(pageTrackingContainerRect.height),
-            } : null,
-            pageTrackingButtonsRect: pageTrackingButtonsRect ? {
-                x: safeRound(pageTrackingButtonsRect.x),
-                y: safeRound(pageTrackingButtonsRect.y),
-                width: safeRound(pageTrackingButtonsRect.width),
-                height: safeRound(pageTrackingButtonsRect.height),
-            } : null,
-            firstPageReadButtonRect: firstPageReadButtonRect ? {
-                x: safeRound(firstPageReadButtonRect.x),
-                y: safeRound(firstPageReadButtonRect.y),
-                width: safeRound(firstPageReadButtonRect.width),
-                height: safeRound(firstPageReadButtonRect.height),
-            } : null,
-            firstPageReadButtonLabel: (firstPageReadButton?.textContent || '').trim(),
-            firstPageReadButtonDisplay: firstPageReadButtonStyle?.display ?? null,
-            firstPageReadButtonVisibility: firstPageReadButtonStyle?.visibility ?? null,
-            firstPageReadButtonOpacity: firstPageReadButtonStyle?.opacity ?? null,
-            firstPageReadButtonViewportVisible: !!(
-                firstPageReadButtonRect
-                && firstPageReadButtonRect.width > 1
-                && firstPageReadButtonRect.height > 1
-                && firstPageReadButtonRect.right > 0
-                && firstPageReadButtonRect.bottom > 0
-                && firstPageReadButtonRect.left < window.innerWidth
-                && firstPageReadButtonRect.top < window.innerHeight
-            ),
+            documentBottomToTextBottomPx: documentBottom != null && visibleTextBottom != null
+                ? safeRound(documentBottom - visibleTextBottom, 1)
+                : null,
+            bodyBottomToTextBottomPx: bodyBottom != null && visibleTextBottom != null
+                ? safeRound(bodyBottom - visibleTextBottom, 1)
+                : null,
+            frameBottomToLastTextBottomPx: frameBottom != null && lastVisibleTextBottom != null
+                ? safeRound(frameBottom - lastVisibleTextBottom, 1)
+                : null,
+            documentBottomToLastTextBottomPx: documentBottom != null && lastVisibleTextBottom != null
+                ? safeRound(documentBottom - lastVisibleTextBottom, 1)
+                : null,
+            bodyBottomToLastTextBottomPx: bodyBottom != null && lastVisibleTextBottom != null
+                ? safeRound(bodyBottom - lastVisibleTextBottom, 1)
+                : null,
+            iframeWritingMode,
+            iframeBodyClientBox,
+            iframeBodyScrollBox,
+            iframeMargins,
+            iframePadding,
             bodyLoading: !!body?.classList?.contains?.('loading'),
         };
-        const hasIssue =
-            layoutSnapshot.horizontalOverflowScrolling
-            || (layoutSnapshot.paginatorViewportBottomClip ?? 0) > 0
-            || (layoutSnapshot.paginatorBottomOverlapWithToolbar ?? 0) > 0
-            || layoutSnapshot.navVisibilityMismatch
-            || layoutSnapshot.sectionProgressOffscreen
-            || (layoutSnapshot.hiddenOverlayExpected && !layoutSnapshot.hiddenOverlayVisible);
-        const shouldLogSnapshot =
-            hasIssue
-            || reason === 'reader-open'
-            || reason === 'document-load'
-            || reason === 'native-hide-bridge'
-            || reason === 'relocate';
+        if (!layoutSnapshot.bodyLoading
+            && typeof layoutSnapshot.currentPageNumber === 'number'
+            && typeof layoutSnapshot.totalPages === 'number'
+            && layoutSnapshot.totalPages > 0
+            && typeof livePaginatorContainer?.clientWidth === 'number'
+            && livePaginatorContainer.clientWidth > 0
+            && typeof livePaginatorContainer?.clientHeight === 'number'
+            && livePaginatorContainer.clientHeight > 0) {
+            markEPUBPerf('layout.ready.first', {
+                reason,
+                currentPageNumber: layoutSnapshot.currentPageNumber,
+                totalPages: layoutSnapshot.totalPages,
+                livePaginatorBox: layoutSnapshot.livePaginatorBox,
+                cssInsets: layoutSnapshot.cssInsets,
+            }, {
+                once: true,
+                anchor: 'did-display.first',
+            });
+        }
+        const hasLayoutAnomaly = [
+            layoutSnapshot.toolbarGapPx,
+            layoutSnapshot.toolbarGapLastRectPx,
+            layoutSnapshot.stageGapPx,
+        ].some((value) => typeof value === 'number' && Math.abs(value) > 120);
+        const shouldLogLayout = !!globalThis.manabiVerboseLayout || hasLayoutAnomaly;
         const key = JSON.stringify(layoutSnapshot);
         if (key === this.lastLayoutDiagnosticsKey) {
             return;
         }
-        this.#logLayoutTransition(reason, this.lastLayoutSnapshot, layoutSnapshot);
         this.lastLayoutSnapshot = layoutSnapshot;
         this.lastLayoutDiagnosticsKey = key;
-        if (shouldLogSnapshot) {
-            postReaderLog('ebook.layout.snapshot', layoutSnapshot);
+        if (shouldLogLayout) {
+            postEPUBLog('ebook.layout.diagnostics', layoutSnapshot);
         }
     }
     #renderPageTrackingButtons(reason = 'unspecified') {
@@ -1683,9 +2342,10 @@ class Reader {
         }
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
-        container.hidden = !hasStates;
-        buttonHost.hidden = !hasStates;
-        if (!hasStates) {
+        const shouldShowPageTracking = hasStates && !this.showingCompletionButtons;
+        container.hidden = !shouldShowPageTracking;
+        buttonHost.hidden = !shouldShowPageTracking;
+        if (!shouldShowPageTracking) {
             buttonHost.innerHTML = '';
             this.navHUD?.refreshAuxiliaryLayout?.();
             return;
@@ -1695,30 +2355,21 @@ class Reader {
             const readState = isBusy ? 'pending' : (state.isRead ? 'complete' : 'ready');
             return `
                 <button
-                    class="page-read-button"
+                    class="page-read-button manabi-tracking-button"
                     data-page-tracking-id="${state.id}"
                     data-read-state="${readState}"
+                    data-manabi-tracking-section-read="${state.isRead ? 'true' : 'false'}"
                     aria-label="${state.fullLabel}"
                     ${state.isRead || isBusy ? 'disabled' : ''}
                 >
-                    <span class="page-read-button-icon" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-                            <path d="M9.2 16.4 5.8 13l-1.4 1.4 4.8 4.8L19.6 8.8l-1.4-1.4z"></path>
-                        </svg>
+                    <span class="manabi-tracking-button-status" aria-hidden="true">
+                        <span class="manabi-tracking-status-checkmark" aria-hidden="true"></span>
                     </span>
+                    <span class="manabi-tracking-button-label" aria-hidden="true">${state.shortLabel}</span>
                     <span class="sr-only">${state.fullLabel}</span>
                 </button>
             `;
         }).join('');
-        this.#logPageTracking('ebook.pageTracking.surfaceOwnership', {
-            reason,
-            stateCount: pageTrackingStates.length,
-            containerOwnedByMainDocument: container.ownerDocument === document,
-            containerContainedByReaderStage: !!document.getElementById('reader-stage')?.contains(container),
-            containerContainedByFoliateView: !!this.view?.contains?.(container),
-            buttonHostOwnedByMainDocument: buttonHost.ownerDocument === document,
-            firstButtonOwnedByMainDocument: buttonHost.querySelector('.page-read-button')?.ownerDocument === document,
-        });
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
@@ -1957,6 +2608,10 @@ class Reader {
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
             : Date.now();
+        markEPUBPerf('reader.open.begin', {
+            fileKind: file?.kind || 'nil',
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+        });
         postReaderLog('ebook.readerOpen.begin', {
             fileKind: file?.kind || 'nil',
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
@@ -1964,6 +2619,10 @@ class Reader {
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
+        markEPUBPerf('view.ready', {
+            hasRenderer: !!this.view?.renderer,
+            hasBook: !!this.view?.book,
+        });
         postReaderVisibilityProbe('reader.open:view-assigned', this.view, null);
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
@@ -1985,6 +2644,12 @@ class Reader {
         this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         applyStoredChromeInsets('reader.open');
+        markEPUBPerf('renderer.ready', {
+            bookDir: this.bookDir,
+            isRTL: !!this.isRTL,
+            sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
+            pageTargetCount: Array.isArray(book?.pageList) ? book.pageList.length : null,
+        });
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
@@ -2254,6 +2919,11 @@ class Reader {
         postReaderLog('ebook.readerOpen.toc.end', {
             hasTOCView: !!this.#tocView,
         });
+        markEPUBPerf('toc.ready', {
+            hasTOC: !!toc,
+            tocCount: Array.isArray(toc) ? toc.length : 'nil',
+            hasTOCView: !!this.#tocView,
+        });
         
         // load and show highlights embedded in the file by Calibre
         postReaderLog('ebook.readerOpen.calibreBookmarks.start', {
@@ -2282,6 +2952,10 @@ class Reader {
         }
         clearTimeout(calibreBookmarksPendingTimer);
         postReaderLog('ebook.readerOpen.calibreBookmarks.end', {
+            pendingLogged: calibreBookmarksPendingLogged,
+            bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
+        });
+        markEPUBPerf('bookmarks.ready', {
             pendingLogged: calibreBookmarksPendingLogged,
             bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
         });
@@ -2346,6 +3020,16 @@ class Reader {
             hasRenderer: !!this.view?.renderer,
             bodyClassName: document.body?.className || 'nil',
         });
+        markEPUBPerf('reader.open.end', {
+            elapsedMs: safeRound(
+                (typeof performance !== 'undefined' && typeof performance.now === 'function'
+                    ? performance.now()
+                    : Date.now()) - readerOpenStartedAt,
+                1,
+            ),
+            hasRenderer: !!this.view?.renderer,
+            bodyClassName: document.body?.className || 'nil',
+        });
     }
     
     async updateNavButtons() {
@@ -2390,6 +3074,7 @@ class Reader {
         }
         const showingCompletion = !!(this.buttons.finish && !this.buttons.finish.hidden)
             || !!(this.buttons.restart && !this.buttons.restart.hidden);
+        this.showingCompletionButtons = showingCompletion;
         this.navHUD?._toggleCompletionStack?.(showingCompletion);
         
         // RTL/LTR logic for disabling/hiding side chevrons
@@ -2467,6 +3152,28 @@ class Reader {
     #onDidDisplay({}) {
         this.setLoadingIndicator(false);
         applyStoredChromeInsets('reader.didDisplay');
+        markEPUBPerf('did-display.first', {
+            hasRenderer: !!this.view?.renderer,
+        }, {
+            once: true,
+            anchor: 'document.animation-frame.first',
+        });
+        requestAnimationFrame(() => {
+            const livePaginator = this.view?.renderer?.querySelector?.('foliate-paginator');
+            const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            markEPUBPerf('did-display.raf.first', {
+                paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
+                paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
+                ...captureEPUBOverlapState(),
+            }, {
+                once: true,
+                anchor: 'did-display.first',
+            });
+            this.#queueLayoutDiagnostics('did-display', {
+                paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
+                paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
+            });
+        });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
     #onLoad({
@@ -2475,6 +3182,89 @@ class Reader {
         }
     }) {
         applyStoredChromeInsets('reader.documentLoad');
+        markEPUBPerf('document.load.first', {
+            documentURL: doc?.location?.href || null,
+            isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
+        }, {
+            once: true,
+        });
+        if (!isCacheWarmerDocument(doc)) {
+            markEPUBPerf('document.load.first-non-cache', {
+                documentURL: doc?.location?.href || null,
+                ...summarizeDocumentFontState(doc),
+                ...captureEPUBOverlapState(),
+            }, {
+                once: true,
+            });
+            postReplaceTextPerfLog('document.load.first-non-cache', {
+                documentURL: doc?.location?.href || null,
+                ...summarizeDocumentFontState(doc),
+                ...captureEPUBOverlapState(),
+            });
+        }
+        postEPUBLog('ebook.perf.document.fonts.state', {
+            documentURL: doc?.location?.href || null,
+            ...summarizeDocumentFontState(doc),
+            ...captureEPUBOverlapState(),
+        });
+        if (doc?.fonts?.ready?.then) {
+            const fontsReadyStartedAt = performanceNowMs();
+            doc.fonts.ready.then(() => {
+                postEPUBLog('ebook.perf.document.fonts.ready', {
+                    documentURL: doc?.location?.href || null,
+                    elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
+                    ...summarizeDocumentFontState(doc),
+                    bodyTextLength: doc?.body?.innerText?.length ?? null,
+                });
+                if (!isCacheWarmerDocument(doc)) {
+                    markEPUBPerf('document.fonts.ready.first', {
+                        documentURL: doc?.location?.href || null,
+                        elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
+                        bodyTextLength: doc?.body?.innerText?.length ?? null,
+                        ...captureEPUBOverlapState(),
+                    }, {
+                        once: true,
+                    });
+                    postReplaceTextPerfLog('document.fonts.ready.first', {
+                        documentURL: doc?.location?.href || null,
+                        elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
+                        bodyTextLength: doc?.body?.innerText?.length ?? null,
+                        ...captureEPUBOverlapState(),
+                    });
+                }
+            }).catch((error) => {
+                postEPUBLog('ebook.perf.document.fonts.ready.error', {
+                    documentURL: doc?.location?.href || null,
+                    message: error?.message || String(error),
+                    ...summarizeDocumentFontState(doc),
+                });
+            });
+        }
+        requestAnimationFrame(() => {
+            postEPUBLog('ebook.perf.document.animation-frame', {
+                documentURL: doc?.location?.href || null,
+                bodyTextLength: doc?.body?.innerText?.length ?? null,
+                bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                ...summarizeDocumentFontState(doc),
+                ...captureEPUBOverlapState(),
+            });
+            if (!isCacheWarmerDocument(doc)) {
+                markEPUBPerf('document.animation-frame.first', {
+                    documentURL: doc?.location?.href || null,
+                    bodyTextLength: doc?.body?.innerText?.length ?? null,
+                    bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                    ...captureEPUBOverlapState(),
+                }, {
+                    once: true,
+                });
+                postReplaceTextPerfLog('document.animation-frame.first', {
+                    documentURL: doc?.location?.href || null,
+                    bodyTextLength: doc?.body?.innerText?.length ?? null,
+                    bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                    ...captureEPUBOverlapState(),
+                });
+            }
+        });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
@@ -2509,6 +3299,7 @@ class Reader {
         reason,
         currentPageNumber,
         totalPages,
+        sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
@@ -2518,6 +3309,7 @@ class Reader {
             mainDocumentURL: mainDocumentURL,
             currentPageNumber: currentPageNumber,
             totalPages: totalPages,
+            sectionIndex: sectionIndex,
         })
     }, 400)
     
@@ -2542,19 +3334,80 @@ class Reader {
         const totalPages = typeof pageMetrics?.totalPages === 'number'
             ? pageMetrics.totalPages
             : null;
+        const sectionIndex = typeof pageMetrics?.sectionIndex === 'number'
+            ? pageMetrics.sectionIndex
+            : (
+                typeof detail?.sectionIndex === 'number'
+                    ? detail.sectionIndex
+                    : (typeof detail?.index === 'number' ? detail.index : null)
+            );
         // (removed: setting tocView currentHref here)
         
         if (this.hasLoadedLastPosition) {
+            postPageNumLog('bridge.updateReadingProgress', {
+                reason: reason ?? null,
+                fraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+                currentPageNumber,
+                currentPageSource: pageMetrics?.currentPageSource ?? null,
+                currentPageReady: pageMetrics?.currentPageReady ?? null,
+                totalPages,
+                totalPageSource: pageMetrics?.totalSource ?? null,
+                totalPagesReady: pageMetrics?.totalPagesReady ?? null,
+                sectionIndex,
+            });
             this.#postUpdateReadingProgressMessage({
                 fraction,
                 cfi,
                 reason,
                 currentPageNumber,
                 totalPages,
+                sectionIndex,
             })
         }
         
         await this.updateNavButtons();
+        markEPUBPerf('relocate.first', {
+            reason: detail?.reason || null,
+            fraction: safeRound(detail?.fraction),
+            currentPageNumber,
+            totalPages,
+            currentLocation: detail?.location?.current ?? null,
+            totalLocation: detail?.location?.total ?? null,
+        }, {
+            once: true,
+            anchor: 'did-display.first',
+        });
+        if (typeof currentPageNumber === 'number' || typeof totalPages === 'number') {
+            postReplaceTextPerfLog('relocate.first', {
+                reason: detail?.reason || null,
+                fraction: safeRound(detail?.fraction),
+                currentPageNumber,
+                totalPages,
+                currentLocation: detail?.location?.current ?? null,
+                totalLocation: detail?.location?.total ?? null,
+                ...captureEPUBOverlapState(),
+            });
+        }
+        if (typeof currentPageNumber === 'number' && typeof totalPages === 'number' && totalPages > 0) {
+            markEPUBPerf('page-metrics.first', {
+                reason: detail?.reason || null,
+                currentPageNumber,
+                totalPages,
+            }, {
+                once: true,
+            });
+            postReplaceTextPerfLog('page-metrics.first', {
+                reason: detail?.reason || null,
+                currentPageNumber,
+                totalPages,
+                ...captureEPUBOverlapState(),
+            });
+        }
+        this.#queueLayoutDiagnostics('relocate', {
+            reason: detail?.reason || null,
+            currentPageNumber,
+            totalPages,
+        });
         postReaderVisibilityProbe('reader.relocate', this.view, {
             reason: detail?.reason || null,
             fraction: safeRound(detail?.fraction),
@@ -2672,19 +3525,61 @@ class CacheWarmer {
         }
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
+        globalThis.__manabiCacheWarmerReady = false;
+        globalThis.__manabiCacheWarmerFinished = false;
+        globalThis.__manabiCacheWarmerHighestSectionIndex = null;
     }
     async open(file) {
         this.destroy()
-        this.view = await getView(file, true)
-        this.view.addEventListener('load', this.#onLoad.bind(this))
-        
-        const {
-            book
-        } = this.view
-        this.view.renderer.setAttribute('flow', 'paginated')
-        //        this.view.renderer.next()
-        
-        await this.view.renderer.firstSection()
+        globalThis.__manabiCacheWarmerOpenInFlight = true;
+        globalThis.__manabiCacheWarmerReady = false;
+        globalThis.__manabiCacheWarmerFinished = false;
+        globalThis.__manabiCacheWarmerHighestSectionIndex = null;
+        globalThis.__manabiDeferredCacheWarmerLogged = false;
+        postEPUBLog('ebook.perf.cache-warmer.open.begin', {
+            sourceKind: file?.kind || 'nil',
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('cache-warmer.open.begin', {
+            sourceKind: file?.kind || 'nil',
+            ...captureEPUBOverlapState(),
+        });
+        try {
+            this.view = await getView(file, true)
+            this.view.addEventListener('load', this.#onLoad.bind(this))
+            
+            const {
+                book
+            } = this.view
+            this.view.renderer.setAttribute('flow', 'paginated')
+            //        this.view.renderer.next()
+            
+            await this.view.renderer.firstSection()
+            globalThis.__manabiCacheWarmerOpenInFlight = false;
+            globalThis.__manabiCacheWarmerReady = true;
+            postEPUBLog('ebook.perf.cache-warmer.open.end', {
+                sourceKind: file?.kind || 'nil',
+                ...captureEPUBOverlapState(),
+            });
+            postReplaceTextPerfLog('cache-warmer.open.end', {
+                sourceKind: file?.kind || 'nil',
+                ...captureEPUBOverlapState(),
+            });
+        } catch (error) {
+            postEPUBLog('ebook.perf.cache-warmer.open.error', {
+                sourceKind: file?.kind || 'nil',
+                message: error?.message || String(error),
+                ...captureEPUBOverlapState(),
+            });
+            postReplaceTextPerfLog('cache-warmer.open.error', {
+                sourceKind: file?.kind || 'nil',
+                message: error?.message || String(error),
+                ...captureEPUBOverlapState(),
+            });
+            throw error;
+        } finally {
+            globalThis.__manabiCacheWarmerOpenInFlight = false;
+        }
     }
     
     async #onLoad({
@@ -2703,6 +3598,12 @@ class CacheWarmer {
         const sourceHref = doc?.body?.dataset?.manabiSourceHref || indexedSectionHref || null;
         const sectionHref = indexedSectionHref || sourceHref || null;
         const isLikelyTitlePage = typeof sourceHref === 'string' && /(?:^|\/)(title|cover)\.xhtml$/i.test(sourceHref);
+        if (Number.isInteger(index)) {
+            globalThis.__manabiCacheWarmerHighestSectionIndex = Math.max(
+                globalThis.__manabiCacheWarmerHighestSectionIndex ?? -1,
+                index,
+            );
+        }
         postReaderLog('ebook.cacheWarmer.sectionLoaded', {
             sectionURL: location,
             documentURL: doc?.location?.href || 'nil',
@@ -2713,6 +3614,37 @@ class CacheWarmer {
             segmentCount: segmentNodes.length,
             isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
             isLikelyTitlePage,
+        });
+        postEPUBLog('ebook.perf.cache-warmer.section', {
+            sectionURL: location,
+            sectionIndex: Number.isInteger(index) ? index : null,
+            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+            sourceHref: sourceHref || null,
+            sentenceCount: sentenceNodes.length,
+            segmentCount: segmentNodes.length,
+            isLikelyTitlePage,
+            ...summarizeDocumentFontState(doc),
+            ...captureEPUBOverlapState(),
+        });
+        postReplaceTextPerfLog('cache-warmer.section', {
+            sectionURL: location,
+            sectionIndex: Number.isInteger(index) ? index : null,
+            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+            sourceHref: sourceHref || null,
+            sentenceCount: sentenceNodes.length,
+            segmentCount: segmentNodes.length,
+            isLikelyTitlePage,
+            ...summarizeDocumentFontState(doc),
+            ...captureEPUBOverlapState(),
+        });
+        markEPUBPerf('cache-warmer.section.first', {
+            sectionURL: location,
+            sectionIndex: Number.isInteger(index) ? index : null,
+            sourceHref: sourceHref || null,
+            sentenceCount: sentenceNodes.length,
+            segmentCount: segmentNodes.length,
+        }, {
+            once: true,
         });
         for (const sentenceNode of sentenceNodes) {
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
@@ -2752,7 +3684,21 @@ class CacheWarmer {
                 topWindowURL: window.top.location.href,
             })
         } else {
-            //            this.view.remove()
+            globalThis.__manabiCacheWarmerFinished = true;
+            postEPUBLog('ebook.perf.cache-warmer.finished', {
+                sectionURL: location,
+                sectionIndex: Number.isInteger(index) ? index : null,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                ...captureEPUBOverlapState(),
+            });
+            postReplaceTextPerfLog('cache-warmer.finished', {
+                sectionURL: location,
+                sectionIndex: Number.isInteger(index) ? index : null,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                ...captureEPUBOverlapState(),
+            });
         }
     }
     
@@ -2799,6 +3745,11 @@ window.loadEBook = ({
     url,
     layoutMode,
 }) => {
+    beginEPUBPerfSession({
+        hasURL: typeof url === 'string' && url.length > 0,
+        layoutMode: layoutMode || 'default',
+        sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
+    });
     postReaderLog('ebook.viewer.load.start', {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || 'default',
@@ -2831,6 +3782,13 @@ window.loadEBook = ({
                 .then(res => res.blob())
                 .then((blob) => {
                     window.blob = blob
+                    markEPUBPerf('source.ready', {
+                        sourceKind: 'blob',
+                        blobSize: blob.size,
+                        blobType: blob.type || 'nil',
+                    }, {
+                        once: true,
+                    });
                     postReaderLog('ebook.viewer.load.blobReady', {
                         blobSize: blob.size,
                         blobType: blob.type || 'nil',
@@ -2841,6 +3799,12 @@ window.loadEBook = ({
         sourcePromise
         .then(async (source) => {
             if (source?.kind === 'native') {
+                markEPUBPerf('source.ready', {
+                    sourceKind: 'native',
+                    sourceURL: source.url,
+                }, {
+                    once: true,
+                });
                 postReaderLog('ebook.viewer.load.nativeSource', {
                     sourceURL: source.url,
                 });
@@ -2848,17 +3812,31 @@ window.loadEBook = ({
             if (layoutMode) {
                 window.initialLayoutMode = layoutMode
             }
+            markEPUBPerf('reader.open.dispatch', {
+                fileKind: source?.kind || 'nil',
+            });
             await reader.open(source)
         })
         .then(async () => {
+            markEPUBPerf('reader.open.resolved', {
+                hasRenderer: !!globalThis.reader?.view?.renderer,
+                bookDir: globalThis.reader?.bookDir || 'nil',
+                isRTL: !!globalThis.reader?.isRTL,
+            });
             postReaderLog('ebook.viewer.load.opened', {
                 hasRenderer: !!globalThis.reader?.view?.renderer,
                 bookDir: globalThis.reader?.bookDir || 'nil',
                 isRTL: !!globalThis.reader?.isRTL,
             });
+            markEPUBPerf('viewer.loaded.callback');
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         .catch((error) => {
+            markEPUBPerf('load.error', {
+                message: error?.message || String(error),
+            }, {
+                once: true,
+            });
             postReaderLog('ebook.viewer.load.error', {
                 message: error?.message || String(error),
             });
@@ -2882,6 +3860,10 @@ window.loadLastPosition = async ({
     postReaderLog('ebook.viewer.loadLastPosition.start', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? fractionalCompletion : 'nil',
+    });
+    markEPUBPerf('restore.start', {
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+        fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 4) : 'nil',
     });
     const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
     if (cfi.length > 0) {
@@ -2952,11 +3934,16 @@ window.loadLastPosition = async ({
     postReaderLog('ebook.viewer.loadLastPosition.done', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
     });
-    
-    // Don't overlap cache warming with initial page load
-    const cacheWarmerSource = window.ebookSource
-        || makeFileSource(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
-    await window.cacheWarmer.open(cacheWarmerSource)
+    markEPUBPerf('restore.done', {
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+    });
+    postReplaceTextPerfLog('restore.done', {
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+        ...captureEPUBOverlapState(),
+    });
+
+    // Let the visible section finish rendering before warming secondary sections.
+    scheduleDeferredCacheWarmerOpen('load-last-position-done', 600);
 }
 
 window.refreshBookReadingProgress = async (articleReadingProgress) => {

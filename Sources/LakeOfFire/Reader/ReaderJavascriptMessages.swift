@@ -229,11 +229,15 @@ public struct FractionalCompletionMessage: Sendable {
             currentPageNumber = rawCurrentPageNumber
         } else if let doubleCurrentPageNumber = body["currentPageNumber"] as? Double {
             currentPageNumber = Int(doubleCurrentPageNumber)
+        } else if let stringCurrentPageNumber = body["currentPageNumber"] as? String {
+            currentPageNumber = Int(stringCurrentPageNumber)
         }
         if let rawTotalPages = body["totalPages"] as? Int {
             totalPages = rawTotalPages
         } else if let doubleTotalPages = body["totalPages"] as? Double {
             totalPages = Int(doubleTotalPages)
+        } else if let stringTotalPages = body["totalPages"] as? String {
+            totalPages = Int(stringTotalPages)
         }
     }
 }

@@ -10,8 +10,10 @@ private func sharedReaderFontLog(
         .joined(separator: " ")
     if payload.isEmpty {
         print("# EPUB", "sharedReaderFont.\(stage)")
+        print("# APR20", "sharedReaderFont.\(stage)")
     } else {
         print("# EPUB", "sharedReaderFont.\(stage)", payload)
+        print("# APR20", "sharedReaderFont.\(stage)", payload)
     }
 }
 
@@ -109,13 +111,24 @@ internal enum SharedReaderFontScheme: String, Sendable {
     }
 }
 
+private func sharedReaderFontBaseURL(for pageURL: URL) -> URL? {
+    if let scheme = pageURL.scheme?.lowercased(), scheme != "blob" {
+        return pageURL
+    }
+    let absoluteString = pageURL.absoluteString
+    guard absoluteString.hasPrefix("blob:") else { return pageURL }
+    let underlyingURLString = String(absoluteString.dropFirst("blob:".count))
+    return URL(string: underlyingURLString)
+}
+
 internal enum SharedReaderFontRoute: Equatable, Sendable {
     case stylesheet(familyName: String)
     case font
 }
 
 internal func sharedReaderFontUsesLocalScheme(for pageURL: URL) -> Bool {
-    SharedReaderFontScheme(pageURL: pageURL) != nil
+    guard let baseURL = sharedReaderFontBaseURL(for: pageURL) else { return false }
+    return SharedReaderFontScheme(pageURL: baseURL) != nil
 }
 
 internal func sharedReaderFontInjectionMode(for pageURL: URL) -> SharedReaderFontInjectionMode {
@@ -123,7 +136,8 @@ internal func sharedReaderFontInjectionMode(for pageURL: URL) -> SharedReaderFon
 }
 
 internal func sharedReaderFontStylesheetURL(for pageURL: URL, familyName: String) -> URL? {
-    guard let scheme = SharedReaderFontScheme(pageURL: pageURL) else { return nil }
+    guard let baseURL = sharedReaderFontBaseURL(for: pageURL),
+          let scheme = SharedReaderFontScheme(pageURL: baseURL) else { return nil }
     var components = URLComponents()
     components.scheme = scheme.rawValue
     components.host = scheme.host
@@ -140,7 +154,8 @@ private func sharedReaderFontFontURL(
     for pageURL: URL,
     asset: SharedReaderFontAsset
 ) -> URL? {
-    guard let scheme = SharedReaderFontScheme(pageURL: pageURL) else { return nil }
+    guard let baseURL = sharedReaderFontBaseURL(for: pageURL),
+          let scheme = SharedReaderFontScheme(pageURL: baseURL) else { return nil }
     var components = URLComponents()
     components.scheme = scheme.rawValue
     components.host = scheme.host

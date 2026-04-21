@@ -56,6 +56,8 @@ private extension View {
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
+private var ebookChromeInsetRevision: Int = 0
+
 @MainActor
 func readerPaginationTrackingSettingsKey(
     readerFontSize: Double?,
@@ -246,6 +248,8 @@ func syncEbookViewerChromeInsets(
 ) async {
     guard pageURL.isEBookURL else { return }
     guard hasAsyncCaller else { return }
+    ebookChromeInsetRevision += 1
+    let revision = ebookChromeInsetRevision
     let toolbarBottomOffset = max(0, toolbarBottomOffset)
     let obscuredBottomInset = max(0, obscuredBottomInset)
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
@@ -254,21 +258,59 @@ func syncEbookViewerChromeInsets(
         try await evaluateJavaScript(
             """
             (function() {
+              const locationHref = globalThis.location?.href ?? '<unknown>';
+              const readyState = document.readyState ?? '<unknown>';
+              const existingState = globalThis.__manabiChromeInsets ?? null;
               const toolbarBottomOffset = '\(toolbarBottomOffsetCSS)';
               const obscuredBottomInset = '\(obscuredBottomInsetCSS)';
               const appliedInsets = {
                 toolbarBottomOffset,
                 obscuredBottomInset,
+                source: 'native',
+                revision: \(revision),
+              };
+              const logPayload = {
+                event: 'ebook.viewer.insets.nativeSyncTarget',
+                locationHref,
+                readyState,
+                hasApplyFunction: typeof window.manabiApplyChromeInsets === 'function',
+                existingToolbarBottomOffset: existingState?.toolbarBottomOffset ?? null,
+                existingObscuredBottomInset: existingState?.obscuredBottomInset ?? null,
+                existingRevision: existingState?.revision ?? null,
+                incomingToolbarBottomOffset: toolbarBottomOffset,
+                incomingObscuredBottomInset: obscuredBottomInset,
+                incomingRevision: \(revision),
               };
               window.__manabiChromeInsets = appliedInsets;
               if (typeof window.manabiApplyChromeInsets === 'function') {
                 window.manabiApplyChromeInsets(appliedInsets, 'native-sync');
+                const nextState = globalThis.__manabiChromeInsets ?? appliedInsets;
+                if (window.webkit?.messageHandlers?.print) {
+                  window.webkit.messageHandlers.print.postMessage({
+                    prefix: '# EPUB',
+                    ...logPayload,
+                    appliedToolbarBottomOffset: nextState?.toolbarBottomOffset ?? null,
+                    appliedObscuredBottomInset: nextState?.obscuredBottomInset ?? null,
+                    appliedRevision: nextState?.revision ?? null,
+                    appliedSource: nextState?.source ?? null,
+                  });
+                }
                 return;
               }
               const targets = [document.documentElement, document.body].filter(Boolean);
               for (const target of targets) {
                 target.style.setProperty('--manabi-toolbar-bottom-offset', toolbarBottomOffset);
                 target.style.setProperty('--manabi-obscured-bottom-inset', obscuredBottomInset);
+              }
+              if (window.webkit?.messageHandlers?.print) {
+                window.webkit.messageHandlers.print.postMessage({
+                  prefix: '# EPUB',
+                  ...logPayload,
+                  appliedToolbarBottomOffset: toolbarBottomOffset,
+                  appliedObscuredBottomInset: obscuredBottomInset,
+                  appliedRevision: \(revision),
+                  appliedSource: 'native-direct-style',
+                });
               }
             })();
             """,
@@ -279,6 +321,7 @@ func syncEbookViewerChromeInsets(
             "pageURL=\(pageURL.absoluteString)",
             "toolbarBottomOffset=\(toolbarBottomOffset)",
             "obscuredBottomInset=\(obscuredBottomInset)",
+            "revision=\(revision)",
             "toolbarBottomOffsetCSS=\(toolbarBottomOffsetCSS)",
             "obscuredBottomInsetCSS=\(obscuredBottomInsetCSS)"
         )
@@ -576,6 +619,7 @@ public struct Reader: View {
     var buildMenu: BuildMenuType?
     
     @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     
     @State private var obscuredInsets: EdgeInsets? = nil
@@ -615,6 +659,22 @@ public struct Reader: View {
     }
     
     public var body: some View {
+        let pageURL = readerContent.content?.url ?? readerContent.pageURL
+        let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
+        let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
+        let effectiveBottomInset = max(sampledBottomInset, additionalBottomInset)
+        let effectiveToolbarBottomOffset = ebookToolbarBottomOffset(
+            obscuredBottomInset: effectiveBottomInset,
+            additionalBottomSafeAreaInset: additionalBottomInset
+        )
+        let viewerLoadedProbeSummary = readerViewModel.ebookViewerLoadedProbeSummary ?? "nil"
+        let chromeInsetsTaskID = [
+            pageURL.absoluteString,
+            "\(effectiveBottomInset)",
+            "\(effectiveToolbarBottomOffset)",
+            viewerLoadedProbeSummary,
+        ].joined(separator: "|")
+
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
@@ -701,24 +761,13 @@ public struct Reader: View {
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
-        .task(id: {
-            let pageURL = readerContent.content?.url ?? readerContent.pageURL
-            let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
-            let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
-            let effectiveBottomInset = max(0, sampledBottomInset + additionalBottomInset)
-            let effectiveToolbarBottomOffset = ebookToolbarBottomOffset(
-                obscuredBottomInset: effectiveBottomInset,
-                additionalBottomSafeAreaInset: additionalBottomInset
-            )
-            return "\(pageURL.absoluteString)|\(effectiveBottomInset)|\(effectiveToolbarBottomOffset)"
-        }()) {
-            let pageURL = readerContent.content?.url ?? readerContent.pageURL
-            let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
-            let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
-            let effectiveBottomInset = max(0, sampledBottomInset + additionalBottomInset)
-            let effectiveToolbarBottomOffset = ebookToolbarBottomOffset(
-                obscuredBottomInset: effectiveBottomInset,
-                additionalBottomSafeAreaInset: additionalBottomInset
+        .task(id: chromeInsetsTaskID) {
+            debugPrint(
+                "# EPUB  ebook.viewer.insets.task",
+                "pageURL=\(pageURL.absoluteString)",
+                "effectiveBottomInset=\(effectiveBottomInset)",
+                "effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset)",
+                "viewerLoadedProbeSummary=\(viewerLoadedProbeSummary)"
             )
             await syncEbookViewerChromeInsets(
                 pageURL: pageURL,
