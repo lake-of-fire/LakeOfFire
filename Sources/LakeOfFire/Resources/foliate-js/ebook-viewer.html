@@ -10,12 +10,7 @@
                     --active-bg: rgba(0, 0, 0, .05);
                     --side-nav-width: 28px;
                     --word-tracking-status-outline-offset: 1px;
-                    --nav-primary-label-height: 12px;
-                    --page-read-button-height: calc(
-                        var(--manabi-nav-bar-height)
-                        - var(--nav-primary-label-height)
-                        - 11px
-                    );
+                    --page-read-button-height: 30px;
                     --word-tracking-status-size: calc(
                         var(--page-read-button-height)
                         - (var(--word-tracking-status-outline-offset) * 2)
@@ -25,7 +20,6 @@
                     --word-tracking-checkmark-left: calc(var(--word-tracking-status-size) / 9.4 + var(--word-tracking-status-size) / 16);
                     --word-tracking-checkmark-height: calc(var(--word-tracking-status-size) / 1.8);
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
-                    --page-read-button-size: var(--page-read-button-height);
                     --nav-page-read-clearance: 50px;
                     --nav-relocate-reserve: 150px;
                 }
@@ -64,16 +58,20 @@
                     --nav-relocate-bg: rgba(0, 0, 0, 0.08);
                     --scrubber-progress-color: color-mix(in srgb, var(--secondary-color) 70%, white 30%);
                     --scrubber-track-rest-color: color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
-                    --nav-relocate-icon-color: var(--scrubber-progress-color);
+                    --nav-relocate-icon-color: var(--secondary-color);
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --manabi-nav-bar-height: 53px;
+                    --manabi-nav-bar-height: 56px;
                     --manabi-toolbar-bottom-offset: 0px;
                     --manabi-obscured-bottom-inset: 0px;
                     --manabi-toolbar-visual-drop: 6px;
                     --nav-primary-hidden-shift-y: 14px;
-                    --manabi-reader-stage-bottom-inset: calc(var(--manabi-nav-bar-height) + var(--manabi-toolbar-bottom-offset, 0px));
+                    --manabi-reader-stage-bottom-inset: calc(
+                        var(--manabi-nav-bar-height)
+                        + var(--manabi-toolbar-bottom-offset, 0px)
+                        - var(--manabi-toolbar-visual-drop, 0px)
+                    );
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
@@ -456,26 +454,32 @@
                     gap: 4px;
                     border: none;
                     background-color: transparent;
-                    color: var(--nav-relocate-icon-color, var(--nav-accent-color, var(--secondary-color)));
+                    color: var(--nav-relocate-icon-color, var(--secondary-color));
                     font-size: 10px !important;
-                    font-weight: 500;
-                    padding: 2px 10px;
+                    font-weight: 600;
+                    padding: 4px 10px;
                     border-radius: 999px;
                     cursor: pointer;
                     transition: color 0.2s ease, opacity 375ms ease-out, background-color 0.2s ease;
                     direction: ltr;
-                    line-height: 1.2;
+                    line-height: 12px;
                     pointer-events: auto;
                     flex: 0 1 auto;
                     min-width: 0;
                     max-width: min(140px, 32vw);
                     position: absolute;
-                    top: auto;
-                    bottom: 2px;
+                    top: 50%;
+                    bottom: auto;
+                    min-height: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    transform: translateY(-50%);
+                    z-index: 2;
+                    opacity: 0.8;
                 }
                 .toolbar .nav-relocate-button:hover,
                 .toolbar .nav-relocate-button:focus-visible {
                     background-color: transparent;
+                    opacity: 1;
                 }
                 .nav-relocate-button:disabled {
                     opacity: 0.35;
@@ -485,12 +489,13 @@
                     display: none;
                 }
                 .nav-relocate-icon {
-                    width: 1em;
-                    height: 1em;
-                    min-width: 1em;
-                    min-height: 1em;
+                    width: 14px;
+                    height: 14px;
+                    min-width: 14px;
+                    min-height: 14px;
                     color: var(--nav-relocate-icon-color, currentColor);
-                    fill: currentColor;
+                    fill: none;
+                    stroke: currentColor;
                     flex-shrink: 0;
                 }
                 .nav-relocate-page {
@@ -499,6 +504,8 @@
                     text-align: inherit;
                     color: var(--nav-relocate-icon-color, currentColor);
                     font-size: 10px !important;
+                    font-weight: 600;
+                    line-height: 12px;
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
@@ -506,10 +513,10 @@
                     unicode-bidi: plaintext;
                 }
                 .nav-relocate-button[data-nav-edge='left'] {
-                    left: var(--nav-horizontal-padding);
+                    left: calc(-1 * var(--nav-horizontal-padding));
                 }
                 .nav-relocate-button[data-nav-edge='right'] {
-                    right: var(--nav-horizontal-padding);
+                    right: calc(-1 * var(--nav-horizontal-padding));
                 }
                 .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
                     text-align: left;
@@ -686,7 +693,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px) + 3px);
+                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px) + 8px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -730,10 +737,10 @@
                     display: inline-flex;
                     align-items: center;
                     justify-content: center;
-                    width: var(--page-read-button-size);
-                    height: var(--page-read-button-size);
-                    min-width: var(--page-read-button-size);
-                    min-height: var(--page-read-button-size);
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                     flex: 0 0 auto;
                     opacity: 1;
                     visibility: visible !important;
@@ -779,10 +786,10 @@
                         0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 0%, transparent),
                         0px 6px 16px -8px color-mix(in srgb, black 0%, transparent);
                     opacity: 0.5;
-                    width: calc(var(--page-read-button-size) * 0.85);
-                    height: calc(var(--page-read-button-size) * 0.85);
-                    min-width: calc(var(--page-read-button-size) * 0.85);
-                    min-height: calc(var(--page-read-button-size) * 0.85);
+                    width: calc(var(--page-read-button-height) * 0.85);
+                    height: calc(var(--page-read-button-height) * 0.85);
+                    min-width: calc(var(--page-read-button-height) * 0.85);
+                    min-height: calc(var(--page-read-button-height) * 0.85);
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
@@ -835,12 +842,12 @@
                 }
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button {
                     width: fit-content;
-                    height: var(--page-read-button-size);
-                    min-width: var(--page-read-button-size);
-                    min-height: var(--page-read-button-size);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                     justify-content: flex-start;
-                    padding-inline-start: calc((var(--page-read-button-size) - var(--word-tracking-status-size)) / 2);
-                    padding-inline-end: calc((var(--page-read-button-size) - var(--word-tracking-status-size)) / 2 + 10px);
+                    padding-inline-start: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 3px);
+                    padding-inline-end: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px);
                     gap: 6px;
                 }
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .manabi-tracking-button-label {
@@ -1247,7 +1254,7 @@
                     left: 0;
                 }
                 #nav-relocate-forward {
-                    right: var(--nav-page-read-clearance);
+                    right: 0;
                 }
                 body[data-book-dir="rtl"] #nav-relocate-back {
                     left: var(--nav-page-read-clearance);
@@ -1410,23 +1417,27 @@
         <div id="nav-bar" class="toolbar">
                 <div id="nav-content">
                     <div id="nav-top-row">
+                    <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled hidden>
+                        <svg class="nav-relocate-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="9" stroke-width="1.75"></circle>
+                            <path d="M8.25 15.5V11.25C8.25 9.73122 9.48122 8.5 11 8.5H15.25" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M12.75 6L15.25 8.5L12.75 11" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                        <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
+                    </button>
+                    <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled hidden>
+                        <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
+                        <svg class="nav-relocate-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="9" stroke-width="1.75"></circle>
+                            <path d="M15.75 15.5V11.25C15.75 9.73122 14.5188 8.5 13 8.5H8.75" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M11.25 6L8.75 8.5L11.25 11" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                    </button>
                     <div id="nav-primary-cluster" aria-live="polite">
-                        <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled hidden>
-                            <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                                <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
-                            </svg>
-                            <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
-                        </button>
                         <a id="nav-primary-text" class="nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite" data-label-variant="full">
                             <span id="nav-primary-text-full" class="nav-primary-layer"></span>
                             <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
                         </a>
-                        <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled hidden>
-                            <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
-                            <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                                <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
-                            </svg>
-                        </button>
                     </div>
                     <div id="nav-primary-percent" aria-live="polite" hidden></div>
                     <div id="completion-stack" class="button-stack" hidden>

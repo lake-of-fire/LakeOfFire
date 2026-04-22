@@ -288,6 +288,8 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         html = injectBodyDatasetAttributes(html, {
             'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
             'data-manabi-source-href': href,
+            'data-manabi-has-sentences': sentenceCount > 0 ? 'true' : null,
+            'data-manabi-has-segments': segmentCount > 0 ? 'true' : null,
         });
         const transformElapsedMs = safeRound(performanceNowMs() - transformStartedAt, 1);
         logReplaceTextOnce(
@@ -402,28 +404,37 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     }
 }
 
-// https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
-    let timeout;
-    let isLeadingInvoked = false;
-    
-    return function(...args) {
-        const context = this;
-        
-        if (!timeout) {
-            fn.apply(context, args);
-            isLeadingInvoked = true;
-            
-            timeout = setTimeout(() => {
-                timeout = null;
-                if (!isLeadingInvoked) {
-                    fn.apply(context, args);
-                }
-            }, delay);
-        } else {
-            isLeadingInvoked = false;
+    let timeout = null;
+    let latestArgs = null;
+    let latestContext = null;
+
+    const debounced = function(...args) {
+        latestArgs = args;
+        latestContext = this;
+        if (timeout) {
+            clearTimeout(timeout);
         }
-    }
+        timeout = setTimeout(() => {
+            const callArgs = latestArgs;
+            const callContext = latestContext;
+            timeout = null;
+            latestArgs = null;
+            latestContext = null;
+            fn.apply(callContext, callArgs ?? []);
+        }, delay);
+    };
+
+    debounced.cancel = () => {
+        if (timeout) {
+            clearTimeout(timeout);
+            timeout = null;
+        }
+        latestArgs = null;
+        latestContext = null;
+    };
+
+    return debounced;
 };
 
 const postReaderLog = (event, details = {}) => {
@@ -459,6 +470,24 @@ const postEPUBLog = (event, details = {}) => {
         window.webkit?.messageHandlers?.print?.postMessage?.(payload);
     } catch (error) {
         console.debug('# EPUB', event, details, error);
+    }
+};
+
+const postAPR21Log = (event, details = {}) => {
+    const payload = {
+        prefix: '# APR21',
+        event,
+    };
+    for (const [key, value] of Object.entries(details)) {
+        if (value === undefined || value === null) {
+            continue;
+        }
+        payload[key] = value;
+    }
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (error) {
+        console.debug('# APR21', event, details, error);
     }
 };
 
@@ -654,6 +683,31 @@ const buildLinearSectionEntries = (book) => {
         }
     }
     return sectionEntries;
+};
+
+const buildLinearSectionStartPercentByHref = (book) => {
+    const linearSections = Array.isArray(book?.sections)
+        ? book.sections.filter((section) => section && section.linear !== 'no')
+        : [];
+    const totalSize = linearSections.reduce((sum, section) => {
+        const size = Number(section?.size);
+        return sum + (Number.isFinite(size) && size > 0 ? size : 0);
+    }, 0);
+    const startPercentByHref = new Map();
+    let consumedSize = 0;
+    for (const section of linearSections) {
+        const href = typeof section?.id === 'string' ? section.id : null;
+        const normalizedHref = normalizeSpineHref(href);
+        if (normalizedHref != null && !startPercentByHref.has(normalizedHref)) {
+            const fraction = totalSize > 0 ? consumedSize / totalSize : 0;
+            startPercentByHref.set(normalizedHref, safeRound(Math.max(0, Math.min(1, fraction)) * 100, 1));
+        }
+        const size = Number(section?.size);
+        if (Number.isFinite(size) && size > 0) {
+            consumedSize += size;
+        }
+    }
+    return startPercentByHref;
 };
 
 const buildGoToSnapshotChapters = (book) => {
@@ -1661,6 +1715,19 @@ const getCSSForBookContent = ({
         color-scheme: light dark;
         cursor: inherit;
     }
+    html:lang(ja),
+    body:lang(ja),
+    :lang(ja),
+    body[data-manabi-has-sentences="true"],
+    body[data-manabi-has-segments="true"],
+    body[data-manabi-has-sentences="true"] manabi-sentence,
+    body[data-manabi-has-segments="true"] manabi-segment {
+        line-break: strict;
+        -webkit-line-break: strict;
+        word-break: normal;
+        overflow-wrap: normal;
+        font-feature-settings: "vchw" 1, "chws" 1;
+    }
     /* https://github.com/whatwg/html/issues/5426 */
     @media (prefers-color-scheme: dark) {
         a:link {
@@ -1898,6 +1965,7 @@ class Reader {
     async buildGoToSheetSnapshot() {
         const chapters = buildGoToSnapshotChapters(this.view?.book);
         const linearSectionEntries = buildLinearSectionEntries(this.view?.book);
+        const linearSectionStartPercentByHref = buildLinearSectionStartPercentByHref(this.view?.book);
         const currentLocationDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
         const currentFraction = typeof currentLocationDescriptor?.fraction === 'number'
             ? Math.max(0, Math.min(1, currentLocationDescriptor.fraction))
@@ -1907,25 +1975,17 @@ class Reader {
         const currentPercent = currentFraction != null
             ? safeRound(currentFraction * 100, 1)
             : null;
-        const linearHrefIndex = new Map(
-            linearSectionEntries
-                .map((entry, index) => [normalizeSpineHref(entry?.href), index])
-                .filter(([href]) => !!href)
-        );
         for (const entry of chapters) {
             const href = entry.href;
             let percent = null;
             let percentSource = null;
             const normalizedHref = normalizeSpineHref(href);
-            const linearIndex = normalizedHref != null ? (linearHrefIndex.get(normalizedHref) ?? null) : null;
-            if (linearIndex != null) {
-                if (linearSectionEntries.length <= 1) {
-                    percent = 0;
-                } else {
-                    const fraction = linearIndex / Math.max(linearSectionEntries.length - 1, 1);
-                    percent = safeRound(Math.max(0, Math.min(1, fraction)) * 100, 1);
-                }
-                percentSource = 'linear-section-estimate';
+            const sectionStartPercent = normalizedHref != null
+                ? (linearSectionStartPercentByHref.get(normalizedHref) ?? null)
+                : null;
+            if (typeof sectionStartPercent === 'number') {
+                percent = sectionStartPercent;
+                percentSource = 'linear-section-start';
             }
             entry.percent = percent;
             entry.percentSource = percentSource;
@@ -1976,6 +2036,14 @@ class Reader {
         const currentChapterPercentSource = typeof currentChapterEntry?.percentSource === 'string'
             ? currentChapterEntry.percentSource
             : null;
+        const canJumpBack = !!this.navHUD?._isRelocateButtonVisible?.('back');
+        const canJumpForward = !!this.navHUD?._isRelocateButtonVisible?.('forward');
+        const backLabel = this.navHUD?.navRelocateLabels?.back?.textContent
+            || this.navHUD?.labelForDescriptor?.(this.navHUD?._descriptorForRelocateLabel?.('back'))
+            || '';
+        const forwardLabel = this.navHUD?.navRelocateLabels?.forward?.textContent
+            || this.navHUD?.labelForDescriptor?.(this.navHUD?._descriptorForRelocateLabel?.('forward'))
+            || '';
         const snapshot = {
             isRTL: !!this.isRTL,
             currentChapterHref,
@@ -1983,6 +2051,10 @@ class Reader {
                 ? currentSectionEntry.title
                 : (typeof currentChapter?.label === 'string' ? currentChapter.label : null),
             currentPercent,
+            canJumpBack,
+            canJumpForward,
+            backLabel,
+            forwardLabel,
             currentSectionIndex,
             currentSectionIndexSource: resolvedSectionIndex?.source ?? null,
             navLastSectionIndexSeen: this.navHUD?.lastSectionIndexSeen ?? null,
@@ -2006,6 +2078,10 @@ class Reader {
             currentChapterPercentSource,
             currentPercent: snapshot.currentPercent,
             currentPercentReady: currentPercent != null,
+            canJumpBack,
+            canJumpForward,
+            backLabel,
+            forwardLabel,
             chapterPreview: chapters.slice(0, 8).map((entry) => ({
                 href: entry.href,
                 title: entry.title,
@@ -2028,10 +2104,48 @@ class Reader {
         }, 120);
         this.scheduleGoToFraction = debounce((fraction) => {
             const clampedFraction = Math.max(0, Math.min(1, Number(fraction)));
+            const currentFraction = this.navHUD?._fractionForPercent?.(this.view?.lastLocation ?? this.navHUD?.lastRelocateDetail ?? null);
+            postPageNumLog('goto.live-schedule.fire', {
+                requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+                clampedFraction: Number.isFinite(clampedFraction) ? clampedFraction : null,
+                hasView: !!this.view,
+                navLabel: this.navHUD?.latestPrimaryLabel ?? '',
+                hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+                currentFraction: typeof currentFraction === 'number' && Number.isFinite(currentFraction) ? safeRound(currentFraction, 6) : null,
+            });
             if (!Number.isFinite(clampedFraction) || !this.view) {
+                postPageNumLog('goto.live-schedule.skipped', {
+                    requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+                    clampedFraction: Number.isFinite(clampedFraction) ? clampedFraction : null,
+                    hasView: !!this.view,
+                    reason: !Number.isFinite(clampedFraction) ? 'invalid-fraction' : 'missing-view',
+                });
                 return;
             }
-            this.view.goToFraction(clampedFraction).catch((error) => console.error(error));
+            if (typeof currentFraction === 'number' && Number.isFinite(currentFraction) && Math.abs(currentFraction - clampedFraction) < 0.0005) {
+                postPageNumLog('goto.live-schedule.skipped', {
+                    requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+                    clampedFraction,
+                    hasView: !!this.view,
+                    reason: 'already-at-fraction',
+                    currentFraction: safeRound(currentFraction, 6),
+                });
+                return;
+            }
+            this.view.goToFraction(clampedFraction)
+                .then(() => {
+                    postPageNumLog('goto.live-schedule.resolved', {
+                        clampedFraction,
+                        navLabel: this.navHUD?.latestPrimaryLabel ?? '',
+                    });
+                })
+                .catch((error) => {
+                    postPageNumLog('goto.live-schedule.error', {
+                        clampedFraction,
+                        message: error?.message ?? String(error),
+                    });
+                    console.error(error);
+                });
         }, 250);
         document.getElementById('nav-primary-text')?.addEventListener('click', (event) => {
             event.preventDefault?.();
@@ -2115,8 +2229,38 @@ class Reader {
         }
         return `x=${x ?? 'nil'} y=${y ?? 'nil'} w=${width ?? 'nil'} h=${height ?? 'nil'}`;
     }
+    #intersectRects(a, b) {
+        if (!a || !b) {
+            return null;
+        }
+        const left = Math.max(a.left ?? -Infinity, b.left ?? -Infinity);
+        const top = Math.max(a.top ?? -Infinity, b.top ?? -Infinity);
+        const right = Math.min(a.right ?? Infinity, b.right ?? Infinity);
+        const bottom = Math.min(a.bottom ?? Infinity, b.bottom ?? Infinity);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
+            return null;
+        }
+        if (right <= left || bottom <= top) {
+            return null;
+        }
+        return {
+            left,
+            top,
+            right,
+            bottom,
+            width: right - left,
+            height: bottom - top,
+        };
+    }
+    #rectBottomGap(containerRect, contentRect) {
+        const containerBottom = Number.isFinite(containerRect?.bottom) ? containerRect.bottom : null;
+        const contentBottom = Number.isFinite(contentRect?.bottom) ? contentRect.bottom : null;
+        return containerBottom != null && contentBottom != null
+            ? safeRound(containerBottom - contentBottom, 1)
+            : null;
+    }
     #logLayoutTransition(_reason, _previousSnapshot, _nextSnapshot) {}
-    #logLayoutDiagnostics(reason = 'unknown', extra = null) {
+    #buildLayoutSnapshot(reason = 'unknown', extra = null) {
         const body = document.body;
         const docEl = document.documentElement;
         const computedStyle = window.getComputedStyle(body || docEl);
@@ -2134,9 +2278,11 @@ class Reader {
         let visibleDocumentRect = null;
         let visibleBodyRect = null;
         let visibleTextRect = null;
+        let viewportVisibleTextRect = null;
         let firstVisibleTextRect = null;
         let lastVisibleTextRect = null;
         let visibleTextRectCount = null;
+        let viewportVisibleTextRectCount = null;
         let iframeWritingMode = null;
         let iframeBodyScrollBox = null;
         let iframeBodyClientBox = null;
@@ -2229,6 +2375,44 @@ class Reader {
                                     bottom: frameRect.top + lastRect.bottom,
                                 };
                             }
+                            const viewportRect = {
+                                left: frameRect.left,
+                                top: frameRect.top,
+                                right: frameRect.right,
+                                bottom: frameRect.bottom,
+                            };
+                            const clippedRects = rects
+                                .map((rect) => this.#intersectRects(
+                                    {
+                                        left: frameRect.left + rect.left,
+                                        top: frameRect.top + rect.top,
+                                        right: frameRect.left + rect.right,
+                                        bottom: frameRect.top + rect.bottom,
+                                    },
+                                    viewportRect,
+                                ))
+                                .filter(Boolean);
+                            if (clippedRects.length > 0) {
+                                viewportVisibleTextRectCount = clippedRects.length;
+                                const viewportUnion = clippedRects.reduce((acc, rect) => ({
+                                    left: Math.min(acc.left, rect.left),
+                                    top: Math.min(acc.top, rect.top),
+                                    right: Math.max(acc.right, rect.right),
+                                    bottom: Math.max(acc.bottom, rect.bottom),
+                                }), {
+                                    left: clippedRects[0].left,
+                                    top: clippedRects[0].top,
+                                    right: clippedRects[0].right,
+                                    bottom: clippedRects[0].bottom,
+                                });
+                                viewportVisibleTextRect = {
+                                    left: viewportUnion.left,
+                                    top: viewportUnion.top,
+                                    width: viewportUnion.right - viewportUnion.left,
+                                    height: viewportUnion.bottom - viewportUnion.top,
+                                    bottom: viewportUnion.bottom,
+                                };
+                            }
                         }
                     }
                 }
@@ -2244,7 +2428,7 @@ class Reader {
         const documentBottom = Number.isFinite(visibleDocumentRect?.bottom) ? visibleDocumentRect.bottom : null;
         const bodyBottom = Number.isFinite(visibleBodyRect?.bottom) ? visibleBodyRect.bottom : null;
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
-        const layoutSnapshot = {
+        return {
             reason,
             extra,
             currentPercent: typeof primaryLabelDiagnostics?.currentPercent === 'number' ? primaryLabelDiagnostics.currentPercent : null,
@@ -2253,6 +2437,13 @@ class Reader {
                 `obscured=${computedStyle?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || 'nil'}`,
                 `stage=${computedStyle?.getPropertyValue('--manabi-reader-stage-bottom-inset')?.trim() || 'nil'}`,
             ].join(' '),
+            windowInnerBox: this.#formatBox(window.innerWidth ?? null, window.innerHeight ?? null),
+            visualViewportBox: this.#formatBox(window.visualViewport?.width ?? null, window.visualViewport?.height ?? null),
+            visualViewportOffset: window.visualViewport
+                ? `x=${safeRound(window.visualViewport.offsetLeft ?? 0, 1)} y=${safeRound(window.visualViewport.offsetTop ?? 0, 1)}`
+                : null,
+            documentClientBox: this.#formatBox(docEl?.clientWidth ?? null, docEl?.clientHeight ?? null),
+            bodyClientBox: this.#formatBox(body?.clientWidth ?? null, body?.clientHeight ?? null),
             livePaginatorBox: this.#formatBox(
                 livePaginatorContainer?.clientWidth ?? null,
                 livePaginatorContainer?.clientHeight ?? null,
@@ -2265,9 +2456,11 @@ class Reader {
             visibleDocumentRect: this.#formatRect(visibleDocumentRect),
             visibleBodyRect: this.#formatRect(visibleBodyRect),
             visibleTextRect: this.#formatRect(visibleTextRect),
+            viewportVisibleTextRect: this.#formatRect(viewportVisibleTextRect),
             firstVisibleTextRect: this.#formatRect(firstVisibleTextRect),
             lastVisibleTextRect: this.#formatRect(lastVisibleTextRect),
             visibleTextRectCount,
+            viewportVisibleTextRectCount,
             toolbarGapPx: visibleTextBottom != null && navBarTop != null
                 ? safeRound(navBarTop - visibleTextBottom, 1)
                 : null,
@@ -2295,6 +2488,9 @@ class Reader {
             bodyBottomToLastTextBottomPx: bodyBottom != null && lastVisibleTextBottom != null
                 ? safeRound(bodyBottom - lastVisibleTextBottom, 1)
                 : null,
+            viewportFrameBottomToTextBottomPx: this.#rectBottomGap(visibleFrameRect, viewportVisibleTextRect),
+            viewportDocumentBottomToTextBottomPx: this.#rectBottomGap(visibleDocumentRect, viewportVisibleTextRect),
+            viewportBodyBottomToTextBottomPx: this.#rectBottomGap(visibleBodyRect, viewportVisibleTextRect),
             iframeWritingMode,
             iframeBodyClientBox,
             iframeBodyScrollBox,
@@ -2302,12 +2498,15 @@ class Reader {
             iframePadding,
             bodyLoading: !!body?.classList?.contains?.('loading'),
         };
+    }
+    collectAPR21GapProbe(reason = 'unknown', extra = null) {
+        return this.#buildLayoutSnapshot(reason, extra);
+    }
+    #logLayoutDiagnostics(reason = 'unknown', extra = null) {
+        const layoutSnapshot = this.#buildLayoutSnapshot(reason, extra);
         if (!layoutSnapshot.bodyLoading
             && typeof layoutSnapshot.currentPercent === 'number'
-            && typeof livePaginatorContainer?.clientWidth === 'number'
-            && livePaginatorContainer.clientWidth > 0
-            && typeof livePaginatorContainer?.clientHeight === 'number'
-            && livePaginatorContainer.clientHeight > 0) {
+            && layoutSnapshot.livePaginatorBox != null) {
             markEPUBPerf('layout.ready.first', {
                 reason,
                 currentPercent: layoutSnapshot.currentPercent,
@@ -2332,6 +2531,12 @@ class Reader {
         this.lastLayoutDiagnosticsKey = key;
         if (shouldLogLayout) {
             postEPUBLog('ebook.layout.diagnostics', layoutSnapshot);
+        }
+        const shouldLogAPR21 =
+            hasLayoutAnomaly
+            || ['reader-open', 'did-display', 'document-load', 'window-resize', 'visual-viewport-resize'].includes(reason);
+        if (shouldLogAPR21) {
+            postAPR21Log('ebook.layout.gapSnapshot', layoutSnapshot);
         }
     }
     #renderPageTrackingButtons(reason = 'unspecified') {
@@ -3984,7 +4189,16 @@ window.loadEBook = ({
                 isRTL: !!globalThis.reader?.isRTL,
             });
             markEPUBPerf('viewer.loaded.callback');
-            window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
+            const probe = globalThis.reader?.collectAPR21GapProbe?.('ebookViewerLoaded', {
+                bookDir: globalThis.reader?.bookDir || null,
+                isRTL: !!globalThis.reader?.isRTL,
+            }) ?? null;
+            if (probe) {
+                postAPR21Log('ebook.viewer.loaded', probe);
+            }
+            window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
+                probe,
+            })
         })
         .catch((error) => {
             markEPUBPerf('load.error', {
@@ -4005,6 +4219,9 @@ window.loadLastPosition = async ({
     cfi,
     fractionalCompletion,
 }) => {
+    globalThis.__manabiRequestedRestoreFraction = Number.isFinite(fractionalCompletion)
+        ? Math.max(0, Math.min(1, fractionalCompletion))
+        : null;
     const awaitWithTimeout = (promise, timeoutMs) =>
         Promise.race([
             promise,
@@ -4268,7 +4485,83 @@ window.manabiGoToReaderHref = async (href) => {
 }
 
 window.manabiScheduleReaderFractionGoTo = (fraction) => {
+    postPageNumLog('goto.live-schedule.request', {
+        requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+    });
     globalThis.reader?.scheduleGoToFraction?.(fraction);
+}
+
+window.manabiCancelScheduledReaderFractionGoTo = () => {
+    globalThis.reader?.scheduleGoToFraction?.cancel?.();
+    postPageNumLog('goto.live-schedule.cancel', {
+        navLabel: globalThis.reader?.navHUD?.latestPrimaryLabel ?? '',
+    });
+    return true;
+}
+
+window.manabiBeginReaderProgressScrub = () => {
+    const navHUD = globalThis.reader?.navHUD;
+    const originDescriptor = navHUD?.getCurrentLocationDescriptor?.() ?? null;
+    postPageNumLog('goto.live-scrub.begin', {
+        originFraction: typeof originDescriptor?.fraction === 'number' ? safeRound(originDescriptor.fraction, 6) : null,
+        backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+    });
+    navHUD?.beginProgressScrubSession?.(originDescriptor);
+    return true;
+}
+
+window.manabiEndReaderProgressScrub = (fraction, cancel = false) => {
+    const navHUD = globalThis.reader?.navHUD;
+    const numericFraction = Number(fraction);
+    const clampedFraction = Number.isFinite(numericFraction)
+        ? Math.max(0, Math.min(1, numericFraction))
+        : null;
+    const finalDescriptor = clampedFraction != null
+        ? (navHUD?._descriptorFromFraction?.(clampedFraction) ?? { fraction: clampedFraction })
+        : (navHUD?.getCurrentLocationDescriptor?.() ?? null);
+    postPageNumLog('goto.live-scrub.end', {
+        requestedFraction: clampedFraction,
+        cancel: !!cancel,
+        backDepthBefore: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepthBefore: navHUD?.relocateStacks?.forward?.length ?? 0,
+    });
+    navHUD?.endProgressScrubSession?.(finalDescriptor, {
+        cancel: !!cancel,
+        releaseFraction: clampedFraction,
+    });
+    postPageNumLog('goto.live-scrub.end.result', {
+        requestedFraction: clampedFraction,
+        cancel: !!cancel,
+        backDepthAfter: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepthAfter: navHUD?.relocateStacks?.forward?.length ?? 0,
+        canJumpBack: !!navHUD?._isRelocateButtonVisible?.('back'),
+        canJumpForward: !!navHUD?._isRelocateButtonVisible?.('forward'),
+    });
+    return true;
+}
+
+window.manabiTriggerReaderRelocateJump = async (direction) => {
+    const navHUD = globalThis.reader?.navHUD;
+    postPageNumLog('goto.sheet.relocate-jump.request', {
+        direction: typeof direction === 'string' ? direction : null,
+        backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+        canJumpBack: !!navHUD?._isRelocateButtonVisible?.('back'),
+        canJumpForward: !!navHUD?._isRelocateButtonVisible?.('forward'),
+    });
+    if (direction !== 'back' && direction !== 'forward') {
+        return false;
+    }
+    await navHUD?._handleRelocateJump?.(direction);
+    postPageNumLog('goto.sheet.relocate-jump.result', {
+        direction,
+        backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+        canJumpBack: !!navHUD?._isRelocateButtonVisible?.('back'),
+        canJumpForward: !!navHUD?._isRelocateButtonVisible?.('forward'),
+    });
+    return true;
 }
 
 window.manabiScheduleReaderPercentGoTo = (percent) => {
@@ -4276,6 +4569,10 @@ window.manabiScheduleReaderPercentGoTo = (percent) => {
     if (!Number.isFinite(numericPercent)) {
         return;
     }
+    postPageNumLog('goto.live-schedule.request-percent', {
+        requestedPercent: numericPercent,
+        requestedFraction: numericPercent / 100,
+    });
     globalThis.reader?.scheduleGoToFraction?.(numericPercent / 100);
 }
 

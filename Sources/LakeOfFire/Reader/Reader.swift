@@ -11,6 +11,10 @@ private func logLandscapeInset(_ message: String) {
     debugPrint("# LANDSCAPEINSET \(message)")
 }
 
+private func logAPR21(_ message: String) {
+    debugPrint("# APR21 \(message)")
+}
+
 private struct ReaderStatusBarFadeMask: ViewModifier {
     var topFadeHeight: CGFloat
     var edgeOpacity: CGFloat = 0.125
@@ -358,11 +362,17 @@ func syncEbookViewerChromeInsets(
             "toolbarBottomOffsetCSS=\(toolbarBottomOffsetCSS)",
             "obscuredBottomInsetCSS=\(obscuredBottomInsetCSS)"
         )
+        logAPR21(
+            "ebook.viewer.insets.apply pageURL=\(pageURL.absoluteString) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset) revision=\(revision)"
+        )
     } catch {
         debugPrint(
             "# EPUB  ebook.viewer.insets.apply.error",
             "pageURL=\(pageURL.absoluteString)",
             "error=\(error.localizedDescription)"
+        )
+        logAPR21(
+            "ebook.viewer.insets.apply.error pageURL=\(pageURL.absoluteString) error=\(error.localizedDescription)"
         )
     }
 }
@@ -775,6 +785,11 @@ public struct Reader: View {
                             trailing: max(0, geometry.safeAreaInsets.trailing)
                         )
                         obscuredInsets = sampledInsets
+                        if pageURL.isEBookURL {
+                            logAPR21(
+                                "reader.sampledObscuredInsets.initial pageURL=\(pageURL.absoluteString) size=\(Int(geometry.size.width))x\(Int(geometry.size.height)) safeAreaTop=\(sampledInsets.top) safeAreaBottom=\(sampledInsets.bottom) safeAreaLeading=\(sampledInsets.leading) safeAreaTrailing=\(sampledInsets.trailing) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomSafeAreaInset ?? 0)"
+                            )
+                        }
                     }
                     .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
                         let sampledInsets = EdgeInsets(
@@ -787,6 +802,11 @@ public struct Reader: View {
                         logLandscapeInset(
                             "stage=reader.sampledObscuredInsets.changed size=\(Int(geometry.size.width))x\(Int(geometry.size.height)) safeAreaTop=\(sampledInsets.top) safeAreaBottom=\(sampledInsets.bottom) safeAreaLeading=\(sampledInsets.leading) safeAreaTrailing=\(sampledInsets.trailing) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomSafeAreaInset ?? 0)"
                         )
+                        if pageURL.isEBookURL {
+                            logAPR21(
+                                "reader.sampledObscuredInsets.changed pageURL=\(pageURL.absoluteString) size=\(Int(geometry.size.width))x\(Int(geometry.size.height)) safeAreaTop=\(sampledInsets.top) safeAreaBottom=\(sampledInsets.bottom) safeAreaLeading=\(sampledInsets.leading) safeAreaTrailing=\(sampledInsets.trailing) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomSafeAreaInset ?? 0)"
+                            )
+                        }
                     }
             }
         }
@@ -812,6 +832,9 @@ public struct Reader: View {
                 "effectiveBottomInset=\(effectiveBottomInset)",
                 "effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset)",
                 "viewerLoadedProbeSummary=\(viewerLoadedProbeSummary)"
+            )
+            logAPR21(
+                "ebook.viewer.insets.task pageURL=\(pageURL.absoluteString) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomSafeAreaInset ?? 0) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary)"
             )
             await syncEbookViewerChromeInsets(
                 pageURL: pageURL,

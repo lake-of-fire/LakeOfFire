@@ -141,6 +141,12 @@ const ensurePageKey = (item, fallbackIndex = 0) => {
     return key;
 };
 
+const safeRound = (value, digits = 1) =>
+    globalThis.__manabiSafeRound?.(value, digits)
+        ?? (typeof value === 'number' && Number.isFinite(value)
+            ? Number(value.toFixed(digits))
+            : null);
+
 export class NavigationHUD {
     constructor({ onJumpRequest, getRenderer, formatPercent } = {}) {
         this.onJumpRequest = onJumpRequest;
@@ -630,13 +636,6 @@ export class NavigationHUD {
         await this._updateSectionProgress({ refreshSnapshot: false });
         this._updateRelocateButtons();
         this._pruneBackStackIfReturnedToOrigin(detail);
-        this._logPageNumberDiagnostic('relocate', {
-            reason: detail?.reason ?? null,
-            liveScrollPhase: detail?.liveScrollPhase ?? null,
-            fraction: typeof detail?.fraction === 'number' ? detail.fraction : null,
-            label: this.latestPrimaryLabel ?? '',
-            ...(this.lastPrimaryLabelDiagnostics ?? {}),
-        });
     }
 
     _updateRendererSnapshotFromDetail(detail) {
@@ -786,12 +785,35 @@ export class NavigationHUD {
     }
 
     _fractionForPercent(detail) {
-        if (detail && typeof detail.fraction === 'number') return detail.fraction;
-        if (typeof this.lastScrubberFraction === 'number') return this.lastScrubberFraction;
-        const descriptorFraction = typeof this.currentLocationDescriptor?.fraction === 'number'
-            ? this.currentLocationDescriptor.fraction
-            : null;
-        return descriptorFraction;
+        const candidates = [
+            { source: 'detail.fraction', value: detail?.fraction },
+            { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
+            { source: 'currentLocationDescriptor.fraction', value: this.currentLocationDescriptor?.fraction },
+            { source: 'reader.view.lastLocation.fraction', value: globalThis.reader?.view?.lastLocation?.fraction },
+            { source: '__manabiRequestedRestoreFraction', value: globalThis.__manabiRequestedRestoreFraction },
+            { source: 'lastScrubberFraction', value: this.lastScrubberFraction },
+        ];
+        for (const candidate of candidates) {
+            if (typeof candidate.value === 'number' && isFinite(candidate.value)) {
+                return Math.max(0, Math.min(1, candidate.value));
+            }
+        }
+        const descriptor = this._makeLocationDescriptor(detail)
+            ?? this._cloneDescriptor(this.currentLocationDescriptor)
+            ?? this._makeLocationDescriptor(this.lastRelocateDetail);
+        const derived = this._scrubberFractionFromMetrics({
+            current: typeof descriptor?.location?.current === 'number'
+                ? Math.max(1, Math.round(descriptor.location.current) + 1)
+                : null,
+            total: typeof descriptor?.location?.total === 'number'
+                ? Math.max(1, Math.round(descriptor.location.total))
+                : null,
+            fallbackFraction: null,
+        });
+        if (typeof derived === 'number' && isFinite(derived)) {
+            return Math.max(0, Math.min(1, derived));
+        }
+        return null;
     }
 
     refreshAuxiliaryLayout() {
@@ -898,7 +920,6 @@ export class NavigationHUD {
             }
             return label;
         }
-        // No fallback beyond the derived page metrics.
         return '';
     }
 
@@ -965,11 +986,6 @@ export class NavigationHUD {
                 label: '',
                 totalPageCount: this.totalPageCount,
             };
-            this._logPageNumberDiagnostic('primary-label.blocked', {
-                reason: 'no-detail',
-                totalPageCount: this.totalPageCount,
-                fallbackTotalPageCount: this.fallbackTotalPageCount,
-            });
             return null;
         }
 
@@ -992,15 +1008,6 @@ export class NavigationHUD {
                 currentPercent,
                 fraction: safeRound(clampedFraction, 6),
             };
-            this._logPageNumberDiagnostic('primary-label.percent', {
-                label,
-                currentPercent,
-                source,
-                fraction: safeRound(clampedFraction, 6),
-                sectionIndex,
-                sectionIndexSource,
-                resolvedSectionHref,
-            });
             this.latestPrimaryLabel = label;
             return label;
         }
@@ -1015,14 +1022,6 @@ export class NavigationHUD {
             sectionIndexSource,
             resolvedSectionHref,
         };
-        this._logPageNumberDiagnostic('primary-label.blocked', {
-            reason: 'percent-pending',
-            sectionIndex,
-            sectionIndexSource,
-            resolvedSectionHref,
-            totalPageCount: this.totalPageCount,
-            fallbackTotalPageCount: this.fallbackTotalPageCount,
-        });
         return null;
     }
 
@@ -1168,16 +1167,6 @@ export class NavigationHUD {
                 : `${pagesLeft} pages left in chapter`;
             center.textContent = label;
             center.hidden = false;
-            logEBookPageNumLimited('ui:section-progress', {
-                label,
-                pagesLeft,
-                target: 'center',
-                sectionIndex: sectionResolution.index,
-                sectionIndexSource: sectionResolution.source,
-                rendererCurrent: this.rendererPageSnapshot?.current ?? null,
-                rendererTotal: this.rendererPageSnapshot?.total ?? null,
-                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            });
         } catch (error) {
             console.error('Failed to update section progress', error);
         }
@@ -1926,6 +1915,34 @@ export class NavigationHUD {
         if (this.navRelocateLabels?.forward) {
             this.navRelocateLabels.forward.textContent = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
         }
+        this._logPageNumberDiagnostic('relocate-buttons.state', {
+            backDepth: backStack.length,
+            forwardDepth: forwardStack.length,
+            showBack,
+            showForward,
+            disableBack,
+            disableForward,
+            scrubbing,
+            busy,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            backLabel: this.navRelocateLabels?.back?.textContent || '',
+            forwardLabel: this.navRelocateLabels?.forward?.textContent || '',
+            backHidden: backBtn?.hidden ?? null,
+            forwardHidden: forwardBtn?.hidden ?? null,
+            backDisabled: backBtn?.disabled ?? null,
+            forwardDisabled: forwardBtn?.disabled ?? null,
+            backWidth: backBtn?.offsetWidth ?? null,
+            forwardWidth: forwardBtn?.offsetWidth ?? null,
+            backEdge: backBtn?.dataset?.navEdge ?? null,
+            forwardEdge: forwardBtn?.dataset?.navEdge ?? null,
+            backOpacity: backBtn ? window.getComputedStyle(backBtn).opacity : null,
+            forwardOpacity: forwardBtn ? window.getComputedStyle(forwardBtn).opacity : null,
+            backDisplay: backBtn ? window.getComputedStyle(backBtn).display : null,
+            forwardDisplay: forwardBtn ? window.getComputedStyle(forwardBtn).display : null,
+            backVisibility: backBtn ? window.getComputedStyle(backBtn).visibility : null,
+            forwardVisibility: forwardBtn ? window.getComputedStyle(forwardBtn).visibility : null,
+        });
         this._updateSectionProgress();
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;

@@ -5,6 +5,9 @@ const CSS_DEFAULTS = {
     minGapPx: 36,
     topMarginPx: 4,
     bottomMarginPx: 32,
+    verticalPaginatedGapPx: 12,
+    verticalPaginatedTopMarginPx: 0,
+    verticalPaginatedBottomMarginPx: 0,
     sideMarginPx: 32,
     maxInlineSizePx: 720,
     maxBlockSizePx: 1440,
@@ -23,6 +26,15 @@ const manabiRound = (value, digits = 1) =>
         ?? (typeof value === 'number' && Number.isFinite(value)
             ? Number(value.toFixed(digits))
             : null);
+const postPaginatorPageNumLog = (event, details = {}) => {
+    const payload = { event, ...details };
+    const line = `# PAGENUM ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
+    }
+};
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
@@ -200,6 +212,32 @@ const setStylesImportant = (el, styles) => {
     for (const [k, v] of Object.entries(styles)) style.setProperty(k, v, 'important')
 }
 
+const isJapaneseLanguageTag = value => {
+    if (typeof value !== 'string') return false
+    const normalized = value.trim().toLowerCase()
+    return normalized === 'ja' || normalized.startsWith('ja-')
+}
+
+const getJapaneseLayoutFlags = doc => {
+    const hasManabiSentences = !!doc?.body?.matches?.('[data-manabi-has-sentences="true"]')
+        || !!doc?.querySelector?.('manabi-sentence')
+    const hasManabiSegments = !!doc?.body?.matches?.('[data-manabi-has-segments="true"]')
+        || !!doc?.querySelector?.('manabi-segment')
+    const lang =
+        doc?.documentElement?.getAttribute?.('lang')
+        || doc?.documentElement?.getAttribute?.('xml:lang')
+        || doc?.body?.getAttribute?.('lang')
+        || doc?.body?.getAttribute?.('xml:lang')
+        || ''
+    const isJapanese = isJapaneseLanguageTag(lang) || hasManabiSentences || hasManabiSegments
+    return {
+        isJapanese,
+        lang: lang || null,
+        hasManabiSentences,
+        hasManabiSegments,
+    }
+}
+
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
@@ -373,6 +411,7 @@ class View {
         await this.#awaitDirection();
         const vertical = this.#vertical
         const doc = this.document
+        const { isJapanese } = getJapaneseLayoutFlags(doc)
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
@@ -388,8 +427,10 @@ class View {
             'column-gap': `${gap}px`,
             'column-fill': 'auto',
             'overflow': 'hidden',
-            // force wrap long words
-            'overflow-wrap': 'anywhere',
+            'overflow-wrap': isJapanese ? 'normal' : 'anywhere',
+            'word-break': 'normal',
+            'line-break': isJapanese ? 'strict' : 'auto',
+            '-webkit-line-break': isJapanese ? 'strict' : 'auto',
             // reset some potentially problematic props
             'position': 'static',
             'border': '0',
@@ -427,6 +468,7 @@ class View {
         //        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
+        const { isJapanese } = getJapaneseLayoutFlags(doc)
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
@@ -440,8 +482,10 @@ class View {
             }),
             'padding': vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
             'overflow': 'hidden',
-            // force wrap long words
-            'overflow-wrap': 'break-word', // TODO: anywhere, for japanese?
+            'overflow-wrap': isJapanese ? 'normal' : 'break-word',
+            'word-break': 'normal',
+            'line-break': isJapanese ? 'strict' : 'auto',
+            '-webkit-line-break': isJapanese ? 'strict' : 'auto',
             // reset some potentially problematic props
             'position': 'static',
             'border': '0',
@@ -729,6 +773,9 @@ export class Paginator extends HTMLElement {
                     }
                 }
             }
+            #top.manabi-vertical-paginated {
+                grid-template-rows: 0 minmax(0, 1fr) 0;
+            }
             #top.reader-loading {
                 opacity: 0;
                 pointer-events: none;
@@ -746,6 +793,9 @@ export class Paginator extends HTMLElement {
                 will-change: transform;
                 transform: translateZ(0);
             }
+            #top.manabi-vertical-paginated #container {
+                grid-row: 1 / -1;
+            }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
                 grid-row: 1 / -1;
@@ -762,6 +812,11 @@ export class Paginator extends HTMLElement {
             }
             #header, #footer {
                 display: grid;
+            }
+            #top.manabi-vertical-paginated #header,
+            #top.manabi-vertical-paginated #footer {
+                display: none;
+                height: 0;
             }
             #header {
                 height: var(--_top-margin);
@@ -1011,6 +1066,8 @@ export class Paginator extends HTMLElement {
             height
         } = await this.sizes()
         const size = vertical ? height : width
+        const flow = this.getAttribute('flow')
+        this.#top.classList.toggle('manabi-vertical-paginated', vertical && flow !== 'scrolled')
 
         // New:
         const {
@@ -1019,6 +1076,9 @@ export class Paginator extends HTMLElement {
             maxColumnCountPortrait,
             topMarginPx,
             bottomMarginPx,
+            verticalPaginatedGapPx,
+            verticalPaginatedTopMarginPx,
+            verticalPaginatedBottomMarginPx,
             minGapPx,
             gapPct
         } = CSS_DEFAULTS;
@@ -1036,8 +1096,13 @@ export class Paginator extends HTMLElement {
                 ? maxColumnCountPortrait
                 : maxColumnCount;
         }
-        const topMargin = topMarginPx;
-        const bottomMargin = bottomMarginPx;
+        const isPaginatedVertical = vertical && flow !== 'scrolled';
+        const topMargin = isPaginatedVertical
+            ? verticalPaginatedTopMarginPx
+            : topMarginPx;
+        const bottomMargin = isPaginatedVertical
+            ? verticalPaginatedBottomMarginPx
+            : bottomMarginPx;
 
         // retro way:
         //                const style = getComputedStyle(this.#top)
@@ -1077,9 +1142,10 @@ export class Paginator extends HTMLElement {
         // But we want to keep the outer padding, and make the inner gap bigger.
         // So we apply the inverse, f⁻¹ = -x / (x - 1) to the column gap.
         const rawGap = -g / (g - 1) * size
-        const gap = Math.max(rawGap, minGapPx)
+        const gap = isPaginatedVertical
+            ? verticalPaginatedGapPx
+            : Math.max(rawGap, minGapPx)
 
-        const flow = this.getAttribute('flow')
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
@@ -1550,17 +1616,38 @@ export class Paginator extends HTMLElement {
         //                ) {
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
+                const shouldFade = !(reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation');
+                postPaginatorPageNumLog('paginator.transition.begin', {
+                    reason: reason ?? null,
+                    shouldFade,
+                    scrolled: this.scrolled,
+                    vertical: this.#vertical,
+                    hasAnimatedAttribute: this.hasAttribute('animated'),
+                    containerClassList: this.#container?.className ?? null,
+                });
+                if (!shouldFade) {
                     await scroll()
                 } else {
                     this.#container.classList.add('view-fade')
+                    postPaginatorPageNumLog('paginator.transition.fade-applied', {
+                        reason: reason ?? null,
+                        classList: this.#container?.className ?? null,
+                    });
                     // Allow the browser to paint the fade
                     /*await new Promise(r => setTimeout(r, 65));
                      this.#container.classList.add('view-faded')*/
                     await scroll()
                     this.#container.classList.remove('view-faded')
                     this.#container.classList.remove('view-fade')
+                    postPaginatorPageNumLog('paginator.transition.fade-cleared', {
+                        reason: reason ?? null,
+                        classList: this.#container?.className ?? null,
+                    });
                 }
+                postPaginatorPageNumLog('paginator.transition.end', {
+                    reason: reason ?? null,
+                    shouldFade,
+                });
                 resolve()
             })
         })

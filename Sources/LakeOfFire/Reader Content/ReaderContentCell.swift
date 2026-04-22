@@ -5,6 +5,32 @@ import RealmSwiftGaps
 import LakeKit
 import ImageIO
 
+struct ReaderNewBadge: View {
+    var body: some View {
+        Text("NEW")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .textCase(.uppercase)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .modifier {
+                if #available(iOS 16, macOS 14, *) {
+                    $0.baselineOffset(-0.5)
+                } else { $0 }
+            }
+            .background(
+                Capsule().fill(
+                    Color(
+                        red: 0x1d / 255.0,
+                        green: 0x46 / 255.0,
+                        blue: 0x75 / 255.0
+                    )
+                )
+            )
+    }
+}
+
 private let ebookAbsoluteDateFormatter: DateFormatter = {
     ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
 }()
@@ -19,7 +45,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
     @Published var latestHistoryRecordLastVisitedAt: Date? = nil
-    @Published var feedShowsUnseenBadge = true
     @Published var forceShowBookmark = false
     @Published var title = ""
     @Published var author: String?
@@ -51,25 +76,11 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let itemURL = item.url
-            let itemURLString = itemURL.absoluteString
             let itemSourceIconURL = item.sourceIconURL
             let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
             let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
-            let latestHistoryRecordLastVisitedAt: Date?
-            let feedShowsUnseenBadge: Bool
-            if item is FeedEntry {
-                let feedEntry = item as? FeedEntry
-                feedShowsUnseenBadge = feedEntry?.getFeed()?.showsUnseenBadge ?? true
-                if feedShowsUnseenBadge {
-                    let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
-                    latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
-                } else {
-                    latestHistoryRecordLastVisitedAt = nil
-                }
-            } else {
-                latestHistoryRecordLastVisitedAt = nil
-                feedShowsUnseenBadge = true
-            }
+            let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
+            let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
 
             var sourceIconURL: URL?
             var sourceTitle: String?
@@ -101,7 +112,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.isFullArticleFinished = nil
                 }
                 self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
-                self.feedShowsUnseenBadge = feedShowsUnseenBadge
                 self.totalWordCount = metadataResult?.totalWordCount
                 self.remainingTime = metadataResult?.remainingTime
             }()
@@ -402,17 +412,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsUnreadIndicator: Bool {
-        if let feedEntry = item as? FeedEntry {
-            guard viewModel.feedShowsUnseenBadge else { return false }
-            if let feed = feedEntry.getFeed() {
-                return feed.isEntryUnseen(
-                    feedEntry,
-                    latestHistoryLastVisitedAt: viewModel.latestHistoryRecordLastVisitedAt
-                )
-            }
-            return viewModel.latestHistoryRecordLastVisitedAt == nil
-        }
-        return false
+        viewModel.latestHistoryRecordLastVisitedAt == nil
     }
 
     private var isProgressVisible: Bool {
@@ -552,28 +552,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ViewBuilder
     private var topStatusRow: some View {
         HStack(spacing: 8) {
+            if showsNewBadge {
+                ReaderNewBadge()
+            }
+
             if showsAudioBadge {
                 Image(systemName: "headphones")
                     .imageScale(.small)
-            }
-
-            if appearance.isEbookStyle, !isProgressVisible {
-                Text("NEW")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .textCase(.uppercase)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(
-                            Color(
-                                red: 0x1d / 255.0,
-                                green: 0x46 / 255.0,
-                                blue: 0x75 / 255.0
-                            )
-                        )
-                    )
             }
 
             if let item = item as? ContentFile {
@@ -643,29 +628,22 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var titleRow: some View {
-        (
-            unreadIndicatorTitleSegment
-            + titleText
-        )
-        .font(.headline)
-        .lineLimit(titleLineLimit)
-        .multilineTextAlignment(.leading)
-        .environment(\._lineHeightMultiple, 0.875)
-        .layoutPriority(1)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var unreadIndicatorTitleSegment: Text {
-        guard showsUnreadIndicator else { return Text("") }
-        return Text(Image(systemName: "circlebadge.fill"))
-            .font(.subheadline.weight(.regular))
-            .foregroundColor(.accentColor)
-            + Text("  ")
+        titleText
+            .font(.headline)
+            .lineLimit(titleLineLimit)
+            .multilineTextAlignment(.leading)
+            .environment(\._lineHeightMultiple, 0.875)
+            .layoutPriority(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var titleText: Text {
         Text(displayTitle)
             .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+    }
+
+    private var showsNewBadge: Bool {
+        showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible)
     }
 
     @ViewBuilder

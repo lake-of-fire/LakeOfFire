@@ -55,7 +55,7 @@ public struct FeedView: View {
     }
 
     private var showsMarkAllAsSeenAction: Bool {
-        feed.hasUnseenEntries(entries)
+        feed.showsUnseenBadge && !entries.isEmpty
     }
 
     private var showUnseenBadgeBinding: Binding<Bool> {
@@ -123,7 +123,7 @@ public struct FeedView: View {
                             }
                         }
                         Toggle(isOn: showUnseenBadgeBinding) {
-                            Text("Show Unseen Badge")
+                            Text("Show New Badge")
                         }
                     } label: {
                         Label("More Options", systemImage: "ellipsis")
@@ -165,7 +165,7 @@ public struct FeedView: View {
 
     @MainActor
     private func markAllEntriesAsSeen() async throws {
-        guard feed.hasUnseenEntries(entries) else { return }
+        guard feed.showsUnseenBadge, !entries.isEmpty else { return }
         try await Realm.asyncWrite(
             ThreadSafeReference(to: feed),
             configuration: ReaderContentLoader.feedEntryRealmConfiguration
