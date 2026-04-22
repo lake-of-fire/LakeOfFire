@@ -23,4 +23,15 @@ body.readability-mode #reader-content [style*="max-width"]:not(img):not(video):n
     width: auto !important;
 }
 
+body.readability-mode:lang(ja),
+body.readability-mode #reader-header:lang(ja),
+body.readability-mode #reader-content:lang(ja),
+body.readability-mode #reader-content :lang(ja),
+body.readability-mode manabi-sentence,
+body.readability-mode manabi-segment {
+    word-break: normal;
+    overflow-wrap: normal;
+    font-feature-settings: "vchw" 1, "chws" 1;
+}
+
 /* TODO: Fonts! */

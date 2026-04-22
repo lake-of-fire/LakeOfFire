@@ -562,7 +562,8 @@ private class ReaderWebViewHandler {
            !readerModeViewModel.isReaderMode,
            !readerModeViewModel.isReaderModeLoading,
            readerModeViewModel.pendingReaderModeURL == nil,
-           !content.url.isNativeReaderView {
+           !content.url.isNativeReaderView,
+           !content.url.isEBookURL {
             debugPrint(
                 "# READERLOAD stage=readerWebView.autoBeginReaderModeLoad",
                 "source=\(source)",
@@ -993,6 +994,7 @@ public struct ReaderWebView: View {
             }
         }
         .task { @MainActor in
+            navigator.shouldLoadFallbackOnAttach = false
             navigator.attachFallbackDelayNanoseconds = 700_000_000
             if handler == nil {
                 handler = ReaderWebViewHandler(
