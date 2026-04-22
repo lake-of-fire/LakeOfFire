@@ -3,6 +3,9 @@ import Combine
 import LakeOfFireCore
 import LakeOfFireAdblock
 
+private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInternalReaderLoader.traceID"
+private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
+
 @MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
@@ -130,6 +133,15 @@ public class ReaderContent: ObservableObject {
         self.preloadedContent = nil
         return preloadedContent
     }
+
+    private func activeInternalLoaderWaitContext() -> (traceID: String, requestURL: String)? {
+        let defaults = UserDefaults.standard
+        guard let traceID = defaults.string(forKey: activeInternalReaderLoaderTraceIDKey),
+              let requestURL = defaults.string(forKey: activeInternalReaderLoaderURLKey) else {
+            return nil
+        }
+        return (traceID, requestURL)
+    }
     
     @MainActor
     public func load(url: URL) async throws {
@@ -164,6 +176,17 @@ public class ReaderContent: ObservableObject {
                 "# READERLOAD stage=readerContent.load.skipTransientAboutBlank",
                 "requestURL=\(url.absoluteString)",
                 "targetURL=\(suppressedTargetURL.absoluteString)"
+            )
+            return
+        }
+
+        if resolvedContentURL.absoluteString == "about:blank",
+           let activeInternalLoaderWait = activeInternalLoaderWaitContext() {
+            debugPrint(
+                "# READERLOAD stage=readerContent.load.skipActiveInternalLoaderAboutBlank",
+                "requestURL=\(url.absoluteString)",
+                "activeLoaderURL=\(activeInternalLoaderWait.requestURL)",
+                "traceID=\(activeInternalLoaderWait.traceID)"
             )
             return
         }
@@ -245,6 +268,7 @@ public class ReaderContent: ObservableObject {
             try Task.checkCancellation()
             debugPrint("# FLASH ReaderContent.load task resolving content", "page=\(flashURLDescription(url))")
             let content = try await ReaderContentLoader.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
+            try Task.checkCancellation()
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 debugPrint("# FLASH ReaderContent.load mismatch", "page=\(flashURLDescription(url))", "content=\(flashURLDescription(content.url))")

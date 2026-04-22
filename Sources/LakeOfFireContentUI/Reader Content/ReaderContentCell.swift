@@ -11,16 +11,18 @@ import LakeOfFireAdblock
 import SwiftUtilities
 
 public struct ReaderNewBadge: View {
+    @Environment(\.controlSize) private var controlSize
+
     public init() {}
 
     public var body: some View {
         Text("NEW")
-            .font(.caption2)
+            .font(isCompactControlSize ? .caption2.weight(.semibold) : .caption2)
             .fontWeight(.semibold)
             .textCase(.uppercase)
             .foregroundStyle(.white)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
+            .padding(.horizontal, isCompactControlSize ? 5 : 6)
+            .padding(.vertical, isCompactControlSize ? 2 : 3)
             .modifier {
                 if #available(iOS 16, macOS 14, *) {
                     $0.baselineOffset(-0.5)
@@ -35,6 +37,15 @@ public struct ReaderNewBadge: View {
                     )
                 )
             )
+    }
+
+    private var isCompactControlSize: Bool {
+        switch controlSize {
+        case .mini, .small:
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -592,6 +603,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     private var newBadge: some View {
         if showsNewBadge {
             ReaderNewBadge()
+                .controlSize(.small)
         }
     }
 
