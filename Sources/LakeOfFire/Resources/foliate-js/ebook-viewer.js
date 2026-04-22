@@ -60,8 +60,22 @@ const postReplaceTextPerfLog = (event, details = {}) => {
     }
 };
 
+const PAGE_NUM_DEDUP_EVENTS = new Set([
+    'goto.snapshot',
+    'nav.sections.handoff',
+    'nav.visibility.updateNavButtons',
+]);
+const lastPageNumLogSignatureByEvent = new Map();
+
 const postPageNumLog = (event, details = {}) => {
     const payload = { event, ...details };
+    if (PAGE_NUM_DEDUP_EVENTS.has(event)) {
+        const signature = JSON.stringify(payload);
+        if (lastPageNumLogSignatureByEvent.get(event) === signature) {
+            return;
+        }
+        lastPageNumLogSignatureByEvent.set(event, signature);
+    }
     const line = `# PAGENUM ${JSON.stringify(payload)}`;
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
@@ -103,6 +117,16 @@ const parseSyntheticRestoreLocator = (value) => {
         rendererTotal,
         fractionInSection,
     };
+};
+
+const getPrimaryRendererContentIndex = (renderer) => {
+    try {
+        const contents = renderer?.getContents?.();
+        const primaryContent = Array.isArray(contents) && contents.length > 0 ? contents[0] ?? null : null;
+        return typeof primaryContent?.index === 'number' ? primaryContent.index : null;
+    } catch (_error) {
+        return null;
+    }
 };
 
 const captureNavVisibilityState = () => {
@@ -1081,6 +1105,21 @@ const safeRound = (value, digits = 1) =>
         ? Number(value.toFixed(digits))
         : null;
 
+const getAuthoritativeReaderFraction = ({ navHUD = null, detail = null, fallbackFraction = null } = {}) => {
+    const primaryLabelFraction = navHUD?.lastPrimaryLabelDiagnostics?.fraction ?? null;
+    if (typeof primaryLabelFraction === 'number' && Number.isFinite(primaryLabelFraction)) {
+        return Math.max(0, Math.min(1, primaryLabelFraction));
+    }
+    const scrubberFraction = navHUD?.getScrubberFraction?.(detail ?? null) ?? null;
+    if (typeof scrubberFraction === 'number' && Number.isFinite(scrubberFraction)) {
+        return Math.max(0, Math.min(1, scrubberFraction));
+    }
+    if (typeof fallbackFraction === 'number' && Number.isFinite(fallbackFraction)) {
+        return Math.max(0, Math.min(1, fallbackFraction));
+    }
+    return null;
+};
+
 const performanceNowMs = () =>
     typeof performance !== 'undefined' && typeof performance.now === 'function'
         ? performance.now()
@@ -1893,11 +1932,57 @@ class Reader {
     }
     async _goToDescriptor(descriptor) {
         if (!descriptor || !this.view) return;
+        if (
+            typeof descriptor.sectionIndex === 'number'
+            && typeof descriptor.localSectionIndex === 'number'
+            && typeof descriptor.rendererTotal === 'number'
+            && descriptor.rendererTotal > 1
+            && this.view?.renderer?.goTo
+        ) {
+            const clampedLocalSectionIndex = Math.max(
+                0,
+                Math.min(descriptor.rendererTotal - 1, Math.round(descriptor.localSectionIndex))
+            );
+            const fractionInSection = clampedLocalSectionIndex / (descriptor.rendererTotal - 1);
+            postPageNumLog('jump.goToDescriptor', {
+                path: 'renderer-goTo-anchor',
+                fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
+                cfi: descriptor.cfi ?? null,
+                sectionIndex: descriptor.sectionIndex,
+                localSectionIndex: descriptor.localSectionIndex,
+                rendererTotal: descriptor.rendererTotal,
+                fractionInSection: safeRound(fractionInSection, 6),
+                pageItemKey: descriptor.pageItemKey ?? null,
+            });
+            await this.view.renderer.goTo({
+                index: Math.max(0, Math.round(descriptor.sectionIndex)),
+                anchor: fractionInSection,
+            }).catch((error) => console.error(error));
+            return;
+        }
         if (typeof descriptor.cfi === 'string' && descriptor.cfi) {
+            postPageNumLog('jump.goToDescriptor', {
+                path: 'view-goTo-cfi',
+                fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
+                cfi: descriptor.cfi ?? null,
+                sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
+                localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
+                rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
+                pageItemKey: descriptor.pageItemKey ?? null,
+            });
             await this.view.goTo(descriptor.cfi).catch((error) => console.error(error));
             return;
         }
         if (typeof descriptor.fraction === 'number' && Number.isFinite(descriptor.fraction)) {
+            postPageNumLog('jump.goToDescriptor', {
+                path: 'view-goToFraction',
+                fraction: safeRound(descriptor.fraction, 6),
+                cfi: descriptor.cfi ?? null,
+                sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
+                localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
+                rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
+                pageItemKey: descriptor.pageItemKey ?? null,
+            });
             await this.view.goToFraction(descriptor.fraction);
         }
     }
@@ -1967,11 +2052,15 @@ class Reader {
         const linearSectionEntries = buildLinearSectionEntries(this.view?.book);
         const linearSectionStartPercentByHref = buildLinearSectionStartPercentByHref(this.view?.book);
         const currentLocationDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
-        const currentFraction = typeof currentLocationDescriptor?.fraction === 'number'
-            ? Math.max(0, Math.min(1, currentLocationDescriptor.fraction))
-            : (typeof this.navHUD?._fractionForPercent?.(this.navHUD?.lastRelocateDetail ?? null) === 'number'
-                ? Math.max(0, Math.min(1, this.navHUD._fractionForPercent(this.navHUD.lastRelocateDetail)))
-                : null);
+        const currentFraction = getAuthoritativeReaderFraction({
+            navHUD: this.navHUD,
+            detail: this.navHUD?.lastRelocateDetail ?? currentLocationDescriptor ?? null,
+            fallbackFraction: typeof currentLocationDescriptor?.fraction === 'number'
+                ? currentLocationDescriptor.fraction
+                : (typeof this.navHUD?._fractionForPercent?.(this.navHUD?.lastRelocateDetail ?? null) === 'number'
+                    ? this.navHUD._fractionForPercent(this.navHUD.lastRelocateDetail)
+                    : null),
+        });
         const currentPercent = currentFraction != null
             ? safeRound(currentFraction * 100, 1)
             : null;
@@ -1998,7 +2087,8 @@ class Reader {
         const rendererCurrentIndex = (() => {
             try {
                 const currentIndex = this.view?.renderer?.currentIndex;
-                return typeof currentIndex === 'number' ? currentIndex : null;
+                if (typeof currentIndex === 'number') return currentIndex;
+                return getPrimaryRendererContentIndex(this.view?.renderer);
             } catch (_) {
                 return null;
             }
@@ -2104,7 +2194,29 @@ class Reader {
         }, 120);
         this.scheduleGoToFraction = debounce((fraction) => {
             const clampedFraction = Math.max(0, Math.min(1, Number(fraction)));
-            const currentFraction = this.navHUD?._fractionForPercent?.(this.view?.lastLocation ?? this.navHUD?.lastRelocateDetail ?? null);
+            const currentDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
+            const targetDescriptor = this.navHUD?._descriptorFromFraction?.(clampedFraction) ?? null;
+            const currentFraction = typeof currentDescriptor?.fraction === 'number'
+                ? currentDescriptor.fraction
+                : this.navHUD?._fractionForPercent?.(this.view?.lastLocation ?? this.navHUD?.lastRelocateDetail ?? null);
+            const currentLocationCurrent = typeof currentDescriptor?.location?.current === 'number'
+                ? currentDescriptor.location.current
+                : null;
+            const currentLocationTotal = typeof currentDescriptor?.locationTotalHint === 'number'
+                ? currentDescriptor.locationTotalHint
+                : null;
+            const targetLocationCurrent = typeof targetDescriptor?.location?.current === 'number'
+                ? targetDescriptor.location.current
+                : null;
+            const targetLocationTotal = typeof targetDescriptor?.locationTotalHint === 'number'
+                ? targetDescriptor.locationTotalHint
+                : null;
+            const roundedCurrentPercent = typeof currentFraction === 'number' && Number.isFinite(currentFraction)
+                ? Math.round(currentFraction * 100)
+                : null;
+            const roundedTargetPercent = Number.isFinite(clampedFraction)
+                ? Math.round(clampedFraction * 100)
+                : null;
             postPageNumLog('goto.live-schedule.fire', {
                 requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
                 clampedFraction: Number.isFinite(clampedFraction) ? clampedFraction : null,
@@ -2112,6 +2224,8 @@ class Reader {
                 navLabel: this.navHUD?.latestPrimaryLabel ?? '',
                 hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
                 currentFraction: typeof currentFraction === 'number' && Number.isFinite(currentFraction) ? safeRound(currentFraction, 6) : null,
+                currentLocationCurrent,
+                targetLocationCurrent,
             });
             if (!Number.isFinite(clampedFraction) || !this.view) {
                 postPageNumLog('goto.live-schedule.skipped', {
@@ -2129,6 +2243,34 @@ class Reader {
                     hasView: !!this.view,
                     reason: 'already-at-fraction',
                     currentFraction: safeRound(currentFraction, 6),
+                });
+                return;
+            }
+            if (currentLocationCurrent != null
+                && targetLocationCurrent != null
+                && currentLocationCurrent === targetLocationCurrent
+                && currentLocationTotal != null
+                && targetLocationTotal != null
+                && currentLocationTotal === targetLocationTotal) {
+                postPageNumLog('goto.live-schedule.skipped', {
+                    requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+                    clampedFraction,
+                    hasView: !!this.view,
+                    reason: 'already-at-location-index',
+                    currentLocationCurrent,
+                    targetLocationCurrent,
+                    locationTotal: currentLocationTotal,
+                });
+                return;
+            }
+            if (roundedCurrentPercent != null && roundedTargetPercent != null && roundedCurrentPercent === roundedTargetPercent) {
+                postPageNumLog('goto.live-schedule.skipped', {
+                    requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+                    clampedFraction,
+                    hasView: !!this.view,
+                    reason: 'already-at-rounded-percent',
+                    currentFraction: safeRound(currentFraction, 6),
+                    roundedPercent: roundedCurrentPercent,
                 });
                 return;
             }
@@ -3572,16 +3714,27 @@ class Reader {
             reason
         } = detail
         await this.navHUD?.handleRelocate(detail);
-        const scrubFraction = this.navHUD?.getScrubberFraction(detail) ?? null;
-        const effectiveFraction = Number.isFinite(scrubFraction) ? scrubFraction : fraction;
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
+        const effectiveFraction = getAuthoritativeReaderFraction({
+            navHUD: this.navHUD,
+            detail,
+            fallbackFraction: fraction,
+        });
         const currentPercent = typeof primaryLabelDiagnostics?.currentPercent === 'number'
             ? primaryLabelDiagnostics.currentPercent
             : null;
         const sectionIndex =
             typeof detail?.sectionIndex === 'number'
                 ? detail.sectionIndex
-                : (typeof detail?.index === 'number' ? detail.index : null);
+                : (typeof detail?.index === 'number'
+                    ? detail.index
+                    : (typeof this.view?.renderer?.currentIndex === 'number'
+                        ? this.view.renderer.currentIndex
+                        : (typeof getPrimaryRendererContentIndex(this.view?.renderer) === 'number'
+                            ? getPrimaryRendererContentIndex(this.view?.renderer)
+                        : (typeof this.navHUD?.lastSectionIndexSeen === 'number'
+                            ? this.navHUD.lastSectionIndexSeen
+                            : null))));
         const localSectionIndex = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
             ? Math.max(0, this.navHUD.rendererPageSnapshot.current - 1)
             : null;
@@ -3631,6 +3784,21 @@ class Reader {
         const persistedLocator = shouldPreferSyntheticRestoreLocator
             ? syntheticRestoreLocator
             : cfi;
+        postPageNumLog('bridge.updateReadingProgress.locator-decision', {
+            reason: reason ?? null,
+            effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+            rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal,
+            rawCFI: cfi ?? null,
+            sectionBaseCFI,
+            cfiLooksSectionBase,
+            cfiIsUnstableAcrossPages,
+            syntheticRestoreLocator,
+            shouldPreferSyntheticRestoreLocator,
+            persistedLocator,
+        });
         // (removed: setting tocView currentHref here)
         
         if (this.hasLoadedLastPosition) {
@@ -3660,7 +3828,7 @@ class Reader {
                 persistedLocator,
             });
             this.#postUpdateReadingProgressMessage({
-                fraction,
+                fraction: Number.isFinite(effectiveFraction) ? effectiveFraction : fraction,
                 cfi: persistedLocator,
                 reason,
                 currentPageNumber: null,
@@ -4222,6 +4390,7 @@ window.loadLastPosition = async ({
     globalThis.__manabiRequestedRestoreFraction = Number.isFinite(fractionalCompletion)
         ? Math.max(0, Math.min(1, fractionalCompletion))
         : null;
+    globalThis.__manabiRestoreInProgress = true;
     const awaitWithTimeout = (promise, timeoutMs) =>
         Promise.race([
             promise,
@@ -4296,90 +4465,112 @@ window.loadLastPosition = async ({
             drift: safeRound(delta, 6),
         });
     };
-    const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
-    if (syntheticRestoreLocator) {
-        postReaderLog('ebook.viewer.loadLastPosition.path', {
-            mode: 'synthetic-locator',
-            sectionIndex: syntheticRestoreLocator.sectionIndex,
-            localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-            rendererTotal: syntheticRestoreLocator.rendererTotal,
-            fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-        });
-        postPageNumLog('restore.synthetic-locator', {
-            sectionIndex: syntheticRestoreLocator.sectionIndex,
-            localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-            rendererTotal: syntheticRestoreLocator.rendererTotal,
-            fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-        });
-        await globalThis.reader.view.renderer.goTo({
-            index: syntheticRestoreLocator.sectionIndex,
-            anchor: syntheticRestoreLocator.fractionInSection,
-        });
-        await waitForFrames(2);
-        const syntheticState = captureRestoreState('after-synthetic-locator', {
-            sectionIndex: syntheticRestoreLocator.sectionIndex,
-            localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-            rendererTotal: syntheticRestoreLocator.rendererTotal,
-        });
-        await reconcileRestoreFractionIfNeeded(
-            syntheticState,
-            'synthetic-locator-fraction-drift',
-            'after-synthetic-locator-fraction-reconcile',
-        );
-    } else if (cfi.length > 0) {
-        postReaderLog('ebook.viewer.loadLastPosition.path', {
-            mode: 'cfi',
-        });
-        await globalThis.reader.view.goTo(cfi).catch(async e => {
-            postPageNumLog('restore.cfi.error', {
-                message: e?.message || String(e),
-                fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
+    try {
+        const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
+        if (syntheticRestoreLocator) {
+            postReaderLog('ebook.viewer.loadLastPosition.path', {
+                mode: 'synthetic-locator',
+                sectionIndex: syntheticRestoreLocator.sectionIndex,
+                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
+                rendererTotal: syntheticRestoreLocator.rendererTotal,
+                fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
             });
-            postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                hasCFI: true,
-                message: e?.message || String(e),
+            postPageNumLog('restore.synthetic-locator', {
+                sectionIndex: syntheticRestoreLocator.sectionIndex,
+                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
+                rendererTotal: syntheticRestoreLocator.rendererTotal,
+                fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
             });
-            console.error(e)
-            if (hasFractionalCompletion) {
-                postReaderLog('ebook.viewer.loadLastPosition.path', {
-                    mode: 'fraction-fallback',
-                });
-                await globalThis.reader.view.goToFraction(fractionalCompletion)
-            }
-        });
-        await waitForFrames(2);
-        const cfiState = captureRestoreState('after-cfi');
-        await reconcileRestoreFractionIfNeeded(
-            cfiState,
-            'cfi-fraction-drift',
-            'after-cfi-fraction-reconcile',
-        );
-    } else if (hasFractionalCompletion) {
-        postReaderLog('ebook.viewer.loadLastPosition.path', {
-            mode: 'fraction',
-        });
-        try {
-            await globalThis.reader.view.goToFraction(fractionalCompletion);
+            await globalThis.reader.view.renderer.goTo({
+                index: syntheticRestoreLocator.sectionIndex,
+                anchor: syntheticRestoreLocator.fractionInSection,
+            });
             await waitForFrames(2);
-            captureRestoreState('after-fraction');
-        } catch (error) {
-            postPageNumLog('restore.fraction.error', {
-                message: error?.message || String(error),
-                fallback: 'default-next',
+            const syntheticState = captureRestoreState('after-synthetic-locator', {
+                sectionIndex: syntheticRestoreLocator.sectionIndex,
+                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
+                rendererTotal: syntheticRestoreLocator.rendererTotal,
             });
-            postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                hasCFI: false,
+            await reconcileRestoreFractionIfNeeded(
+                syntheticState,
+                'synthetic-locator-fraction-drift',
+                'after-synthetic-locator-fraction-reconcile',
+            );
+        } else if (cfi.length > 0) {
+            postReaderLog('ebook.viewer.loadLastPosition.path', {
+                mode: 'cfi',
+            });
+            await globalThis.reader.view.goTo(cfi).catch(async e => {
+                postPageNumLog('restore.cfi.error', {
+                    message: e?.message || String(e),
+                    fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
+                });
+                postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                    hasCFI: true,
+                    message: e?.message || String(e),
+                });
+                console.error(e)
+                if (hasFractionalCompletion) {
+                    postReaderLog('ebook.viewer.loadLastPosition.path', {
+                        mode: 'fraction-fallback',
+                    });
+                    await globalThis.reader.view.goToFraction(fractionalCompletion)
+                }
+            });
+            await waitForFrames(2);
+            const cfiState = captureRestoreState('after-cfi');
+            await reconcileRestoreFractionIfNeeded(
+                cfiState,
+                'cfi-fraction-drift',
+                'after-cfi-fraction-reconcile',
+            );
+        } else if (hasFractionalCompletion) {
+            postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'fraction',
-                message: error?.message || String(error),
-                fallback: 'default-next',
+            });
+            try {
+                await globalThis.reader.view.goToFraction(fractionalCompletion);
+                await waitForFrames(2);
+                captureRestoreState('after-fraction');
+            } catch (error) {
+                postPageNumLog('restore.fraction.error', {
+                    message: error?.message || String(error),
+                    fallback: 'default-next',
+                });
+                postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                    hasCFI: false,
+                    mode: 'fraction',
+                    message: error?.message || String(error),
+                    fallback: 'default-next',
+                });
+                try {
+                    await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
+                } catch (nextError) {
+                    postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                        hasCFI: false,
+                        mode: 'default-next',
+                        message: nextError?.message || String(nextError),
+                        fallback: 'nextSection',
+                    });
+                    await globalThis.reader.view.renderer.nextSection();
+                }
+                postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
+                    mode: 'default-next',
+                });
+                await waitForFrames(2);
+                captureRestoreState('after-default-next-fallback');
+            }
+        } else {
+            postReaderLog('ebook.viewer.loadLastPosition.path', {
+                mode: 'default-next',
             });
             try {
                 await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
-            } catch (nextError) {
+            } catch (error) {
                 postReaderLog('ebook.viewer.loadLastPosition.goToError', {
                     hasCFI: false,
                     mode: 'default-next',
-                    message: nextError?.message || String(nextError),
+                    message: error?.message || String(error),
                     fallback: 'nextSection',
                 });
                 await globalThis.reader.view.renderer.nextSection();
@@ -4388,44 +4579,26 @@ window.loadLastPosition = async ({
                 mode: 'default-next',
             });
             await waitForFrames(2);
-            captureRestoreState('after-default-next-fallback');
+            captureRestoreState('after-default-next');
         }
-    } else {
-        postReaderLog('ebook.viewer.loadLastPosition.path', {
-            mode: 'default-next',
+        globalThis.reader.hasLoadedLastPosition = true
+        captureRestoreState('done');
+        postReaderLog('ebook.viewer.loadLastPosition.done', {
+            hasCFI: typeof cfi === 'string' && cfi.length > 0,
         });
-        try {
-            await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
-        } catch (error) {
-            postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                hasCFI: false,
-                mode: 'default-next',
-                message: error?.message || String(error),
-                fallback: 'nextSection',
-            });
-            await globalThis.reader.view.renderer.nextSection();
-        }
-        postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
-            mode: 'default-next',
+        markEPUBPerf('restore.done', {
+            hasCFI: typeof cfi === 'string' && cfi.length > 0,
         });
-        await waitForFrames(2);
-        captureRestoreState('after-default-next');
-    }
-    globalThis.reader.hasLoadedLastPosition = true
-    captureRestoreState('done');
-    postReaderLog('ebook.viewer.loadLastPosition.done', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-    });
-    markEPUBPerf('restore.done', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-    });
-    postReplaceTextPerfLog('restore.done', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        ...captureEPUBOverlapState(),
-    });
+        postReplaceTextPerfLog('restore.done', {
+            hasCFI: typeof cfi === 'string' && cfi.length > 0,
+            ...captureEPUBOverlapState(),
+        });
 
-    // Let the visible section finish rendering before warming secondary sections.
-    scheduleDeferredCacheWarmerOpen('load-last-position-done', 600);
+        // Let the visible section finish rendering before warming secondary sections.
+        scheduleDeferredCacheWarmerOpen('load-last-position-done', 600);
+    } finally {
+        globalThis.__manabiRestoreInProgress = false;
+    }
 }
 
 window.refreshBookReadingProgress = async (articleReadingProgress) => {
@@ -4513,6 +4686,11 @@ window.manabiBeginReaderProgressScrub = () => {
 
 window.manabiEndReaderProgressScrub = (fraction, cancel = false) => {
     const navHUD = globalThis.reader?.navHUD;
+    globalThis.reader?.scheduleGoToFraction?.cancel?.();
+    postPageNumLog('goto.live-schedule.cancel', {
+        navLabel: globalThis.reader?.navHUD?.latestPrimaryLabel ?? '',
+        reason: 'scrub-end',
+    });
     const numericFraction = Number(fraction);
     const clampedFraction = Number.isFinite(numericFraction)
         ? Math.max(0, Math.min(1, numericFraction))

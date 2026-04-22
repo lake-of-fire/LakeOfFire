@@ -19,6 +19,19 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     const verbose = !!globalThis.manabiPageNumVerbose;
     const allow = verbose || NAV_PAGE_NUM_WHITELIST.has(event);
     if (!allow) return;
+    if (event === 'ui:primary-label') {
+        const signature = JSON.stringify({
+            label: detail?.label ?? '',
+            compactLabel: detail?.compactLabel ?? '',
+            currentPercent: detail?.currentPercent ?? null,
+            source: detail?.source ?? null,
+            hideNavigationDueToScroll: detail?.hideNavigationDueToScroll ?? null,
+        });
+        if (globalThis.__manabiLastUIPrimaryLabelSignature === signature) {
+            return;
+        }
+        globalThis.__manabiLastUIPrimaryLabelSignature = signature;
+    }
     if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return;
     logEBookPageNumCounter += 1;
     const payload = { event, count: logEBookPageNumCounter, ...detail };
@@ -61,6 +74,14 @@ const logNavHide = (event, detail = {}) => {
 
 const logEPUBNav = (event, detail = {}) => {
     const payload = { event, ...detail };
+    if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
+        const signature = JSON.stringify(payload);
+        const key = `__manabiLast${event.replace(/[^a-z0-9]/gi, '')}Signature`;
+        if (globalThis[key] === signature) {
+            return;
+        }
+        globalThis[key] = signature;
+    }
     const line = `# PAGENUM ${JSON.stringify(payload)}`;
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
@@ -84,6 +105,11 @@ const getPrimaryRendererContent = (renderer) => {
     } catch (_error) {
         return null;
     }
+};
+
+const getPrimaryRendererContentIndex = (renderer) => {
+    const content = getPrimaryRendererContent(renderer);
+    return typeof content?.index === 'number' ? content.index : null;
 };
 
 const getRendererContentHref = (renderer) => {
@@ -213,6 +239,8 @@ export class NavigationHUD {
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
+        this.lastResolvedSectionIndexLog = null;
+        this.lastRelocateButtonsStateLog = null;
         this._applyLabelVariant();
         if (this.pendingScrubCommit) {
             this._logPageScrub('pending-commit-reset', {
@@ -506,7 +534,7 @@ export class NavigationHUD {
         const releaseMoved = typeof releaseValue === 'number'
             && typeof session.originFraction === 'number'
             && Math.abs(releaseValue - session.originFraction) > FRACTION_EPSILON;
-        if (!cancel && session.originDescriptor && session.hasMoved && releaseMoved) {
+        if (!cancel && session.originDescriptor && releaseMoved) {
             this.pendingScrubCommit = {
                 origin: this._cloneDescriptor(session.originDescriptor),
                 reason: 'scrub-release',
@@ -518,6 +546,7 @@ export class NavigationHUD {
             this._logPageScrub('pending-commit', {
                 originFraction: session.originFraction ?? null,
                 releaseFraction: releaseValue,
+                hasMoved: session.hasMoved,
             });
         } else {
             this.pendingScrubCommit = null;
@@ -540,6 +569,9 @@ export class NavigationHUD {
             }
         } else {
             deferredCommit = !!this.pendingScrubCommit;
+        }
+        if (releaseDescriptor) {
+            this.currentLocationDescriptor = this._cloneDescriptor(releaseDescriptor);
         }
         this._logPageScrub('end', {
             cancel,
@@ -1227,6 +1259,25 @@ export class NavigationHUD {
             // fall through to normal handling to capture subsequent movement if needed
         }
         const reason = (detail?.reason || '').toLowerCase();
+        const isRestoreInProgress = globalThis.__manabiRestoreInProgress === true;
+        if (isRestoreInProgress) {
+            if (this.relocateStacks.back.length || this.relocateStacks.forward.length) {
+                this.relocateStacks.back.length = 0;
+                this.relocateStacks.forward.length = 0;
+                this._logStackSnapshot('restore-clear', {
+                    reason,
+                });
+            }
+            this.currentLocationDescriptor = descriptor;
+            this._logJumpDiagnostic('relocate-history-suppressed', {
+                reason,
+                restoreInProgress: true,
+                backDepth: this.relocateStacks.back.length,
+                forwardDepth: this.relocateStacks.forward.length,
+            });
+            this._updateRelocateButtons();
+            return;
+        }
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
         const isJumpReason = isLiveScrollReason || reason === 'navigation';
@@ -1334,6 +1385,15 @@ export class NavigationHUD {
         if (stripCFI) {
             entry.cfi = null;
         }
+        this._logJumpDiagnostic('descriptor-stack-push', {
+            fraction: typeof entry.fraction === 'number' ? Number(entry.fraction.toFixed(6)) : null,
+            cfi: entry.cfi ?? null,
+            sectionIndex: typeof entry.sectionIndex === 'number' ? entry.sectionIndex : null,
+            localSectionIndex: typeof entry.localSectionIndex === 'number' ? entry.localSectionIndex : null,
+            rendererTotal: typeof entry.rendererTotal === 'number' ? entry.rendererTotal : null,
+            pageItemKey: entry.pageItemKey ?? null,
+            stripCFI,
+        });
         const backStack = this.relocateStacks.back;
         backStack.push(entry);
         const index = backStack.length - 1;
@@ -1368,6 +1428,31 @@ export class NavigationHUD {
         const rawLocCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
+        const rendererCurrentIndex = (() => {
+            try {
+                const renderer = this.getRenderer?.();
+                if (typeof renderer?.currentIndex === 'number') return renderer.currentIndex;
+                return getPrimaryRendererContentIndex(renderer);
+            } catch (_error) {
+                return null;
+            }
+        })();
+        const sectionIndex = typeof detail?.sectionIndex === 'number'
+            ? Math.max(0, Math.round(detail.sectionIndex))
+            : (typeof detail?.index === 'number'
+                ? Math.max(0, Math.round(detail.index))
+                : (typeof rendererCurrentIndex === 'number'
+                    ? Math.max(0, Math.round(rendererCurrentIndex))
+                    : (typeof this.lastSectionIndexSeen === 'number'
+                        ? Math.max(0, Math.round(this.lastSectionIndexSeen))
+                        : null)));
+        const rendererSnapshotCurrent = typeof this.rendererPageSnapshot?.current === 'number'
+            ? Math.max(1, Math.round(this.rendererPageSnapshot.current))
+            : null;
+        const rendererSnapshotTotal = typeof this.rendererPageSnapshot?.total === 'number'
+            ? Math.max(1, Math.round(this.rendererPageSnapshot.total))
+            : null;
+        const localSectionIndex = rendererSnapshotCurrent != null ? rendererSnapshotCurrent - 1 : null;
         const derivedLocCurrent = deriveLocationIndexFromFraction(fraction, locTotal);
         let locCurrent = rawLocCurrent;
         if (derivedLocCurrent != null) {
@@ -1393,14 +1478,33 @@ export class NavigationHUD {
             ? { current: locCurrent, total: locTotal }
             : null;
         const locationTotalHint = locTotal != null ? locTotal : (this.lastKnownLocationTotal ?? null);
-        return {
+        const descriptor = {
             cfi: detail.cfi ?? null,
             fraction,
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal: rendererSnapshotTotal,
             pageItemKey: detail.pageItem ? ensurePageKey(detail.pageItem) : null,
             pageLabel: typeof detail.pageItem?.label === 'string' ? detail.pageItem.label : null,
             location,
             locationTotalHint,
         };
+        this._logJumpDiagnostic('descriptor-derived', {
+            reason: detail?.reason ?? null,
+            rawSectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+            rawIndex: typeof detail?.index === 'number' ? detail.index : null,
+            rendererCurrentIndex,
+            lastSectionIndexSeen: typeof this.lastSectionIndexSeen === 'number' ? this.lastSectionIndexSeen : null,
+            fraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            sectionIndex: descriptor.sectionIndex,
+            localSectionIndex: descriptor.localSectionIndex,
+            rendererTotal: descriptor.rendererTotal,
+            locCurrent: descriptor.location?.current ?? null,
+            locTotal: descriptor.location?.total ?? null,
+            pageItemKey: descriptor.pageItemKey ?? null,
+            cfi: descriptor.cfi ?? null,
+        });
+        return descriptor;
     }
 
     _descriptorFromFraction(fraction) {
@@ -1417,6 +1521,9 @@ export class NavigationHUD {
         return {
             cfi: null,
             fraction,
+            sectionIndex: null,
+            localSectionIndex: null,
+            rendererTotal: hasTotal ? clampedTotal : null,
             pageItemKey: null,
             pageLabel: null,
             location,
@@ -1429,6 +1536,9 @@ export class NavigationHUD {
         return {
             cfi: descriptor.cfi ?? null,
             fraction: typeof descriptor.fraction === 'number' ? descriptor.fraction : null,
+            sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
+            localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
+            rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
             pageItemKey: descriptor.pageItemKey ?? null,
             pageLabel: descriptor.pageLabel ?? null,
             location: descriptor.location ? { ...descriptor.location } : null,
@@ -1558,12 +1668,53 @@ export class NavigationHUD {
     }
 
     _logPageNumberDiagnostic(event, payload = {}) {
+        if (event === 'section-index.resolved') {
+            const signature = JSON.stringify({
+                source: payload?.source ?? null,
+                sectionIndex: payload?.sectionIndex ?? null,
+                resolvedHref: payload?.resolvedHref ?? null,
+            });
+            if (this.lastResolvedSectionIndexLog === signature) {
+                return;
+            }
+            this.lastResolvedSectionIndexLog = signature;
+        }
+        if (event === 'relocate-buttons.state') {
+            const signature = JSON.stringify({
+                backDepth: payload?.backDepth ?? null,
+                forwardDepth: payload?.forwardDepth ?? null,
+                showBack: payload?.showBack ?? null,
+                showForward: payload?.showForward ?? null,
+                disableBack: payload?.disableBack ?? null,
+                disableForward: payload?.disableForward ?? null,
+                scrubbing: payload?.scrubbing ?? null,
+                busy: payload?.busy ?? null,
+                backLabel: payload?.backLabel ?? '',
+                forwardLabel: payload?.forwardLabel ?? '',
+            });
+            if (this.lastRelocateButtonsStateLog === signature) {
+                return;
+            }
+            this.lastRelocateButtonsStateLog = signature;
+        }
         const base = {
             event,
             totalPageCount: this.totalPageCount,
             totalSource: this.lastTotalSource ?? null,
             ...payload,
         };
+        if (event === 'renderer-snapshot') {
+            const signature = JSON.stringify({
+                rendererCurrent: base?.rendererCurrent ?? null,
+                rendererTotal: base?.rendererTotal ?? null,
+                rawRendererCurrent: base?.rawRendererCurrent ?? null,
+                rawRendererTotal: base?.rawRendererTotal ?? null,
+            });
+            if (this.lastRendererSnapshotLog === signature) {
+                return;
+            }
+            this.lastRendererSnapshotLog = signature;
+        }
         const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
         const line = `# PAGENUM ${JSON.stringify(cleaned)}`;
         try {
@@ -1606,7 +1757,22 @@ export class NavigationHUD {
 
     _isSameDescriptor(a, b) {
         if (!a || !b) return false;
-        if (a.cfi && b.cfi) return a.cfi === b.cfi;
+        const aSectionIndex = typeof a.sectionIndex === 'number' ? a.sectionIndex : null;
+        const bSectionIndex = typeof b.sectionIndex === 'number' ? b.sectionIndex : null;
+        const aLocalSectionIndex = typeof a.localSectionIndex === 'number' ? a.localSectionIndex : null;
+        const bLocalSectionIndex = typeof b.localSectionIndex === 'number' ? b.localSectionIndex : null;
+        if (
+            aSectionIndex != null && bSectionIndex != null
+            && aLocalSectionIndex != null && bLocalSectionIndex != null
+        ) {
+            return aSectionIndex === bSectionIndex && aLocalSectionIndex === bLocalSectionIndex;
+        }
+        if (a.cfi && b.cfi && a.cfi === b.cfi) {
+            if (typeof a.fraction === 'number' && typeof b.fraction === 'number') {
+                return Math.abs(a.fraction - b.fraction) < FRACTION_EPSILON;
+            }
+            return true;
+        }
         if (typeof a.fraction === 'number' && typeof b.fraction === 'number') {
             return Math.abs(a.fraction - b.fraction) < FRACTION_EPSILON;
         }
@@ -2161,9 +2327,8 @@ export class NavigationHUD {
             return;
         }
 
-        const preJumpDescriptor = this.lastRelocateDetail
-            ? this._makeLocationDescriptor(this.lastRelocateDetail)
-            : this._cloneDescriptor(this.currentLocationDescriptor);
+        const preJumpDescriptor = this._cloneDescriptor(this.currentLocationDescriptor)
+            ?? (this.lastRelocateDetail ? this._makeLocationDescriptor(this.lastRelocateDetail) : null);
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];
 

@@ -33,7 +33,7 @@ public struct FeedCell: View {
     var includesDescription = true
     var horizontalSpacing: CGFloat = 10
     
-    @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 26
+    @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 40
     
     private var showsAudioIndicator: Bool {
         feed.firstEntryHasAudio
@@ -57,7 +57,6 @@ public struct FeedCell: View {
     
     public var body: some View {
         HStack(spacing: 0) {
-            Spacer(minLength: 0)
             VStack(alignment: .leading) {
                 HStack(alignment: .top, spacing: horizontalSpacing) {
                     LakeImage(feed.iconUrl)
@@ -67,27 +66,17 @@ public struct FeedCell: View {
                         .frame(width: scaledIconHeight, height: scaledIconHeight)
                         .padding(4)
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            titleText
-                                .font(.headline.bold())
+                        titleText
+                            .font(.headline.bold())
 
-                            Spacer(minLength: 0)
-
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                if showsAudioIndicator {
-                                    Image(systemName: "headphones")
-                                        .font(.subheadline.weight(.regular))
-                                        .foregroundColor(.secondary)
-                                        .alignmentGuide(.firstTextBaseline) { dimensions in
-                                            dimensions[VerticalAlignment.center]
-                                        }
-                                }
-                                if showsUnreadIndicator {
-                                    FeedCellNewBadge()
-                                        .alignmentGuide(.firstTextBaseline) { dimensions in
-                                            dimensions[VerticalAlignment.center]
-                                        }
-                                }
+                        HStack(spacing: 8) {
+                            if showsUnreadIndicator {
+                                FeedCellNewBadge()
+                            }
+                            if showsAudioIndicator {
+                                Image(systemName: "headphones")
+                                    .font(.subheadline.weight(.regular))
+                                    .foregroundColor(.secondary)
                             }
                         }
 
@@ -101,8 +90,8 @@ public struct FeedCell: View {
                     }
                 }
             }
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .tag(feed.id.uuidString)
     }
     
