@@ -182,6 +182,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     @EnvironmentObject private var readerContent: ReaderContent
     @Environment(\.readerModeLoadHandler) private var readerModeLoadHandler
     @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
+    @Environment(\.contentSelectionReaderTabHandoff) private var contentSelectionReaderTabHandoff
 
     func body(content: Content) -> some View {
         let shouldSyncToReader = enabled && onSelection == nil
@@ -232,6 +233,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         "url=\(content.url.absoluteString)"
                     )
                     contentSelectionNavigationHint?(content.url, content.compoundKey)
+                    contentSelectionReaderTabHandoff?(content.url, content.compoundKey)
                     do {
                         debugPrint("# SNIPPETLOAD ReaderContentList.select", "action=navigatorLoad")
                         try await navigator.load(

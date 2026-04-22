@@ -157,8 +157,19 @@ public struct BookLibraryView: View {
             guard let fileFilter = viewModel.fileFilter else { return true }
             return (try? fileFilter(contentFile)) ?? false
         }
+        debugPrint(
+            "# APR21b",
+            "source=BookLibraryView.reloadMyBooks.begin",
+            "fileTypes=\(viewModel.fileTypes.map(\.identifier).joined(separator: ","))",
+            "nativeFiles=\(nativeFiles.count)"
+        )
 
         guard let realm = try? await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: MainActor.shared) else {
+            debugPrint(
+                "# APR21b",
+                "source=BookLibraryView.reloadMyBooks.realmUnavailable",
+                "nativeFiles=\(nativeFiles.count)"
+            )
             try? await readerContentListViewModel.load(contents: nativeFiles.map { $0 as Bookmark }, sortOrder: .createdAt)
             return
         }
@@ -178,11 +189,18 @@ public struct BookLibraryView: View {
         let deduplicatedBooks = Dictionary(grouping: combinedBooks, by: \.compoundKey)
             .values
             .compactMap { $0.max(by: { $0.modifiedAt < $1.modifiedAt }) }
-
-        try? await readerContentListViewModel.load(
-            contents: deduplicatedBooks,
-            sortOrder: .createdAt
+            .sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+        debugPrint(
+            "# APR21b",
+            "source=BookLibraryView.reloadMyBooks.result",
+            "nativeFiles=\(nativeFiles.count)",
+            "importedExternalBooks=\(importedExternalBooks.count)",
+            "combinedBooks=\(combinedBooks.count)",
+            "deduplicatedBooks=\(deduplicatedBooks.count)"
         )
+        viewModel.hasLocalFiles = !deduplicatedBooks.isEmpty
+
+        try? await readerContentListViewModel.load(contents: deduplicatedBooks)
     }
 
     @ViewBuilder
@@ -190,12 +208,18 @@ public struct BookLibraryView: View {
         Button {
             bookLibraryModalsModel.isImportingBookFile.toggle()
         } label: {
-            Label("Add \(viewModel.mediaFileTypeTitle)", systemImage: "plus.circle")
+            Text("Add \(viewModel.mediaFileTypeTitle)")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .font(.footnote)
         .fontWeight(.semibold)
+    }
+
+    @ViewBuilder
+    private var inlineAddEpubButton: some View {
+        addEpubButton
+            .tint(.secondary)
     }
     
     @ViewBuilder private var myBooksHeader: some View {
@@ -204,7 +228,7 @@ public struct BookLibraryView: View {
                 Text("My \(viewModel.mediaTypeTitle)")
                 Spacer()
                 if !isMyBooksEmpty {
-                    addEpubButton
+                    inlineAddEpubButton
                 }
             }
         } else {
@@ -213,36 +237,53 @@ public struct BookLibraryView: View {
     }
     
     @ViewBuilder private var myBooksSection: some View {
-        if isMyBooksEmpty {
-            EmptyStateBoxView(
-                title: Text("Discover and add books"),
-                text: Text("Find books to add in the Editor's Picks section, import your own EPUB editions, or link books from Ttsu Reader in User Data settings."),
-                systemImageName: "books.vertical"
-            ) {
-                addEpubButton
-            }
-            .listRowSeparatorIfAvailable(.hidden)
-        } else {
-            ReaderContentListItems(
-                viewModel: readerContentListViewModel,
-                entrySelection: contentSelection,
-                includeSource: false,
-                alwaysShowThumbnails: true,
-                showSeparators: false,
-                useCardBackground: false,
-                clearRowBackground: true
-            )
-            .modifier {
-#if os(iOS)
-                if #available(iOS 16, *) {
-                    $0.listRowSpacing(15)
-                } else {
-                    $0
+        let filteredCount = readerContentListViewModel.filteredContents.count
+        let hasLoadedBefore = readerContentListViewModel.hasLoadedBefore
+        let localFiles = viewModel.hasLocalFiles
+        let empty = isMyBooksEmpty
+        let key = [String(filteredCount), String(hasLoadedBefore), String(localFiles), String(empty)].joined(separator: "|")
+        Group {
+            if isMyBooksEmpty {
+                EmptyStateBoxView(
+                    title: Text("Discover and add books"),
+                    text: Text("Find books to add in the Editor's Picks section, import your own EPUB editions, or link books from Ttsu Reader in User Data settings."),
+                    systemImageName: "books.vertical"
+                ) {
+                    addEpubButton
                 }
+                .listRowSeparatorIfAvailable(.hidden)
+            } else {
+                ReaderContentListItems(
+                    viewModel: readerContentListViewModel,
+                    entrySelection: contentSelection,
+                    includeSource: false,
+                    alwaysShowThumbnails: true,
+                    showSeparators: false,
+                    useCardBackground: false,
+                    clearRowBackground: true
+                )
+                .modifier {
+#if os(iOS)
+                    if #available(iOS 16, *) {
+                        $0.listRowSpacing(15)
+                    } else {
+                        $0
+                    }
 #else
-                $0
+                    $0
 #endif
+                }
             }
+        }
+        .task(id: key) {
+            debugPrint(
+                "# APR21b",
+                "source=BookLibraryView.myBooksSection",
+                "filteredContents=\(filteredCount)",
+                "hasLoadedBefore=\(hasLoadedBefore)",
+                "hasLocalFiles=\(localFiles)",
+                "isMyBooksEmpty=\(empty)"
+            )
         }
     }
 
@@ -294,6 +335,24 @@ public struct BookLibraryView: View {
         .task { @MainActor in
             await reloadMyBooks()
         }
+        .task(
+            id: [
+                String(readerContentListViewModel.hasLoadedBefore),
+                String(readerContentListViewModel.filteredContents.count),
+                String(readerContentListViewModel.filteredContentIDs.count),
+                String(viewModel.hasLocalFiles)
+            ].joined(separator: "|")
+        ) {
+            debugPrint(
+                "# APR21b",
+                "source=BookLibraryView.renderState",
+                "hasLoadedBefore=\(readerContentListViewModel.hasLoadedBefore)",
+                "filteredContents=\(readerContentListViewModel.filteredContents.count)",
+                "filteredContentIDs=\(readerContentListViewModel.filteredContentIDs.count)",
+                "hasLocalFiles=\(viewModel.hasLocalFiles)",
+                "isMyBooksEmpty=\(isMyBooksEmpty)"
+            )
+        }
         .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
             Task { @MainActor in
                 if ebookFiles != nil {
@@ -302,8 +361,16 @@ public struct BookLibraryView: View {
             }
         }
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
+            let hasAnyFilteredBooks = !readerContentListViewModel.filteredContents.isEmpty
+            viewModel.hasLocalFiles = hasAnyFilteredBooks
+            debugPrint(
+                "# APR21b",
+                "source=BookLibraryView.filteredContentIDsChanged",
+                "filteredFileIDs=\(filteredFileIDs.count)",
+                "filteredContents=\(readerContentListViewModel.filteredContents.count)",
+                "hasLocalFiles=\(viewModel.hasLocalFiles)"
+            )
             let nativeFilteredFiles = readerContentListViewModel.filteredContents.compactMap { $0 as? ContentFile }
-            viewModel.hasLocalFiles = !nativeFilteredFiles.isEmpty
             guard let loadedFiles = viewModel.loadedFiles else { return }
             Task { @RealmBackgroundActor in
                 guard !nativeFilteredFiles.isEmpty, let realmConfiguration = await readerContentListViewModel.realmConfiguration else { return }
@@ -372,6 +439,11 @@ public class BookLibraryViewModel: ObservableObject {
     @MainActor
     public static func refreshDownloadedEditorsPicks(readerFileManager: ReaderFileManager = .shared) async {
         let (publications, _) = await Self.fetchPublications(from: Self.defaultOPDSURL)
+        debugPrint(
+            "# APR21b",
+            "source=BookLibraryViewModel.refreshDownloadedEditorsPicks.begin",
+            "publications=\(publications.count)"
+        )
         guard !publications.isEmpty else { return }
 
         var downloads = Set<Downloadable>()
@@ -383,9 +455,21 @@ public class BookLibraryViewModel: ObservableObject {
             else { continue }
             downloads.insert(downloadable)
         }
+        debugPrint(
+            "# APR21b",
+            "source=BookLibraryViewModel.refreshDownloadedEditorsPicks.downloads",
+            "downloads=\(downloads.count)"
+        )
         if !downloads.isEmpty {
             await DownloadController.shared.ensureDownloaded(downloads)
             try? await readerFileManager.refreshAllFilesMetadata()
+            let localFilesAfterRefresh = readerFileManager.files(ofTypes: [.epub, .epubZip]) ?? []
+            debugPrint(
+                "# APR21b",
+                "source=BookLibraryViewModel.refreshDownloadedEditorsPicks.refreshed",
+                "downloads=\(downloads.count)",
+                "localFilesAfterRefresh=\(localFilesAfterRefresh.count)"
+            )
         }
 
         await updateMediaLinks(for: publications, readerFileManager: readerFileManager)
@@ -394,6 +478,12 @@ public class BookLibraryViewModel: ObservableObject {
     @MainActor
     static func updateMediaLinks(for publications: [Publication], readerFileManager: ReaderFileManager = .shared) async {
         let localFiles = readerFileManager.files(ofTypes: [.epub, .epubZip]) ?? []
+        debugPrint(
+            "# APR21b",
+            "source=BookLibraryViewModel.updateMediaLinks.begin",
+            "publications=\(publications.count)",
+            "localFiles=\(localFiles.count)"
+        )
         for publication in publications {
             guard publication.voiceAudioURL != nil || publication.audioSubtitlesURL != nil else { continue }
             guard

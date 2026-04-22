@@ -13,14 +13,24 @@ public extension EnvironmentValues {
 }
 
 public typealias ContentSelectionNavigationHint = @Sendable (_ url: URL, _ selectionKey: String) -> Void
+public typealias ContentSelectionReaderTabHandoff = @Sendable (_ url: URL, _ selectionKey: String) -> Void
 
 private struct ContentSelectionNavigationHintKey: EnvironmentKey {
     nonisolated(unsafe) static var defaultValue: ContentSelectionNavigationHint? = nil
+}
+
+private struct ContentSelectionReaderTabHandoffKey: EnvironmentKey {
+    nonisolated(unsafe) static var defaultValue: ContentSelectionReaderTabHandoff? = nil
 }
 
 public extension EnvironmentValues {
     var contentSelectionNavigationHint: ContentSelectionNavigationHint? {
         get { self[ContentSelectionNavigationHintKey.self] }
         set { self[ContentSelectionNavigationHintKey.self] = newValue }
+    }
+
+    var contentSelectionReaderTabHandoff: ContentSelectionReaderTabHandoff? {
+        get { self[ContentSelectionReaderTabHandoffKey.self] }
+        set { self[ContentSelectionReaderTabHandoffKey.self] = newValue }
     }
 }

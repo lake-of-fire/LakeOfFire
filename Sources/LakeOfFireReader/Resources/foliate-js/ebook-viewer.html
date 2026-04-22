@@ -266,16 +266,16 @@
                     line-height: 12px;
                     position: absolute;
                     top: 3px;
-                    right: var(--nav-horizontal-padding);
-                    min-width: var(--nav-compact-percent-min-width);
-                    text-align: right;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    text-align: center;
                     direction: ltr;
                     unicode-bidi: isolate;
                     pointer-events: none;
                     height: 12px;
-                    opacity: 0;
+                    opacity: 0.8;
                 }
-                #nav-primary-text-compact,
                 #nav-primary-percent {
                     margin-top: 14px;
                 }
@@ -301,9 +301,8 @@
                 #nav-primary-text[data-label-variant="compact"] #nav-primary-text-full {
                     opacity: 0;
                 }
-                #nav-primary-text[data-label-variant="compact"] ~ #nav-primary-percent,
                 #nav-primary-text[data-label-variant="compact"]  #nav-primary-text-compact {
-                    opacity: 0.8;
+                    opacity: 0;
                 }
                 #nav-primary-text-compact {
                     text-align: left;
@@ -320,7 +319,7 @@
                     bottom: 16px;
                     display: flex;
                     align-items: center;
-                    justify-content: space-between;
+                    justify-content: center;
                     gap: 10px;
                     pointer-events: none;
                     opacity: 0;
@@ -340,7 +339,11 @@
                     unicode-bidi: isolate;
                 }
                 #nav-hidden-overlay .nav-hidden-percent {
-                    text-align: right;
+                    text-align: center;
+                    width: 100%;
+                }
+                #nav-hidden-primary-text {
+                    display: none;
                 }
                 body.nav-hidden #nav-primary-text,
                 body.nav-hidden #nav-primary-percent {

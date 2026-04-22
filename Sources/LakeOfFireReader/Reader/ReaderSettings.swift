@@ -22,6 +22,47 @@ public enum DarkModeTheme: String, CaseIterable, Identifiable {
     public var id: String { self.rawValue }
 }
 
+private let readerAdaptiveWidthStartFontSize: Double = 24
+private let readerAdaptiveWidthFullWidthFontSize: Double = 34
+private let readerAdaptiveWidthStandardMaxWidthEm: Double = 40
+private let readerAdaptiveWidthExpandedMaxWidthEm: Double = 56
+
+public func readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: Double?) -> String {
+    guard let readerFontSize else {
+        return "\(Int(readerAdaptiveWidthStandardMaxWidthEm))em"
+    }
+
+    if readerFontSize >= readerAdaptiveWidthFullWidthFontSize {
+        return "none"
+    }
+
+    let maxWidthEm: Double
+    if readerFontSize > readerAdaptiveWidthStartFontSize {
+        let progress = min(
+            max(
+                (readerFontSize - readerAdaptiveWidthStartFontSize)
+                    / (readerAdaptiveWidthFullWidthFontSize - readerAdaptiveWidthStartFontSize),
+                0
+            ),
+            1
+        )
+        maxWidthEm = readerAdaptiveWidthStandardMaxWidthEm
+            + (readerAdaptiveWidthExpandedMaxWidthEm - readerAdaptiveWidthStandardMaxWidthEm) * progress
+    } else {
+        maxWidthEm = readerAdaptiveWidthStandardMaxWidthEm
+    }
+
+    let roundedMaxWidthEm = (maxWidthEm * 100).rounded() / 100
+    if abs(roundedMaxWidthEm - roundedMaxWidthEm.rounded()) < 0.001 {
+        return "\(Int(roundedMaxWidthEm.rounded()))em"
+    }
+    return "\(roundedMaxWidthEm)em"
+}
+
+public func readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: Double?) -> String {
+    "--manabi-reader-max-width-override: \(readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize));"
+}
+
 struct ReaderSettingsForm: View {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @AppStorage("readerFontSize") private var readerFontSize: Double?

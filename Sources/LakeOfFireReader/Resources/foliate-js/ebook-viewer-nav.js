@@ -561,34 +561,21 @@ export class NavigationHUD {
         // Ensure our label variant reflects the current hidden state (body/nav classes or flags).
         this._syncLabelVariantFromDOM();
 
-        const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
-        const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
-        const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        const normalizedRaw = rawLabel ? rawLabel.replace(/^Page\\s+/i, 'Page ') : '';
-        const condensed = normalizedRaw ? this._condensePrimaryLabel(normalizedRaw) : '';
-
-        // Full shows the complete page string (with total when available); compact omits the total.
-        fullLabelTarget.textContent = normalizedRaw || condensed;
-        compactLabelTarget.textContent = condensed || normalizedRaw;
+        fullLabelTarget.textContent = '';
+        compactLabelTarget.textContent = '';
         if (overlayLabelTarget) {
-            overlayLabelTarget.textContent = condensed || normalizedRaw;
+            overlayLabelTarget.textContent = '';
         }
-
-        if (fullLabelCandidate) {
-            this.latestPrimaryLabel = fullLabelCandidate;
-        }
+        this.latestPrimaryLabel = '';
 
         this._updateCompactPercent(detail);
 
-        // UI surface logging: what the user actually sees on the nav bar.
         logEBookPageNumLimited('ui:primary-label', {
-            label: fullLabelTarget.textContent || '',
-            compactLabel: compactLabelTarget.textContent || '',
-            source: this.lastPrimaryLabelDiagnostics?.source ?? null,
-            current: this.lastPrimaryLabelDiagnostics?.candidateIndex != null
-                ? this.lastPrimaryLabelDiagnostics.candidateIndex + 1
-                : null,
-            total: null, // never report totals to UI log to avoid confusion with Loc
+            label: '',
+            compactLabel: '',
+            source: 'percent-only',
+            current: null,
+            total: null,
             rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
@@ -617,9 +604,8 @@ export class NavigationHUD {
 
     _updateCompactPercent(detail) {
         if (!this.navPrimaryPercent) return;
-        const isCompact = this.navPrimaryText?.dataset?.labelVariant === 'compact';
         const fraction = this._fractionForPercent(detail);
-        const hasValue = isCompact && typeof fraction === 'number' && isFinite(fraction);
+        const hasValue = typeof fraction === 'number' && isFinite(fraction);
         const primary = this.navPrimaryPercent;
         const overlay = this.navHiddenOverlay?.percent;
 
@@ -693,21 +679,11 @@ export class NavigationHUD {
     }
 
     formatPrimaryLabel(detail, { allowRendererFallback = false, condensedOnly = false } = {}) {
-        const derived = this._derivePrimaryLabel(detail);
-        if (derived) {
-            const label = condensedOnly ? this._condensePrimaryLabel(derived) : derived;
-            if (!condensedOnly) {
-                this.latestPrimaryLabel = label;
-            }
-            return label;
-        }
-        // No fallback beyond the derived page metrics.
         return '';
     }
 
     getPrimaryDisplayLabel(detail) {
-        const label = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
-        return label ?? '';
+        return '';
     }
 
     getPageEstimate(detail) {
@@ -757,35 +733,15 @@ export class NavigationHUD {
     _derivePrimaryLabel(detail) {
         if (!detail) {
             this.lastPrimaryLabelDiagnostics = {
-                source: 'no-detail',
+                source: 'percent-only',
                 label: '',
                 totalPageCount: this.totalPageCount,
             };
             return null;
         }
-
-        const metrics = this._computePageMetrics(detail);
-        if (metrics?.currentPageNumber != null) {
-            const currentPageNumber = metrics.currentPageNumber;
-            const totalPages = metrics.totalPages;
-            const label = totalPages != null
-                ? `Page ${currentPageNumber} of ${totalPages}`
-                : `Page ${currentPageNumber}`;
-            this.lastPrimaryLabelDiagnostics = {
-                source: 'page-metrics',
-                label,
-                currentPageNumber,
-                totalPages,
-                totalPageCount: this.totalPageCount,
-            };
-            this.latestPrimaryLabel = label;
-            return label;
-        }
-
-        // If no page metrics are available yet, we won't show a label.
         this.latestPrimaryLabel = '';
         this.lastPrimaryLabelDiagnostics = {
-            source: 'no-page-metrics',
+            source: 'percent-only',
             label: '',
             totalPageCount: this.totalPageCount,
         };
@@ -793,15 +749,7 @@ export class NavigationHUD {
     }
 
     _condensePrimaryLabel(label) {
-        if (typeof label !== 'string') return '';
-        // Prefer an explicit "Page <n>" capture so we keep the prefix even if the suffix format changes.
-        const pageMatch = label.match(/\bPage\s*(\d+)/i);
-        if (pageMatch) {
-            return `Page ${pageMatch[1]}`.replace(/\s+/g, ' ').trim();
-        }
-        // Otherwise strip any "of <total>" suffix (allowing for varied whitespace/non-breaking spaces).
-        const trimmed = label.replace(/\s*of\s+.*$/i, '').trim();
-        return trimmed || label;
+        return '';
     }
 
     _computePageMetrics(detail) {
@@ -1295,10 +1243,6 @@ export class NavigationHUD {
     }
     
     _formatRendererPageLabel(info) {
-        if (!info) return '';
-        if (info.total && info.total > 0) {
-            return `${info.current} of ${info.total}`;
-        }
         return '';
     }
 

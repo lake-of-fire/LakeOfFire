@@ -270,6 +270,7 @@ public struct FeedCategoryButtonLabel: View {
     let backgroundImageURL: URL
     var isCompact = false
     var showEditingDisabled: Bool = false
+    private let cardShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     
 #if os(iOS)
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 46
@@ -316,9 +317,10 @@ public struct FeedCategoryButtonLabel: View {
         .overlay(Color.white.opacity(0.0000001)) // Weird macOS hack...
         .background {
             FeedCategoryImage(imageURL: backgroundImageURL)
-            //                            .frame(maxHeight: isInSidebar ? scaledCategoryHeight : 110)
                 .allowsHitTesting(false)
+                .clipShape(cardShape)
         }
+        .clipShape(cardShape)
         .multilineTextAlignment(.leading)
     }
     

@@ -231,6 +231,20 @@ const waitForFontCSSReady = async (doc = document) => {
     return true;
 };
 
+const injectBodyDatasetAttributes = (html, attributes) => {
+    if (typeof html !== 'string' || !html.replace) {
+        return html;
+    }
+    const serializedAttributes = Object.entries(attributes)
+        .filter(([, value]) => value !== undefined && value !== null && value !== '')
+        .map(([key, value]) => ` ${key}="${String(value).replace(/"/g, '&quot;')}"`)
+        .join('');
+    if (!serializedAttributes) {
+        return html;
+    }
+    return html.replace(/<body\b/i, `<body${serializedAttributes}`);
+};
+
 globalThis.manabiWaitForFontCSS = waitForFontCSSReady;
 globalThis.manabiEnsureCustomFonts = ensureCustomFontsForDoc;
 
@@ -514,6 +528,8 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     timeoutPromise(5000, `replace-text-response-body-timeout:${href}`),
     ])
     globalThis.manabiLoadEBookLastState = `replace-text-response-decoded:${href}`
+    const sentenceCount = (html.match(/<manabi-sentence\b/g) || []).length;
+    const segmentCount = (html.match(/<manabi-segment\b/g) || []).length;
     maybeLogEBookHTML('js.replaceText.responseProcessed', {
     href,
     mediaType,
@@ -521,9 +537,11 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     html,
     force: shouldForceHTMLLogging,
     });
-    if (isCacheWarmer && html.replace) {
-    html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ")
-    }
+    html = injectBodyDatasetAttributes(html, {
+    'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
+    'data-manabi-has-sentences': sentenceCount > 0 ? 'true' : null,
+    'data-manabi-has-segments': segmentCount > 0 ? 'true' : null,
+    })
     return html
     } catch (error) {
     const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
@@ -1106,6 +1124,19 @@ const getCSSForBookContent = ({
 html {
 color-scheme: light dark;
 cursor: inherit;
+}
+html:lang(ja),
+body:lang(ja),
+:lang(ja),
+body[data-manabi-has-sentences="true"],
+body[data-manabi-has-segments="true"],
+body[data-manabi-has-sentences="true"] manabi-sentence,
+body[data-manabi-has-segments="true"] manabi-segment {
+line-break: strict;
+-webkit-line-break: strict;
+word-break: normal;
+overflow-wrap: normal;
+font-feature-settings: "vchw" 1, "chws" 1;
 }
 /* https://github.com/whatwg/html/issues/5426 */
 @media (prefers-color-scheme: dark) {
@@ -2499,13 +2530,7 @@ class Reader {
         }
         const percentValue = Number.isFinite(effectiveFraction) ? effectiveFraction : 0;
         const percent = percentFormat.format(percentValue);
-        const navLabel = this.navHUD?.getPrimaryDisplayLabel(normalizedDetail);
-        const tooltipParts = [];
-        if (navLabel) {
-            tooltipParts.push(navLabel);
-        }
-        tooltipParts.push(percent);
-        slider.title = tooltipParts.filter(Boolean).join(' · ');
+        slider.title = percent;
         if (scrubbing && this._progressScrubState && this._progressScrubState.pendingEnd) {
             this._finalizeProgressScrubSession({ cancel: this._progressScrubState.cancelRequested });
         }

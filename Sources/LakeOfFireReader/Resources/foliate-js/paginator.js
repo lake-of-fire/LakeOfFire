@@ -1580,6 +1580,32 @@ const setStylesImportant = (el, styles) => {
     for (const [k, v] of Object.entries(styles)) style.setProperty(k, v, 'important')
 }
 
+const isJapaneseLanguageTag = value => {
+    if (typeof value !== 'string') return false
+    const normalized = value.trim().toLowerCase()
+    return normalized === 'ja' || normalized.startsWith('ja-')
+}
+
+const getJapaneseLayoutFlags = doc => {
+    const hasManabiSentences = !!doc?.body?.matches?.('[data-manabi-has-sentences="true"]')
+        || !!doc?.querySelector?.('manabi-sentence')
+    const hasManabiSegments = !!doc?.body?.matches?.('[data-manabi-has-segments="true"]')
+        || !!doc?.querySelector?.('manabi-segment')
+    const lang =
+        doc?.documentElement?.getAttribute?.('lang')
+        || doc?.documentElement?.getAttribute?.('xml:lang')
+        || doc?.body?.getAttribute?.('lang')
+        || doc?.body?.getAttribute?.('xml:lang')
+        || ''
+    const isJapanese = isJapaneseLanguageTag(lang) || hasManabiSentences || hasManabiSegments
+    return {
+        isJapanese,
+        lang: lang || null,
+        hasManabiSentences,
+        hasManabiSegments,
+    }
+}
+
 class View {
     _wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     _debouncedExpand
@@ -2090,6 +2116,7 @@ class View {
         await this._awaitDirection();
         const vertical = this._vertical
         const doc = this.document
+        const { isJapanese } = getJapaneseLayoutFlags(doc)
         const layoutRoot = this._getContentRoot() || doc.documentElement
         const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
         const constrainedSize = shouldColumnizeForThreshold
@@ -2121,8 +2148,10 @@ class View {
             'column-gap': effectiveGap,
             'column-fill': 'auto',
             'overflow': 'hidden',
-            // force wrap long words
-            'overflow-wrap': 'anywhere',
+            'overflow-wrap': isJapanese ? 'normal' : 'anywhere',
+            'word-break': 'normal',
+            'line-break': isJapanese ? 'strict' : 'auto',
+            '-webkit-line-break': isJapanese ? 'strict' : 'auto',
             // reset some potentially problematic props
             'position': 'static',
             'border': '0',
@@ -2182,6 +2211,7 @@ class View {
         //        console.log("columnize #size = ", this._size)
 
         const doc = this.document
+        const { isJapanese } = getJapaneseLayoutFlags(doc)
         const layoutRoot = this._getContentRoot() || doc.documentElement
         const columnizeStyles = {
             'box-sizing': 'border-box',
@@ -2196,8 +2226,10 @@ class View {
             }),
             'padding': vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
             'overflow': 'hidden',
-            // force wrap long words
-            'overflow-wrap': 'break-word', // TODO: anywhere, for japanese?
+            'overflow-wrap': isJapanese ? 'normal' : 'break-word',
+            'word-break': 'normal',
+            'line-break': isJapanese ? 'strict' : 'auto',
+            '-webkit-line-break': isJapanese ? 'strict' : 'auto',
             // reset some potentially problematic props
             'position': 'static',
             'border': '0',

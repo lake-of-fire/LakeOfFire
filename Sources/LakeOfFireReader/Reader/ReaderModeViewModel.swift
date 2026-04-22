@@ -291,7 +291,9 @@ internal func buildCanonicalReadabilityHTML(
     let scripts = Readability.shared.scripts
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
     let writingDirectionAttribute = "\(ReaderModeWritingDirectionContract.bodyDataAttributeWritingDirection)=\"\(writingDirectionBootstrap.rawValue)\""
+    let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
     let bodyStyle = readerModeSystemUIFontCSSDeclarations()
+        + readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
     let bodyClasses = writingDirectionBootstrap == .vertical
         ? "readability-mode \(ReaderModeWritingDirectionContract.bodyClassReaderVerticalWriting)"
         : "readability-mode"
@@ -5534,7 +5536,7 @@ public func processForReaderMode(
                 _ = try? bodyTag.attr("style", existingBodyStyle)
             }
 
-            var bodyStyle = "font-size: \(readerFontSize)px"
+            var bodyStyle = "font-size: \(readerFontSize)px; \(readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize))"
             if !existingBodyStyle.isEmpty {
                 bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
             }

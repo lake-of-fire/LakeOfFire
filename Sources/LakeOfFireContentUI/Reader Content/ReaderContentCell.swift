@@ -10,6 +10,34 @@ import LakeOfFireCore
 import LakeOfFireAdblock
 import SwiftUtilities
 
+public struct ReaderNewBadge: View {
+    public init() {}
+
+    public var body: some View {
+        Text("NEW")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .textCase(.uppercase)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .modifier {
+                if #available(iOS 16, macOS 14, *) {
+                    $0.baselineOffset(-0.5)
+                } else { $0 }
+            }
+            .background(
+                Capsule().fill(
+                    Color(
+                        red: 0x1d / 255.0,
+                        green: 0x46 / 255.0,
+                        blue: 0x75 / 255.0
+                    )
+                )
+            )
+    }
+}
+
 private let readerContentCellWordCountFormatter: NumberFormatter = {
     let formatter = NumberFormatter()
     formatter.numberStyle = .decimal
@@ -27,7 +55,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
     @Published var latestHistoryRecordLastVisitedAt: Date? = nil
-    @Published var feedShowsUnseenBadge = true
     @Published var forceShowBookmark = false
     @Published var title = ""
     @Published var author: String?
@@ -68,26 +95,16 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let itemSourceIconURL = item.sourceIconURL
                 let feedEntry = item as? FeedEntry
                 let feed = feedEntry?.getFeed()
-                let feedShowsUnseenBadge = feed?.showsUnseenBadge ?? true
                 let feedTitle = feed?.title
                 let feedIconURL = feed?.iconUrl
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
                 let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
                 let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
-                let latestHistoryRecordLastVisitedAt: Date?
-                if item is FeedEntry {
-                    if feedShowsUnseenBadge {
-                        let historyRealm = try await Realm(
-                            configuration: ReaderContentLoader.historyRealmConfiguration,
-                            actor: ReaderContentCellActor.shared
-                        )
-                        latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
-                    } else {
-                        latestHistoryRecordLastVisitedAt = nil
-                    }
-                } else {
-                    latestHistoryRecordLastVisitedAt = nil
-                }
+                let historyRealm = try await Realm(
+                    configuration: ReaderContentLoader.historyRealmConfiguration,
+                    actor: ReaderContentCellActor.shared
+                )
+                let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
                 try Task.checkCancellation()
 
                 let sourceURL = itemURL
@@ -140,7 +157,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         self.isFullArticleFinished = nil
                     }
                     self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
-                    self.feedShowsUnseenBadge = feedShowsUnseenBadge
                     self.totalWordCount = metadataResult?.totalWordCount
                     self.remainingTime = metadataResult?.remainingTime
                     self.syncStatusPresentation = syncStatusPresentation
@@ -432,25 +448,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsUnreadIndicator: Bool {
-        if let feedEntry = item as? FeedEntry {
-            guard viewModel.feedShowsUnseenBadge else { return false }
-            if let feed = feedEntry.getFeed() {
-                guard feed.showsUnseenBadge else { return false }
-                let effectiveSeenDate = [
-                    feed.lastViewedAt,
-                    feed.lastSeenFeedEntriesAt,
-                    viewModel.latestHistoryRecordLastVisitedAt,
-                ]
-                .compactMap { $0 }
-                .max()
-                if let effectiveSeenDate {
-                    return feedEntry.createdAt > effectiveSeenDate
-                }
-                return viewModel.latestHistoryRecordLastVisitedAt == nil
-            }
-            return viewModel.latestHistoryRecordLastVisitedAt == nil
-        }
-        return false
+        viewModel.latestHistoryRecordLastVisitedAt == nil
     }
 
     private var fallbackSourceTitle: String? {
@@ -592,28 +590,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     @ViewBuilder
     private var newBadge: some View {
-        if appearance.isEbookStyle && !isProgressVisible {
-            Text("NEW")
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .textCase(.uppercase)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 6) // +1px for a roomier capsule
-                .padding(.vertical, 3)
-                .modifier {
-                    if #available(iOS 16, macOS 14, *) {
-                        $0.baselineOffset(-0.5) // visually center the glyph within the capsule
-                    } else { $0 }
-                }
-                .background(
-                    Capsule().fill(
-                        Color(
-                            red: 0x1d / 255.0,
-                            green: 0x46 / 255.0,
-                            blue: 0x75 / 255.0
-                        )
-                    )
-                )
+        if showsNewBadge {
+            ReaderNewBadge()
         }
     }
 
@@ -685,11 +663,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ViewBuilder
     private var topStatusRow: some View {
         HStack(spacing: 8) {
+            newBadge
             audioBadge
-            
-            if appearance.isEbookStyle {
-                newBadge
-            }
             
             if let contentFile = item as? ContentFile {
                 CloudDriveSyncStatusView(item: contentFile)
@@ -708,29 +683,22 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var titleRow: some View {
-        (
-            unreadIndicatorTitleSegment
-            + titleText
-        )
-        .font(.headline)
-        .lineLimit(titleLineLimit)
-        .multilineTextAlignment(.leading)
-        .environment(\._lineHeightMultiple, 0.875)
-        .layoutPriority(1)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var unreadIndicatorTitleSegment: Text {
-        guard showsUnreadIndicator else { return Text("") }
-        return Text(Image(systemName: "circlebadge.fill"))
-            .font(.subheadline.weight(.regular))
-            .foregroundColor(.accentColor)
-            + Text("  ")
+        titleText
+            .font(.headline)
+            .lineLimit(titleLineLimit)
+            .multilineTextAlignment(.leading)
+            .environment(\._lineHeightMultiple, 0.875)
+            .layoutPriority(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var titleText: Text {
         Text(displayTitle)
             .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+    }
+
+    private var showsNewBadge: Bool {
+        showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible)
     }
 
     @ViewBuilder

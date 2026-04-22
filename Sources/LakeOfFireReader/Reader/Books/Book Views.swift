@@ -180,8 +180,30 @@ fileprivate struct DownloadableBookListRow: View {
     private func buttonPress() {
         Task { @MainActor in
             let wasAlreadyDownloaded = await downloadable.existsLocally()
+            debugPrint(
+                "# APR21b",
+                "source=BookGridRow.buttonPress.begin",
+                "title=\(publication.title)",
+                "wasAlreadyDownloaded=\(wasAlreadyDownloaded)",
+                "downloadURL=\(publication.downloadURL?.absoluteString ?? "nil")"
+            )
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
+                debugPrint(
+                    "# APR21b",
+                    "source=BookGridRow.buttonPress.downloaded",
+                    "title=\(publication.title)",
+                    "downloadURL=\(publication.downloadURL?.absoluteString ?? "nil")"
+                )
+                try? await ReaderFileManager.shared.refreshAllFilesMetadata()
+                let localFilesAfterRefresh = ReaderFileManager.shared.files(ofTypes: [.epub, .epubZip]) ?? []
+                debugPrint(
+                    "# APR21b",
+                    "source=BookGridRow.buttonPress.refreshedMetadata",
+                    "title=\(publication.title)",
+                    "localFilesAfterRefresh=\(localFilesAfterRefresh.count)",
+                    "downloadURL=\(publication.downloadURL?.absoluteString ?? "nil")"
+                )
                 await BookLibraryViewModel.updateMediaLinks(for: [publication])
             }
             onSelected?(wasAlreadyDownloaded)

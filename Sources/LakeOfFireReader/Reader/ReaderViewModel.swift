@@ -451,6 +451,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let resolvedFontSize = readerFontSize ?? 16
+            let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
             try await self.scriptCaller.evaluateJavaScript("""
                 const px = '\(resolvedFontSize)px';
                 if (document.body.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
@@ -461,6 +462,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 }
                 try { document.documentElement?.style?.setProperty('font-size', px); } catch (_error) {}
                 try { document.body?.style?.setProperty('font-size', px); } catch (_error) {}
+                try { document.body?.style?.setProperty('--manabi-reader-max-width-override', '\(maxWidthOverride)'); } catch (_error) {}
                 try { document.body?.setAttribute?.('data-manabi-diagnostic-font-size', px); } catch (_error) {}
                 globalThis.manabiDiagnosticFontSize = px;
                 """, duplicateInMultiTargetFrames: true)

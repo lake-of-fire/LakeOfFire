@@ -22,6 +22,25 @@ fileprivate struct ThemeModifier: ViewModifier {
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
 
+    private func applyAdaptiveReaderWidth(reason: String, shouldRequestGeometryBake: Bool) async {
+        guard scriptCaller.hasAsyncCaller else {
+            debugPrint("# READER adaptiveWidth.set.skip", "reason=\(reason)", "info=no asyncCaller")
+            return
+        }
+        let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
+        do {
+            try await scriptCaller.evaluateJavaScript(
+                "document.body?.style?.setProperty('--manabi-reader-max-width-override', '\(maxWidthOverride)');",
+                duplicateInMultiTargetFrames: true
+            )
+            if shouldRequestGeometryBake {
+                await requestGeometryBake(reason: reason)
+            }
+        } catch {
+            print("Adaptive reader width update failed: \(error)")
+        }
+    }
+
     private func updateTrackingSettingsKey(reason: String) async {
         guard scriptCaller.hasAsyncCaller else {
             debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
@@ -122,12 +141,20 @@ fileprivate struct ThemeModifier: ViewModifier {
             }
             .task { @MainActor in
                 await updateTrackingSettingsKey(reason: "initial")
+                await applyAdaptiveReaderWidth(
+                    reason: "reader-width-initial",
+                    shouldRequestGeometryBake: readerFontSize == nil
+                )
                 if let readerFontSize {
                     await applyFontSize(readerFontSize, reason: "font-size-initial")
                 }
             }
             .task(id: readerFontSize) { @MainActor in
                 guard let readerFontSize else { return }
+                await applyAdaptiveReaderWidth(
+                    reason: "reader-width-change",
+                    shouldRequestGeometryBake: false
+                )
                 await applyFontSize(readerFontSize, reason: "font-size-change")
             }
     }
