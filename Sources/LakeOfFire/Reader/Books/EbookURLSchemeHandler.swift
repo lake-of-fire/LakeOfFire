@@ -40,6 +40,19 @@ fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> Str
     return String(value.prefix(limit))
 }
 
+fileprivate let ebookReplaceTextDetailedLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
+fileprivate let ebookReplaceTextSlowSummaryThresholdMs = 5_000
+
+@inline(__always)
+fileprivate func shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: Int? = nil, didCoalesce: Bool = false) -> Bool {
+    if ebookReplaceTextDetailedLoggingEnabled || didCoalesce {
+        return true
+    }
+    guard let elapsedMs else { return false }
+    return elapsedMs >= ebookReplaceTextSlowSummaryThresholdMs
+}
+
 fileprivate struct EBookProcessTextRequestKey: Hashable {
     let contentURLString: String
     let location: String
@@ -98,45 +111,52 @@ fileprivate actor EBookProcessTextRequestDeduper {
         let startedAt = Date()
         if inFlightWaitersByKey[key] != nil {
             let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
-            debugPrint(
-                "# REPLACETEXT",
-                "native.process.deduper.join",
-                [
-                    "location": key.location,
-                    "isCacheWarmer": key.isCacheWarmer,
-                    "textFingerprint": key.textFingerprint,
-                    "waiterCountBeforeAppend": waiterCountBeforeAppend,
-                    "contentURL": ebookProcessTextSample(key.contentURLString)
-                ] as [String: Any]
-            )
+            if ebookReplaceTextDetailedLoggingEnabled {
+                debugPrint(
+                    "# REPLACETEXT",
+                    "native.process.deduper.join",
+                    [
+                        "location": key.location,
+                        "isCacheWarmer": key.isCacheWarmer,
+                        "textFingerprint": key.textFingerprint,
+                        "waiterCountBeforeAppend": waiterCountBeforeAppend,
+                        "contentURL": ebookProcessTextSample(key.contentURLString)
+                    ] as [String: Any]
+                )
+            }
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
             }
-            debugPrint(
-                "# REPLACETEXT",
-                "native.process.deduper.join.resumed",
-                [
-                    "location": key.location,
-                    "isCacheWarmer": key.isCacheWarmer,
-                    "textFingerprint": key.textFingerprint,
-                    "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000),
-                    "contentURL": ebookProcessTextSample(key.contentURLString)
-                ] as [String: Any]
-            )
+            let joinElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: joinElapsedMs, didCoalesce: true) {
+                debugPrint(
+                    "# REPLACETEXT",
+                    "native.process.deduper.join.resumed",
+                    [
+                        "location": key.location,
+                        "isCacheWarmer": key.isCacheWarmer,
+                        "textFingerprint": key.textFingerprint,
+                        "elapsedMs": joinElapsedMs,
+                        "contentURL": ebookProcessTextSample(key.contentURLString)
+                    ] as [String: Any]
+                )
+            }
             return (try resolve(response), true)
         }
 
         inFlightWaitersByKey[key] = []
-        debugPrint(
-            "# REPLACETEXT",
-            "native.process.deduper.leader",
-            [
-                "location": key.location,
-                "isCacheWarmer": key.isCacheWarmer,
-                "textFingerprint": key.textFingerprint,
-                "contentURL": ebookProcessTextSample(key.contentURLString)
-            ] as [String: Any]
-        )
+        if ebookReplaceTextDetailedLoggingEnabled {
+            debugPrint(
+                "# REPLACETEXT",
+                "native.process.deduper.leader",
+                [
+                    "location": key.location,
+                    "isCacheWarmer": key.isCacheWarmer,
+                    "textFingerprint": key.textFingerprint,
+                    "contentURL": ebookProcessTextSample(key.contentURLString)
+                ] as [String: Any]
+            )
+        }
         let response: ProcessTextOutcome
         do {
             response = .success(try await operation())
@@ -146,18 +166,21 @@ fileprivate actor EBookProcessTextRequestDeduper {
             response = .failure(error.localizedDescription)
         }
         let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
-        debugPrint(
-            "# REPLACETEXT",
-            "native.process.deduper.resolve",
-            [
-                "location": key.location,
-                "isCacheWarmer": key.isCacheWarmer,
-                "textFingerprint": key.textFingerprint,
-                "waiterCount": waiters.count,
-                "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000),
-                "contentURL": ebookProcessTextSample(key.contentURLString)
-            ] as [String: Any]
-        )
+        let resolveElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: resolveElapsedMs, didCoalesce: !waiters.isEmpty) {
+            debugPrint(
+                "# REPLACETEXT",
+                "native.process.deduper.resolve",
+                [
+                    "location": key.location,
+                    "isCacheWarmer": key.isCacheWarmer,
+                    "textFingerprint": key.textFingerprint,
+                    "waiterCount": waiters.count,
+                    "elapsedMs": resolveElapsedMs,
+                    "contentURL": ebookProcessTextSample(key.contentURLString)
+                ] as [String: Any]
+            )
+        }
         for waiter in waiters {
             waiter.resume(returning: response)
         }
@@ -190,16 +213,18 @@ actor EBookProcessingActor {
         isCacheWarmer: Bool
     ) async throws -> String {
         let startedAt = Date()
-        debugPrint(
-            "# REPLACETEXT",
-            "native.process.actor.start",
-            [
-                "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                "location": location,
-                "isCacheWarmer": isCacheWarmer,
-                "textLength": text.utf8.count
-            ] as [String: Any]
-        )
+        if ebookReplaceTextDetailedLoggingEnabled {
+            debugPrint(
+                "# REPLACETEXT",
+                "native.process.actor.start",
+                [
+                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
+                    "location": location,
+                    "isCacheWarmer": isCacheWarmer,
+                    "textLength": text.utf8.count
+                ] as [String: Any]
+            )
+        }
         guard let ebookTextProcessor else {
             return text
         }
@@ -395,17 +420,19 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: isCacheWarmer,
                             text: text
                         )
-                        debugPrint(
-                            "# REPLACETEXT",
-                            "native.process.request.start",
-                            [
-                                "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                                "location": replacedTextLocation,
-                                "isCacheWarmer": isCacheWarmer,
-                                "textLength": text.utf8.count,
-                                "textFingerprint": processRequestKey.textFingerprint
-                            ] as [String: Any]
-                        )
+                        if ebookReplaceTextDetailedLoggingEnabled {
+                            debugPrint(
+                                "# REPLACETEXT",
+                                "native.process.request.start",
+                                [
+                                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
+                                    "location": replacedTextLocation,
+                                    "isCacheWarmer": isCacheWarmer,
+                                    "textLength": text.utf8.count,
+                                    "textFingerprint": processRequestKey.textFingerprint
+                                ] as [String: Any]
+                            )
+                        }
                         let respText: String
                         let didCoalesce: Bool
                         do {
@@ -448,20 +475,23 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             return
                         }
                         if let respData = respText.data(using: .utf8) {
-                            debugPrint(
-                                "# REPLACETEXT",
-                                "native.process.request.responseReady",
-                                [
-                                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                                    "location": replacedTextLocation,
-                                    "isCacheWarmer": isCacheWarmer,
-                                    "textLength": text.utf8.count,
-                                    "textFingerprint": processRequestKey.textFingerprint,
-                                    "didCoalesce": didCoalesce,
-                                    "responseLength": respData.count,
-                                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1000)
-                                ] as [String: Any]
-                            )
+                            let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
+                            if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
+                                debugPrint(
+                                    "# REPLACETEXT",
+                                    "native.process.request.responseReady",
+                                    [
+                                        "contentURL": ebookProcessTextSample(contentURL.absoluteString),
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "textLength": text.utf8.count,
+                                        "textFingerprint": processRequestKey.textFingerprint,
+                                        "didCoalesce": didCoalesce,
+                                        "responseLength": respData.count,
+                                        "elapsedMs": responseReadyElapsedMs
+                                    ] as [String: Any]
+                                )
+                            }
                             let resp = HTTPURLResponse(
                                 url: url,
                                 mimeType: nil,

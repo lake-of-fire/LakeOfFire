@@ -448,32 +448,38 @@
                 }
                 .toolbar .nav-relocate-button {
                     display: flex;
-                    align-items: flex-end;
+                    align-items: center;
                     justify-content: flex-start;
                     flex-direction: row;
                     gap: 4px;
                     border: none;
-                    background-color: var(--nav-relocate-bg);
+                    background-color: transparent;
                     color: var(--nav-relocate-icon-color, var(--secondary-color));
-                    font-size: var(--nav-section-progress-font-size, 16px);
+                    font-size: 14px;
                     font-weight: 500;
-                    padding: 4px 12px;
-                    border-radius: 999px;
+                    padding: 2px 4px;
+                    border-radius: 0;
                     cursor: pointer;
                     transition: color 0.2s ease, opacity 375ms ease-out, background-color 0.2s ease;
                     direction: ltr;
-                    line-height: 1.2;
+                    line-height: 1;
                     pointer-events: auto;
                     flex: 0 1 auto;
                     min-width: 0;
-                    max-width: min(140px, 32vw);
-                    position: absolute;
-                    top: 0;
-                    bottom: auto;
+                    width: max-content;
+                    max-width: max-content;
+                    position: fixed;
+                    top: auto;
+                    bottom: calc(
+                        var(--manabi-toolbar-bottom-offset, 0px)
+                        - var(--manabi-toolbar-visual-drop, 0px)
+                        + 8px
+                        + ((var(--page-read-button-height) - 26px) / 2)
+                    );
                     min-height: 26px;
                     height: 26px;
                     transform: none;
-                    z-index: 2;
+                    z-index: 7;
                     opacity: 0.8;
                     visibility: visible;
                 }
@@ -486,11 +492,15 @@
                     opacity: 0.35;
                     cursor: default;
                 }
+                .nav-relocate-button[hidden] {
+                    display: none !important;
+                }
                 .nav-relocate-button[aria-hidden="true"] {
                     opacity: 0;
                     pointer-events: none;
                 }
                 .nav-relocate-icon {
+                    display: block;
                     width: 1em;
                     height: 1em;
                     min-width: 1em;
@@ -500,14 +510,19 @@
                     stroke: none;
                     flex-shrink: 0;
                 }
+                .nav-relocate-button[data-nav-rtl='true'] .nav-relocate-icon {
+                    transform: scaleX(-1);
+                    transform-origin: center;
+                }
                 .nav-relocate-page {
+                    display: block;
                     min-width: 0;
                     margin: 0;
                     text-align: inherit;
                     color: var(--nav-relocate-icon-color, currentColor);
-                    font-size: var(--nav-section-progress-font-size, 16px);
+                    font-size: 14px;
                     font-weight: 500;
-                    line-height: 1.2;
+                    line-height: 1;
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
@@ -515,10 +530,12 @@
                     unicode-bidi: plaintext;
                 }
                 .nav-relocate-button[data-nav-edge='left'] {
-                    left: calc(-1 * var(--nav-horizontal-padding));
+                    left: 0;
+                    right: auto;
                 }
                 .nav-relocate-button[data-nav-edge='right'] {
-                    right: calc(-1 * var(--nav-horizontal-padding));
+                    left: auto;
+                    right: 0;
                 }
                 .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
                     text-align: left;

@@ -224,6 +224,7 @@ export class NavigationHUD {
             forward: [],
         };
         this.scrubSession = null;
+        this.pendingReleasedScrubDescriptor = null;
         this.pendingRelocateJump = null;
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
@@ -570,9 +571,9 @@ export class NavigationHUD {
         } else {
             deferredCommit = !!this.pendingScrubCommit;
         }
-        if (releaseDescriptor) {
-            this.currentLocationDescriptor = this._cloneDescriptor(releaseDescriptor);
-        }
+        this.pendingReleasedScrubDescriptor = releaseDescriptor
+            ? this._cloneDescriptor(releaseDescriptor)
+            : null;
         this._logPageScrub('end', {
             cancel,
             committed,
@@ -857,12 +858,22 @@ export class NavigationHUD {
         const forwardEdge = this.isRTL ? 'left' : 'right';
         this._setButtonEdge(this.navRelocateButtons?.back, backEdge);
         this._setButtonEdge(this.navRelocateButtons?.forward, forwardEdge);
+        if (this.navRelocateButtons?.back) {
+            this.navRelocateButtons.back.dataset.navRtl = this.isRTL ? 'true' : 'false';
+        }
+        if (this.navRelocateButtons?.forward) {
+            this.navRelocateButtons.forward.dataset.navRtl = this.isRTL ? 'true' : 'false';
+        }
         this._updateAuxiliaryInsets();
     }
 
     _updateAuxiliaryInsets() {
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
+        const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
+            ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
+            ?? null;
+        const pageReadRect = pageReadButton?.getBoundingClientRect?.() ?? null;
         const reserveGap = 18;
         const leftVisible = !!this.navRelocateButtons?.back
             && !this.navRelocateButtons.back.hidden
@@ -888,6 +899,18 @@ export class NavigationHUD {
             rightVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
             rightForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
         );
+        for (const button of [this.navRelocateButtons?.back, this.navRelocateButtons?.forward]) {
+            if (!button?.style) continue;
+            const buttonRect = button.getBoundingClientRect?.() ?? null;
+            if (pageReadRect && navRect && buttonRect && buttonRect.height > 0) {
+                const targetTopInNav = (pageReadRect.top - navRect.top) + ((pageReadRect.height - buttonRect.height) / 2);
+                button.style.top = `${Math.round(targetTopInNav)}px`;
+                button.style.bottom = 'auto';
+            } else {
+                button.style.top = '';
+                button.style.bottom = '';
+            }
+        }
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
         logNavHide('hud:aux-layout', {
@@ -910,6 +933,53 @@ export class NavigationHUD {
             pageTrackingContainedByReaderStage: !!document.getElementById('reader-stage')?.contains(this.pageTrackingContainer),
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             navHidden: this.navHidden,
+        });
+        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
+        const backRect = this.navRelocateButtons?.back?.getBoundingClientRect?.() ?? null;
+        const forwardRect = this.navRelocateButtons?.forward?.getBoundingClientRect?.() ?? null;
+        this._logJumpPosition('relocate-buttons.layout', {
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            nav: navRect ? {
+                left: Math.round(navRect.left),
+                right: Math.round(navRect.right),
+                top: Math.round(navRect.top),
+                bottom: Math.round(navRect.bottom),
+                width: Math.round(navRect.width),
+                height: Math.round(navRect.height),
+            } : null,
+            pageRead: pageReadRect ? {
+                left: Math.round(pageReadRect.left),
+                right: Math.round(pageReadRect.right),
+                top: Math.round(pageReadRect.top),
+                bottom: Math.round(pageReadRect.bottom),
+                width: Math.round(pageReadRect.width),
+                height: Math.round(pageReadRect.height),
+            } : null,
+            back: this.navRelocateButtons?.back ? {
+                hidden: !!this.navRelocateButtons.back.hidden,
+                ariaHidden: this.navRelocateButtons.back.getAttribute('aria-hidden'),
+                edge: this.navRelocateButtons.back.dataset?.navEdge ?? null,
+                rtl: this.navRelocateButtons.back.dataset?.navRtl ?? null,
+                left: backRect ? Math.round(backRect.left) : null,
+                right: backRect ? Math.round(backRect.right) : null,
+                top: backRect ? Math.round(backRect.top) : null,
+                bottom: backRect ? Math.round(backRect.bottom) : null,
+                width: backRect ? Math.round(backRect.width) : null,
+                height: backRect ? Math.round(backRect.height) : null,
+            } : null,
+            forward: this.navRelocateButtons?.forward ? {
+                hidden: !!this.navRelocateButtons.forward.hidden,
+                ariaHidden: this.navRelocateButtons.forward.getAttribute('aria-hidden'),
+                edge: this.navRelocateButtons.forward.dataset?.navEdge ?? null,
+                rtl: this.navRelocateButtons.forward.dataset?.navRtl ?? null,
+                left: forwardRect ? Math.round(forwardRect.left) : null,
+                right: forwardRect ? Math.round(forwardRect.right) : null,
+                top: forwardRect ? Math.round(forwardRect.top) : null,
+                bottom: forwardRect ? Math.round(forwardRect.bottom) : null,
+                width: forwardRect ? Math.round(forwardRect.width) : null,
+                height: forwardRect ? Math.round(forwardRect.height) : null,
+            } : null,
         });
     }
 
@@ -1269,6 +1339,7 @@ export class NavigationHUD {
                 });
             }
             this.currentLocationDescriptor = descriptor;
+            this.pendingReleasedScrubDescriptor = null;
             this._logJumpDiagnostic('relocate-history-suppressed', {
                 reason,
                 restoreInProgress: true,
@@ -1350,6 +1421,7 @@ export class NavigationHUD {
             liveScrollPhase,
         });
         this.currentLocationDescriptor = descriptor;
+        this.pendingReleasedScrubDescriptor = null;
         this._maybeCommitPendingScrub(detail, descriptor);
     }
 
@@ -1751,6 +1823,24 @@ export class NavigationHUD {
         try {
             console.log(line);
         } catch (error) {
+            // optional console
+        }
+    }
+
+    _logJumpPosition(event, payload = {}) {
+        const line = `# JUMP ${JSON.stringify({
+            timestamp: Date.now(),
+            event,
+            ...payload,
+        })}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional handler
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
             // optional console
         }
     }
@@ -2327,7 +2417,8 @@ export class NavigationHUD {
             return;
         }
 
-        const preJumpDescriptor = this._cloneDescriptor(this.currentLocationDescriptor)
+        const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
+            ?? this._cloneDescriptor(this.currentLocationDescriptor)
             ?? (this.lastRelocateDetail ? this._makeLocationDescriptor(this.lastRelocateDetail) : null);
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];

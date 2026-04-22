@@ -4686,6 +4686,7 @@ window.manabiBeginReaderProgressScrub = () => {
 
 window.manabiEndReaderProgressScrub = (fraction, cancel = false) => {
     const navHUD = globalThis.reader?.navHUD;
+    const view = globalThis.reader?.view;
     globalThis.reader?.scheduleGoToFraction?.cancel?.();
     postPageNumLog('goto.live-schedule.cancel', {
         navLabel: globalThis.reader?.navHUD?.latestPrimaryLabel ?? '',
@@ -4708,6 +4709,22 @@ window.manabiEndReaderProgressScrub = (fraction, cancel = false) => {
         cancel: !!cancel,
         releaseFraction: clampedFraction,
     });
+    if (!cancel && Number.isFinite(clampedFraction) && view) {
+        view.goToFraction(clampedFraction)
+            .then(() => {
+                postPageNumLog('goto.live-scrub.release.resolved', {
+                    requestedFraction: clampedFraction,
+                    navLabel: navHUD?.latestPrimaryLabel ?? '',
+                });
+            })
+            .catch((error) => {
+                postPageNumLog('goto.live-scrub.release.error', {
+                    requestedFraction: clampedFraction,
+                    message: error?.message ?? String(error),
+                });
+                console.error(error);
+            });
+    }
     postPageNumLog('goto.live-scrub.end.result', {
         requestedFraction: clampedFraction,
         cancel: !!cancel,
