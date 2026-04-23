@@ -208,8 +208,8 @@ internal func buildCanonicalReadabilityHTML(
     body.readability-mode .manabi-start-over-button {
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         font-size: var(--manabi-system-font-size-footnote, 13px);
-        font-weight: 600;
-        height: 40px !important;
+        font-weight: 500;
+        height: 36px !important;
     }
     body.readability-mode .manabi-finished-reading-button-subtitle {
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;

@@ -237,6 +237,20 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const run = async () => {
     const replaceTextStartedAt = performanceNowMs();
     globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
+    if (!isCacheWarmer) {
+        const normalizedHref = normalizeSpineHref(href);
+        if (normalizedHref && !firstLiveSectionHref()) {
+            globalThis.__manabiFirstLiveSectionHref = normalizedHref;
+            postEPUBLog('ebook.perf.live-first-section.recorded', {
+                href: normalizedHref,
+                ...captureEPUBOverlapState(),
+            });
+            postReplaceTextPerfLog('live-first-section.recorded', {
+                href: normalizedHref,
+                ...captureEPUBOverlapState(),
+            });
+        }
+    }
     if (isCacheWarmer) {
         globalThis.__manabiInflightCacheWarmerReplaceTextCount = (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
     }
@@ -538,11 +552,51 @@ const cacheWarmerSourceForCurrentBook = () => {
         || makeFileSource(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname));
 };
 
+const liveSettledSectionHrefSet = () => {
+    if (!(globalThis.__manabiLiveSettledSectionHrefs instanceof Set)) {
+        globalThis.__manabiLiveSettledSectionHrefs = new Set();
+    }
+    return globalThis.__manabiLiveSettledSectionHrefs;
+};
+
+const firstLiveSectionHref = () => {
+    const normalizedHref = normalizeSpineHref(globalThis.__manabiFirstLiveSectionHref ?? null);
+    return normalizedHref || null;
+};
+
+window.manabi_recordLiveSettledSection = (href) => {
+    const normalizedHref = normalizeSpineHref(href);
+    if (!normalizedHref) return;
+    const settledSet = liveSettledSectionHrefSet();
+    const sizeBefore = settledSet.size;
+    settledSet.add(normalizedHref);
+    const firstLiveHref = firstLiveSectionHref();
+    const isNewlySettled = settledSet.size !== sizeBefore;
+    if (isNewlySettled) {
+        postReplaceTextPerfLog('live-section.settled', {
+            href: normalizedHref,
+            settledSectionCount: settledSet.size,
+            isFirstLiveSection: normalizedHref === firstLiveHref,
+            ...captureEPUBOverlapState(),
+        });
+    }
+    if (normalizedHref === firstLiveHref) {
+        postReplaceTextPerfLog('first-live-section.settled', {
+            href: normalizedHref,
+            settledSectionCount: settledSet.size,
+            ...captureEPUBOverlapState(),
+        });
+    }
+};
+
 const isForegroundReaderIdle = () => {
     const bodyLoading = !!document.body?.classList?.contains?.('loading');
+    const firstLiveHref = firstLiveSectionHref();
     return !!globalThis.reader?.hasLoadedLastPosition
         && !bodyLoading
         && (globalThis.__manabiInflightReplaceTextCount ?? 0) === 0
+        && !!firstLiveHref
+        && liveSettledSectionHrefSet().has(firstLiveHref)
         && !globalThis.__manabiCacheWarmerOpenInFlight
         && !globalThis.__manabiCacheWarmerReady;
 };
@@ -575,6 +629,12 @@ const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
         return;
     }
     const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
+    postReplaceTextPerfLog('cache-warmer.unblocked', {
+        firstLiveHref: firstLiveSectionHref(),
+        settledSectionCount: liveSettledSectionHrefSet().size,
+        sourceKind: cacheWarmerSource?.kind || 'nil',
+        ...captureEPUBOverlapState(),
+    });
     const openPromise = (async () => {
         await window.cacheWarmer.open(cacheWarmerSource);
         markEPUBPerf('cache-warmer.opened', {
@@ -3401,6 +3461,38 @@ class Reader {
         // Use public helpers to detect prev/next section
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
+        const sectionIndex = typeof this.navHUD?.lastRelocateDetail?.sectionIndex === 'number'
+            ? this.navHUD.lastRelocateDetail.sectionIndex
+            : (typeof this.navHUD?.lastRelocateDetail?.index === 'number'
+                ? this.navHUD.lastRelocateDetail.index
+                : (typeof r.currentIndex === 'number' ? r.currentIndex : null));
+        const sectionHref = typeof sectionIndex === 'number'
+            ? (typeof this.view?.renderer?.tocItem?.href === 'string'
+                ? this.view.renderer.tocItem.href
+                : (typeof this.view?.book?.sections?.[sectionIndex]?.id === 'string'
+                    ? this.view.book.sections[sectionIndex].id
+                    : ''))
+            : (typeof this.view?.renderer?.tocItem?.href === 'string'
+                ? this.view.renderer.tocItem.href
+                : '');
+        const isMetadataSection = isLikelyMetadataSectionHref(sectionHref);
+        const pageCountFromCache = typeof sectionIndex === 'number' && this.navHUD?.sectionPageCounts instanceof Map
+            ? this.navHUD.sectionPageCounts.get(sectionIndex)
+            : null;
+        const pageCount = typeof pageCountFromCache === 'number' && pageCountFromCache > 0
+            ? pageCountFromCache
+            : (typeof this.navHUD?.rendererPageSnapshot?.total === 'number' && this.navHUD.rendererPageSnapshot.total > 0
+                ? this.navHUD.rendererPageSnapshot.total
+                : (typeof this.navHUD?.lastRelocateDetail?.pageCount === 'number'
+                    ? this.navHUD.lastRelocateDetail.pageCount
+                    : null));
+        const isSinglePageMetadataSection = isMetadataSection && pageCount === 1;
+        const finishLabel = isSinglePageMetadataSection ? 'Mark Read' : 'Finish Chapter';
+        const finishFullLabel = this.buttons.finish?.querySelector('.button-label.full');
+        const finishShortLabel = this.buttons.finish?.querySelector('.button-label.short');
+        if (finishFullLabel) finishFullLabel.textContent = finishLabel;
+        if (finishShortLabel) finishShortLabel.textContent = finishLabel;
+        if (this.buttons.finish) this.buttons.finish.setAttribute('aria-label', finishLabel);
         
         this.#show(this.buttons.prev, atSectionStart && hasPrevSection);
         
@@ -3968,6 +4060,160 @@ class CacheWarmer {
         this.view
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
+        this.lastLoadedSectionIndex = null
+        this.lastLoadedSectionHref = null
+    }
+    #normalizeSectionHref(href) {
+        return normalizeSpineHref(href)
+    }
+    #nextUnsettledSectionIndex(settledSectionHrefs = []) {
+        const sections = Array.isArray(this.view?.book?.sections) ? this.view.book.sections : []
+        const settled = new Set(
+            Array.isArray(settledSectionHrefs)
+                ? settledSectionHrefs.map((href) => this.#normalizeSectionHref(href)).filter(Boolean)
+                : []
+        )
+        const currentIndex = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex : -1
+        for (let index = currentIndex + 1; index < sections.length; index += 1) {
+            const section = sections[index]
+            if (section?.linear === 'no') continue
+            const normalizedHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
+            if (normalizedHref && settled.has(normalizedHref)) continue
+            return index
+        }
+        return null
+    }
+    async #openFirstUnsettledSection() {
+        const settledSectionHrefs = Array.from(liveSettledSectionHrefSet())
+        const firstUnsettledIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        if (!Number.isInteger(firstUnsettledIndex)) {
+            globalThis.__manabiCacheWarmerFinished = true
+            postEPUBLog('ebook.perf.cache-warmer.finished', {
+                sectionURL: null,
+                sectionIndex: null,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                trigger: 'open-no-unsettled',
+                ...captureEPUBOverlapState(),
+            })
+            postReplaceTextPerfLog('cache-warmer.finished', {
+                sectionURL: null,
+                sectionIndex: null,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                trigger: 'open-no-unsettled',
+                ...captureEPUBOverlapState(),
+            })
+            return
+        }
+        const skippedSettledSectionHrefs = this.view?.book?.sections
+            ?.slice(0, firstUnsettledIndex)
+            ?.map((section) => this.#normalizeSectionHref(section?.href ?? section?.id ?? null))
+            ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
+        if (firstUnsettledIndex > 0) {
+            const targetSection = this.view?.book?.sections?.[firstUnsettledIndex] ?? null
+            postEPUBLog('ebook.perf.cache-warmer.skip-settled', {
+                trigger: 'open',
+                skippedToSectionIndex: firstUnsettledIndex,
+                skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+                skippedSettledSectionHrefs,
+                settledSectionCount: settledSectionHrefs.length,
+                ...captureEPUBOverlapState(),
+            })
+            postReplaceTextPerfLog('cache-warmer.skip-settled', {
+                trigger: 'open',
+                skippedToSectionIndex: firstUnsettledIndex,
+                skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+                skippedSettledSectionHrefs,
+                settledSectionCount: settledSectionHrefs.length,
+                ...captureEPUBOverlapState(),
+            })
+        }
+        const targetSection = this.view?.book?.sections?.[firstUnsettledIndex] ?? null
+        postReplaceTextPerfLog('cache-warmer.target-unsettled', {
+            trigger: 'open',
+            targetSectionIndex: firstUnsettledIndex,
+            targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            skippedSettledSectionHrefs,
+            settledSectionCount: settledSectionHrefs.length,
+            ...captureEPUBOverlapState(),
+        })
+        await this.view.renderer.goTo({ index: firstUnsettledIndex })
+    }
+    async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
+        const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        if (!Number.isInteger(targetIndex)) {
+            globalThis.__manabiCacheWarmerFinished = true
+            postEPUBLog('ebook.perf.cache-warmer.finished', {
+                sectionURL: this.lastLoadedSectionHref,
+                sectionIndex: this.lastLoadedSectionIndex,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                trigger: 'skip-settled',
+                ...captureEPUBOverlapState(),
+            })
+            postReplaceTextPerfLog('cache-warmer.finished', {
+                sectionURL: this.lastLoadedSectionHref,
+                sectionIndex: this.lastLoadedSectionIndex,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                trigger: 'skip-settled',
+                ...captureEPUBOverlapState(),
+            })
+            return
+        }
+        if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
+            const targetSection = this.view?.book?.sections?.[targetIndex] ?? null
+            postReplaceTextPerfLog('cache-warmer.target-unsettled', {
+                trigger: 'advance-adjacent',
+                currentSectionIndex: this.lastLoadedSectionIndex,
+                currentSectionHref: this.lastLoadedSectionHref,
+                targetSectionIndex: targetIndex,
+                targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+                skippedSettledSectionHrefs: [],
+                settledSectionCount: Array.isArray(settledSectionHrefs) ? settledSectionHrefs.length : 0,
+                ...captureEPUBOverlapState(),
+            })
+            await this.view.renderer.nextSection()
+            return
+        }
+        const targetSection = this.view?.book?.sections?.[targetIndex] ?? null
+        const sectionSliceStart = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex + 1 : 0
+        const skippedSettledSectionHrefs = this.view?.book?.sections
+            ?.slice(sectionSliceStart, targetIndex)
+            ?.map((section) => this.#normalizeSectionHref(section?.href ?? section?.id ?? null))
+            ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
+        postEPUBLog('ebook.perf.cache-warmer.skip-settled', {
+            trigger: 'advance',
+            currentSectionIndex: this.lastLoadedSectionIndex,
+            currentSectionHref: this.lastLoadedSectionHref,
+            skippedToSectionIndex: targetIndex,
+            skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            skippedSettledSectionHrefs,
+            settledSectionCount: Array.isArray(settledSectionHrefs) ? settledSectionHrefs.length : 0,
+            ...captureEPUBOverlapState(),
+        })
+        postReplaceTextPerfLog('cache-warmer.skip-settled', {
+            trigger: 'advance',
+            currentSectionIndex: this.lastLoadedSectionIndex,
+            currentSectionHref: this.lastLoadedSectionHref,
+            skippedToSectionIndex: targetIndex,
+            skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            skippedSettledSectionHrefs,
+            settledSectionCount: Array.isArray(settledSectionHrefs) ? settledSectionHrefs.length : 0,
+            ...captureEPUBOverlapState(),
+        })
+        postReplaceTextPerfLog('cache-warmer.target-unsettled', {
+            trigger: 'advance',
+            currentSectionIndex: this.lastLoadedSectionIndex,
+            currentSectionHref: this.lastLoadedSectionHref,
+            targetSectionIndex: targetIndex,
+            targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            skippedSettledSectionHrefs,
+            settledSectionCount: Array.isArray(settledSectionHrefs) ? settledSectionHrefs.length : 0,
+            ...captureEPUBOverlapState(),
+        })
+        await this.view.renderer.goTo({ index: targetIndex })
     }
     destroy() {
         if (this.view) {
@@ -3979,6 +4225,8 @@ class CacheWarmer {
         }
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
+        this.lastLoadedSectionIndex = null
+        this.lastLoadedSectionHref = null
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
@@ -4006,9 +4254,7 @@ class CacheWarmer {
                 book
             } = this.view
             this.view.renderer.setAttribute('flow', 'paginated')
-            //        this.view.renderer.next()
-            
-            await this.view.renderer.firstSection()
+            await this.#openFirstUnsettledSection()
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
             postEPUBLog('ebook.perf.cache-warmer.open.end', {
@@ -4095,6 +4341,8 @@ class CacheWarmer {
             : null;
         const sourceHref = doc?.body?.dataset?.manabiSourceHref || indexedSectionHref || null;
         const sectionHref = indexedSectionHref || sourceHref || null;
+        this.lastLoadedSectionIndex = Number.isInteger(index) ? index : null;
+        this.lastLoadedSectionHref = sectionHref || location || null;
         const isLikelyTitlePage = typeof sourceHref === 'string' && /(?:^|\/)(title|cover)\.xhtml$/i.test(sourceHref);
         if (Number.isInteger(index)) {
             globalThis.__manabiCacheWarmerHighestSectionIndex = Math.max(
@@ -4265,14 +4513,16 @@ window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
 }
 
-window.loadNextCacheWarmerSection = async () => {
-    await window.cacheWarmer.view.renderer.nextSection()
+window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
+    await window.cacheWarmer.loadNextSectionSkippingSettled(settledSectionHrefs)
 }
 
 window.loadEBook = ({
     url,
     layoutMode,
 }) => {
+    globalThis.__manabiLiveSettledSectionHrefs = new Set();
+    globalThis.__manabiFirstLiveSectionHref = null;
     beginEPUBPerfSession({
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || 'default',

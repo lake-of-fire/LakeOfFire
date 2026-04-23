@@ -373,7 +373,10 @@ export class NavigationHUD {
             this._updateRendererSnapshotFromDetail(this.lastRelocateDetail);
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
-        this._toggleCompletionStack();
+        // Keep completion button visibility controlled by navigation state rather than scroll visibility.
+        // This prevents finish/restart controls from disappearing when the nav is hidden during scroll.
+        const showingCompletion = !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
+        this._toggleCompletionStack(showingCompletion);
         this._updateSectionProgress();
         this._updateRelocateButtons();
     }
@@ -429,7 +432,9 @@ export class NavigationHUD {
         if (this.lastRelocateDetail) {
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
+        // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
         this._updateRelocateButtons();
+        this._updateAuxiliaryInsets();
         globalThis.reader?.queueLayoutDiagnostics?.('nav-hide-due-to-scroll', {
             source,
             shouldHide: this.hideNavigationDueToScroll,
@@ -926,6 +931,23 @@ export class NavigationHUD {
             rightVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
             rightForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
         );
+        const parseReservePx = (value) => {
+            const parsed = parseFloat(String(value ?? '').trim());
+            return Number.isFinite(parsed) ? parsed : 0;
+        };
+        const compactPercentReserve = Math.max(
+            0,
+            parseReservePx(window.getComputedStyle(styleTarget).getPropertyValue('--nav-compact-percent-min-width')),
+        );
+        const primaryPercentReserve = Math.max(
+            0,
+            this.navPrimaryPercent?.offsetWidth ?? 0,
+            this.navHiddenOverlay?.percent?.offsetWidth ?? 0,
+            this.navPrimaryText?.dataset?.labelVariant === 'compact'
+                ? this.navPrimaryTextCompact?.offsetWidth ?? 0
+                : this.navPrimaryTextFull?.offsetWidth ?? 0,
+        );
+        const percentReserve = Math.max(compactPercentReserve, primaryPercentReserve);
         for (const button of [this.navRelocateButtons?.back, this.navRelocateButtons?.forward]) {
             if (!button?.style) continue;
             const buttonRect = button.getBoundingClientRect?.() ?? null;
@@ -940,9 +962,11 @@ export class NavigationHUD {
         }
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
+        styleTarget.style.setProperty('--nav-primary-percent-reserve', `${Math.ceil(percentReserve)}px`);
         logNavHide('hud:aux-layout', {
             leftInset,
             rightInset,
+            percentReserve: Math.ceil(percentReserve),
             backButtonWidth: this.navRelocateButtons?.back?.offsetWidth ?? null,
             forwardButtonWidth: this.navRelocateButtons?.forward?.offsetWidth ?? null,
             backButtonHidden: this.navRelocateButtons?.back?.hidden ?? null,
@@ -1273,6 +1297,7 @@ export class NavigationHUD {
                 this._updateCompactPercent(descriptor);
             }
         }
+        requestAnimationFrame(() => this._updateAuxiliaryInsets());
     }
 
     async _updateSectionProgress({ refreshSnapshot = true } = {}) {
@@ -1331,6 +1356,15 @@ export class NavigationHUD {
     _handleRelocateHistory(detail) {
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
+        const reason = (detail?.reason || '').toLowerCase();
+        const shouldMutateRelocateHistory = !!(
+            reason === 'live-scroll'
+            || reason === 'navigation'
+            || this.pendingScrubCommit
+            || this.isProcessingRelocateJump
+            || this.pendingRelocateJump
+            || (this.scrubSession?.active && this.pendingScrubCommit)
+        );
         const lastOrigin = this.scrubSession?.originDescriptor;
         // If the relocate matches the scrub origin immediately after a jump, don't clobber history yet.
         if (this.scrubSession?.pendingCommit && lastOrigin && this._isSameDescriptor(lastOrigin, descriptor)) {
@@ -1354,7 +1388,6 @@ export class NavigationHUD {
             }
             // fall through to normal handling to capture subsequent movement if needed
         }
-        const reason = (detail?.reason || '').toLowerCase();
         const isRestoreInProgress = globalThis.__manabiRestoreInProgress === true;
         if (isRestoreInProgress) {
             if (this.relocateStacks.back.length || this.relocateStacks.forward.length) {
@@ -1380,7 +1413,6 @@ export class NavigationHUD {
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
         const isJumpReason = isLiveScrollReason || reason === 'navigation';
-        const isPageTurn = reason === 'page';
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this._isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;
@@ -1396,7 +1428,7 @@ export class NavigationHUD {
         if (isScrubbing) {
             this._trackScrubMovement({ descriptor, movedFromOrigin, detailFraction });
         }
-        if (isJumpReason && descriptorChanged && !isLiveScrollReason) {
+        if (shouldMutateRelocateHistory && isJumpReason && descriptorChanged && !isLiveScrollReason) {
             if (!isScrubbing && previousDescriptor) {
                 this._pushBackStack(previousDescriptor);
                 logFix('jumpback:push', {
@@ -1415,31 +1447,14 @@ export class NavigationHUD {
                     newFraction: descriptor?.fraction ?? null,
                 });
             }
-        } else if (isPageTurn && descriptorChanged && !isScrubbing && previousDescriptor) {
-            this._pushBackStack(previousDescriptor);
-            logFix('jumpback:push:pageturn', {
-                reason,
-                backDepth: this.relocateStacks.back.length,
-                descriptorFraction: descriptor?.fraction ?? null,
-                prevFraction: previousDescriptor?.fraction ?? null,
-                sectionIndex: detail?.sectionIndex ?? null,
-            });
-            logBug('EBOOKJUMP', {
-                event: 'push-pageturn',
-                reason,
-                backDepth: this.relocateStacks.back.length,
-                forwardDepth: this.relocateStacks.forward.length,
-                prevFraction: previousDescriptor?.fraction ?? null,
-                newFraction: descriptor?.fraction ?? null,
-                sectionIndex: detail?.sectionIndex ?? null,
-            });
-        } else if (!isScrubbing && descriptorChanged) {
+        } else if (shouldMutateRelocateHistory && !isScrubbing && descriptorChanged) {
             this.relocateStacks.forward.length = 0;
             this._logStackSnapshot('forward-clear');
         }
         this._logJumpDiagnostic('relocate-history', {
             reason,
             isJumpReason,
+            historyMutationAllowed: shouldMutateRelocateHistory,
             descriptorChanged,
             backDepth: this.relocateStacks.back.length,
             forwardDepth: this.relocateStacks.forward.length,

@@ -7,10 +7,11 @@ import ImageIO
 
 struct ReaderNewBadge: View {
     @Environment(\.controlSize) private var controlSize
+    @ScaledMetric(relativeTo: .caption2) private var compactFontSize: CGFloat = 10
 
     var body: some View {
         Text("NEW")
-            .font(isCompactControlSize ? .caption2.weight(.semibold) : .caption2)
+            .font(isCompactControlSize ? .system(size: compactFontSize, weight: .semibold) : .caption2)
             .fontWeight(.semibold)
             .textCase(.uppercase)
             .foregroundStyle(.white)
