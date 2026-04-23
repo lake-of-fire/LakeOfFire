@@ -569,10 +569,15 @@
                 #completion-stack button {
                     border: none;
                     border-radius: 999px;
-                    padding: 4px 6px;
-                    min-height: 26px;
+                    padding: 0 calc((var(--page-read-button-height) - 14px) / 2);
+                    min-height: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    width: fit-content;
+                    min-width: var(--page-read-button-height);
                     font-weight: 600;
                     font-size: 14px;
+                    color: var(--secondary-color);
+                    line-height: 1;
                     cursor: pointer;
                     display: flex;
                     align-items: center;
@@ -673,10 +678,12 @@
                     text-align: left;
                 }
                 #btn-finish {
-                    background-color: var(--finish-button-color, #1fa352);
-                    color: #fff;
+                    background-color: var(--finish-button-color, var(--theme-tracking-read-color));
+                    border-color: var(--finish-button-color, var(--theme-tracking-read-color));
+                    color: var(--secondary-color);
                     box-shadow: 0 3px 10px rgb(0 0 0 / 0.144);
                     flex-direction: row;
+                    justify-content: center;
                 }
                 #btn-finish .icon {
                     color: inherit;
@@ -686,8 +693,9 @@
                     order: 1;
                 }
                 #btn-restart {
-                    background-color: var(--manabi-red, #ff4500);
-                    color: #fff;
+                    background-color: transparent;
+                    border: 1px solid var(--theme-tracking-unread-color);
+                    color: var(--secondary-color);
                     box-shadow: 0 3px 10px rgb(0 0 0 / 0.144);
                 }
                 #btn-restart .icon {
