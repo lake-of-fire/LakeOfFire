@@ -488,6 +488,13 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (isCacheWarmer) {
         headers['X-Is-Cache-Warmer'] = 'true';
     }
+    if (!isCacheWarmer) {
+        const normalizedHref = normalizeSpineHref(href);
+        if (normalizedHref && !firstLiveSectionHref()) {
+            globalThis.__manabiFirstLiveSectionHref = normalizedHref;
+            try { logFix('live-first-section.recorded', { href: normalizedHref }); } catch (_) {}
+        }
+    }
     const perfStart = (typeof performance !== 'undefined' && typeof performance.now === 'function')
         ? performance.now()
         : Date.now();
@@ -2694,8 +2701,37 @@ class CacheWarmer {
     constructor() {
         this.view
         this.pageCounts = new Map()
+        this.lastLoadedSectionIndex = null
+        this.lastLoadedSectionHref = null
         globalThis.cacheWarmerPageCounts = this.pageCounts
         globalThis.cacheWarmerTotalPages = 0
+    }
+    #normalizeSectionHref(href) {
+        return normalizeSpineHref(href)
+    }
+    #nextUnsettledSectionIndex(settledSectionHrefs = []) {
+        const sections = Array.isArray(this.view?.book?.sections) ? this.view.book.sections : []
+        const settled = new Set(
+            Array.isArray(settledSectionHrefs)
+                ? settledSectionHrefs.map((href) => this.#normalizeSectionHref(href)).filter(Boolean)
+                : []
+        )
+        const currentIndex = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex : -1
+        for (let index = currentIndex + 1; index < sections.length; index += 1) {
+            const section = sections[index]
+            if (section?.linear === 'no') continue
+            const normalizedHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
+            if (normalizedHref && settled.has(normalizedHref)) continue
+            return index
+        }
+        return null
+    }
+    async #openFirstUnsettledSection() {
+        const targetIndex = this.#nextUnsettledSectionIndex(Array.from(liveSettledSectionHrefSet()))
+        if (!Number.isInteger(targetIndex)) {
+            return
+        }
+        await this.view.renderer.goTo({ index: targetIndex })
     }
     async open(source) {
     this.source = source
@@ -2709,14 +2745,33 @@ class CacheWarmer {
     this.view.renderer.setAttribute('flow', 'paginated')
     //        this.view.renderer.next()
 
-    await this.view.renderer.firstSection()
+    await this.#openFirstUnsettledSection()
+    }
+
+    async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
+        const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        if (!Number.isInteger(targetIndex)) {
+            return
+        }
+        if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
+            await this.view.renderer.nextSection()
+            return
+        }
+        await this.view.renderer.goTo({ index: targetIndex })
     }
 
     async _onLoad({
         detail: {
-            location
+            location,
+            index
         }
     }) {
+        const indexedSectionHref =
+            Number.isInteger(index)
+                ? this.view?.book?.sections?.[index]?.href || null
+                : null
+        this.lastLoadedSectionIndex = Number.isInteger(index) ? index : null
+        this.lastLoadedSectionHref = indexedSectionHref || location || null
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
             frameURL: location,
@@ -3012,8 +3067,71 @@ window.manabiGetWritingDirectionSnapshot = () => {
     };
 }
 
-window.loadNextCacheWarmerSection = async () => {
-    await window.cacheWarmer.view.renderer.nextSection()
+const normalizeSpineHref = (href) => {
+    if (typeof href !== 'string') return null;
+    const trimmed = href.trim();
+    if (!trimmed) return null;
+    const hashIndex = trimmed.indexOf('#');
+    return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
+};
+
+const liveSettledSectionHrefSet = () => {
+    if (!(globalThis.__manabiLiveSettledSectionHrefs instanceof Set)) {
+        globalThis.__manabiLiveSettledSectionHrefs = new Set();
+    }
+    return globalThis.__manabiLiveSettledSectionHrefs;
+};
+
+const firstLiveSectionHref = () => {
+    const normalizedHref = normalizeSpineHref(globalThis.__manabiFirstLiveSectionHref ?? null);
+    return normalizedHref || null;
+};
+
+window.manabi_recordLiveSettledSection = (href) => {
+    const normalizedHref = normalizeSpineHref(href);
+    if (!normalizedHref) { return; }
+    liveSettledSectionHrefSet().add(normalizedHref);
+};
+
+const isForegroundReaderIdle = () => {
+    const bodyLoading = !!document.body?.classList?.contains?.('loading');
+    const firstLiveHref = firstLiveSectionHref();
+    return !!globalThis.reader?.hasLoadedLastPosition
+        && !bodyLoading
+        && !!firstLiveHref
+        && liveSettledSectionHrefSet().has(firstLiveHref);
+};
+
+const maybeOpenDeferredCacheWarmer = async () => {
+    if (!window.bookSource) { return; }
+    if (globalThis.__manabiCacheWarmerOpenPromise) {
+        return await globalThis.__manabiCacheWarmerOpenPromise;
+    }
+    if (!isForegroundReaderIdle()) {
+        clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
+        globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
+            void maybeOpenDeferredCacheWarmer();
+        }, 250);
+        return;
+    }
+    const openPromise = window.cacheWarmer.open(window.bookSource);
+    globalThis.__manabiCacheWarmerOpenPromise = openPromise;
+    try {
+        await openPromise;
+    } finally {
+        globalThis.__manabiCacheWarmerOpenPromise = null;
+    }
+};
+
+const scheduleDeferredCacheWarmerOpen = (delayMs = 600) => {
+    clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
+    globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
+        void maybeOpenDeferredCacheWarmer();
+    }, delayMs);
+};
+
+window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
+    await window.cacheWarmer.loadNextSectionSkippingSettled(settledSectionHrefs)
 }
 
 const throttle = (fn, intervalMs = 200) => {
@@ -3959,6 +4077,10 @@ window.loadEBook = ({
     if (url) {
     const source = makeNativeSource(url)
     window.bookSource = source
+    globalThis.__manabiLiveSettledSectionHrefs = new Set()
+    globalThis.__manabiFirstLiveSectionHref = null
+    globalThis.__manabiCacheWarmerOpenPromise = null
+    clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer)
     if (layoutMode) {
     window.initialLayoutMode = layoutMode
     }
@@ -4211,10 +4333,7 @@ window.loadLastPosition = async ({
         logFix('pagecount:restore:error', { error: String(error) });
     }
 
-    // Don't overlap cache warming with initial page load
-    if (window.bookSource) {
-    await window.cacheWarmer.open(window.bookSource)
-    }
+    scheduleDeferredCacheWarmerOpen(600);
 }
 
 globalThis.manabiResolveTrackingSizeCache = function (requestId, entries) {
