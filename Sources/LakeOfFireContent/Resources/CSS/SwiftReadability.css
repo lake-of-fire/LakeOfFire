@@ -29,8 +29,11 @@ body.readability-mode #reader-content:lang(ja),
 body.readability-mode #reader-content :lang(ja),
 body.readability-mode manabi-sentence,
 body.readability-mode manabi-segment {
+    line-break: strict;
+    -webkit-line-break: strict;
     word-break: normal;
     overflow-wrap: normal;
+    hanging-punctuation: allow-end last;
     font-feature-settings: "vchw" 1, "chws" 1;
 }
 

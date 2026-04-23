@@ -1932,8 +1932,12 @@ class View {
         } catch (_error) {}
 
         await afterLoad?.(document)
-        Promise.resolve().then(() => globalThis.manabiWaitForFontCSS?.()).catch(() => {})
-        Promise.resolve().then(() => globalThis.manabiEnsureCustomFonts?.(document)).catch(() => {})
+        try {
+            await globalThis.manabiWaitForFontCSS?.(document)
+        } catch {}
+        try {
+            await globalThis.manabiEnsureCustomFonts?.(document)
+        } catch {}
 
         const writingDirectionOverride = globalThis.manabiEbookWritingDirection || 'original'
         const sourceDir = sourceDoc.body?.getAttribute?.('dir')

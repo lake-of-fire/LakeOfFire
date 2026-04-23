@@ -76,6 +76,7 @@ final class SharedReaderFontTests: XCTestCase {
         let css = try XCTUnwrap(String(data: response.data, encoding: .utf8))
         XCTAssertTrue(css.contains("font-family: 'YuKyokasho'"), css)
         XCTAssertTrue(css.contains("internal://local/manabi-fonts/YuKyokasho.woff2"), css)
+        XCTAssertTrue(css.contains("font-display: block;"), css)
     }
 
     func testSharedReaderFontFontResponseIncludesCORSHeaders() throws {

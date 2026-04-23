@@ -4075,6 +4075,14 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
 @MainActor
 extension ReaderModeViewModel {
+    private func normalizeSharedReaderFontCSS(_ css: String) -> String {
+        css.replacingOccurrences(
+            of: #"font-display\s*:\s*swap\s*;"#,
+            with: "font-display: block;",
+            options: [.regularExpression, .caseInsensitive]
+        )
+    }
+
     func decodeSharedReaderFontCSS(from base64: String?) -> String? {
         guard let base64, !base64.isEmpty else { return nil }
         guard let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]) else {
@@ -4083,7 +4091,8 @@ extension ReaderModeViewModel {
         guard let css = String(data: data, encoding: .utf8) else {
             return nil
         }
-        let trimmedCSS = css.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCSS = normalizeSharedReaderFontCSS(css)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedCSS.isEmpty ? nil : trimmedCSS
     }
 

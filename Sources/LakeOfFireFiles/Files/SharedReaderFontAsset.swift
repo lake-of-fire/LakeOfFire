@@ -229,7 +229,7 @@ public func sharedReaderFontResponse(
           font-weight: 500;
           font-style: normal;
           src: url("\(fontURL.absoluteString)") format("\(asset.format)");
-          font-display: swap;
+          font-display: block;
         }
         """
         let data = Data(css.utf8)
