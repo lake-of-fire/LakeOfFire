@@ -4672,9 +4672,50 @@ window.manabiCancelScheduledReaderFractionGoTo = () => {
     return true;
 }
 
+const postEBookJumpLog = (event, payload = {}) => {
+    const cleanedEntries = Object.entries({
+        timestamp: Date.now(),
+        ...payload,
+    }).filter(([, value]) => value !== undefined && value !== null);
+    const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
+    const line = metadata ? `# EBOOKJUMP ${event} ${metadata}` : `# EBOOKJUMP ${event}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        // optional handler
+    }
+    try {
+        console.log(line);
+    } catch (_error) {
+        // optional console
+    }
+};
+
 window.manabiBeginReaderProgressScrub = () => {
     const navHUD = globalThis.reader?.navHUD;
+    if (navHUD?.scrubSession?.active) {
+        postEBookJumpLog('scrub-begin-request', {
+            skipped: true,
+            reason: 'already-active',
+            currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,
+            backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+            forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+        });
+        postPageNumLog('goto.live-scrub.begin.skipped', {
+            reason: 'already-active',
+            backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+            forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+        });
+        return true;
+    }
     const originDescriptor = navHUD?.getCurrentLocationDescriptor?.() ?? null;
+    postEBookJumpLog('scrub-begin-request', {
+        skipped: false,
+        originDescriptor: navHUD?._serializeDescriptorForJumpLog?.(originDescriptor) ?? null,
+        currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.currentLocationDescriptor ?? null) ?? null,
+        backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+    });
     postPageNumLog('goto.live-scrub.begin', {
         originFraction: typeof originDescriptor?.fraction === 'number' ? safeRound(originDescriptor.fraction, 6) : null,
         backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
@@ -4684,7 +4725,7 @@ window.manabiBeginReaderProgressScrub = () => {
     return true;
 }
 
-window.manabiEndReaderProgressScrub = (fraction, cancel = false) => {
+window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
     const navHUD = globalThis.reader?.navHUD;
     const view = globalThis.reader?.view;
     globalThis.reader?.scheduleGoToFraction?.cancel?.();
@@ -4699,31 +4740,76 @@ window.manabiEndReaderProgressScrub = (fraction, cancel = false) => {
     const finalDescriptor = clampedFraction != null
         ? (navHUD?._descriptorFromFraction?.(clampedFraction) ?? { fraction: clampedFraction })
         : (navHUD?.getCurrentLocationDescriptor?.() ?? null);
+    postEBookJumpLog('scrub-end-request', {
+        cancel: !!cancel,
+        requestedFraction: clampedFraction,
+        currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,
+        finalDescriptor: navHUD?._serializeDescriptorForJumpLog?.(finalDescriptor) ?? null,
+        pendingReleasedScrubDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.pendingReleasedScrubDescriptor ?? null) ?? null,
+        scrubActive: !!navHUD?.scrubSession?.active,
+        backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+        forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+    });
     postPageNumLog('goto.live-scrub.end', {
         requestedFraction: clampedFraction,
         cancel: !!cancel,
         backDepthBefore: navHUD?.relocateStacks?.back?.length ?? 0,
         forwardDepthBefore: navHUD?.relocateStacks?.forward?.length ?? 0,
     });
-    navHUD?.endProgressScrubSession?.(finalDescriptor, {
-        cancel: !!cancel,
-        releaseFraction: clampedFraction,
-    });
+    const finalizeScrubSession = () => {
+        postEBookJumpLog('scrub-end-finalize', {
+            cancel: !!cancel,
+            requestedFraction: clampedFraction,
+            currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,
+            pendingReleasedScrubDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.pendingReleasedScrubDescriptor ?? null) ?? null,
+            scrubActive: !!navHUD?.scrubSession?.active,
+            backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+            forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+        });
+        navHUD?.endProgressScrubSession?.(finalDescriptor, {
+            cancel: !!cancel,
+            releaseFraction: clampedFraction,
+        });
+    };
     if (!cancel && Number.isFinite(clampedFraction) && view) {
-        view.goToFraction(clampedFraction)
-            .then(() => {
-                postPageNumLog('goto.live-scrub.release.resolved', {
-                    requestedFraction: clampedFraction,
-                    navLabel: navHUD?.latestPrimaryLabel ?? '',
-                });
-            })
-            .catch((error) => {
-                postPageNumLog('goto.live-scrub.release.error', {
-                    requestedFraction: clampedFraction,
-                    message: error?.message ?? String(error),
-                });
-                console.error(error);
+        postEBookJumpLog('scrub-release-request', {
+            requestedFraction: clampedFraction,
+            currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,
+            targetDescriptor: navHUD?._serializeDescriptorForJumpLog?.(finalDescriptor) ?? null,
+            backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+            forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+        });
+        try {
+            await view.goToFraction(clampedFraction);
+            postEBookJumpLog('scrub-release-resolved', {
+                requestedFraction: clampedFraction,
+                currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,
+                pendingReleasedScrubDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.pendingReleasedScrubDescriptor ?? null) ?? null,
+                backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+                forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
             });
+            postPageNumLog('goto.live-scrub.release.resolved', {
+                requestedFraction: clampedFraction,
+                navLabel: navHUD?.latestPrimaryLabel ?? '',
+            });
+            finalizeScrubSession();
+        } catch (error) {
+            postEBookJumpLog('scrub-release-error', {
+                requestedFraction: clampedFraction,
+                message: error?.message ?? String(error),
+                currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,
+                backDepth: navHUD?.relocateStacks?.back?.length ?? 0,
+                forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
+            });
+            postPageNumLog('goto.live-scrub.release.error', {
+                requestedFraction: clampedFraction,
+                message: error?.message ?? String(error),
+            });
+            finalizeScrubSession();
+            console.error(error);
+        }
+    } else {
+        finalizeScrubSession();
     }
     postPageNumLog('goto.live-scrub.end.result', {
         requestedFraction: clampedFraction,

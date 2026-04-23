@@ -520,6 +520,17 @@ export class NavigationHUD {
         this._logJumpDiagnostic('scrub-begin', {
             hasOrigin: !!originDescriptor,
             backDepth: this.relocateStacks.back.length,
+            forwardDepth: this.relocateStacks.forward.length,
+            originDescriptor: this._serializeDescriptorForJumpLog(originDescriptor),
+            baselineDescriptor: this._serializeDescriptorForJumpLog(baselineDescriptor),
+            currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+            pendingScrubCommit: this.pendingScrubCommit ? {
+                reason: this.pendingScrubCommit.reason ?? null,
+                origin: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.origin),
+                releaseFraction: typeof this.pendingScrubCommit.releaseFraction === 'number'
+                    ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6))
+                    : null,
+            } : null,
         });
         this._updateRelocateButtons();
     }
@@ -594,6 +605,21 @@ export class NavigationHUD {
             finalFraction: comparisonDescriptor?.fraction ?? null,
             backDepth: this.relocateStacks.back.length,
             forwardDepth: this.relocateStacks.forward.length,
+            deferredCommit,
+            releaseFraction: typeof releaseValue === 'number' ? Number(releaseValue.toFixed(6)) : null,
+            originDescriptor: this._serializeDescriptorForJumpLog(session.originDescriptor),
+            comparisonDescriptor: this._serializeDescriptorForJumpLog(comparisonDescriptor),
+            releaseDescriptor: this._serializeDescriptorForJumpLog(releaseDescriptor),
+            currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+            pendingReleasedScrubDescriptor: this._serializeDescriptorForJumpLog(this.pendingReleasedScrubDescriptor),
+            pendingScrubCommit: this.pendingScrubCommit ? {
+                reason: this.pendingScrubCommit.reason ?? null,
+                origin: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.origin),
+                releaseFraction: typeof this.pendingScrubCommit.releaseFraction === 'number'
+                    ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6))
+                    : null,
+                releaseDescriptor: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.releaseDescriptor),
+            } : null,
         });
     }
     
@@ -854,15 +880,15 @@ export class NavigationHUD {
     }
 
     _applyRelocateButtonEdges() {
-        const backEdge = this.isRTL ? 'right' : 'left';
-        const forwardEdge = this.isRTL ? 'left' : 'right';
+        const backEdge = 'left';
+        const forwardEdge = 'right';
         this._setButtonEdge(this.navRelocateButtons?.back, backEdge);
         this._setButtonEdge(this.navRelocateButtons?.forward, forwardEdge);
         if (this.navRelocateButtons?.back) {
-            this.navRelocateButtons.back.dataset.navRtl = this.isRTL ? 'true' : 'false';
+            this.navRelocateButtons.back.dataset.navRtl = 'false';
         }
         if (this.navRelocateButtons?.forward) {
-            this.navRelocateButtons.forward.dataset.navRtl = this.isRTL ? 'true' : 'false';
+            this.navRelocateButtons.forward.dataset.navRtl = 'false';
         }
         this._updateAuxiliaryInsets();
     }
@@ -870,6 +896,7 @@ export class NavigationHUD {
     _updateAuxiliaryInsets() {
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
+        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
         const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
             ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
             ?? null;
@@ -934,7 +961,6 @@ export class NavigationHUD {
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             navHidden: this.navHidden,
         });
-        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
         const backRect = this.navRelocateButtons?.back?.getBoundingClientRect?.() ?? null;
         const forwardRect = this.navRelocateButtons?.forward?.getBoundingClientRect?.() ?? null;
         this._logJumpPosition('relocate-buttons.layout', {
@@ -1345,6 +1371,8 @@ export class NavigationHUD {
                 restoreInProgress: true,
                 backDepth: this.relocateStacks.back.length,
                 forwardDepth: this.relocateStacks.forward.length,
+                descriptor: this._serializeDescriptorForJumpLog(descriptor),
+                currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
             });
             this._updateRelocateButtons();
             return;
@@ -1419,6 +1447,10 @@ export class NavigationHUD {
             movedFromOrigin,
             hiddenDueToScroll: this.hideNavigationDueToScroll,
             liveScrollPhase,
+            descriptor: this._serializeDescriptorForJumpLog(descriptor),
+            previousDescriptor: this._serializeDescriptorForJumpLog(previousDescriptor),
+            originDescriptor: this._serializeDescriptorForJumpLog(originDescriptor),
+            pendingReleasedScrubDescriptor: this._serializeDescriptorForJumpLog(this.pendingReleasedScrubDescriptor),
         });
         this.currentLocationDescriptor = descriptor;
         this.pendingReleasedScrubDescriptor = null;
@@ -1802,6 +1834,22 @@ export class NavigationHUD {
     }
 
     _logPageScrub(_event, _payload = {}) {}
+
+    _serializeDescriptorForJumpLog(descriptor) {
+        if (!descriptor) return null;
+        return {
+            fraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            cfi: descriptor.cfi ?? null,
+            sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
+            localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
+            rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
+            locationCurrent: typeof descriptor.location?.current === 'number' ? descriptor.location.current : null,
+            locationTotal: typeof descriptor.location?.total === 'number' ? descriptor.location.total : null,
+            locationTotalHint: typeof descriptor.locationTotalHint === 'number' ? descriptor.locationTotalHint : null,
+            pageItemKey: descriptor.pageItemKey ?? null,
+            pageLabel: descriptor.pageLabel ?? null,
+        };
+    }
 
     _logJumpDiagnostic(event, payload = {}) {
         const currentPercent = typeof this.lastPrimaryLabelDiagnostics?.currentPercent === 'number'

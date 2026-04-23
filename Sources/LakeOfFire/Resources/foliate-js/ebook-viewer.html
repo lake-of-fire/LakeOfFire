@@ -322,10 +322,10 @@
                     top: 0;
                     left: 50%;
                     display: inline-grid;
-                    grid-template-columns: max-content;
-                    justify-items: center;
+                    grid-template-columns: minmax(0, 1fr);
+                    justify-items: stretch;
                     width: max-content;
-                    min-width: max-content;
+                    min-width: 60px;
                     max-width: min(220px, calc(100vw - (var(--nav-horizontal-padding) * 2) - (var(--nav-relocate-reserve) * 2)));
                     white-space: nowrap;
                     direction: ltr;
@@ -366,8 +366,8 @@
                 .nav-primary-layer {
                     grid-area: 1 / 1;
                     display: block;
-                    width: max-content;
-                    min-width: max-content;
+                    width: 100%;
+                    min-width: 0;
                     max-width: 100%;
                     overflow: hidden;
                     text-overflow: ellipsis;
@@ -375,6 +375,7 @@
                     opacity: 0;
                     transform: translateY(0);
                     transition: opacity 240ms ease, transform 240ms ease;
+                    text-align: center;
                 }
                 #nav-primary-text {
                     --label-variant: full;
@@ -399,7 +400,7 @@
                     opacity: 0.8;
                 }
                 #nav-primary-text-compact {
-                    text-align: left;
+                    text-align: center;
                     box-sizing: border-box;
                 }
                 #nav-primary-percent[hidden] {
@@ -468,7 +469,7 @@
                     min-width: 0;
                     width: max-content;
                     max-width: max-content;
-                    position: fixed;
+                    position: absolute;
                     top: auto;
                     bottom: calc(
                         var(--manabi-toolbar-bottom-offset, 0px)
@@ -510,10 +511,6 @@
                     stroke: none;
                     flex-shrink: 0;
                 }
-                .nav-relocate-button[data-nav-rtl='true'] .nav-relocate-icon {
-                    transform: scaleX(-1);
-                    transform-origin: center;
-                }
                 .nav-relocate-page {
                     display: block;
                     min-width: 0;
@@ -528,20 +525,6 @@
                     text-overflow: ellipsis;
                     direction: ltr;
                     unicode-bidi: plaintext;
-                }
-                .nav-relocate-button[data-nav-edge='left'] {
-                    left: 0;
-                    right: auto;
-                }
-                .nav-relocate-button[data-nav-edge='right'] {
-                    left: auto;
-                    right: 0;
-                }
-                .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
-                    text-align: left;
-                }
-                .nav-relocate-button[data-nav-edge='right'] .nav-relocate-page {
-                    text-align: right;
                 }
                 #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
                 #nav-bar.nav-hidden-due-to-scroll .nav-section-progress {
@@ -712,7 +695,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px) + 8px);
+                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px) + 7px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -1270,16 +1253,14 @@
                     margin-right: calc(var(--side-nav-width, 32px) / 5);
                 }
                 #nav-relocate-back {
-                    left: 0;
+                    left: var(--nav-horizontal-padding);
+                    right: auto;
+                    text-align: left;
                 }
                 #nav-relocate-forward {
-                    right: 0;
-                }
-                body[data-book-dir="rtl"] #nav-relocate-back {
-                    left: var(--nav-page-read-clearance);
-                }
-                body[data-book-dir="rtl"] #nav-relocate-forward {
-                    right: 0;
+                    left: auto;
+                    right: var(--nav-horizontal-padding);
+                    text-align: right;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-relocate-back,
                 #nav-bar.nav-hidden-due-to-scroll #nav-relocate-forward,
@@ -1438,14 +1419,14 @@
                     <div id="nav-top-row">
                     <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled hidden>
                         <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
                         </svg>
                         <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
                     </button>
                     <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled hidden>
                         <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
                         <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
                         </svg>
                     </button>
                     <div id="nav-primary-cluster" aria-live="polite">
