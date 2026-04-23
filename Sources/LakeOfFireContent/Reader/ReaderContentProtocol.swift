@@ -40,6 +40,15 @@ public actor ReaderContentSyncStatusLoader {
     nonisolated(unsafe) public static var syncStatusLoader: (@Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?)?
 }
 
+@globalActor
+public actor ReaderContentBackgroundAnalysisLoader {
+    public static let shared = ReaderContentBackgroundAnalysisLoader()
+
+    public init() { }
+
+    nonisolated(unsafe) public static var inlineHTMLAnalysisEnqueuer: (@Sendable (URL, URL?, String?, String) async -> Void)?
+}
+
 public struct ReaderContentProgressMetadata: Sendable {
     public let totalWordCount: Int?
     public let remainingTime: TimeInterval?
@@ -619,6 +628,10 @@ public extension ReaderContentProtocol {
                 }
             }
         }()
+
+        if let html, !html.isEmpty {
+            await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
+        }
     }
     
     /// Returns whether a matching bookmark was found and deleted.
@@ -657,6 +670,7 @@ public extension ReaderContentProtocol {
         var imageURL: URL?
         let ref = ThreadSafeReference(to: self)
         let historyInlineContent = historyInlineContent
+        let historyInlineHTML = Self.contentToHTML(content: historyInlineContent)
         if let config = realm?.configuration {
             imageURL = try await { @MainActor in
                 let realm = try await Realm(configuration: config, actor: MainActor.shared)
@@ -691,6 +705,14 @@ public extension ReaderContentProtocol {
                 }
                 record.refreshChangeMetadata(explicitlyModified: true)
             }
+            if let historyInlineHTML, !historyInlineHTML.isEmpty {
+                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(
+                    pageURL,
+                    imageURL,
+                    sanitizedTitle,
+                    historyInlineHTML
+                )
+            }
             return record
         } else {
             let record = HistoryRecord()
@@ -718,9 +740,17 @@ public extension ReaderContentProtocol {
             try await realm.asyncWrite {
                 realm.add(record, update: .modified)
             }
-            
+
             try await record.refreshDemotedStatus()
 
+            if let historyInlineHTML, !historyInlineHTML.isEmpty {
+                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(
+                    pageURL,
+                    imageURL,
+                    sanitizedTitle,
+                    historyInlineHTML
+                )
+            }
             return record
         }
     }

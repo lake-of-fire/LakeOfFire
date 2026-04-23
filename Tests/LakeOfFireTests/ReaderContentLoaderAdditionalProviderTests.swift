@@ -29,6 +29,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
         let originalAdditionalProviders = ReaderContentLoader.additionalContentProviders
+        let originalInlineHTMLAnalysisEnqueuer = ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("LakeOfFireAdditionalProvider-\(UUID().uuidString)", isDirectory: true)
 
@@ -57,9 +58,25 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
                 ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
                 ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
                 ReaderContentLoader.additionalContentProviders = originalAdditionalProviders
+                ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = originalInlineHTMLAnalysisEnqueuer
                 try? FileManager.default.removeItem(at: directoryURL)
             }
         )
+    }
+
+    private actor InlineHTMLAnalysisRecorder {
+        struct Event: Sendable {
+            let url: URL
+            let imageURL: URL?
+            let title: String?
+            let html: String
+        }
+
+        private(set) var events = [Event]()
+
+        func append(url: URL, imageURL: URL?, title: String?, html: String) {
+            events.append(.init(url: url, imageURL: imageURL, title: title, html: html))
+        }
     }
 
     @MainActor
@@ -144,5 +161,44 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         XCTAssertNil(bookmark.html)
         XCTAssertNil(bookmark.content)
         XCTAssertNil(history.content)
+    }
+
+    @MainActor
+    func testBookmarkAndHistoryCreationEnqueueInlineHTMLAnalysis() async throws {
+        let (configuration, restore) = try makeConfiguration()
+        defer { restore() }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let recorder = InlineHTMLAnalysisRecorder()
+        ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer = { url, imageURL, title, html in
+            await recorder.append(url: url, imageURL: imageURL, title: title, html: html)
+        }
+
+        let contentURL = try XCTUnwrap(URL(string: "https://example.com/article"))
+        let imageURL = try XCTUnwrap(URL(string: "https://example.com/image.jpg"))
+        let html = "<html><body><manabi-segment>本文</manabi-segment></body></html>"
+        let realm = try Realm(configuration: configuration)
+        let content = Bookmark()
+        content.url = contentURL
+        content.title = "Inline Analysis"
+        content.imageUrl = imageURL
+        content.html = html
+        content.rssContainsFullContent = true
+        content.updateCompoundKey()
+
+        try realm.write {
+            realm.add(content, update: .modified)
+        }
+
+        let managedContent = try XCTUnwrap(realm.object(ofType: Bookmark.self, forPrimaryKey: content.compoundKey))
+        try await managedContent.addBookmark(realmConfiguration: configuration)
+        _ = try await managedContent.addHistoryRecord(realmConfiguration: configuration, pageURL: contentURL)
+
+        let events = await recorder.events
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events.map(\.url), [contentURL, contentURL])
+        XCTAssertEqual(events.map(\.imageURL), [imageURL, imageURL])
+        XCTAssertEqual(events.map(\.title), ["Inline Analysis", "Inline Analysis"])
+        XCTAssertTrue(events.allSatisfy { $0.html == html })
     }
 }
