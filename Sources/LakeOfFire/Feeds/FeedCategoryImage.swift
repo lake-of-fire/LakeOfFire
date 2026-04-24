@@ -5,12 +5,22 @@ public struct FeedCategoryImage: View {
     private let imageURL: URL
     
     public var body: some View {
-        EmptyView()
-        LakeImage(imageURL)
-            .scaledToFill()
-            .overlay {
-                Color.black.opacity(0.18)
+        GeometryReader { proxy in
+            LakeImage(imageURL)
+                .scaledToFill()
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .overlay {
+                    Color.black.opacity(0.18)
+                }
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
             }
+        .clipped()
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
     
     public init(imageURL: URL) {

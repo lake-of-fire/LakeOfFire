@@ -136,6 +136,7 @@ public struct ReaderContentCellAppearance {
     public var alwaysShowThumbnails: Bool
     public var isEbookStyle: Bool
     public var includeSource: Bool
+    public var showsNewBadge: Bool
     public var thumbnailDimension: CGFloat?
     public var thumbnailCornerRadius: CGFloat?
 
@@ -144,6 +145,7 @@ public struct ReaderContentCellAppearance {
         alwaysShowThumbnails: Bool = true,
         isEbookStyle: Bool = false,
         includeSource: Bool = false,
+        showsNewBadge: Bool = true,
         thumbnailDimension: CGFloat? = nil,
         thumbnailCornerRadius: CGFloat? = nil
     ) {
@@ -151,6 +153,7 @@ public struct ReaderContentCellAppearance {
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.isEbookStyle = isEbookStyle
         self.includeSource = includeSource
+        self.showsNewBadge = showsNewBadge
         self.thumbnailDimension = thumbnailDimension
         self.thumbnailCornerRadius = thumbnailCornerRadius
     }
@@ -204,6 +207,7 @@ extension ReaderContentProtocol {
         alwaysShowThumbnails: Bool = true,
         isEbookStyle: Bool = false,
         includeSource: Bool = false,
+        showsNewBadge: Bool = true,
         thumbnailDimension: CGFloat? = nil,
         thumbnailCornerRadius: CGFloat? = nil
     ) -> some View {
@@ -213,6 +217,7 @@ extension ReaderContentProtocol {
                 alwaysShowThumbnails: alwaysShowThumbnails,
                 isEbookStyle: isEbookStyle,
                 includeSource: includeSource,
+                showsNewBadge: showsNewBadge,
                 thumbnailDimension: thumbnailDimension,
                 thumbnailCornerRadius: thumbnailCornerRadius
             )
@@ -656,7 +661,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsNewBadge: Bool {
-        showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible)
+        appearance.showsNewBadge && (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
 
     @ViewBuilder

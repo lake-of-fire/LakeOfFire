@@ -1,5 +1,16 @@
 const MAX_RELOCATE_STACK = 50;
 const FRACTION_EPSILON = 0.000001;
+const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
+    'bridge.goToReaderPage',
+    'bridge.goToReaderLocation',
+    'bridge.goToReaderPercent',
+    'bridge.goToReaderHref',
+    'goToPercent',
+    'goToLocation',
+    'goToHref',
+    'relocate-button',
+    'scrub-release',
+]);
 
 // Focused pagination/bake diagnostics (capped to avoid spam)
 let logEBookPageNumCounter = 0;
@@ -201,7 +212,6 @@ export class NavigationHUD {
             back: document.getElementById('nav-relocate-label-back'),
             forward: document.getElementById('nav-relocate-label-forward'),
         };
-        this.completionStack = document.getElementById('completion-stack');
         this.progressWrapper = document.getElementById('progress-wrapper');
         this.progressSlider = document.getElementById('progress-slider');
         this.pageTrackingContainer = document.getElementById('page-tracking-container');
@@ -223,6 +233,7 @@ export class NavigationHUD {
             back: [],
             forward: [],
         };
+        this._explicitRelocateHistoryMutationSource = null;
         this.scrubSession = null;
         this.pendingReleasedScrubDescriptor = null;
         this.pendingRelocateJump = null;
@@ -286,6 +297,21 @@ export class NavigationHUD {
         } catch (_error) {
             // optional console logger
         }
+    }
+
+    requestExplicitRelocateHistoryMutation(source = 'unknown') {
+        this._explicitRelocateHistoryMutationSource = source;
+    }
+
+    #consumeExplicitRelocateHistoryMutation() {
+        const source = this._explicitRelocateHistoryMutationSource ?? null;
+        this._explicitRelocateHistoryMutationSource = null;
+        if (source) {
+            this._logJumpDiagnostic('relocate-history-explicit', {
+                source,
+            });
+        }
+        return source;
     }
 
     linearSectionCount = null;
@@ -1260,10 +1286,6 @@ export class NavigationHUD {
         const shouldShow = typeof forceShow === 'boolean'
             ? forceShow
             : !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
-        if (this.completionStack) {
-            this.completionStack.hidden = !shouldShow;
-            this.completionStack.style.display = shouldShow ? '' : 'none';
-        }
         const fadeTargets = [
             this.navRelocateButtons?.back,
             this.navRelocateButtons?.forward,
@@ -1357,14 +1379,29 @@ export class NavigationHUD {
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
         const reason = (detail?.reason || '').toLowerCase();
+        const explicitMutationSource = this.#consumeExplicitRelocateHistoryMutation();
+        const explicitMutate = EXPLICIT_RELOCATE_HISTORY_SOURCES.has(explicitMutationSource);
+        const isImplicitProgressEvent = !reason || reason === 'page' || reason === 'navigation' || reason === 'live-scroll';
         const shouldMutateRelocateHistory = !!(
-            reason === 'live-scroll'
-            || reason === 'navigation'
-            || this.pendingScrubCommit
+            (explicitMutate && !this.pendingScrubCommit)
             || this.isProcessingRelocateJump
             || this.pendingRelocateJump
-            || (this.scrubSession?.active && this.pendingScrubCommit)
         );
+        if (!shouldMutateRelocateHistory && isImplicitProgressEvent) {
+            this._logJumpDiagnostic('relocate-history-suppressed', {
+                reason,
+                backDepth: this.relocateStacks.back.length,
+                forwardDepth: this.relocateStacks.forward.length,
+                descriptor: this._serializeDescriptorForJumpLog(descriptor),
+                previousDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+                descriptorChanged: false,
+                source: isImplicitProgressEvent ? 'non-explicit-progress' : 'non-explicit-explicit-fallback',
+            });
+            this.currentLocationDescriptor = descriptor;
+            this.pendingReleasedScrubDescriptor = null;
+            this._maybeCommitPendingScrub(detail, descriptor);
+            return;
+        }
         const lastOrigin = this.scrubSession?.originDescriptor;
         // If the relocate matches the scrub origin immediately after a jump, don't clobber history yet.
         if (this.scrubSession?.pendingCommit && lastOrigin && this._isSameDescriptor(lastOrigin, descriptor)) {
@@ -1412,7 +1449,7 @@ export class NavigationHUD {
         }
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
-        const isJumpReason = isLiveScrollReason || reason === 'navigation';
+        const isJumpReason = isLiveScrollReason || explicitMutate || this.isProcessingRelocateJump || this.pendingRelocateJump;
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this._isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;
@@ -1454,6 +1491,8 @@ export class NavigationHUD {
         this._logJumpDiagnostic('relocate-history', {
             reason,
             isJumpReason,
+            explicitMutation: explicitMutate,
+            explicitMutationSource,
             historyMutationAllowed: shouldMutateRelocateHistory,
             descriptorChanged,
             backDepth: this.relocateStacks.back.length,
@@ -2479,6 +2518,8 @@ export class NavigationHUD {
             this._logJumpButton('tap-ignored-nodescriptor', { direction });
             return;
         }
+
+        this.requestExplicitRelocateHistoryMutation?.('relocate-button');
 
         const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
             ?? this._cloneDescriptor(this.currentLocationDescriptor)

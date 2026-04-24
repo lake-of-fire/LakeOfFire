@@ -123,6 +123,27 @@ private enum SwiftReadabilityProcessingOutcome {
     case failed
 }
 
+private func logTitleTrace(_ message: String) {
+    debugPrint("# TITLE \(message)")
+}
+
+private extension String {
+    var debugTitleFragment: String {
+        let normalized = replacingOccurrences(of: "\n", with: "\\n")
+        if normalized.isEmpty {
+            return "\"\""
+        }
+        return "\"\(normalized.truncate(120, trailing: "…"))\""
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var debugTitleFragment: String {
+        guard let value = self else { return "<nil>" }
+        return value.debugTitleFragment
+    }
+}
+
 private struct SwiftReadabilityProcessingResult {
     let outputHTML: String
 }
@@ -2085,6 +2106,22 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func resolveReaderModeRouteDecision(readerContent: ReaderContent) async -> ReaderModeRouteDecision {
         let startedAt = CFAbsoluteTimeGetCurrent()
+        let activeReaderFileManager = readerFileManager ?? .shared
+        if let content = try? await readerContent.getContent(),
+           content.rssContainsFullContent,
+           !content.isReaderModeByDefault {
+            if let html = try? await locallyRetrievableReaderHTML(
+                for: content,
+                readerFileManager: activeReaderFileManager
+            ),
+               !html.isEmpty {
+                return ReaderModeRouteDecision(
+                    route: .localHTML,
+                    prefetchedContent: content,
+                    prefetchedLocalHTML: html
+                )
+            }
+        }
         if let readabilityContent, !readabilityContent.isEmpty {
             debugPrint(
                 "# READERLOAD stage=readerMode.route.resolve",
@@ -2100,7 +2137,6 @@ public class ReaderModeViewModel: ObservableObject {
                 prefetchedLocalHTML: nil
             )
         }
-        let activeReaderFileManager = readerFileManager ?? .shared
         if let content = try? await readerContent.getContent(),
            let html = try? await locallyRetrievableReaderHTML(
                 for: content,
@@ -2468,6 +2504,10 @@ public class ReaderModeViewModel: ObservableObject {
                 .first?
                 .truncate(36) ?? ""
         }()
+        let titleForDisplay = content.titleForDisplay
+        logTitleTrace(
+            "stage=readerMode.showReadabilityContent.preflight contentURL=\(url.absoluteString) pageURL=\(readerContent.pageURL.absoluteString) contentType=\(String(describing: type(of: content))) existingTitle=\(content.title.debugTitleFragment) titleForDisplay=\(titleForDisplay.debugTitleFragment) shouldStoreReaderHTML=\(shouldStoreReaderHTML) resolvedTitleIfNeeded=\(resolvedTitleIfNeeded.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent)"
+        )
         let needsAsyncWrite =
             content.isReaderModeByDefault == false
             || content.isReaderModeAvailable == true
@@ -2497,6 +2537,9 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 content.refreshChangeMetadata(explicitlyModified: true)
             }
+            logTitleTrace(
+                "stage=readerMode.showReadabilityContent.persisted contentURL=\(url.absoluteString) storedHTML=\(resolvedStoredHTML != nil) resolvedTitleIfNeeded=\(resolvedTitleIfNeeded.debugTitleFragment) rssContainsFullContentSet=\(!url.isEBookURL && !url.isFileURL && !url.isNativeReaderView)"
+            )
         }
         
         if !isReaderMode {
@@ -2508,7 +2551,6 @@ public class ReaderModeViewModel: ObservableObject {
         }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
-        let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
@@ -2569,6 +2611,9 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
+            logTitleTrace(
+                "stage=readerMode.showReadabilityContent.derived contentURL=\(url.absoluteString) titleForDisplay=\(titleForDisplay.debugTitleFragment) derivedTitle=\(derivedTitle.debugTitleFragment) snippetRawTitle=\(snippetRawTitle.debugTitleFragment) prefersDirectSnippetParse=\(prefersDirectSnippetReadabilityParse)"
+            )
             await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
@@ -3492,7 +3537,7 @@ nonisolated public func processForReaderMode(
         if !isEBook {
             let fixTitlesStartedAt = Date()
             do {
-                try fixAnnoyingTitlesWithPipes(doc: doc)
+                try fixAnnoyingTitlesWithPipes(doc: doc, url: url)
             } catch { }
             debugPrint(
                 "# READERLOAD stage=readerMode.processForReaderMode.fixTitles",

@@ -286,25 +286,36 @@ private func hypebeast(doc: Document) throws {
     try doc.getElementById("post-feed")?.remove()
 }
 
-public func fixAnnoyingTitlesWithPipes(doc: Document) throws {
+public func fixAnnoyingTitlesWithPipes(doc: Document, url: URL) throws {
+    guard shouldPreferPipePrefixTitle(url: url) else { return }
     guard let titleElement = try doc.getElementById("reader-title") else { return }
     let textNodes = try titleElement.textNodes()
     for node in textNodes {
         let original = node.getWholeText()
-        let updated = fixAnnoyingTitlesWithPipes(title: original)
+        let updated = fixAnnoyingTitlesWithPipes(title: original, url: url)
         node.text(updated)
     }
 }
 
 public func fixAnnoyingTitlesWithPipes(title: String) -> String {
+    title
+}
+
+public func fixAnnoyingTitlesWithPipes(title: String, url: URL) -> String {
+    guard shouldPreferPipePrefixTitle(url: url) else { return title }
     guard let range = title.range(of: "|", options: .backwards) else { return title }
     let beforeText = String(title[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-    let afterText = String(title[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-    if containsCJKCharacters(text: afterText) {
-        return afterText
-    } else {
-        return beforeText
-    }
+    return beforeText.isEmpty ? title : beforeText
+}
+
+private func shouldPreferPipePrefixTitle(url: URL) -> Bool {
+    guard let host = url.host?.lowercased() else { return false }
+    return host == "matcha-jp.com"
+        || host.hasSuffix(".matcha-jp.com")
+        || host == "news.web.nhk"
+        || host.hasSuffix(".news.web.nhk")
+        || host == "www3.nhk.or.jp"
+        || host.hasSuffix(".nhk.or.jp")
 }
 
 public func wireViewOriginalLinks(doc: Document, url: URL) throws {

@@ -84,6 +84,49 @@ const postPageNumLog = (event, details = {}) => {
     }
 };
 
+const postMarkReadLog = (event, details = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    const line = `# MARKREAD ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        // optional native logger
+    }
+    try {
+        console.log(line);
+    } catch (_error) {
+        // optional console logger
+    }
+};
+
+const describeMarkReadNode = (node) => {
+    if (!node) return null;
+    const element = node.nodeType === Node.ELEMENT_NODE
+        ? node
+        : (node.parentElement || null);
+    if (!element) {
+        return {
+            nodeType: node.nodeType ?? null,
+            nodeName: node.nodeName || null,
+        };
+    }
+    return {
+        nodeType: node.nodeType ?? null,
+        nodeName: node.nodeName || null,
+        elementTag: element.tagName || null,
+        elementID: element.id || null,
+        classSample: typeof element.className === 'string'
+            ? element.className.split(/\s+/).filter(Boolean).slice(0, 4)
+            : [],
+        segmentIdentifier: segmentIdentifierForNode(element),
+        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('manabi-sentence') || null),
+    };
+};
+
 const MANABI_RESTORE_LOCATOR_PREFIX = 'manabi-loc-v1:';
 
 const makeSyntheticRestoreLocator = ({ sectionIndex, localSectionIndex, rendererTotal }) => {
@@ -589,6 +632,34 @@ window.manabi_recordLiveSettledSection = (href) => {
     }
 };
 
+window.manabi_syncLiveSettledSections = (payload = {}) => {
+    const rawHrefs =
+        (Array.isArray(payload.hrefs) && payload.hrefs)
+        || (Array.isArray(payload.settledSectionHrefs) && payload.settledSectionHrefs)
+        || [];
+    const nextSettledSectionHrefs = Array.from(new Set(
+        rawHrefs.map((href) => normalizeSpineHref(href)).filter(Boolean)
+    )).sort();
+    const previousFirstLiveHref = firstLiveSectionHref();
+    const previousSettledSectionHrefs = Array.from(liveSettledSectionHrefSet()).sort();
+    globalThis.__manabiLiveSettledSectionHrefs = new Set(nextSettledSectionHrefs);
+    if (typeof payload.firstLiveHref === 'string' && payload.firstLiveHref.length > 0) {
+        globalThis.__manabiFirstLiveSectionHref = normalizeSpineHref(payload.firstLiveHref);
+    }
+    const nextFirstLiveHref = firstLiveSectionHref();
+    const didChange =
+        previousFirstLiveHref !== nextFirstLiveHref
+        || previousSettledSectionHrefs.length !== nextSettledSectionHrefs.length
+        || previousSettledSectionHrefs.some((href, index) => href !== nextSettledSectionHrefs[index]);
+    if (!didChange) return;
+    postReplaceTextPerfLog('live-sections.synced', {
+        firstLiveHref: nextFirstLiveHref,
+        settledSectionCount: nextSettledSectionHrefs.length,
+        settledSectionHrefs: nextSettledSectionHrefs,
+        ...captureEPUBOverlapState(),
+    });
+};
+
 const isForegroundReaderIdle = () => {
     const bodyLoading = !!document.body?.classList?.contains?.('loading');
     const firstLiveHref = firstLiveSectionHref();
@@ -605,7 +676,12 @@ const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
     if (globalThis.__manabiCacheWarmerOpenPromise) {
         return await globalThis.__manabiCacheWarmerOpenPromise;
     }
+    window.webkit?.messageHandlers?.syncCacheWarmerLiveSettledSections?.postMessage?.({
+        topWindowURL: window.top.location.href,
+    });
     if (!isForegroundReaderIdle()) {
+        const firstLiveHref = firstLiveSectionHref();
+        const firstLiveSettled = !!firstLiveHref && liveSettledSectionHrefSet().has(firstLiveHref);
         const retryDelayMs = Math.min(250 + (attempt * 150), 1500);
         clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
         globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
@@ -617,12 +693,18 @@ const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
                 attempt,
                 retryDelayMs,
                 bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                firstLiveHref: firstLiveHref ?? null,
+                firstLiveSettled,
+                settledSectionCount: liveSettledSectionHrefSet().size,
                 ...captureEPUBOverlapState(),
             });
             postReplaceTextPerfLog('cache-warmer.deferred', {
                 attempt,
                 retryDelayMs,
                 bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                firstLiveHref: firstLiveHref ?? null,
+                firstLiveSettled,
+                settledSectionCount: liveSettledSectionHrefSet().size,
                 ...captureEPUBOverlapState(),
             });
         }
@@ -1387,7 +1469,7 @@ const rectIntersectsViewport = (rect, viewportWidth, viewportHeight) => {
         && rect.top < viewportHeight;
 };
 
-const collectVisibleSegmentNodes = (doc) => {
+const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     if (!isDocumentLike(doc)) {
         return {
             visibleSegments: [],
@@ -1399,14 +1481,46 @@ const collectVisibleSegmentNodes = (doc) => {
             outOfViewportCount: 0,
         };
     }
+    const startedAt = performance.now();
     const viewportWidth = doc.documentElement?.clientWidth || doc.defaultView?.innerWidth || 0;
     const viewportHeight = doc.documentElement?.clientHeight || doc.defaultView?.innerHeight || 0;
+    const allSegmentNodes = Array.from(doc.querySelectorAll('manabi-segment'));
+    const queryCompletedAt = performance.now();
+    const rangeCommonAncestor = visibleRange?.commonAncestorContainer ?? null;
+    const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
+        ? rangeCommonAncestor
+        : (rangeCommonAncestor?.parentElement || null);
+    const ancestorSegmentCandidateCount = rangeCommonAncestorElement?.querySelectorAll
+        ? rangeCommonAncestorElement.querySelectorAll('manabi-segment').length
+        : null;
+    postMarkReadLog('visibleRange.collect.start', {
+        documentURL: doc.URL || doc.location?.href || null,
+        hasVisibleRange: !!visibleRange,
+        segmentCandidateCount: allSegmentNodes.length,
+        ancestorSegmentCandidateCount,
+        viewportWidth,
+        viewportHeight,
+        queryElapsedMs: safeRound(queryCompletedAt - startedAt, 2),
+        rangeStartContainer: visibleRange?.startContainer?.nodeName || null,
+        rangeEndContainer: visibleRange?.endContainer?.nodeName || null,
+        rangeStartOffset: typeof visibleRange?.startOffset === 'number' ? visibleRange.startOffset : null,
+        rangeEndOffset: typeof visibleRange?.endOffset === 'number' ? visibleRange.endOffset : null,
+        rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+        rangeCommonAncestor: describeMarkReadNode(rangeCommonAncestor),
+        rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
+        rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+    });
     const visibleSegments = [];
     let totalSegmentCount = 0;
     let hiddenTooltipCount = 0;
     let missingIdentifierCount = 0;
     let outOfViewportCount = 0;
-    for (const segmentNode of doc.querySelectorAll('manabi-segment')) {
+    let visibleRangeCheckCount = 0;
+    let visibleRangeErrorCount = 0;
+    let rectMeasureCount = 0;
+    let rectMeasureElapsedMs = 0;
+    let rangeCheckElapsedMs = 0;
+    for (const segmentNode of allSegmentNodes) {
         totalSegmentCount += 1;
         if (segmentNode.closest('.tippy-box')) {
             hiddenTooltipCount += 1;
@@ -1417,8 +1531,26 @@ const collectVisibleSegmentNodes = (doc) => {
             missingIdentifierCount += 1;
             continue;
         }
+        const rectStartedAt = performance.now();
         const rect = segmentNode.getBoundingClientRect();
-        if (!rectIntersectsViewport(rect, viewportWidth, viewportHeight)) {
+        rectMeasureCount += 1;
+        rectMeasureElapsedMs += performance.now() - rectStartedAt;
+        const isInVisibleRange = visibleRange
+            ? (() => {
+                const rangeStartedAt = performance.now();
+                try {
+                    visibleRangeCheckCount += 1;
+                    const didIntersect = visibleRange.intersectsNode(segmentNode);
+                    rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+                    return didIntersect;
+                } catch (_error) {
+                    visibleRangeErrorCount += 1;
+                    rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+                    return false;
+                }
+            })()
+            : rectIntersectsViewport(rect, viewportWidth, viewportHeight);
+        if (!isInVisibleRange) {
             outOfViewportCount += 1;
             continue;
         }
@@ -1430,6 +1562,36 @@ const collectVisibleSegmentNodes = (doc) => {
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
+    const completedAt = performance.now();
+    postMarkReadLog('visibleRange.collect.end', {
+        documentURL: doc.URL || doc.location?.href || null,
+        hasVisibleRange: !!visibleRange,
+        segmentCandidateCount: allSegmentNodes.length,
+        totalSegmentCount,
+        visibleSegmentCount: visibleSegments.length,
+        hiddenTooltipCount,
+        missingIdentifierCount,
+        outOfViewportCount,
+        visibleRangeCheckCount,
+        visibleRangeErrorCount,
+        rectMeasureCount,
+        rectMeasureElapsedMs: safeRound(rectMeasureElapsedMs, 2),
+        rangeCheckElapsedMs: safeRound(rangeCheckElapsedMs, 2),
+        firstVisibleSegmentSample: visibleSegments[0]
+            ? {
+                segmentIdentifier: visibleSegments[0].segmentIdentifier,
+                sentenceIdentifier: visibleSegments[0].sentenceIdentifier,
+            }
+            : null,
+        lastVisibleSegmentSample: visibleSegments.length > 0
+            ? {
+                segmentIdentifier: visibleSegments[visibleSegments.length - 1].segmentIdentifier,
+                sentenceIdentifier: visibleSegments[visibleSegments.length - 1].sentenceIdentifier,
+            }
+            : null,
+        totalElapsedMs: safeRound(completedAt - startedAt, 2),
+        loopElapsedMs: safeRound(completedAt - queryCompletedAt, 2),
+    });
     return {
         visibleSegments,
         viewportWidth,
@@ -1441,7 +1603,7 @@ const collectVisibleSegmentNodes = (doc) => {
     };
 };
 
-const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
+const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
     const {
@@ -1452,7 +1614,7 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
         hiddenTooltipCount,
         missingIdentifierCount,
         outOfViewportCount,
-    } = collectVisibleSegmentNodes(doc);
+    } = collectVisibleSegmentNodesFromRange(doc, visibleRange);
     const clusterAxis = !!doc?.body?.classList?.contains?.('reader-vertical-writing') ? 'block' : 'inline';
     let skippedMissingSearchStringCount = 0;
     const dedupedSegments = new Map();
@@ -1953,6 +2115,8 @@ class Reader {
     hasLoadedLastPosition = false
     markedAsFinished = false;
     showingCompletionButtons = false;
+    completionAction = null;
+    completionActionBusy = false;
     lastPercentValue = null;
     articleReadingProgress = normalizeArticleReadingProgress();
     pageTrackingStates = [];
@@ -2050,6 +2214,7 @@ class Reader {
         if (!this.view || typeof href !== 'string' || !href) {
             return false;
         }
+        this.navHUD?.requestExplicitRelocateHistoryMutation?.('goToHref');
         postEPUBLog('ebook.goTo.href.request', {
             source,
             href,
@@ -2061,6 +2226,7 @@ class Reader {
         if (!this.view) {
             return false;
         }
+        this.navHUD?.requestExplicitRelocateHistoryMutation?.('goToPercent');
         const numericPercent = Number(percent);
         const clampedPercent = Math.max(0, Math.min(100, numericPercent));
         if (!Number.isFinite(clampedPercent)) {
@@ -2079,6 +2245,7 @@ class Reader {
         if (!this.view) {
             return false;
         }
+        this.navHUD?.requestExplicitRelocateHistoryMutation?.('goToLocation');
         const numericLocationNumber = Number(locationNumber);
         const locationTotalHint = this.navHUD?.getLocationTotalHint?.()
             ?? this.navHUD?.currentLocationDescriptor?.locationTotalHint
@@ -2366,7 +2533,15 @@ class Reader {
         })
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
         document.getElementById('page-tracking-buttons')?.addEventListener('click', (event) => {
-            const button = event.target?.closest?.('button[data-page-tracking-id]');
+            const button = event.target?.closest?.('button[data-page-tracking-id], button[data-completion-action]');
+            if (!button) {
+                return;
+            }
+            const completionAction = button.dataset?.completionAction;
+            if (completionAction) {
+                this.#handleCompletionAction(completionAction).catch((error) => console.error(error));
+                return;
+            }
             const stateID = button?.dataset?.pageTrackingId;
             if (!stateID) {
                 return;
@@ -2379,6 +2554,19 @@ class Reader {
     #logPageTracking(event, details = {}) {
         postReaderLog(event, details);
     }
+    #logMarkRead(event, details = {}) {
+        postMarkReadLog(event, details);
+    }
+    #summarizeMarkReadIDs(segmentIdentifiers = [], sentenceIdentifiers = []) {
+        const safeSegments = Array.isArray(segmentIdentifiers) ? segmentIdentifiers : [];
+        const safeSentences = Array.isArray(sentenceIdentifiers) ? sentenceIdentifiers : [];
+        return {
+            segmentIdentifierCount: safeSegments.length,
+            segmentIdentifierSample: safeSegments.slice(0, 3),
+            sentenceIdentifierCount: safeSentences.length,
+            sentenceIdentifierSample: safeSentences.slice(0, 3),
+        };
+    }
     #queuePageTrackingRetry(reason, explicitDoc, retryCount) {
         if (retryCount <= 0) {
             return;
@@ -2388,7 +2576,7 @@ class Reader {
         }
         this.pageTrackingRetryHandle = requestAnimationFrame(() => {
             this.pageTrackingRetryHandle = null;
-            this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1);
+            this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1).catch((error) => console.error(error));
         });
     }
     queueLayoutDiagnostics(reason = 'unknown', extra = null) {
@@ -2749,12 +2937,36 @@ class Reader {
         }
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
-        const shouldShowPageTracking = hasStates && !this.showingCompletionButtons;
+        const completionAction = this.completionAction;
+        const shouldShowPageTracking = !!completionAction || hasStates;
         container.hidden = !shouldShowPageTracking;
         buttonHost.hidden = !shouldShowPageTracking;
         if (!shouldShowPageTracking) {
             buttonHost.innerHTML = '';
             this.navHUD?.refreshAuxiliaryLayout?.();
+            return;
+        }
+        if (completionAction) {
+            const isBusy = !!this.completionActionBusy;
+            buttonHost.innerHTML = `
+                <button
+                    class="page-read-button manabi-tracking-button"
+                    data-completion-action="${completionAction.type}"
+                    data-completion-tone="${completionAction.tone}"
+                    data-manabi-force-expanded="true"
+                    aria-label="${completionAction.label}"
+                    ${isBusy ? 'disabled' : ''}
+                >
+                    <span class="manabi-tracking-button-status" aria-hidden="true"></span>
+                    <span class="manabi-tracking-button-label" aria-hidden="true">${completionAction.label}</span>
+                    <span class="sr-only">${completionAction.label}</span>
+                </button>
+            `;
+            this.navHUD?.refreshAuxiliaryLayout?.();
+            this.#queueLayoutDiagnostics('page-tracking-render', {
+                completionAction: completionAction.type,
+                stateCount: 0,
+            });
             return;
         }
         buttonHost.innerHTML = pageTrackingStates.map((state) => {
@@ -2808,7 +3020,7 @@ class Reader {
             await this.view.goRight();
         }
     }
-    #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
+    async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
         const isRestorePending =
             reason === 'document-load'
             && globalThis.reader
@@ -2853,10 +3065,50 @@ class Reader {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
             this.pageTrackingRetryHandle = null;
         }
+        const visibleRange = this.navHUD?.lastRelocateDetail?.range?.commonAncestorContainer?.ownerDocument === doc
+            || this.navHUD?.lastRelocateDetail?.range?.startContainer?.ownerDocument === doc
+            ? this.navHUD.lastRelocateDetail.range
+            : null;
+        this.#logMarkRead('pageState.sync.start', {
+            reason,
+            documentURL: doc.URL || doc.location?.href || null,
+            retryCount,
+            hasVisibleRange: !!visibleRange,
+            visibleRangeStartContainer: visibleRange?.startContainer?.nodeName || null,
+            visibleRangeEndContainer: visibleRange?.endContainer?.nodeName || null,
+        });
+        const syncStartedAt = performance.now();
         const {
             states,
             diagnostics,
-        } = buildVisiblePageTrackingStates(doc, this.articleReadingProgress);
+        } = await buildVisiblePageTrackingStates(doc, this.articleReadingProgress, visibleRange);
+        this.#logMarkRead('pageState.sync.end', {
+            reason,
+            documentURL: diagnostics.documentURL,
+            retryCount,
+            stateCount: diagnostics.stateCount,
+            visibleSegmentCount: diagnostics.visibleSegmentCount,
+            totalSegmentCount: diagnostics.totalSegmentCount,
+            usedFoliateRange: !!visibleRange,
+            elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
+        });
+        const visibleScreenState = states.find((state) => state.id === 'visible-screen') ?? null;
+        this.#logMarkRead('pageState.result', {
+            reason,
+            documentURL: diagnostics.documentURL,
+            stateCount: diagnostics.stateCount,
+            visibleSegmentCount: diagnostics.visibleSegmentCount,
+            unreadVisibleSegmentCount: visibleScreenState?.unreadVisibleSegmentCount ?? 0,
+            selectedSegmentCount: visibleScreenState?.payload?.segments?.length ?? 0,
+            selectedSentenceCount: visibleScreenState?.payload?.sentenceIdentifiers?.length ?? 0,
+            readSegmentCount: diagnostics.readSegmentCount,
+            readSentenceCount: diagnostics.readSentenceCount,
+            segmentIdentifierSample: (visibleScreenState?.payload?.segments ?? [])
+                .map((segment) => segment.segmentIdentifier)
+                .slice(0, 3),
+            sentenceIdentifierSample: (visibleScreenState?.payload?.sentenceIdentifiers ?? []).slice(0, 3),
+            usedFoliateRange: !!visibleRange,
+        });
         const shouldRetryEmptyDocument =
             retryCount > 0
             && diagnostics.stateCount === 0
@@ -2939,6 +3191,7 @@ class Reader {
         this.articleReadingProgress = normalizeArticleReadingProgress(articleReadingProgress);
         this.markedAsFinished = !!this.articleReadingProgress.articleMarkedAsFinished;
         this.pageTrackingBusyStateIDs.clear();
+        this.completionActionBusy = false;
         const progressKey = JSON.stringify({
             articleMarkedAsFinished: this.articleReadingProgress.articleMarkedAsFinished,
             sentenceIdentifiersRead: this.articleReadingProgress.sentenceIdentifiersRead.length,
@@ -2954,15 +3207,78 @@ class Reader {
                 articleSentenceCount: this.articleReadingProgress.articleSentenceCount,
             });
         }
-        this.#syncPageTrackingButtons('progress-applied', null, 2);
+        this.#syncPageTrackingButtons('progress-applied', null, 2).catch((error) => console.error(error));
         this.#queueLayoutDiagnostics('progress-applied', {
             articleSentenceCount: this.articleReadingProgress.articleSentenceCount,
             readSegmentIdentifiers: this.articleReadingProgress.readSegmentIdentifiers.length,
         });
     }
+    async #handleCompletionAction(actionType) {
+        if (this.completionActionBusy) {
+            this.#logMarkRead('completion.ignored', {
+                actionType,
+                reason: 'busy',
+                currentAction: this.completionAction?.type ?? null,
+            });
+            return;
+        }
+        this.#logMarkRead('completion.click', {
+            actionType,
+            label: this.completionAction?.label ?? null,
+            currentAction: this.completionAction?.type ?? null,
+            markedAsFinished: this.markedAsFinished,
+        });
+        this.completionActionBusy = true;
+        this.#renderPageTrackingButtons('completion-action-busy');
+        this.#logMarkRead('completion.busy', {
+            actionType,
+            label: this.completionAction?.label ?? null,
+        });
+        try {
+            switch (actionType) {
+                case 'finish':
+                    this.#logMarkRead('completion.finish.dispatch', {
+                        actionType,
+                        label: this.completionAction?.label ?? null,
+                    });
+                    window.webkit.messageHandlers.finishedReadingBook.postMessage({
+                        topWindowURL: window.top.location.href,
+                    });
+                    break;
+                case 'restart':
+                    this.#logMarkRead('completion.restart.dispatch', {
+                        actionType,
+                        label: this.completionAction?.label ?? null,
+                    });
+                    window.webkit.messageHandlers.startOver.postMessage({});
+                    await this.view?.renderer?.firstSection?.();
+                    this.#logMarkRead('completion.restart.resetToFirstSection', {
+                        actionType,
+                    });
+                    break;
+                default:
+                    this.#logMarkRead('completion.unknown', {
+                        actionType,
+                    });
+                    break;
+            }
+        } finally {
+            if (actionType !== 'finish') {
+                this.completionActionBusy = false;
+                this.#renderPageTrackingButtons('completion-action-finished');
+                this.#logMarkRead('completion.idle', {
+                    actionType,
+                });
+            }
+        }
+    }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
+            this.#logMarkRead('markRead.skip', {
+                reason: 'missing-state',
+                stateID,
+            });
             this.#logPageTracking('ebook.pageTracking.markRead.skip', {
                 reason: 'missing-state',
                 stateID,
@@ -2970,6 +3286,10 @@ class Reader {
             return;
         }
         if (pageTrackingState.payload.segments.length === 0) {
+            this.#logMarkRead('markRead.skip', {
+                reason: 'empty-payload',
+                stateID,
+            });
             this.#logPageTracking('ebook.pageTracking.markRead.skip', {
                 reason: 'empty-payload',
                 stateID,
@@ -2977,12 +3297,27 @@ class Reader {
             return;
         }
         if (pageTrackingState.isRead) {
+            this.#logMarkRead('markRead.skip', {
+                reason: 'already-read',
+                stateID,
+            });
             this.#logPageTracking('ebook.pageTracking.markRead.skip', {
                 reason: 'already-read',
                 stateID,
             });
             return;
         }
+        this.#logMarkRead('markRead.click', {
+            stateID,
+            fullLabel: pageTrackingState.fullLabel,
+            shortLabel: pageTrackingState.shortLabel,
+            visibleSegmentCount: pageTrackingState.visibleSegmentCount,
+            unreadVisibleSegmentCount: pageTrackingState.unreadVisibleSegmentCount,
+            ...this.#summarizeMarkReadIDs(
+                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
+                pageTrackingState.payload.sentenceIdentifiers,
+            ),
+        });
         this.#logPageTracking('ebook.pageTracking.markRead.start', {
             stateID,
             visibleSegmentCount: pageTrackingState.visibleSegmentCount,
@@ -2991,7 +3326,23 @@ class Reader {
             sentenceIdentifierCount: pageTrackingState.payload.sentenceIdentifiers.length,
         });
         this.pageTrackingBusyStateIDs.add(stateID);
+        this.#logMarkRead('markRead.busy', {
+            stateID,
+            payloadSegmentCount: pageTrackingState.payload.segments.length,
+            ...this.#summarizeMarkReadIDs(
+                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
+                pageTrackingState.payload.sentenceIdentifiers,
+            ),
+        });
         this.#renderPageTrackingButtons('mark-read-busy');
+        this.#logMarkRead('markRead.dispatch', {
+            stateID,
+            payloadSegmentCount: pageTrackingState.payload.segments.length,
+            ...this.#summarizeMarkReadIDs(
+                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
+                pageTrackingState.payload.sentenceIdentifiers,
+            ),
+        });
         window.webkit.messageHandlers.markSectionAsRead.postMessage(pageTrackingState.payload);
         const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
         optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
@@ -3003,6 +3354,15 @@ class Reader {
             ...pageTrackingState.payload.sentenceIdentifiers,
         ]));
         this.applyBookReadingProgress(optimisticProgress);
+        this.#logMarkRead('markRead.optimisticApplied', {
+            stateID,
+            readSegmentIdentifiers: optimisticProgress.readSegmentIdentifiers.length,
+            sentenceIdentifiersRead: optimisticProgress.sentenceIdentifiersRead.length,
+            ...this.#summarizeMarkReadIDs(
+                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
+                pageTrackingState.payload.sentenceIdentifiers,
+            ),
+        });
         this.#logPageTracking('ebook.pageTracking.markRead.optimisticApplied', {
             stateID,
             readSegmentIdentifiers: optimisticProgress.readSegmentIdentifiers.length,
@@ -3072,8 +3432,6 @@ class Reader {
         this.buttons = {
             prev: document.getElementById('btn-prev-chapter'),
             next: document.getElementById('btn-next-chapter'),
-            finish: document.getElementById('btn-finish'),
-            restart: document.getElementById('btn-restart'),
         };
         // Hide all other nav buttons except spinners
         for (const btn of Object.values(this.buttons)) {
@@ -3270,7 +3628,7 @@ class Reader {
             if (!isNaN(value) && value >= 0 && value <= 100) {
                 this.lastPercentValue = value;
                 percentButton.disabled = true;
-                this.view.goToFraction(value / 100);
+                this.goToPercent(value, 'sidebar-percent-jump-button');
             }
         });
         
@@ -3443,7 +3801,7 @@ class Reader {
     
     async updateNavButtons() {
         const navVisibilityBefore = captureNavVisibilityState();
-        // Remove any nav-spinner left over from finish/restart click
+        // Remove any nav-spinner left over from chapter navigation click
         document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
             const btn = spinner.closest('button');
             if (btn && btn._originalIcon) {
@@ -3488,36 +3846,41 @@ class Reader {
                     : null));
         const isSinglePageMetadataSection = isMetadataSection && pageCount === 1;
         const finishLabel = isSinglePageMetadataSection ? 'Mark Read' : 'Finish Chapter';
-        const finishFullLabel = this.buttons.finish?.querySelector('.button-label.full');
-        const finishShortLabel = this.buttons.finish?.querySelector('.button-label.short');
-        if (finishFullLabel) finishFullLabel.textContent = finishLabel;
-        if (finishShortLabel) finishShortLabel.textContent = finishLabel;
-        if (this.buttons.finish) this.buttons.finish.setAttribute('aria-label', finishLabel);
+        const isRestartHiddenForMiddlePageWhileNavHidden =
+            !!this.markedAsFinished
+            && !!this.navHUD?.hideNavigationDueToScroll
+            && !atSectionStart
+            && !atSectionEnd;
+        const completionAction = this.markedAsFinished
+            ? (isRestartHiddenForMiddlePageWhileNavHidden
+                ? null
+                : {
+                    type: 'restart',
+                    label: 'Start Over',
+                    tone: 'restart',
+                })
+            : (atSectionEnd && !hasNextSection
+                ? {
+                    type: 'finish',
+                    label: finishLabel,
+                    tone: 'finish',
+                }
+                : null);
+        this.completionAction = completionAction;
+        if (!completionAction) {
+            this.completionActionBusy = false;
+        }
         
         this.#show(this.buttons.prev, atSectionStart && hasPrevSection);
         
         if (atSectionEnd && hasNextSection) {
             this.#show(this.buttons.next, true);
-            this.#show(this.buttons.finish, false);
-            this.#show(this.buttons.restart, false);
-        } else if (atSectionEnd && !hasNextSection) {
-            this.#show(this.buttons.next, false);
-            if (this.markedAsFinished) {
-                this.#show(this.buttons.restart, true);
-                this.#show(this.buttons.finish, false);
-            } else {
-                this.#show(this.buttons.finish, true);
-                this.#show(this.buttons.restart, false);
-            }
         } else {
             this.#show(this.buttons.next, false);
-            this.#show(this.buttons.finish, false);
-            this.#show(this.buttons.restart, false);
         }
-        const showingCompletion = !!(this.buttons.finish && !this.buttons.finish.hidden)
-            || !!(this.buttons.restart && !this.buttons.restart.hidden);
+        const showingCompletion = !!completionAction;
         this.showingCompletionButtons = showingCompletion;
-        this.navHUD?._toggleCompletionStack?.(showingCompletion);
+        this.navHUD?._toggleCompletionStack?.(false);
         
         // RTL/LTR logic for disabling/hiding side chevrons
         const btnScrollLeft = document.getElementById('btn-scroll-left');
@@ -3536,23 +3899,13 @@ class Reader {
             }
         }
         
-        // Consolidate restart icon SVG path update
-        const restartBtn = this.buttons.restart;
-        if (restartBtn) {
-            const iconPath = restartBtn.querySelector('svg path');
-            if (iconPath) {
-                iconPath.setAttribute('d', 'M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z');
-                iconPath.setAttribute('fill', 'currentColor');
-                iconPath.setAttribute('stroke', 'none');
-            }
-        }
         this.navHUD?.setNavContext({
             atSectionStart,
             atSectionEnd,
             hasPrevSection,
             hasNextSection,
-            showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
-            showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
+            showingFinish: false,
+            showingRestart: false,
             sections: this.view?.book?.sections ?? [],
         });
         postPageNumLog('nav.sections.handoff', {
@@ -3579,15 +3932,19 @@ class Reader {
             atSectionEnd,
             hasPrevSection,
             hasNextSection,
-            showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
-            showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
+            markedAsFinished: this.markedAsFinished,
+            restartHiddenForMiddlePageWhileNavHidden: isRestartHiddenForMiddlePageWhileNavHidden,
+            showingFinish: !!(completionAction?.type === 'finish'),
+            showingRestart: !!(completionAction?.type === 'restart'),
             before: navVisibilityBefore,
             after: captureNavVisibilityState(),
         });
-        this.#syncPageTrackingButtons('nav-buttons', null, 1);
+        this.#syncPageTrackingButtons('nav-buttons', null, 1).catch((error) => console.error(error));
         this.#queueLayoutDiagnostics('nav-buttons', {
-            showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
-            showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
+            markedAsFinished: this.markedAsFinished,
+            restartHiddenForMiddlePageWhileNavHidden: isRestartHiddenForMiddlePageWhileNavHidden,
+            showingFinish: !!(completionAction?.type === 'finish'),
+            showingRestart: !!(completionAction?.type === 'restart'),
             showPrev: !!(this.buttons.prev && !this.buttons.prev.hidden),
             showNext: !!(this.buttons.next && !this.buttons.next.hidden),
         });
@@ -3751,7 +4108,7 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
-        requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2));
+        requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2).catch((error) => console.error(error)));
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
         });
@@ -4035,21 +4392,8 @@ class Reader {
             case 'next':
                 nav = this.view.renderer.nextSection();
                 break;
-            case 'finish':
-                window.webkit.messageHandlers.finishedReadingBook.postMessage({
-                    topWindowURL: window.top.location.href,
-                });
-                nav = Promise.resolve();
-                break;
-            case 'restart':
-                window.webkit.messageHandlers.startOver.postMessage({});
-                await this.view.renderer.firstSection();
-                nav = Promise.resolve();
-                break;
         }
         Promise.resolve(nav).finally(() => {
-            // Keep spinner for 'finish' or 'restart' – Swift layer will handle refresh
-            if (type === 'finish' || type === 'restart') return;
             restoreIcon();
         });
     }
@@ -4888,6 +5232,7 @@ window.manabiScheduleReaderPageGoTo = (pageNumber) => {
 }
 
 window.manabiGoToReaderPage = async (pageNumber) => {
+    globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderPage');
     return await globalThis.reader?.goToPageNumber?.(pageNumber, 'window.manabiGoToReaderPage');
 }
 
@@ -4896,14 +5241,17 @@ window.manabiScheduleReaderLocationGoTo = (locationNumber) => {
 }
 
 window.manabiGoToReaderLocation = async (locationNumber) => {
+    globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderLocation');
     return await globalThis.reader?.goToLocationNumber?.(locationNumber, 'window.manabiGoToReaderLocation');
 }
 
 window.manabiGoToReaderPercent = async (percent) => {
+    globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderPercent');
     return await globalThis.reader?.goToPercent?.(percent, 'window.manabiGoToReaderPercent');
 }
 
 window.manabiGoToReaderHref = async (href) => {
+    globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderHref');
     return await globalThis.reader?.goToHref?.(href, 'window.manabiGoToReaderHref');
 }
 
@@ -5030,6 +5378,7 @@ window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
             forwardDepth: navHUD?.relocateStacks?.forward?.length ?? 0,
         });
         try {
+            navHUD?.requestExplicitRelocateHistoryMutation?.('scrub-release');
             await view.goToFraction(clampedFraction);
             postEBookJumpLog('scrub-release-resolved', {
                 requestedFraction: clampedFraction,

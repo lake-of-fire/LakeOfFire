@@ -13,6 +13,14 @@ private func logSnippetLoad(_ message: String) {
     debugPrint("# SNIPPETLOAD", message)
 }
 
+private func logDetent(_ message: String) {
+    debugPrint("# DETENT \(message)")
+}
+
+private func logFeedFlash(_ message: String) {
+    debugPrint("# FEEDFLASH \(message)")
+}
+
 public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {
     public let id: String
     public let title: String
@@ -190,13 +198,21 @@ public extension View {
 
 private extension View {
     @ViewBuilder
-    func readerContentListRowStyle(showSeparators: Bool = false) -> some View {
+    func readerContentListRowStyle(showSeparators: Bool = false, useDefaultRowInsets: Bool = false) -> some View {
         if #available(iOS 15, macOS 12, *) {
-            self
-                .listRowInsets(.init())
-                .listRowSeparator(showSeparators ? .visible : .hidden)
+            if useDefaultRowInsets {
+                self.listRowSeparator(showSeparators ? .visible : .hidden)
+            } else {
+                self
+                    .listRowInsets(.init())
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            }
         } else {
-            self.listRowInsets(.init())
+            if useDefaultRowInsets {
+                self
+            } else {
+                self.listRowInsets(.init())
+            }
         }
     }
 }
@@ -237,6 +253,35 @@ struct ReaderContentListAppearance: Sendable {
     var showSeparators: Bool = false
     var useCardBackground: Bool = false
     var clearRowBackground: Bool = false
+    var useDefaultRowInsets: Bool = false
+    var showsNewBadges: Bool = true
+
+    var usesNativeRowInsets: Bool {
+        useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+    }
+}
+
+private struct FeedCellLayoutLog: View {
+    let label: String
+    let details: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear {
+                    log(frame: proxy.frame(in: .global))
+                }
+                .onChange(of: proxy.frame(in: .global)) { frame in
+                    log(frame: frame)
+                }
+        }
+    }
+
+    private func log(frame: CGRect) {
+        debugPrint(
+            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
+        )
+    }
 }
 
 private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
@@ -277,6 +322,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 logReaderLoad(
                     "stage=contentList.selectionChanged selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
                 )
+                logDetent(
+                    "contentList.selectionChanged oldSelection=\(oldValue ?? "nil") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
+                )
 
                 Task { @MainActor in
                     if let onSelection {
@@ -288,8 +336,14 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         logReaderLoad(
                             "stage=contentList.selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                         )
+                        logDetent(
+                            "contentList.selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                        )
                         onSelection(selectedContent)
                         if entrySelection == itemSelection {
+                            logDetent(
+                                "contentList.clearEntrySelectionAfterCustomHandler selection=\(itemSelection)"
+                            )
                             entrySelection = nil
                         }
                         return
@@ -304,7 +358,16 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     logReaderLoad(
                         "stage=contentList.selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                     )
+                    logDetent(
+                        "contentList.selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                    )
+                    logDetent(
+                        "contentList.navigationHint.before selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                    )
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
+                    logDetent(
+                        "contentList.navigationHint.after selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                    )
                     guard !isAlreadyLoaded else {
                         logReaderLoad(
                             "# SAMECONTENT stage=list.skipNavigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
@@ -312,6 +375,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         if entrySelection == itemSelection {
                             logReaderLoad(
                                 "# SAMECONTENT stage=list.clearSelection selection=\(itemSelection)"
+                            )
+                            logDetent(
+                                "contentList.clearEntrySelectionSameContent selection=\(itemSelection)"
                             )
                             entrySelection = nil
                         }
@@ -330,6 +396,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         debugPrint("Failed to load reader content for selection", error)
                     }
                     if entrySelection == itemSelection {
+                        logDetent(
+                            "contentList.clearEntrySelectionAfterNavigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                        )
                         entrySelection = nil
                     }
                 }
@@ -478,6 +547,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
     @MainActor
     private func applyFilteredContents(_ contents: [C], ids: [String]) {
+        logFeedFlash(
+            "readerContentList.applyFilteredContents type=\(String(describing: C.self)) oldCount=\(filteredContents.count) newCount=\(contents.count) oldIDs=\(filteredContentIDs.joined(separator: ",")) newIDs=\(ids.joined(separator: ",")) hasLoadedBefore=\(hasLoadedBefore) isLoading=\(isLoading)"
+        )
         let updateState = {
             self.filteredContentIDs = ids
             self.filteredContents = contents
@@ -519,11 +591,17 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
         let contentIDs = contents.map(\.compoundKey)
+        logFeedFlash(
+            "readerContentList.load.begin type=\(String(describing: C.self)) inputCount=\(contents.count) inputIDs=\(contentIDs.joined(separator: ",")) currentFilteredCount=\(filteredContents.count) currentFilteredIDs=\(filteredContentIDs.joined(separator: ",")) hasLoadedBefore=\(hasLoadedBefore) isLoading=\(isLoading) sortOrder=\(String(describing: sortOrder)) hasFilter=\(contentFilter != nil) hasPostSortTransform=\(postSortTransform != nil)"
+        )
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
             applyFilteredContents(
                 contents.map { $0.realm == nil ? $0 : $0.freeze() },
                 ids: contentIDs
+            )
+            logFeedFlash(
+                "readerContentList.load.endSync type=\(String(describing: C.self)) outputCount=\(contentIDs.count) outputIDs=\(contentIDs.joined(separator: ","))"
             )
             return
         }
@@ -531,6 +609,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         let realmConfig = contents.first?.realm?.configuration
         realmConfiguration = realmConfig
         loadContentsTask?.cancel()
+        logFeedFlash(
+            "readerContentList.load.taskScheduled type=\(String(describing: C.self)) inputCount=\(contents.count) hadRealmConfig=\(realmConfig != nil)"
+        )
         loadContentsTask = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -601,6 +682,11 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try Task.checkCancellation()
 
             let ids = Array(filtered.prefix(10_000)).map(\.compoundKey)
+            await MainActor.run {
+                logFeedFlash(
+                    "readerContentList.load.taskFiltered type=\(String(describing: C.self)) filteredCount=\(filtered.count) ids=\(ids.joined(separator: ","))"
+                )
+            }
             try await { @MainActor [weak self] in
                 guard let self else { return }
                 let resolvedContents: [C]
@@ -616,6 +702,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
         try? await loadContentsTask?.value
         loadContentsTask = nil
+        logFeedFlash(
+            "readerContentList.load.endAsync type=\(String(describing: C.self)) filteredCount=\(filteredContents.count) filteredIDs=\(filteredContentIDs.joined(separator: ",")) hasLoadedBefore=\(hasLoadedBefore)"
+        )
     }
 }
 
@@ -656,6 +745,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 alwaysShowThumbnails: appearance.alwaysShowThumbnails,
                 isEbookStyle: item.isPhysicalMedia,
                 includeSource: includeSource,
+                showsNewBadge: appearance.showsNewBadges,
                 thumbnailCornerRadius: 12
             )
             if let customMenuOptions {
@@ -669,7 +759,13 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .readerContentCellStyle(.plain)
             }
         }
-        .padding(11)
+        .padding(appearance.usesNativeRowInsets ? 0 : 11)
+        .background(
+            FeedCellLayoutLog(
+                label: "reader-content-cell-wrapper",
+                details: "title=\(String(item.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
+            )
+        )
     }
 
     @ViewBuilder
@@ -704,12 +800,18 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .simultaneousGesture(
                         TapGesture().onEnded {
                             let wasSelected = (entrySelection == content.compoundKey)
+                            logDetent(
+                                "contentList.rowTap selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString) currentEntrySelection=\(entrySelection ?? "nil") wasSelected=\(wasSelected)"
+                            )
                             if content.url.isSnippetURL {
                                 logSnippetLoad(
                                     "rowTap selection=\(content.compoundKey) currentEntrySelection=\(entrySelection ?? "nil") wasSelected=\(wasSelected)"
                                 )
                             }
                             if !wasSelected {
+                                logDetent(
+                                    "contentList.rowTap.assignSelection selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString)"
+                                )
                                 entrySelection = content.compoundKey
                                 if content.url.isSnippetURL {
                                     logSnippetLoad(
@@ -725,10 +827,16 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                             logReaderLoad(
                                 "# SAMECONTENT stage=list.reselectGesture selection=\(content.compoundKey) currentReaderURL=\(readerContent.pageURL.absoluteString)"
                             )
+                            logDetent(
+                                "contentList.reselectGesture.clear selection=\(content.compoundKey) currentReaderURL=\(readerContent.pageURL.absoluteString)"
+                            )
                             entrySelection = nil
                             Task { @MainActor in
                                 logReaderLoad(
                                     "# SAMECONTENT stage=list.reselectGestureRestore selection=\(content.compoundKey)"
+                                )
+                                logDetent(
+                                    "contentList.reselectGesture.restore selection=\(content.compoundKey)"
                                 )
                                 entrySelection = content.compoundKey
                             }
@@ -743,10 +851,16 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                                 "accessibilityAction selection=\(content.compoundKey)"
                             )
                         }
+                        logDetent(
+                            "contentList.accessibilityAction.assignSelection selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString)"
+                        )
                         entrySelection = content.compoundKey
                     }
             } else {
                 Button {
+                    logDetent(
+                        "contentList.legacyButtonTap.assignSelection selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString) currentEntrySelection=\(entrySelection ?? "nil")"
+                    )
                     if content.url.isSnippetURL {
                         logSnippetLoad(
                             "legacyButtonTap selection=\(content.compoundKey) currentEntrySelection=\(entrySelection ?? "nil")"
@@ -823,6 +937,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 $0
             }
         }
+        .background(
+            FeedCellLayoutLog(
+                label: "reader-content-row",
+                details: "title=\(String(content.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
+            )
+        )
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
@@ -901,6 +1021,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     var alwaysShowThumbnails = true
     let useCardBackground: Bool
     let clearRowBackground: Bool
+    let useDefaultRowInsets: Bool
+    let showsNewBadges: Bool
+    let separateRowsIntoSections: Bool
     let listRowSpacing: CGFloat?
     let listSectionSpacing: CGFloat?
     let contentSectionTitle: String?
@@ -966,6 +1089,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         !rendersHeaderViewInSectionHeader && Header.self != EmptyView.self
     }
 
+    private var usesNativeRowInsets: Bool {
+        useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+    }
+
+    private var effectiveListRowSpacing: CGFloat? {
+        usesNativeRowInsets || separateRowsIntoSections ? nil : listRowSpacing
+    }
+
     @ViewBuilder
     private var listItems: some View {
         ReaderContentListItems(
@@ -976,6 +1107,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             alwaysShowThumbnails: alwaysShowThumbnails,
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
             onRequestDelete: onRequestDeleteSingle,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected
@@ -986,6 +1119,43 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         guard let onDelete else { return nil }
         return { content in
             try await onDelete([content])
+        }
+    }
+
+    @ViewBuilder
+    private var separateRowSections: some View {
+        ForEach(Array(viewModel.filteredContents.enumerated()), id: \.element.compoundKey) { index, content in
+            sectionWithSpacing(
+                Section {
+                    ReaderContentInnerListItem(
+                        content: content,
+                        entrySelection: $entrySelection,
+                        includeSource: includeSource,
+                        appearance: ReaderContentListAppearance(
+                            alwaysShowThumbnails: alwaysShowThumbnails,
+                            showSeparators: false,
+                            useCardBackground: useCardBackground,
+                            clearRowBackground: clearRowBackground,
+                            useDefaultRowInsets: useDefaultRowInsets,
+                            showsNewBadges: showsNewBadges
+                        ),
+                        isFirst: true,
+                        isLast: true,
+                        viewModel: viewModel,
+                        onRequestDelete: onRequestDeleteSingle,
+                        customMenuOptions: customMenuOptions
+                    )
+                    .readerContentListRowStyle(
+                        useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                    )
+                } header: {
+                    if index == viewModel.filteredContents.startIndex,
+                       !showEmptyState || rendersHeaderViewInSectionHeader {
+                        contentSectionHeader
+                    }
+                }
+                .headerProminence(.increased)
+            )
         }
     }
 
@@ -1042,7 +1212,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private var listContainerWithSpacing: some View {
         if #available(iOS 17, *) {
             let sectionSpacing = listSectionSpacing.map(ListSectionSpacing.custom) ?? .default
-            if let listRowSpacing {
+            if let listRowSpacing = effectiveListRowSpacing {
                 listContainer
                     .listRowSpacing(listRowSpacing)
                     .listSectionSpacing(sectionSpacing)
@@ -1050,7 +1220,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 listContainer
                     .listSectionSpacing(sectionSpacing)
             }
-        } else if #available(iOS 16, *), let listRowSpacing {
+        } else if #available(iOS 16, *), let listRowSpacing = effectiveListRowSpacing {
             listContainer.listRowSpacing(listRowSpacing)
         } else {
             listContainer
@@ -1076,6 +1246,16 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     public var body: some View {
         Group {
             listContainerWithSpacing
+                .onAppear {
+                    logFeedFlash(
+                        "readerContentList.appear type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator) hasLoadedBefore=\(viewModel.hasLoadedBefore) isLoading=\(viewModel.isLoading)"
+                    )
+                }
+                .onDisappear {
+                    logFeedFlash(
+                        "readerContentList.disappear type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator) hasLoadedBefore=\(viewModel.hasLoadedBefore) isLoading=\(viewModel.isLoading)"
+                    )
+                }
                 .toolbar {
 #if os(iOS)
                     ToolbarItem(placement: .topBarLeading) {
@@ -1098,6 +1278,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     }
                 }
                 .task { @MainActor in
+                    logFeedFlash(
+                        "readerContentList.task.begin type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
+                    )
                     try? await viewModel.load(
                         contents: contents,
                         contentFilter: contentFilter,
@@ -1105,8 +1288,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         postSortTransform: postSortTransform
                     )
                     refreshGrouping()
+                    logFeedFlash(
+                        "readerContentList.task.end type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
+                    )
                 }
                 .onChange(of: contents) { contents in
+                    logFeedFlash(
+                        "readerContentList.contentsChanged type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
+                    )
                     Task { @MainActor in
                         try? await viewModel.load(
                             contents: contents,
@@ -1118,6 +1307,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     }
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
+                    logFeedFlash(
+                        "readerContentList.filteredContentsChanged type=\(String(describing: C.self)) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ",")) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
+                    )
                     refreshGrouping()
                     refreshDeleteEligibilityCache()
                 }
@@ -1213,9 +1405,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                 .listRowBackground(Color.clear)
                                 .stackListStyle(.grouped)
                         }
+                    } else if separateRowsIntoSections {
+                        separateRowSections
                     } else {
                         listItems
-                            .readerContentListRowStyle()
+                            .readerContentListRowStyle(
+                                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                            )
                     }
                 } header: {
                     if !showEmptyState || rendersHeaderViewInSectionHeader {
@@ -1310,8 +1506,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1335,6 +1534,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.useCardBackground = useCardBackground
         self.clearRowBackground = clearRowBackground
+        self.useDefaultRowInsets = useDefaultRowInsets
+        self.showsNewBadges = showsNewBadges
+        self.separateRowsIntoSections = separateRowsIntoSections
         self.listRowSpacing = listRowSpacing
         self.listSectionSpacing = listSectionSpacing
         self.contentSectionTitle = contentSectionTitle
@@ -1360,8 +1562,11 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         includeSource: Bool = false,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         sortOrder: ReaderContentSortOrder,
         contentFilter: ((C) async throws -> Bool)? = nil,
         allowEditing: Bool = false,
@@ -1381,6 +1586,9 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             alwaysShowThumbnails: alwaysShowThumbnails,
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: nil,
@@ -1408,8 +1616,11 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1430,6 +1641,9 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             alwaysShowThumbnails: alwaysShowThumbnails,
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
@@ -1455,8 +1669,11 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1480,6 +1697,9 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             alwaysShowThumbnails: alwaysShowThumbnails,
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
@@ -1516,13 +1736,26 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
-        .readerContentListRowStyle(showSeparators: appearance.showSeparators)
+        .readerContentListRowStyle(
+            showSeparators: appearance.showSeparators,
+            useDefaultRowInsets: appearance.usesNativeRowInsets
+        )
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,
             enabled: true,
             onSelection: onContentSelected
         )
+        .onAppear {
+            logFeedFlash(
+                "readerContentListItems.appear type=\(String(describing: C.self)) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ","))"
+            )
+        }
+        .onDisappear {
+            logFeedFlash(
+                "readerContentListItems.disappear type=\(String(describing: C.self)) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ","))"
+            )
+        }
     }
 
     public init(
@@ -1532,8 +1765,10 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         includeSource: Bool = false,
         alwaysShowThumbnails: Bool = true,
         showSeparators: Bool = false,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil
@@ -1546,7 +1781,9 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             alwaysShowThumbnails: alwaysShowThumbnails,
             showSeparators: showSeparators,
             useCardBackground: useCardBackground,
-            clearRowBackground: clearRowBackground
+            clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges
         )
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
@@ -1561,8 +1798,9 @@ public extension ReaderContentProtocol {
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        showsNewBadges: Bool = true,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1582,6 +1820,7 @@ public extension ReaderContentProtocol {
             entrySelection: entrySelection,
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
+            showsNewBadges: showsNewBadges,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
@@ -1603,8 +1842,9 @@ public extension ReaderContentProtocol {
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,
-        useCardBackground: Bool = true,
+        useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
+        showsNewBadges: Bool = true,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1623,6 +1863,7 @@ public extension ReaderContentProtocol {
             includeSource: includeSource,
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
+            showsNewBadges: showsNewBadges,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,

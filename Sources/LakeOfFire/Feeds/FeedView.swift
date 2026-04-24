@@ -7,15 +7,34 @@ import LakeKit
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
+private func logDetent(_ message: String) {
+    debugPrint("# DETENT \(message)")
+}
+
+private func logFeedFlash(_ message: String) {
+    debugPrint("# FEEDFLASH \(message)")
+}
+
 @MainActor
 public class FeedViewModel: ObservableObject {
     @Published var entries: [FeedEntry]? = nil
+
+    private static var recentAutomaticFetchAttempts: [UUID: Date] = [:]
+    private static let automaticFetchAttemptSuppressionInterval: TimeInterval = 60
+    private let instanceID = UUID()
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
     public init(feed: Feed) {
+        entries = feed.getEntries()
         let feedID = feed.id
+        logDetent(
+            "feedViewModel.init instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) title=\(feed.title) initialEntries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
+        )
+        logFeedFlash(
+            "model.init instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) title=\(feed.title) initialEntries=\(entries?.count ?? -1) entryIDs=\((entries ?? []).map(\.compoundKey).joined(separator: ",")) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
+        )
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
             realm.objects(FeedEntry.self)
@@ -28,7 +47,14 @@ public class FeedViewModel: ObservableObject {
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                        self?.entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted } .map { $0 }
+                        let entries = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted })
+                        logDetent(
+                            "feedViewModel.entriesChanged instanceID=\(self?.instanceID.uuidString ?? "nil") feedID=\(feedID.uuidString) entries=\(entries.count)"
+                        )
+                        logFeedFlash(
+                            "model.entriesChanged instanceID=\(self?.instanceID.uuidString ?? "nil") feedID=\(feedID.uuidString) entries=\(entries.count) entryIDs=\(entries.map(\.compoundKey).joined(separator: ","))"
+                        )
+                        self?.entries = entries
                     }
                 })
                 .store(in: &cancellables)
@@ -37,9 +63,45 @@ public class FeedViewModel: ObservableObject {
     
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
-        if force || feed.shouldRefreshAutomaticallyOnFeedAppear {
+        logDetent(
+            "feedViewModel.fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
+        )
+        logFeedFlash(
+            "fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
+        )
+        if force {
+            logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
+            logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
             try await feed.fetch()
+            logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce")
+            logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce entries=\(entries?.count ?? -1)")
+            return
         }
+
+        guard feed.shouldRefreshAutomaticallyOnFeedAppear else {
+            logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipFresh")
+            logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipFresh entries=\(entries?.count ?? -1)")
+            return
+        }
+
+        let now = Date()
+        if let lastAttempt = Self.recentAutomaticFetchAttempts[feed.id],
+           now.timeIntervalSince(lastAttempt) < Self.automaticFetchAttemptSuppressionInterval {
+            logDetent(
+                "feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt)))"
+            )
+            logFeedFlash(
+                "fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt))) entries=\(entries?.count ?? -1)"
+            )
+            return
+        }
+
+        Self.recentAutomaticFetchAttempts[feed.id] = now
+        logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
+        logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
+        try await feed.fetch()
+        logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto")
+        logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto entries=\(entries?.count ?? -1)")
     }
 }
 
@@ -48,6 +110,7 @@ public struct FeedView: View {
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
     var showsToolbar = true
+    @State private var showsReaderContentNewBadges = true
     @Environment(\.contentSelection) private var contentSelection
 
     private var entries: [FeedEntry] {
@@ -58,57 +121,106 @@ public struct FeedView: View {
         feed.showsUnseenBadge && !entries.isEmpty
     }
 
-    private var showUnseenBadgeBinding: Binding<Bool> {
-        Binding(
-            get: { feed.showsUnseenBadge },
-            set: { newValue in
-                Task { @MainActor in
-                    try? await setShowsUnseenBadge(newValue)
-                }
-            }
+    private func entryIDsDescription(_ entries: [FeedEntry]?) -> String {
+        (entries ?? []).map(\.compoundKey).joined(separator: ",")
+    }
+
+    private func logFeedViewFlash(_ stage: String, entries: [FeedEntry]?, showInitialContent: Bool? = nil) {
+        let showInitialContentDescription = showInitialContent.map(String.init(describing:)) ?? "nil"
+        logFeedFlash(
+            "view.\(stage) feedID=\(feed.id.uuidString) title=\(feed.title) isHorizontal=\(isHorizontal) showsToolbar=\(showsToolbar) entries=\(entries?.count ?? -1) entryIDs=\(entryIDsDescription(entries)) showInitialContent=\(showInitialContentDescription)"
         )
     }
-    
-    public var body: some View {
-        AsyncView(operation: { forceRefreshRequested in
-            try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
-        }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
-            if let entries = viewModel.entries {
-                let entryIDs = entries.map(\.compoundKey)
-                Group {
-                    if isHorizontal {
-                        ReaderContentHorizontalList(
-                            contents: entries,
-                            sortOrder: .publicationDate,
-                            includeSource: false,
-                            contentSelection: contentSelection
-                        ) {
-                            EmptyView()
-                        }
-                        .animation(.easeInOut(duration: 0.25), value: entryIDs)
-                    } else {
-                        ReaderContentList(
-                            contents: entries,
-                            sortOrder: .publicationDate,
-                            includeSource: false,
-                            entrySelection: contentSelection
-                        ) {
-                        } emptyStateView: {
-                            EmptyStateBoxView(
-                                title: Text("No Entries Available"),
-                                text: Text("This feed is empty. Try refreshing or checking back later."),
-                                systemImageName: "newspaper.fill"
-                            )
-                        }
-                        .animation(.easeInOut(duration: 0.25), value: entryIDs)
-#if os(iOS)
-                        .listStyle(.plain)
-#endif
-                    }
+
+    @ViewBuilder
+    private func feedContent(entries: [FeedEntry]) -> some View {
+        let entryIDs = entries.map(\.compoundKey)
+        Group {
+            if isHorizontal {
+                ReaderContentHorizontalList(
+                    contents: entries,
+                    sortOrder: .publicationDate,
+                    includeSource: false,
+                    contentSelection: contentSelection
+                ) {
+                    EmptyView()
                 }
+                .animation(.easeInOut(duration: 0.25), value: entryIDs)
+            } else {
+                ReaderContentList(
+                    contents: entries,
+                    sortOrder: .publicationDate,
+                    includeSource: false,
+                    entrySelection: contentSelection,
+                    useDefaultRowInsets: true,
+                    showsNewBadges: showsReaderContentNewBadges,
+                    separateRowsIntoSections: true
+                ) {
+                } emptyStateView: {
+                    EmptyStateBoxView(
+                        title: Text("No Entries Available"),
+                        text: Text("This feed is empty. Try refreshing or checking back later."),
+                        systemImageName: "newspaper.fill"
+                    )
+                }
+                .animation(.easeInOut(duration: 0.25), value: entryIDs)
+#if os(iOS)
+                .listStyle(.insetGrouped)
+#endif
             }
         }
+        .onAppear {
+            logFeedViewFlash("contentAppear", entries: entries)
+        }
+        .onDisappear {
+            logFeedViewFlash("contentDisappear", entries: entries)
+        }
+    }
+
+    public var body: some View {
+        let currentEntries = viewModel.entries
+        let showInitialContent = !(currentEntries?.isEmpty ?? true)
+        AsyncView(operation: { forceRefreshRequested in
+            logDetent(
+                "feedView.asyncOperation feedID=\(feed.id.uuidString) title=\(feed.title) force=\(forceRefreshRequested) entries=\(viewModel.entries?.count ?? -1)"
+            )
+            logFeedViewFlash("asyncOperation force=\(forceRefreshRequested)", entries: viewModel.entries, showInitialContent: showInitialContent)
+            try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
+        }, showInitialContent: showInitialContent) { _ in
+            let contentEntries = viewModel.entries
+            if let contentEntries {
+                feedContent(entries: contentEntries)
+                    .onAppear {
+                        logFeedViewFlash("contentBuilderVisible", entries: contentEntries, showInitialContent: showInitialContent)
+                    }
+            } else {
+                Color.clear
+                    .onAppear {
+                        logFeedViewFlash("contentBuilderNil", entries: nil, showInitialContent: showInitialContent)
+                    }
+            }
+        }
+        .onAppear {
+            logDetent(
+                "feedView.appear feedID=\(feed.id.uuidString) title=\(feed.title) isHorizontal=\(isHorizontal) showsToolbar=\(showsToolbar) entries=\(viewModel.entries?.count ?? -1)"
+            )
+            logFeedViewFlash("appear", entries: currentEntries, showInitialContent: showInitialContent)
+        }
+        .onDisappear {
+            logDetent(
+                "feedView.disappear feedID=\(feed.id.uuidString) title=\(feed.title) isHorizontal=\(isHorizontal) showsToolbar=\(showsToolbar) entries=\(viewModel.entries?.count ?? -1)"
+            )
+            logFeedViewFlash("disappear", entries: viewModel.entries)
+        }
+        .onChange(of: viewModel.entries?.map(\.compoundKey) ?? []) { entryIDs in
+            logFeedFlash(
+                "view.entriesChanged feedID=\(feed.id.uuidString) title=\(feed.title) entries=\(viewModel.entries?.count ?? -1) entryIDs=\(entryIDs.joined(separator: ","))"
+            )
+        }
         .task(id: feed.id) {
+            logDetent(
+                "feedView.markViewedTask feedID=\(feed.id.uuidString) title=\(feed.title)"
+            )
             try? await markFeedAsViewed()
         }
         .toolbar {
@@ -122,7 +234,7 @@ public struct FeedView: View {
                                 }
                             }
                         }
-                        Toggle(isOn: showUnseenBadgeBinding) {
+                        Toggle(isOn: $showsReaderContentNewBadges) {
                             Text("Show New Badge")
                         }
                     } label: {
@@ -174,14 +286,4 @@ public struct FeedView: View {
         }
     }
 
-    @MainActor
-    private func setShowsUnseenBadge(_ showsUnseenBadge: Bool) async throws {
-        guard feed.showsUnseenBadge != showsUnseenBadge else { return }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.showsUnseenBadge = showsUnseenBadge
-        }
-    }
 }

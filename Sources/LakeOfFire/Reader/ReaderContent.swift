@@ -8,21 +8,36 @@ private func logReaderLoad(_ message: String) {
     debugPrint("# READERLOAD \(message)")
 }
 
+private func logTitleTrace(_ message: String) {
+    debugPrint("# TITLE \(message)")
+}
+
 @MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)? {
         didSet {
+            logTitleTrace(
+                "stage=readerContent.content.didSet pageURL=\(pageURL.absoluteString) oldContentURL=\(oldValue?.url.absoluteString ?? "nil") newContentURL=\(content?.url.absoluteString ?? "nil") oldType=\(oldValue.map { String(describing: type(of: $0)) } ?? "nil") newType=\(content.map { String(describing: type(of: $0)) } ?? "nil") oldTitle=\(oldValue?.title.debugTitleFragment ?? "<nil>") newTitle=\(content?.title.debugTitleFragment ?? "<nil>") oldLocationBarTitle=\(oldValue?.locationBarTitle.debugTitleFragment ?? "<nil>") newLocationBarTitle=\(content?.locationBarTitle.debugTitleFragment ?? "<nil>")"
+            )
             syncLocationBarTitle()
             syncContentTitle()
         }
     }// = ReaderContentLoader.unsavedHome
-    @Published public var pageURL = URL(string: "about:blank")! { didSet { syncLocationBarTitle() } }
+    @Published public var pageURL = URL(string: "about:blank")! {
+        didSet {
+            logTitleTrace(
+                "stage=readerContent.pageURL.didSet oldPageURL=\(oldValue.absoluteString) newPageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") currentLocationBarTitle=\(locationBarTitle.debugTitleFragment)"
+            )
+            syncLocationBarTitle()
+        }
+    }
     @Published public var currentSectionIndex: Int?
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
     @Published public var isRenderingReaderHTML = false
     public let contentTitleSubject = PassthroughSubject<String, Never>()
     public private(set) var contentTitle: String = ""
+    private var contentTitleURL: URL?
     public private(set) var snippetTitleIsGeneratedFromPrefix = false
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
@@ -38,16 +53,25 @@ public class ReaderContent: ObservableObject {
         guard pageURL.absoluteString != "about:blank" else {
             snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
+            logTitleTrace(
+                "stage=readerContent.syncLocationBarTitle action=clear reason=aboutBlank pageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil")"
+            )
             return
         }
         guard let content,
               content.url.matchesReaderURL(pageURL) else {
             snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
+            logTitleTrace(
+                "stage=readerContent.syncLocationBarTitle action=clear reason=contentMismatch pageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") contentType=\(content.map { String(describing: type(of: $0)) } ?? "nil") contentTitle=\(content?.title.debugTitleFragment ?? "<nil>")"
+            )
             return
         }
         let trimmedTitle = resolvedLocationBarTitle(for: content)?.trimmingCharacters(in: .whitespacesAndNewlines)
         locationBarTitle = (trimmedTitle?.isEmpty == false) ? trimmedTitle : nil
+        logTitleTrace(
+            "stage=readerContent.syncLocationBarTitle action=set pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rawLocationBarTitle=\(content.locationBarTitle.debugTitleFragment) resolvedTitle=\(trimmedTitle.debugTitleFragment) finalLocationBarTitle=\(locationBarTitle.debugTitleFragment) snippetTitleIsGeneratedFromPrefix=\(snippetTitleIsGeneratedFromPrefix)"
+        )
     }
 
     private func resolvedLocationBarTitle(for content: any ReaderContentProtocol) -> String? {
@@ -66,9 +90,20 @@ public class ReaderContent: ObservableObject {
     }
 
     private func syncContentTitle() {
-        let newTitle = content?.title ?? ""
-        guard contentTitle != newTitle else { return }
+        guard let content else {
+            logTitleTrace(
+                "stage=readerContent.syncContentTitle action=preserve reason=noContent existingTitle=\(contentTitle.debugTitleFragment) pageURL=\(pageURL.absoluteString)"
+            )
+            return
+        }
+        let newTitle = content.title
+        let newTitleURL = content.url
+        guard contentTitle != newTitle || contentTitleURL?.absoluteString != newTitleURL.absoluteString else { return }
+        logTitleTrace(
+            "stage=readerContent.syncContentTitle action=set oldTitle=\(contentTitle.debugTitleFragment) newTitle=\(newTitle.debugTitleFragment) oldContentURL=\(contentTitleURL?.absoluteString ?? "nil") newContentURL=\(newTitleURL.absoluteString) pageURL=\(pageURL.absoluteString)"
+        )
         contentTitle = newTitle
+        contentTitleURL = newTitleURL
         guard !newTitle.isEmpty else { return }
         contentTitleSubject.send(newTitle)
     }
@@ -260,6 +295,9 @@ public class ReaderContent: ObservableObject {
         guard !trimmed.isEmpty else { return }
         guard let content else { return }
         guard trimmed != content.title else { return }
+        logTitleTrace(
+            "stage=readerContent.updateContentTitle begin pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) oldTitle=\(content.title.debugTitleFragment) requestedTitle=\(newTitle.debugTitleFragment) trimmedTitle=\(trimmed.debugTitleFragment)"
+        )
         let isTitlePrefixOfContent =
             content.url.isSnippetURL &&
             ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
@@ -282,8 +320,28 @@ public class ReaderContent: ObservableObject {
                 object.isTitlePrefixOfContent = isTitlePrefixOfContent
                 return true
             }
+            logTitleTrace(
+                "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment) isTitlePrefixOfContent=\(isTitlePrefixOfContent)"
+            )
         } catch {
             debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
         }
+    }
+}
+
+private extension String {
+    var debugTitleFragment: String {
+        let normalized = replacingOccurrences(of: "\n", with: "\\n")
+        if normalized.isEmpty {
+            return "\"\""
+        }
+        return "\"\(normalized.truncate(120, trailing: "…"))\""
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var debugTitleFragment: String {
+        guard let value = self else { return "<nil>" }
+        return value.debugTitleFragment
     }
 }

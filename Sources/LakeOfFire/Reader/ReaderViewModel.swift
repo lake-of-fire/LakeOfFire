@@ -12,6 +12,10 @@ private func logReaderLoad(_ message: String) {
     debugPrint("# READERLOAD \(message)")
 }
 
+private func logTitleTrace(_ message: String) {
+    debugPrint("# TITLE \(message)")
+}
+
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
     private static var inFlightContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
@@ -141,6 +145,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
         let state = newState ?? self.state
+        logTitleTrace(
+            "stage=readerViewModel.refreshTitleInWebView pageURL=\(state.pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent) isLoading=\(state.isLoading) isProvisionallyNavigating=\(state.isProvisionallyNavigating)"
+        )
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
                 try await scriptCaller.evaluateJavaScript(
@@ -162,13 +169,35 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
+        let sanitizedIncomingTitle = title?
+            .replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: "")
+        logTitleTrace(
+            "stage=readerViewModel.pageMetadataUpdated.received pageURL=\(state.pageURL.absoluteString) incomingTitle=\(title.debugTitleFragment) sanitizedTitle=\(sanitizedIncomingTitle.debugTitleFragment) author=\(author.debugTitleFragment) isNativeReaderView=\(state.pageURL.isNativeReaderView) httpStatus=\(state.mainFrameHTTPStatusCode.map(String.init) ?? "nil")"
+        )
+        if ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(state.mainFrameHTTPStatusCode) {
+            let statusCode = state.mainFrameHTTPStatusCode
+            debugPrint(
+                "# 404 reader.metadata.skip",
+                "url=\(state.pageURL.absoluteString)",
+                "status=\(statusCode.map(String.init) ?? "nil")",
+                "incomingTitle=\(title.debugTitleFragment)",
+                "preservedStoredMetadata=true"
+            )
+            logTitleTrace(
+                "stage=readerViewModel.pageMetadataUpdated.skippedHTTPError pageURL=\(state.pageURL.absoluteString) status=\(statusCode.map(String.init) ?? "nil") incomingTitle=\(title.debugTitleFragment)"
+            )
+            return
+        }
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle: String
         if state.pageURL.isEBookURL {
             newTitle = title
         } else {
-            newTitle = fixAnnoyingTitlesWithPipes(title: title)
+            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: state.pageURL)
         }
+        logTitleTrace(
+            "stage=readerViewModel.pageMetadataUpdated.normalized pageURL=\(state.pageURL.absoluteString) newTitle=\(newTitle.debugTitleFragment)"
+        )
         let contentRefs = try await { @RealmBackgroundActor in
             let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
@@ -180,12 +209,18 @@ public class ReaderViewModel: NSObject, ObservableObject {
             let existingTitle = content.title
                 .replacingOccurrences(of: String("\u{fffc}"), with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            logTitleTrace(
+                "stage=readerViewModel.pageMetadataUpdated.inspect contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) existingTitle=\(existingTitle.debugTitleFragment) finalTitle=\(finalTitle.debugTitleFragment) existingAuthor=\(content.author.debugTitleFragment) newAuthor=\((author ?? "").debugTitleFragment)"
+            )
             if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
                     content.title = finalTitle
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
+                logTitleTrace(
+                    "stage=readerViewModel.pageMetadataUpdated.persisted contentURL=\(content.url.absoluteString) key=\(content.compoundKey) persistedTitle=\(finalTitle.debugTitleFragment) persistedAuthor=\((author ?? "").debugTitleFragment)"
+                )
                 try await refreshTitleInWebView(content: content)
             } else if state.pageURL.isEBookURL {
                 try await refreshTitleInWebView(content: content)
@@ -209,5 +244,22 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }
+    }
+}
+
+private extension String {
+    var debugTitleFragment: String {
+        let normalized = replacingOccurrences(of: "\n", with: "\\n")
+        if normalized.isEmpty {
+            return "\"\""
+        }
+        return "\"\(normalized.truncate(120, trailing: "…"))\""
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var debugTitleFragment: String {
+        guard let value = self else { return "<nil>" }
+        return value.debugTitleFragment
     }
 }
