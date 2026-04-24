@@ -392,12 +392,23 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
+        if ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(state.mainFrameHTTPStatusCode) {
+            let statusCode = state.mainFrameHTTPStatusCode
+            debugPrint(
+                "# 404 reader.metadata.skip",
+                "url=\(state.pageURL.absoluteString)",
+                "status=\(statusCode.map(String.init) ?? "nil")",
+                "incomingTitle=\(title ?? "<nil>")",
+                "preservedStoredMetadata=true"
+            )
+            return
+        }
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle: String
         if state.pageURL.isEBookURL {
             newTitle = title
         } else {
-            newTitle = fixAnnoyingTitlesWithPipes(title: title)
+            newTitle = fixAnnoyingTitlesWithPipes(title: title, url: state.pageURL)
         }
         debugPrint(
             "# READERMODETITLE metadata.received",

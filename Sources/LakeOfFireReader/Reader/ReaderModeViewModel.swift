@@ -2372,9 +2372,11 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
         let isNativeReaderView = await MainActor.run { url.isNativeReaderView }
         let existingHTML = content.html ?? ""
+        let shouldPreserveStoredFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
         let shouldPersistRenderedHTML =
             !url.isEBookURL
             && !isNativeReaderView
+            && !shouldPreserveStoredFullContentOriginal
             && (
                 existingHTML.isEmpty
                 || !url.isSnippetURL
@@ -2395,6 +2397,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             || (
                 !url.isEBookURL
                 && !isNativeReaderView
+                && !shouldPreserveStoredFullContentOriginal
                 && content.rssContainsFullContent == false
             )
             || (shouldPersistRenderedHTML && content.html != readabilityContent)
@@ -2409,9 +2412,12 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 if !url.isEBookURL && !isNativeReaderView {
                     let existingHTML = content.html ?? ""
                     let shouldPersistRenderedHTML =
+                        !shouldPreserveStoredFullContentOriginal
+                        && (
                         existingHTML.isEmpty
                         || !url.isSnippetURL
                         || existingHTML != readabilityContent
+                        )
                     if shouldPersistRenderedHTML {
                         content.html = readabilityContent
                     } else if url.isSnippetURL {
@@ -5570,7 +5576,7 @@ public func processForReaderMode(
         if !isEBook {
             let annoyingTitlesStartedAt = Date()
             do {
-                try fixAnnoyingTitlesWithPipes(doc: doc)
+                try fixAnnoyingTitlesWithPipes(doc: doc, url: url)
             } catch { }
         }
 

@@ -441,6 +441,10 @@ fileprivate struct FeedFetchMetadata {
     }
 }
 
+fileprivate func logRSS(_ message: String) {
+    debugPrint("# RSS \(message)")
+}
+
 fileprivate enum FeedFetchResult {
     case notModified(metadata: FeedFetchMetadata)
     case fetched(Data, metadata: FeedFetchMetadata)
@@ -525,6 +529,9 @@ fileprivate func getRssData(
     lastFetchedModifiedAt: Date?
 ) async throws -> FeedFetchResult {
     let session = makeFeedSession()
+    logRSS(
+        "stage=http.head.start url=\(rssUrl.absoluteString) ifNoneMatch=\(lastFetchedETag ?? "nil") ifModifiedSince=\(lastFetchedModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+    )
     let headRequest = makeFeedRequest(
         url: rssUrl,
         method: "HEAD",
@@ -537,8 +544,12 @@ fileprivate func getRssData(
     }
 
     let headMetadata = feedFetchMetadata(from: headHTTPResponse)
+    logRSS(
+        "stage=http.head.response url=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode) etag=\(headMetadata.etag ?? "nil") lastModified=\(headMetadata.lastModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+    )
     switch headHTTPResponse.statusCode {
     case 304:
+        logRSS("stage=http.notModified source=head304 url=\(rssUrl.absoluteString)")
         return .notModified(metadata: headMetadata)
     case let statusCode where isSuccessfulFeedRefreshStatus(statusCode):
         if isFeedUnchanged(
@@ -546,12 +557,15 @@ fileprivate func getRssData(
             lastFetchedETag: lastFetchedETag,
             lastFetchedModifiedAt: lastFetchedModifiedAt
         ) {
+            logRSS("stage=http.notModified source=headMetadata url=\(rssUrl.absoluteString)")
             return .notModified(metadata: headMetadata)
         }
     default:
+        logRSS("stage=http.head.error url=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode)")
         throw FeedError.downloadFailed
     }
 
+    logRSS("stage=http.get.start url=\(rssUrl.absoluteString)")
     let getRequest = makeFeedRequest(
         url: rssUrl,
         method: "GET",
@@ -564,14 +578,20 @@ fileprivate func getRssData(
     }
 
     let getMetadata = headMetadata.merged(with: feedFetchMetadata(from: getHTTPResponse))
+    logRSS(
+        "stage=http.get.response url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode) bytes=\(data.count) etag=\(getMetadata.etag ?? "nil") lastModified=\(getMetadata.lastModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+    )
     switch getHTTPResponse.statusCode {
     case 304:
+        logRSS("stage=http.notModified source=get304 url=\(rssUrl.absoluteString)")
         return .notModified(metadata: getMetadata)
     case 200..<300:
         return .fetched(data, metadata: getMetadata)
     case 300..<400:
+        logRSS("stage=http.notModified source=getRedirect url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode)")
         return .notModified(metadata: getMetadata)
     default:
+        logRSS("stage=http.get.error url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode)")
         throw FeedError.downloadFailed
     }
 }
@@ -600,27 +620,40 @@ public extension Feed {
         realmConfiguration: Realm.Configuration
     ) async throws {
         let feedID = id
+        let rssUrl = rssUrl
+        logRSS(
+            "stage=metadata.persist.start feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModified=\(metadata.lastModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+        )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else {
+                    logRSS("stage=metadata.persist.missingFeed feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
+                    return
+                }
                 feed.lastRefreshedEntriesAt = Date()
                 feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
                 feed.lastFetchedModifiedAt = metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
             }
         }()
+        logRSS("stage=metadata.persist.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
     }
 
     @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         let iconUrl = iconUrl
+        let rssUrl = rssUrl
         var incomingIDs = [String]()
+        var skippedItems = 0
         let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
             guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
                   let url = URL(string: link)
-            else { return nil }
+            else {
+                skippedItems += 1
+                return nil
+            }
             var imageUrl: URL? = nil
             if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
                 if let imageUrlRaw = enclosureAttribs.url {
@@ -680,6 +713,9 @@ public extension Feed {
             incomingIDs.append(feedEntry.compoundKey)
             return feedEntry
         }
+        logRSS(
+            "stage=persist.rss.mapped feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) inputItems=\(rssItems.count) mappedEntries=\(feedEntries.count) skippedInvalidURL=\(skippedItems) deleteOrphans=\(deleteOrphans)"
+        )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
@@ -688,6 +724,9 @@ public extension Feed {
                     .where { $0.feedID == feedID }
                     .filter { !$0.isDeleted }
                     .map { $0.compoundKey }
+            )
+            logRSS(
+                "stage=persist.rss.beforeUpsert feedID=\(feedID.uuidString) existingEntries=\(existingEntryIDs.count) incomingEntries=\(incomingIDs.count)"
             )
             
             let payloads = try await upsertFeedEntries(
@@ -700,6 +739,9 @@ public extension Feed {
             for payload in payloads {
                 try await syncRelatedReaderContent(with: payload)
             }
+            logRSS(
+                "stage=persist.rss.finished feedID=\(feedID.uuidString) payloadsSynced=\(payloads.count)"
+            )
         }()
     }
     
@@ -707,7 +749,9 @@ public extension Feed {
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         let sourceIconURL = iconUrl
+        let rssUrl = rssUrl
         var incomingIDs = [String]()
+        var skippedItems = 0
         let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
             var url: URL?
             var imageUrl: URL?
@@ -721,7 +765,10 @@ public extension Feed {
                     imageUrl = URL(string: linkHref)
                 }
             }
-            guard let url = url else { return nil }
+            guard let url = url else {
+                skippedItems += 1
+                return nil
+            }
 
             var voiceFrameUrl: URL? = nil
             if let rawVoiceFrameUrl = item.links?
@@ -794,6 +841,9 @@ public extension Feed {
             incomingIDs.append(feedEntry.compoundKey)
             return feedEntry
         }
+        logRSS(
+            "stage=persist.atom.mapped feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) inputItems=\(atomItems.count) mappedEntries=\(feedEntries.count) skippedInvalidURL=\(skippedItems) deleteOrphans=\(deleteOrphans)"
+        )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
@@ -802,6 +852,9 @@ public extension Feed {
                     .where { $0.feedID == feedID }
                     .filter { !$0.isDeleted }
                     .map { $0.compoundKey }
+            )
+            logRSS(
+                "stage=persist.atom.beforeUpsert feedID=\(feedID.uuidString) existingEntries=\(existingEntryIDs.count) incomingEntries=\(incomingIDs.count)"
             )
             
             let payloads = try await upsertFeedEntries(
@@ -814,22 +867,44 @@ public extension Feed {
             for payload in payloads {
                 try await syncRelatedReaderContent(with: payload)
             }
+            logRSS(
+                "stage=persist.atom.finished feedID=\(feedID.uuidString) payloadsSynced=\(payloads.count)"
+            )
         }()
     }
     
     @MainActor
     func fetch(realmConfiguration: Realm.Configuration) async throws {
-        let fetchResult = try await getRssData(
-            rssUrl: rssUrl,
-            lastFetchedETag: lastFetchedETag,
-            lastFetchedModifiedAt: lastFetchedModifiedAt
+        let feedID = id
+        let feedTitle = title
+        let rssUrl = rssUrl
+        let lastFetchedETag = lastFetchedETag
+        let lastFetchedModifiedAt = lastFetchedModifiedAt
+        let lastRefreshedEntriesAt = lastRefreshedEntriesAt
+        logRSS(
+            "stage=fetch.start feedID=\(feedID.uuidString) title=\(feedTitle) url=\(rssUrl.absoluteString) lastRefresh=\(lastRefreshedEntriesAt?.description ?? "nil") etag=\(lastFetchedETag ?? "nil") lastModified=\(lastFetchedModifiedAt?.description ?? "nil") deleteOrphans=\(deleteOrphans)"
         )
+        let fetchResult: FeedFetchResult
+        do {
+            fetchResult = try await getRssData(
+                rssUrl: rssUrl,
+                lastFetchedETag: lastFetchedETag,
+                lastFetchedModifiedAt: lastFetchedModifiedAt
+            )
+        } catch {
+            logRSS("stage=fetch.download.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
+            throw error
+        }
         switch fetchResult {
         case .notModified(let metadata):
+            logRSS("stage=fetch.notModified feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
             try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+            logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=notModified")
             return
         case .fetched(var rssData, let metadata):
+            logRSS("stage=fetch.fetched feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) bytesBeforeClean=\(rssData.count)")
             rssData = cleanRssData(rssData)
+            logRSS("stage=fetch.cleaned feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) bytesAfterClean=\(rssData.count)")
             let parser = FeedKit.FeedParser(data: rssData)
             return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { [weak self] parserResult in
@@ -838,41 +913,51 @@ public extension Feed {
                         switch feed {
                         case .rss(let rssFeed):
                             guard let items = rssFeed.items else {
+                                logRSS("stage=parse.rss.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) reason=missingItems")
                                 continuation.resume(throwing: FeedError.parserFailed)
                                 return
                             }
+                            logRSS("stage=parse.rss.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) items=\(items.count)")
                             Task { @MainActor [weak self] in
                                 guard let self = self else { return }
                                 do {
                                     try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=rss")
                                     continuation.resume(returning: ())
                                 } catch {
+                                    logRSS("stage=fetch.persist.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
                                     continuation.resume(throwing: error)
                                 }
                             }
                             return
                         case .atom(let atomFeed):
                             guard let items = atomFeed.entries else {
+                                logRSS("stage=parse.atom.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) reason=missingEntries")
                                 continuation.resume(throwing: FeedError.parserFailed)
                                 return
                             }
+                            logRSS("stage=parse.atom.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) entries=\(items.count)")
                             Task { @MainActor [weak self] in
                                 guard let self = self else { return }
                                 do {
                                     try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
                                     continuation.resume(returning: ())
                                 } catch {
+                                    logRSS("stage=fetch.persist.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
                                     continuation.resume(throwing: error)
                                 }
                             }
                             return
                         case .json:
+                            logRSS("stage=parse.json.unsupported feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
                     case .failure:
+                        logRSS("stage=parse.failure feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
                         continuation.resume(throwing: FeedError.parserFailed)
                         return
                     }
@@ -950,7 +1035,12 @@ fileprivate func upsertFeedEntries(
     deleteOrphans: Bool
 ) async throws -> [FeedEntryPayload] {
     let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: entries)
+    let feedIDDescription = entries.first?.feedID?.uuidString ?? "nil"
+    logRSS(
+        "stage=upsert.filtered feedID=\(feedIDDescription) incomingEntries=\(entries.count) existingEntries=\(existingEntryIDs.count) changedOrNewEntries=\(entriesToPersist.count) deleteOrphans=\(deleteOrphans)"
+    )
     if !deleteOrphans && entriesToPersist.isEmpty {
+        logRSS("stage=upsert.skipped feedID=\(feedIDDescription) reason=noChangedEntries")
         return []
     }
 
@@ -971,15 +1061,20 @@ fileprivate func upsertFeedEntries(
 
     await realm.asyncRefresh()
     try await realm.asyncWrite {
+        var orphanCount = 0
         if deleteOrphans {
             let orphans = realm.objects(FeedEntry.self)
                 .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
             for orphan in orphans {
                 orphan.isDeleted = true
                 orphan.refreshChangeMetadata(explicitlyModified: true)
+                orphanCount += 1
             }
         }
 
+        var createdCount = 0
+        var updatedCount = 0
+        var unchangedPayloadCount = 0
         for payload in payloads {
             if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: payload.compoundKey) {
                 let existingSubtitle = existing.audioSubtitlesURL?.absoluteString ?? "nil"
@@ -993,6 +1088,9 @@ fileprivate func upsertFeedEntries(
                 )
                 if applyPayload(payload, to: existing) {
                     existing.refreshChangeMetadata(explicitlyModified: true)
+                    updatedCount += 1
+                } else {
+                    unchangedPayloadCount += 1
                 }
             } else {
                 let newEntry = FeedEntry()
@@ -1008,8 +1106,12 @@ fileprivate func upsertFeedEntries(
                 applyPayload(payload, to: newEntry)
                 realm.add(newEntry, update: .error)
                 newEntry.refreshChangeMetadata(explicitlyModified: true)
+                createdCount += 1
             }
         }
+        logRSS(
+            "stage=upsert.write feedID=\(feedIDDescription) created=\(createdCount) updated=\(updatedCount) unchangedPayloads=\(unchangedPayloadCount) deletedOrphans=\(orphanCount)"
+        )
     }
 
     return payloads

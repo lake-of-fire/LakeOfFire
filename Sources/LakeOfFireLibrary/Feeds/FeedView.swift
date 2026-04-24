@@ -13,6 +13,10 @@ import LakeOfFireContentUI
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
+private func logRSS(_ message: String) {
+    debugPrint("# RSS \(message)")
+}
+
 @MainActor
 public class FeedViewModel: ObservableObject {
     @Published var entries: [FeedEntry]? = nil {
@@ -46,7 +50,7 @@ public class FeedViewModel: ObservableObject {
                     Task { @MainActor [weak self] in
                         let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
                         debugPrint("# FeedViewModel.reloadEntries feedID=\(feedID.uuidString)")
-                        self?.entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted } .map { $0 }
+                        self?.entries = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted })
                         debugPrint("# FeedViewModel.reloadEntriesFinished feedID=\(feedID.uuidString) count=\(self?.entries?.count ?? 0)")
                     }
                 })
@@ -56,12 +60,20 @@ public class FeedViewModel: ObservableObject {
     
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
-        if force || feed.shouldRefreshAutomaticallyOnFeedAppear {
+        let shouldRefresh = feed.shouldRefreshAutomaticallyOnFeedAppear
+        logRSS(
+            "stage=feedView.fetchDecision feedID=\(feed.id.uuidString) title=\(feed.title) url=\(feed.rssUrl.absoluteString) force=\(force) shouldRefreshOnAppear=\(shouldRefresh) lastRefresh=\(feed.lastRefreshedEntriesAt?.description ?? "nil") hasRecentlyRefreshed=\(feed.hasRecentlyRefreshedEntries)"
+        )
+        if force || shouldRefresh {
             do {
                 try await feed.fetch()
+                logRSS("stage=feedView.fetchFinished feedID=\(feed.id.uuidString) title=\(feed.title)")
             } catch {
+                logRSS("stage=feedView.fetchError feedID=\(feed.id.uuidString) title=\(feed.title) error=\(error)")
                 throw error
             }
+        } else {
+            logRSS("stage=feedView.fetchSkipped feedID=\(feed.id.uuidString) title=\(feed.title) reason=recentlyRefreshed")
         }
     }
 }
@@ -71,6 +83,7 @@ public struct FeedView: View {
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
     var showsToolbar = true
+    @State private var showsReaderContentNewBadges = true
 
     @Environment(\.contentSelection) private var contentSelection
 
@@ -80,17 +93,6 @@ public struct FeedView: View {
 
     private var showsMarkAllAsSeenAction: Bool {
         feed.showsUnseenBadge && !entries.isEmpty
-    }
-
-    private var showUnseenBadgeBinding: Binding<Bool> {
-        Binding(
-            get: { feed.showsUnseenBadge },
-            set: { newValue in
-                Task { @MainActor in
-                    try? await setShowsUnseenBadge(newValue)
-                }
-            }
-        )
     }
 
     public var body: some View {
@@ -115,7 +117,10 @@ public struct FeedView: View {
                             contents: entries,
                             sortOrder: .publicationDate,
                             includeSource: false,
-                            entrySelection: contentSelection
+                            entrySelection: contentSelection,
+                            useDefaultRowInsets: true,
+                            showsNewBadges: showsReaderContentNewBadges,
+                            separateRowsIntoSections: true
                         ) {
                         } emptyStateView: {
                             EmptyStateBoxView(
@@ -126,12 +131,12 @@ public struct FeedView: View {
                         }
                         .animation(.easeInOut(duration: 0.25), value: entryIDs)
 #if os(iOS)
-                        .listStyle(.plain)
+                        .listStyle(.insetGrouped)
 #endif
                     }
                 }
             }
-        }
+    }
         .task(id: feed.id) {
             try? await markFeedAsViewed()
         }
@@ -146,7 +151,7 @@ public struct FeedView: View {
                                 }
                             }
                         }
-                        Toggle(isOn: showUnseenBadgeBinding) {
+                        Toggle(isOn: $showsReaderContentNewBadges) {
                             Text("Show New Badge")
                         }
                     } label: {
@@ -187,14 +192,4 @@ public struct FeedView: View {
         }
     }
 
-    @MainActor
-    private func setShowsUnseenBadge(_ showsUnseenBadge: Bool) async throws {
-        guard feed.showsUnseenBadge != showsUnseenBadge else { return }
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.showsUnseenBadge = showsUnseenBadge
-        }
-    }
 }

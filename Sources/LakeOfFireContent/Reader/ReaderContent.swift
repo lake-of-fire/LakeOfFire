@@ -6,11 +6,24 @@ import LakeOfFireAdblock
 private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInternalReaderLoader.traceID"
 private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
 
+private func logTitleTrace(_ message: String) {
+    debugPrint("# TITLE \(message)")
+}
+
 @MainActor
 public class ReaderContent: ObservableObject {
-    @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
+    @Published public var content: (any ReaderContentProtocol)? {
+        didSet {
+            logTitleTrace(
+                "stage=readerContent.content.didSet pageURL=\(pageURL.absoluteString) oldContentURL=\(oldValue?.url.absoluteString ?? "nil") newContentURL=\(content?.url.absoluteString ?? "nil") oldType=\(oldValue.map { String(describing: type(of: $0)) } ?? "nil") newType=\(content.map { String(describing: type(of: $0)) } ?? "nil") oldTitle=\(oldValue?.title.debugTitleFragment ?? "<nil>") newTitle=\(content?.title.debugTitleFragment ?? "<nil>") oldLocationBarTitle=\(oldValue?.locationBarTitle.debugTitleFragment ?? "<nil>") newLocationBarTitle=\(content?.locationBarTitle.debugTitleFragment ?? "<nil>")"
+            )
+        }
+    }// = ReaderContentLoader.unsavedHome
     @Published public var pageURL = URL(string: "about:blank")! {
         didSet {
+            logTitleTrace(
+                "stage=readerContent.pageURL.didSet oldPageURL=\(oldValue.absoluteString) newPageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") currentLocationBarTitle=\(locationBarTitle.debugTitleFragment)"
+            )
             let pointer = Unmanaged.passUnretained(self).toOpaque()
             if pageURL.isSnippetURL {
                 debugPrint("# LOOKUPS ReaderContent.pageURL didSet snippet", pageURL.absoluteString, "self=", pointer)
@@ -29,6 +42,7 @@ public class ReaderContent: ObservableObject {
     private var mainFrameNavigationTaskOrder: [UUID] = []
     public let contentTitleSubject = PassthroughSubject<String, Never>()
     public private(set) var contentTitle: String = ""
+    private var contentTitleURL: URL?
     private var cancellables = Set<AnyCancellable>()
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var suppressedTransientAboutBlankTargetURL: URL?
@@ -41,16 +55,20 @@ public class ReaderContent: ObservableObject {
                 guard let self else { return }
 //                debugPrint("# new content", newContent?.url)
                 self.locationBarTitle = newContent?.locationBarTitle
-                let newTitle = newContent?.title ?? ""
-                if self.contentTitle != newTitle {
-                    debugPrint(
-                        "# READERMODETITLE content.titleDidSet",
-                        "pageURL=\(self.pageURL.absoluteString)",
-                        "old=\(self.contentTitle)",
-                        "new=\(newTitle)"
+                guard let newContent else {
+                    logTitleTrace(
+                        "stage=readerContent.syncContentTitle action=preserve reason=noContent existingTitle=\(self.contentTitle.debugTitleFragment) pageURL=\(self.pageURL.absoluteString)"
                     )
+                    return
                 }
+                let newTitle = newContent.title
+                let newTitleURL = newContent.url
+                guard self.contentTitle != newTitle || self.contentTitleURL?.absoluteString != newTitleURL.absoluteString else { return }
+                logTitleTrace(
+                    "stage=readerContent.syncContentTitle action=set oldTitle=\(self.contentTitle.debugTitleFragment) newTitle=\(newTitle.debugTitleFragment) oldContentURL=\(self.contentTitleURL?.absoluteString ?? "nil") newContentURL=\(newTitleURL.absoluteString) pageURL=\(self.pageURL.absoluteString)"
+                )
                 self.contentTitle = newTitle
+                self.contentTitleURL = newTitleURL
                 if !newTitle.isEmpty {
                     self.contentTitleSubject.send(newTitle)
                 }
@@ -340,13 +358,11 @@ public class ReaderContent: ObservableObject {
         guard let content else { return }
         guard trimmed != content.title else { return }
 
-        debugPrint(
-            "# READERMODETITLE content.updateTitle",
-            "pageURL=\(pageURL.absoluteString)",
-            "old=\(content.title)",
-            "new=\(trimmed)"
+        logTitleTrace(
+            "stage=readerContent.updateContentTitle begin pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) oldTitle=\(content.title.debugTitleFragment) requestedTitle=\(newTitle.debugTitleFragment) trimmedTitle=\(trimmed.debugTitleFragment)"
         )
         contentTitle = trimmed
+        contentTitleURL = content.url
         contentTitleSubject.send(trimmed)
 
         do {
@@ -356,8 +372,31 @@ public class ReaderContent: ObservableObject {
                 object.title = trimmed
                 return true
             }
+            logTitleTrace(
+                "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment)"
+            )
         } catch {
             debugPrint("# READER contentTitle.update.failed", error.localizedDescription)
         }
+    }
+}
+
+private extension String {
+    var debugTitleFragment: String {
+        let normalized = replacingOccurrences(of: "\n", with: "\\n")
+        if normalized.isEmpty {
+            return "\"\""
+        }
+        if normalized.count <= 120 {
+            return "\"\(normalized)\""
+        }
+        return "\"\(String(normalized.prefix(120)))...\""
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var debugTitleFragment: String {
+        guard let value = self else { return "<nil>" }
+        return value.debugTitleFragment
     }
 }

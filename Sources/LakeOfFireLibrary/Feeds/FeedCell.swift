@@ -31,19 +31,53 @@ private struct FeedCellNewBadge: View {
     }
 }
 
+private struct FeedCellLayoutLog: View {
+    let label: String
+    let details: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear {
+                    log(frame: proxy.frame(in: .global))
+                }
+                .onChange(of: proxy.frame(in: .global)) { frame in
+                    log(frame: frame)
+                }
+        }
+    }
+
+    private func log(frame: CGRect) {
+        debugPrint(
+            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
+        )
+    }
+}
+
 public struct FeedCell: View {
     @ObservedRealmObject var feed: Feed
     var includesDescription = true
     var horizontalSpacing: CGFloat = 10
     
     @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 40
-
     private var showsAudioIndicator: Bool {
         feed.firstEntryHasAudio
     }
 
     private var showsUnreadIndicator: Bool {
         feed.hasEntriesNewerThanLastViewedAt
+    }
+
+    private var showsStatusRow: Bool {
+        showsUnreadIndicator || showsAudioIndicator
+    }
+
+    private var showsDescription: Bool {
+        includesDescription && !(feed.markdownDescription?.isEmpty ?? true)
+    }
+
+    private var shouldCenterTitleWithIcon: Bool {
+        !showsStatusRow && !showsDescription
     }
 
     private var titleText: Text {
@@ -61,7 +95,7 @@ public struct FeedCell: View {
     public var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading) {
-                HStack(alignment: .top, spacing: horizontalSpacing) {
+                HStack(alignment: shouldCenterTitleWithIcon ? .center : .top, spacing: horizontalSpacing) {
                     ReaderContentSourceIconImage(
                         sourceIconURL: feed.iconUrl,
                         iconSize: scaledIconHeight
@@ -73,14 +107,16 @@ public struct FeedCell: View {
                         titleText
                             .font(.headline.bold())
 
-                        HStack(spacing: 8) {
-                            if showsUnreadIndicator {
-                                FeedCellNewBadge()
-                            }
-                            if showsAudioIndicator {
-                                Image(systemName: "headphones")
-                                    .font(.subheadline.weight(.regular))
-                                    .foregroundColor(.secondary)
+                        if showsStatusRow {
+                            HStack(spacing: 8) {
+                                if showsUnreadIndicator {
+                                    FeedCellNewBadge()
+                                }
+                                if showsAudioIndicator {
+                                    Image(systemName: "headphones")
+                                        .font(.subheadline.weight(.regular))
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
 
@@ -96,6 +132,12 @@ public struct FeedCell: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            FeedCellLayoutLog(
+                label: "feed-category-cell",
+                details: "title=\(feed.title) includesDescription=\(includesDescription) showsDescription=\(showsDescription) showsStatusRow=\(showsStatusRow) iconHeight=\(scaledIconHeight)"
+            )
+        )
         .tag(feed.id.uuidString)
     }
     

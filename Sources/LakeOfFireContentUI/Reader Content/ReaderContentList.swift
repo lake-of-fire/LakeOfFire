@@ -135,14 +135,21 @@ public extension View {
 
 private extension View {
     @ViewBuilder
-    func readerContentListRowStyle(showSeparators: Bool = false) -> some View {
+    func readerContentListRowStyle(showSeparators: Bool = false, useDefaultRowInsets: Bool = false) -> some View {
         if #available(iOS 15, macOS 12, *) {
-            self
-                .listRowInsets(.init())
-                .listRowSeparator(showSeparators ? .visible : .hidden)
+            if useDefaultRowInsets {
+                self.listRowSeparator(showSeparators ? .visible : .hidden)
+            } else {
+                self
+                    .listRowInsets(.init())
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            }
         } else {
-            self
-                .listRowInsets(.init())
+            if useDefaultRowInsets {
+                self
+            } else {
+                self.listRowInsets(.init())
+            }
         }
     }
 }
@@ -168,6 +175,35 @@ struct ReaderContentListAppearance: Sendable {
     var showSeparators: Bool = false
     var useCardBackground: Bool = false
     var clearRowBackground: Bool = false
+    var useDefaultRowInsets: Bool = false
+    var showsNewBadges: Bool = true
+
+    var usesNativeRowInsets: Bool {
+        useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+    }
+}
+
+private struct FeedCellLayoutLog: View {
+    let label: String
+    let details: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear {
+                    log(frame: proxy.frame(in: .global))
+                }
+                .onChange(of: proxy.frame(in: .global)) { frame in
+                    log(frame: frame)
+                }
+        }
+    }
+
+    private func log(frame: CGRect) {
+        debugPrint(
+            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
+        )
+    }
 }
 
 // MARK: - Shared selection syncing
@@ -513,6 +549,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 alwaysShowThumbnails: appearance.alwaysShowThumbnails,
                 isEbookStyle: item.isPhysicalMedia,
                 includeSource: includeSource,
+                showsNewBadge: appearance.showsNewBadges,
                 thumbnailCornerRadius: 12
             )
             if let customMenuOptions {
@@ -528,7 +565,13 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .readerContentCellStyle(.plain)
             }
         }
-        .padding(11)
+        .padding(appearance.usesNativeRowInsets ? 0 : 11)
+        .background(
+            FeedCellLayoutLog(
+                label: "reader-content-cell-wrapper",
+                details: "title=\(String(item.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
+            )
+        )
     }
 
     @ViewBuilder private func rowContent(item: C) -> some View {
@@ -642,6 +685,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 $0
             }
         }
+        .background(
+            FeedCellLayoutLog(
+                label: "reader-content-row",
+                details: "title=\(String(content.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
+            )
+        )
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
@@ -708,6 +757,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
+    let useDefaultRowInsets: Bool
+    let showsNewBadges: Bool
+    let separateRowsIntoSections: Bool
     let listRowSpacing: CGFloat?
     let listSectionSpacing: CGFloat?
     let contentSectionTitle: String?
@@ -760,6 +812,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private var showsHeaderSection: Bool {
         Header.self != EmptyView.self
     }
+
+    private var effectiveListRowSpacing: CGFloat? {
+        useDefaultRowInsets || separateRowsIntoSections ? nil : listRowSpacing
+    }
     
     @ViewBuilder private var listItems: some View {
         ReaderContentListItems(
@@ -768,6 +824,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             contentSortAscending: contentSortAscending,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected
@@ -781,6 +839,40 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             }
         }
         return nil
+    }
+
+    @ViewBuilder
+    private var separateRowSections: some View {
+        ForEach(Array(viewModel.filteredContents.enumerated()), id: \.element.compoundKey) { index, content in
+            sectionWithSpacing(
+                Section {
+                    ReaderContentInnerListItem(
+                        content: content,
+                        entrySelection: $entrySelection,
+                        includeSource: includeSource,
+                        appearance: ReaderContentListAppearance(
+                            alwaysShowThumbnails: alwaysShowThumbnails,
+                            showSeparators: false,
+                            useDefaultRowInsets: useDefaultRowInsets,
+                            showsNewBadges: showsNewBadges
+                        ),
+                        isFirst: true,
+                        isLast: true,
+                        viewModel: viewModel,
+                        onRequestDelete: onRequestDelete,
+                        customMenuOptions: customMenuOptions
+                    )
+                    .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
+                } header: {
+                    if index == viewModel.filteredContents.startIndex,
+                       let contentSectionTitle {
+                        Text(contentSectionTitle)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .headerProminence(.increased)
+            )
+        }
     }
     
     private var listContainer: some View {
@@ -810,7 +902,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private var listContainerWithSpacing: some View {
         if #available(iOS 17, *) {
             let sectionSpacing = listSectionSpacing.map(ListSectionSpacing.custom) ?? .default
-            if let listRowSpacing {
+            if let listRowSpacing = effectiveListRowSpacing {
                 listContainer
                     .listRowSpacing(listRowSpacing)
                     .listSectionSpacing(sectionSpacing)
@@ -818,7 +910,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 listContainer
                     .listSectionSpacing(sectionSpacing)
             }
-        } else if #available(iOS 16, *), let listRowSpacing {
+        } else if #available(iOS 16, *), let listRowSpacing = effectiveListRowSpacing {
             listContainer.listRowSpacing(listRowSpacing)
         } else {
             listContainer
@@ -972,9 +1064,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                 .listRowBackground(Color.clear)
                                 .stackListStyle(.grouped)
                         }
+                    } else if separateRowsIntoSections {
+                        separateRowSections
                     } else {
                         listItems
-                            .readerContentListRowStyle()
+                            .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
                     }
                 } header: {
                     if !showEmptyState, let contentSectionTitle {
@@ -1070,6 +1164,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1090,6 +1187,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.includeSource = includeSource
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.useDefaultRowInsets = useDefaultRowInsets
+        self.showsNewBadges = showsNewBadges
+        self.separateRowsIntoSections = separateRowsIntoSections
         self.contentSortAscending = contentSortAscending
         self.listRowSpacing = listRowSpacing
         self.listSectionSpacing = listSectionSpacing
@@ -1114,6 +1214,9 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1134,6 +1237,9 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             entrySelection: entrySelection,
             contentSortAscending: contentSortAscending,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
@@ -1169,7 +1275,10 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
-        .readerContentListRowStyle(showSeparators: appearance.showSeparators)
+        .readerContentListRowStyle(
+            showSeparators: appearance.showSeparators,
+            useDefaultRowInsets: appearance.usesNativeRowInsets
+        )
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,
@@ -1189,7 +1298,9 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onContentSelected: ((C) -> Void)? = nil,
         showSeparators: Bool = false,
         useCardBackground: Bool = false,
-        clearRowBackground: Bool = false
+        clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -1199,7 +1310,9 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             alwaysShowThumbnails: alwaysShowThumbnails,
             showSeparators: showSeparators,
             useCardBackground: useCardBackground,
-            clearRowBackground: clearRowBackground
+            clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges
         )
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
