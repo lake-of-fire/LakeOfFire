@@ -824,11 +824,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             contentSortAscending: contentSortAscending,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
-            useDefaultRowInsets: useDefaultRowInsets,
-            showsNewBadges: showsNewBadges,
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions,
-            onContentSelected: onContentSelected
+            onContentSelected: onContentSelected,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
         )
     }
     

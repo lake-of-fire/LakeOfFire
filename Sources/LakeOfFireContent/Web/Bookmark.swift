@@ -57,6 +57,7 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     @Persisted public var htmlContent: String?
     @Persisted public var content: Data?
     @Persisted public var isReaderModeAvailable = false
+    @Persisted public var isReaderModeOfferHidden = false
     
     // Feed entry metadata.
     @Persisted public var rssURLs = RealmSwift.List<URL>()

@@ -1478,7 +1478,8 @@ private actor ReaderPageTurnNavigationProbeResultBox {
     }
 }
 
-private actor ReaderPageTurnJavaScriptEvaluationResultBox {
+@MainActor
+private final class ReaderPageTurnJavaScriptEvaluationResultBox {
     private var result: Any??
     private var error: Error?
 
@@ -4756,20 +4757,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         contentRect: CGRect,
         timeoutNanoseconds: UInt64 = 750_000_000
     ) async -> PageTurnPlatformImage? {
-        await withTaskGroup(of: PageTurnPlatformImage?.self, returning: PageTurnPlatformImage?.self) { group in
-            group.addTask {
-                await self.navigator?.withAttachedWebView { webView in
-                    await captureReaderPageTurnSnapshot(from: webView, contentRect: contentRect)
-                } ?? nil
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                return nil
-            }
-            let image = await group.next() ?? nil
-            group.cancelAll()
-            return image
-        }
+        _ = timeoutNanoseconds
+        return await navigator?.withAttachedWebView { webView in
+            await captureReaderPageTurnSnapshot(from: webView, contentRect: contentRect)
+        } ?? nil
     }
 
     private func fetchNavigationProbe(preferredFrameOverride: WKFrameInfo? = nil) async -> ReaderPageTurnNavigationProbe? {

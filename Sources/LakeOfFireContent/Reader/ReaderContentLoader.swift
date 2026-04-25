@@ -29,6 +29,10 @@ public extension URL {
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+    private final class ContentUpdateChangeTracker: @unchecked Sendable {
+        var didChange = false
+    }
+
     public struct AdditionalContentProvider {
         public let id: String
         public let loadReferences: @Sendable @RealmBackgroundActor (URL) async throws -> [ContentReference]
@@ -482,22 +486,26 @@ public struct ReaderContentLoader {
     }
 
     /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
+    @discardableResult
     @RealmBackgroundActor
     public static func updateContent(
         url: URL,
         skipContentFiles: Bool = false,
         skipFeedEntries: Bool = false,
         mutate: @Sendable (any Object & ReaderContentProtocol) -> Bool
-    ) async throws {
+    ) async throws -> Bool {
         let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+        let changeTracker = ContentUpdateChangeTracker()
         for case let object as (any Object & ReaderContentProtocol) in objects {
             guard let realm = object.realm else { continue }
             try await realm.asyncWrite {
                 if mutate(object) {
+                    changeTracker.didChange = true
                     object.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
+        return changeTracker.didChange
     }
 
     @RealmBackgroundActor
@@ -1140,7 +1148,6 @@ public struct ReaderContentLoader {
     ) async throws -> Bool {
         let normalizedHTML = snippetHTML(fromHTML: html)
         return try await { @RealmBackgroundActor in
-            var didChange = false
             try await updateContent(url: contentURL) { object in
                 let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
                 var objectDidChange = false
@@ -1162,12 +1169,8 @@ public struct ReaderContentLoader {
                     objectDidChange = true
                 }
 
-                if objectDidChange {
-                    didChange = true
-                }
                 return objectDidChange
             }
-            return didChange
         }()
     }
 

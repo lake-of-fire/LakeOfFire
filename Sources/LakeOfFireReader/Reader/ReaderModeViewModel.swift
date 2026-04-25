@@ -275,7 +275,7 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
 internal func buildCanonicalReadabilityHTML(
     title: String,
     byline: String,
-    publishedTime _: String?,
+    publishedTime: String?,
     content: String,
     contentURL: URL
 ) -> String {
@@ -286,7 +286,17 @@ internal func buildCanonicalReadabilityHTML(
     let bylineLine = hasByline
         ? "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(normalizedByline)</span></div>"
         : ""
-    let metaLine = "<div id=\"reader-meta-line\" class=\"byline-meta-line\"><span id=\"reader-publication-date\"></span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>"
+    let publicationDate = publishedTime.map(escapeReadabilityHTMLAttribute) ?? ""
+    let publicationDateElement = publicationDate.isEmpty
+        ? ""
+        : "<span id=\"reader-publication-date\">\(publicationDate)</span>"
+    let metaDivider = publicationDateElement.isEmpty || viewOriginal.isEmpty
+        ? ""
+        : "<span class=\"reader-meta-divider\"></span>"
+    let metaContent = "\(publicationDateElement)\(metaDivider)\(viewOriginal)"
+    let metaLine = metaContent.isEmpty
+        ? ""
+        : "<div id=\"reader-meta-line\" class=\"byline-meta-line\">\(metaContent)</div>"
     let css = Readability.shared.css
     let scripts = Readability.shared.scripts
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""

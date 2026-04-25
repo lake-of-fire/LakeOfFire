@@ -205,6 +205,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         get { return isReaderModeByDefault }
         set { }
     }
+    public var isReaderModeOfferHidden: Bool {
+        get { false }
+        set { }
+    }
     
     // Feed entry metadata.
     public var rssURLs: List<URL> {

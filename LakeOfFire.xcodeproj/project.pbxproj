@@ -158,6 +158,7 @@
 		9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
 		A35BCC9172FDA64D24751A4B /* ContentFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF2E0FE2DC03E3D0F9EAA88 /* ContentFile.swift */; };
+		A47AE248CCA11DAAB5E3FF6A /* ReaderHTTPErrorRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C1A5B9E03F2CF3DEB0D4C84 /* ReaderHTTPErrorRecoveryPolicy.swift */; };
 		A584E153C538821E510CC7BB /* ReaderPageTurnSpreadGraph.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E1E4AB70D64E250D86AC1F /* ReaderPageTurnSpreadGraph.swift */; };
 		A648E4AF80F0406F68DFC089 /* ReadabilityImagesUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = E25057F44128F064A752E967 /* ReadabilityImagesUserScript.swift */; };
 		A68CA45F11D331E6974F99F8 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
@@ -762,6 +763,7 @@
 		89514077A2D3DFC4E370326C /* ParseData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParseData.swift; sourceTree = "<group>"; };
 		89794E4F53FDE88FD9453CC4 /* PhysicalMediaCapableProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalMediaCapableProtocol.swift; sourceTree = "<group>"; };
 		8BEBB200185722685FD99D0B /* FlashLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashLog.swift; sourceTree = "<group>"; };
+		8C1A5B9E03F2CF3DEB0D4C84 /* ReaderHTTPErrorRecoveryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderHTTPErrorRecoveryPolicy.swift; sourceTree = "<group>"; };
 		8C8A26CEB5EFF0E4A288F7DB /* URL+ReaderBook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderBook.swift"; sourceTree = "<group>"; };
 		8E8DB8BE5FC8753325BDABE3 /* ReaderViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderViewModel.swift; sourceTree = "<group>"; };
 		91D0420AF9E12FDF8404AAE3 /* DefaultRealmConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultRealmConfiguration.swift; sourceTree = "<group>"; };
@@ -993,6 +995,7 @@
 				E9AA574E96149E47844F7F66 /* Reader.swift */,
 				2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */,
 				DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */,
+				8C1A5B9E03F2CF3DEB0D4C84 /* ReaderHTTPErrorRecoveryPolicy.swift */,
 				C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */,
 				AEACDFF35BB3C511190E95F2 /* ReaderLoadingProgressOverlayViewModifier.swift */,
 				F7351A4FB774D9A62D45A567 /* ReaderMediaPlayerViewModel.swift */,
@@ -1911,6 +1914,7 @@
 				845BE8FB9903B9BD14565EE7 /* Reader.swift in Sources */,
 				8FB6AF011166D0B829C8402D /* ReaderEbookTextProcessor.swift in Sources */,
 				52E9D564CC7C6233AA680257 /* ReaderEnvironmentViewModifier.swift in Sources */,
+				A47AE248CCA11DAAB5E3FF6A /* ReaderHTTPErrorRecoveryPolicy.swift in Sources */,
 				E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */,
 				5A96F584C1590884AA55785A /* ReaderLoadingProgressOverlayViewModifier.swift in Sources */,
 				51652B02A2CB419BEB48D78F /* ReaderMediaPlayerViewModel.swift in Sources */,

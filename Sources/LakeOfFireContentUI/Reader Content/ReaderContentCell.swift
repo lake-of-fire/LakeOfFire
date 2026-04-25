@@ -708,7 +708,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             .lineLimit(titleLineLimit)
             .multilineTextAlignment(.leading)
             .environment(\._lineHeightMultiple, 0.875)
-            .layoutPriority(1)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -812,7 +811,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var metadataRow: some View {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .bottom, spacing: 6) {
             if let publicationDate = publicationDateText {
                 Text(publicationDate)
                     .lineLimit(1)
@@ -822,21 +821,28 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .layoutPriority(2)
             }
 
-            Spacer(minLength: 0)
-
-            BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
-                .labelStyle(.iconOnly)
-                .frame(
-                    width: viewModel.forceShowBookmark ? ReaderContentCell<C>.buttonSize : 0,
-                    height: ReaderContentCell<C>.buttonSize,
-                    alignment: .center
-                )
-                .opacity(viewModel.forceShowBookmark ? 1 : 0)
-                .accessibilityHidden(!viewModel.forceShowBookmark)
-
-            trailingMenuButton
+            Spacer(minLength: ReaderContentCell<C>.buttonSize * 2 + 6)
         }
         .foregroundStyle(.secondary)
+        .overlay(alignment: .bottomTrailing) {
+            HStack(spacing: 6) {
+                BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                    .labelStyle(.iconOnly)
+                    .frame(
+                        width: viewModel.forceShowBookmark ? ReaderContentCell<C>.buttonSize : 0,
+                        height: ReaderContentCell<C>.buttonSize,
+                        alignment: .bottom
+                    )
+                    .opacity(viewModel.forceShowBookmark ? 1 : 0)
+                    .accessibilityHidden(!viewModel.forceShowBookmark)
+
+                trailingMenuButton
+                    .frame(height: ReaderContentCell<C>.buttonSize, alignment: .bottom)
+            }
+            .foregroundStyle(.secondary)
+            .buttonStyle(.clearBordered)
+            .controlSize(.small)
+        }
         .buttonStyle(.clearBordered)
         .controlSize(.small)
     }
@@ -940,6 +946,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 progressRow
                                 metadataRow
                             }
+                            .layoutPriority(3)
                         }
                         .frame(
                             maxWidth: .infinity,
@@ -963,6 +970,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 progressRow
                                 metadataRow
                             }
+                            .layoutPriority(3)
                         }
                         .frame(height: contentColumnHeight, alignment: .top)
                     }

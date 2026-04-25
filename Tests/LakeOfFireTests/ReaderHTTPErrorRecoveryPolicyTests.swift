@@ -48,8 +48,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
         let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
             currentFlags: .init(
                 isReaderModeByDefault: true,
-                isReaderModeAvailable: false,
-                isReaderModeOfferHidden: false
+                isReaderModeAvailable: false
             ),
             hasCapturedReadabilityContent: true
         )
@@ -58,8 +57,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
             update.flags,
             .init(
                 isReaderModeByDefault: false,
-                isReaderModeAvailable: true,
-                isReaderModeOfferHidden: true
+                isReaderModeAvailable: true
             )
         )
         XCTAssertTrue(update.didChange)
@@ -69,8 +67,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
         let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
             currentFlags: .init(
                 isReaderModeByDefault: true,
-                isReaderModeAvailable: false,
-                isReaderModeOfferHidden: false
+                isReaderModeAvailable: false
             ),
             hasCapturedReadabilityContent: false
         )
@@ -79,8 +76,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
             update.flags,
             .init(
                 isReaderModeByDefault: false,
-                isReaderModeAvailable: false,
-                isReaderModeOfferHidden: false
+                isReaderModeAvailable: false
             )
         )
         XCTAssertTrue(update.didChange)
@@ -90,8 +86,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
         let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
             currentFlags: .init(
                 isReaderModeByDefault: true,
-                isReaderModeAvailable: false,
-                isReaderModeOfferHidden: false
+                isReaderModeAvailable: false
             ),
             hasCapturedReadabilityContent: false,
             hasStoredFullContent: true
@@ -101,8 +96,7 @@ final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
             update.flags,
             .init(
                 isReaderModeByDefault: false,
-                isReaderModeAvailable: true,
-                isReaderModeOfferHidden: true
+                isReaderModeAvailable: true
             )
         )
         XCTAssertTrue(update.didChange)

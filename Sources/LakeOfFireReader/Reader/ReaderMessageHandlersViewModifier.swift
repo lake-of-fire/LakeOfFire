@@ -1776,15 +1776,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
                 currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
                     isReaderModeByDefault: object.isReaderModeByDefault,
-                    isReaderModeAvailable: object.isReaderModeAvailable,
-                    isReaderModeOfferHidden: object.isReaderModeOfferHidden
+                    isReaderModeAvailable: object.isReaderModeAvailable
                 ),
                 hasCapturedReadabilityContent: hasCapturedReadabilityContent,
                 hasStoredFullContent: object.rssContainsFullContent
             )
             object.isReaderModeByDefault = update.flags.isReaderModeByDefault
             object.isReaderModeAvailable = update.flags.isReaderModeAvailable
-            object.isReaderModeOfferHidden = update.flags.isReaderModeOfferHidden
             let shouldKeepReaderModeAvailable = hasCapturedReadabilityContent || object.rssContainsFullContent
             debugPrint(
                 "# 404 reader.showOriginal.persist",
@@ -1794,7 +1792,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 "shouldKeepReaderModeAvailable=\(shouldKeepReaderModeAvailable)",
                 "isReaderModeByDefault=\(object.isReaderModeByDefault)",
                 "isReaderModeAvailable=\(object.isReaderModeAvailable)",
-                "isReaderModeOfferHidden=\(object.isReaderModeOfferHidden)",
                 "didChange=\(update.didChange)"
             )
             return update.didChange
