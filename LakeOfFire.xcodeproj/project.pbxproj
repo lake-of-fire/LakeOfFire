@@ -149,6 +149,7 @@
 		90CB3289582C5298DAB5E2C7 /* AdblockStatsUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AACB1DB248432581D82792C /* AdblockStatsUserScript.swift */; };
 		91296B41B50B271356D2BC85 /* UserScriptAllowedDomainCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10F789EFF1222C6A701E0E6 /* UserScriptAllowedDomainCell.swift */; };
 		9241FAE8F084B37417D46233 /* UserLibraryCategoryButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F059AA2317C283232A0DB30 /* UserLibraryCategoryButtons.swift */; };
+		94811D84C583736FACCC83FE /* ReaderPageTurnNativePagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57B83D4AAED578F56734469 /* ReaderPageTurnNativePagination.swift */; };
 		94F504531CE5AC44C222E0A6 /* ReaderContentCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = FECE32BA7953906A59D3AD88 /* ReaderContentCell.swift */; };
 		9698ECA908D8785FCB9C32FC /* URL+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE1C1D617EC7AA8E290627A /* URL+ReaderView.swift */; };
 		97AFAE4255BB5CC3F3631B7A /* PDFJSWeb in Resources */ = {isa = PBXBuildFile; fileRef = A40C9908B4E643535FB1DD19 /* PDFJSWeb */; };
@@ -832,6 +833,7 @@
 		F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIDownloads.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIWebView.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OrderedCollections.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		F57B83D4AAED578F56734469 /* ReaderPageTurnNativePagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPageTurnNativePagination.swift; sourceTree = "<group>"; };
 		F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftCloudDrive.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F63913BA3B001236DF672E24 /* ReaderWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebView.swift; sourceTree = "<group>"; };
 		F7351A4FB774D9A62D45A567 /* ReaderMediaPlayerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderMediaPlayerViewModel.swift; sourceTree = "<group>"; };
@@ -1002,6 +1004,7 @@
 				1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */,
 				EBB3093361E7F10B9B618FEA /* ReaderModeButton.swift */,
 				F928AF6884694ED6E488E4D6 /* ReaderModeViewModel.swift */,
+				F57B83D4AAED578F56734469 /* ReaderPageTurnNativePagination.swift */,
 				A6E1E4AB70D64E250D86AC1F /* ReaderPageTurnSpreadGraph.swift */,
 				355678653CC5882AE9C4748C /* ReaderSettings.swift */,
 				D9A9E2BDEC10079CE6CED146 /* ReaderToastBar.swift */,
@@ -1921,6 +1924,7 @@
 				F4F9B4AF34EE7401B91A9B47 /* ReaderMessageHandlersViewModifier.swift in Sources */,
 				8F83E3E0D028AB91C912C310 /* ReaderModeButton.swift in Sources */,
 				09C951CAF82A49704471FAF9 /* ReaderModeViewModel.swift in Sources */,
+				94811D84C583736FACCC83FE /* ReaderPageTurnNativePagination.swift in Sources */,
 				A584E153C538821E510CC7BB /* ReaderPageTurnSpreadGraph.swift in Sources */,
 				80E05426241473182B1338A2 /* ReaderSettings.swift in Sources */,
 				6ACF6EE4F619ED0BEE29F134 /* ReaderToastBar.swift in Sources */,

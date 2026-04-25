@@ -467,7 +467,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         || globalThis.location?.href
         || ""
     const shouldFailOpenFast =
-        contentLocation.includes('ui-test-page-turn.epub')
+        contentLocation.includes('ui-test-page-turn')
         || globalThis.manabiPageTurnInteractionDiagnostic === true
     if (shouldFailOpenFast) {
         globalThis.manabiLoadEBookLastState = `replace-text-skip-original:${href}`
@@ -3057,13 +3057,14 @@ window.setEbookViewerWritingDirection = async (writingDirection) => {
 }
 
 window.manabiGetWritingDirectionSnapshot = () => {
+    const resolvedDirection = globalThis.manabiResolveReaderWritingDirection?.() ?? null;
     return {
         pageURL: window.location.href,
         writingDirectionOverride: globalThis.manabiEbookWritingDirection || 'original',
-        vertical: globalThis.manabiTrackingVertical === true,
-        verticalRTL: globalThis.manabiTrackingVerticalRTL === true,
-        rtl: globalThis.manabiTrackingRTL === true,
-        writingMode: globalThis.manabiTrackingWritingMode || null,
+        vertical: globalThis.manabiTrackingVertical === true || resolvedDirection?.vertical === true,
+        verticalRTL: globalThis.manabiTrackingVerticalRTL === true || resolvedDirection?.verticalRTL === true,
+        rtl: globalThis.manabiTrackingRTL === true || resolvedDirection?.rtl === true,
+        writingMode: globalThis.manabiTrackingWritingMode || resolvedDirection?.writingMode || null,
     };
 }
 
@@ -3368,7 +3369,7 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             : null;
         const layoutWritingMode = typeof layoutDiagnostics?.writingMode === 'string'
             ? (
-                chunkLayoutIsVertical && layoutDiagnostics.writingMode === 'horizontal-tb'
+                chunkLayoutIsVertical && typeof chunkLayoutWritingMode === 'string'
                     ? chunkLayoutWritingMode
                     : layoutDiagnostics.writingMode
             )
@@ -3856,7 +3857,7 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
         const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
         const derivedWritingMode =
             globalThis.manabiTrackingWritingMode
-            ?? globalThis.manabiResolveReadingDirectionProbe?.()?.resolvedWritingMode
+            ?? globalThis.manabiResolveReaderWritingDirection?.()?.writingMode
             ?? null;
         return {
             hasView,
@@ -3981,7 +3982,7 @@ window.manabiGetPageTurnProbeSnapshotJSON = async () => {
         const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
         const derivedWritingMode =
             globalThis.manabiTrackingWritingMode
-            ?? globalThis.manabiResolveReadingDirectionProbe?.()?.resolvedWritingMode
+            ?? globalThis.manabiResolveReaderWritingDirection?.()?.writingMode
             ?? null;
         return JSON.stringify({
             hasView: !!globalThis.reader?.view,
@@ -4031,6 +4032,32 @@ window.manabiGetPageTurnProbeSnapshotJSON = async () => {
     }
 };
 
+const resetSameDocumentEBookShell = reason => {
+    try { globalThis.reader?.view?.close?.() } catch (_error) {}
+    try { globalThis.reader?.close?.() } catch (_error) {}
+    try {
+        document.getElementById('manabi-same-document-viewport')?.remove?.()
+        document
+            .querySelectorAll('[data-manabi-same-document-section-style="true"]')
+            .forEach(node => node?.remove?.())
+        document.body?.removeAttribute?.('data-is-ebook')
+        document.body?.classList?.remove?.(
+            'reader-vertical-writing',
+            'reader-tategaki-display-transform',
+            'manabi-tracking-size-baking',
+            'manabi-tracking-force-visible',
+            'manabi-prebake-hidden'
+        )
+    } catch (_error) {}
+    try {
+        globalThis.manabiSameDocumentHostTurnDiagnostics = {
+            phase: 'reset',
+            result: reason ?? 'reset',
+        }
+    } catch (_error) {}
+    globalThis.reader = null
+}
+
 window.loadEBook = ({
     url,
     layoutMode,
@@ -4044,6 +4071,7 @@ window.loadEBook = ({
             globalThis.manabiPreviousLoadEBookError
             ?? globalThis.manabiLoadEBookLastState
             ?? `restart-before-ready:attempt-${priorAttemptCount}`;
+        resetSameDocumentEBookShell(`restart-before-ready:attempt-${priorAttemptCount}`);
     }
     globalThis.manabiLoadEBookLastState = 'called';
     globalThis.manabiLoadEBookStarted = true;
@@ -4098,9 +4126,7 @@ window.loadEBook = ({
     globalThis.manabiLoadEBookStarted = false;
     globalThis.manabiLoadEBookReady = false;
     globalThis.manabiLoadEBookLastState = 'open-watchdog-timeout';
-    try { globalThis.reader?.close?.(); } catch (_error) {}
-    try { globalThis.reader?.view?.close?.(); } catch (_error) {}
-    globalThis.reader = null;
+    resetSameDocumentEBookShell('open-watchdog-timeout');
     logFix('loadEBook:watchdog-timeout', {
     attempt: loadAttemptNumber,
     pageURL: window.location.href,
@@ -4157,6 +4183,7 @@ window.loadEBook = ({
     return;
     }
     globalThis.manabiLoadEBookLastState = 'posting-loaded';
+    postRuntimePaginationReadback();
     const loadedProbe = {
     hasView: !!reader?.view,
     hasRenderer: !!reader?.view?.renderer,

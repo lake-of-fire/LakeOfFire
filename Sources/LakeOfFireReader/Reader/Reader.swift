@@ -1419,7 +1419,9 @@ public final class ReaderPageTurnProbeModel: ObservableObject {
 
     public func performFastTurn(_ command: ReaderPageTurnProbeCommand) async -> ReaderPageTurnFastTurnResult? {
         guard let fastTurnCommandHandler else { return nil }
-        return await fastTurnCommandHandler(command)
+        let result = await fastTurnCommandHandler(command)
+        recordFastTurnResult(result, command: command)
+        return result
     }
 
     public func performFastTurnAndWait(
@@ -1427,12 +1429,29 @@ public final class ReaderPageTurnProbeModel: ObservableObject {
         timeoutNanoseconds: UInt64
     ) async -> ReaderPageTurnFastTurnResult? {
         guard let fastTurnAndWaitCommandHandler else { return nil }
-        return await fastTurnAndWaitCommandHandler(command, timeoutNanoseconds)
+        let result = await fastTurnAndWaitCommandHandler(command, timeoutNanoseconds)
+        recordFastTurnResult(result, command: command)
+        return result
     }
 
     public func goToResolvedPage(_ pageIndex: Int) async -> ReaderPageTurnFastTurnResult? {
         guard let pageNavigationHandler else { return nil }
         return await pageNavigationHandler(pageIndex)
+    }
+
+    private func recordFastTurnResult(
+        _ result: ReaderPageTurnFastTurnResult?,
+        command: ReaderPageTurnProbeCommand
+    ) {
+        guard let result else { return }
+        let direction = command == .hostForwardTurn ? "forward" : "backward"
+        if result.moved {
+            lastCommandResult = "committed:\(direction)"
+        } else if result.status.hasPrefix("blocked:") || result.status.hasPrefix("error:") {
+            lastCommandResult = result.status
+        } else {
+            lastCommandResult = "committed-nochange:\(direction)"
+        }
     }
 }
 
@@ -2969,6 +2988,20 @@ struct ReaderResolvedPaginationContext {
             .map { $0 + 1 }
     }
 
+    private var bridgePageStateIsAuthoritative: Bool {
+        guard let bridgeCurrentPage else { return false }
+        if bridgePageOffsetsDisplayed?.contains(bridgeCurrentPage) == true {
+            return true
+        }
+        if bridgeVisiblePageIndices?.contains(bridgeCurrentPage) == true {
+            return true
+        }
+        if bridgeCurrentSpread?.pageIndices.contains(bridgeCurrentPage) == true {
+            return true
+        }
+        return false
+    }
+
     var pageCount: Int? {
         runtimeDerivedPageCount
             ?? paginationState?.pageCount
@@ -3037,39 +3070,66 @@ struct ReaderResolvedPaginationContext {
     }
 
     public var currentSpread: WebViewPaginationSpread? {
-        paginationSpreadSequence?.currentSpread
+        if bridgePageStateIsAuthoritative {
+            return bridgeCurrentSpread
+                ?? paginationSpreadSequence?.currentSpread
+                ?? paginationState?.currentSpread
+                ?? seedGraph.spreadSequence.current?.spread
+        }
+        return paginationSpreadSequence?.currentSpread
             ?? paginationState?.currentSpread
             ?? bridgeCurrentSpread
             ?? seedGraph.spreadSequence.current?.spread
     }
 
     public var pageOffsetsDisplayed: [Int]? {
-        paginationState?.pageOffsetsDisplayed
+        if bridgePageStateIsAuthoritative {
+            return bridgePageOffsetsDisplayed
+                ?? currentSpread?.pageIndices
+                ?? paginationState?.pageOffsetsDisplayed
+                ?? seedGraph.currentVisiblePageIndices
+        }
+        return paginationState?.pageOffsetsDisplayed
             ?? bridgePageOffsetsDisplayed
             ?? currentSpread?.pageIndices
             ?? seedGraph.currentVisiblePageIndices
     }
 
     public var currentPageIndex: Int? {
-        preferredRuntimeSpreadSequence != nil
+        if bridgePageStateIsAuthoritative {
+            return bridgeCurrentPage
+        }
+        return preferredRuntimeSpreadSequence != nil
             ? (seedGraph.currentPageIndex ?? paginationCurrentPageIndex ?? bridgeCurrentPage)
             : (paginationCurrentPageIndex ?? bridgeCurrentPage ?? seedGraph.currentPageIndex)
     }
 
     public var visiblePageIndices: [Int]? {
-        preferredRuntimeSpreadSequence != nil
+        if bridgePageStateIsAuthoritative {
+            return bridgeVisiblePageIndices
+                ?? bridgePageOffsetsDisplayed
+                ?? paginationVisiblePageIndices
+                ?? seedGraph.currentVisiblePageIndices
+        }
+        return preferredRuntimeSpreadSequence != nil
             ? (seedGraph.currentVisiblePageIndices ?? paginationVisiblePageIndices ?? bridgeVisiblePageIndices)
             : (paginationVisiblePageIndices ?? bridgeVisiblePageIndices ?? seedGraph.currentVisiblePageIndices)
     }
 
     public var canMoveForward: Bool? {
-        preferredRuntimeSpreadSequence != nil
+        if bridgePageStateIsAuthoritative {
+            return bridgeCanMoveForward ?? paginationCanMoveForward ?? seedGraph.canMoveForward
+        }
+        return preferredRuntimeSpreadSequence != nil
             ? (seedGraph.canMoveForward ?? paginationCanMoveForward ?? bridgeCanMoveForward)
             : (paginationCanMoveForward ?? bridgeCanMoveForward ?? seedGraph.canMoveForward)
     }
 
     public var canMoveBackward: Bool? {
-        preferredRuntimeSpreadSequence != nil
+        if bridgePageStateIsAuthoritative {
+            return bridgeCanMoveBackward ?? paginationCanMoveBackward ?? seedGraph.canMoveBackward
+        }
+        return preferredRuntimeSpreadSequence != nil
             ? (seedGraph.canMoveBackward ?? paginationCanMoveBackward ?? bridgeCanMoveBackward)
             : (paginationCanMoveBackward ?? bridgeCanMoveBackward ?? seedGraph.canMoveBackward)
     }
@@ -3077,6 +3137,12 @@ struct ReaderResolvedPaginationContext {
     public func destinationAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability? {
         switch direction {
         case .forward:
+            if bridgePageStateIsAuthoritative {
+                return bridgeForwardDestinationAvailability
+                    .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? paginationForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? seedGraph.forwardDestinationAvailability
+            }
             return preferredRuntimeSpreadSequence != nil
                 ? (seedGraph.forwardDestinationAvailability
                     ?? paginationForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
@@ -3086,6 +3152,12 @@ struct ReaderResolvedPaginationContext {
                     ?? bridgeForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
                     ?? seedGraph.forwardDestinationAvailability)
         case .backward:
+            if bridgePageStateIsAuthoritative {
+                return bridgeBackwardDestinationAvailability
+                    .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? paginationBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? seedGraph.backwardDestinationAvailability
+            }
             return preferredRuntimeSpreadSequence != nil
                 ? (seedGraph.backwardDestinationAvailability
                     ?? paginationBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
@@ -3585,6 +3657,8 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
               let paginationState,
               paginationState.isAppliedToMountedHost,
               paginationState.paginationComplete == true,
+              hasView,
+              hasRenderer,
               !webViewState.isLoading,
               !webViewState.isProvisionallyNavigating else {
             return false
@@ -3652,7 +3726,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             navigationStyle: pageNavigationStyle,
             transitionFamily: .slide
         )
-        layoutState = .aboutToChange
+        layoutState = localSupportsActivePageTurn ? .done : .aboutToChange
         let nextContentHostState = resolvedContentHostState(
             webViewState: webViewState,
             paginationState: paginationState,
@@ -3684,6 +3758,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             currentPageDisplayLabel: ReaderResolvedPagination.currentPageDisplayLabel(
                 bridgeLabel: nil,
                 paginationState: paginationContext.paginationState
+            ) ?? ReaderNativePaginationSupport.displayLabel(
+                currentPageIndex: paginationContext.currentPageIndex,
+                pageCount: paginationContext.pageCount
             ),
             currentPhysicalPageLabel: ReaderResolvedPagination.currentPhysicalPageLabel(
                 bridgeLabel: nil,
@@ -5438,7 +5515,12 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 supportsActivePageTurn: supportsActivePageTurn
             )
         } else {
-            layoutState = requestedLocationState == nil ? .changing : .aboutToChange
+            if sameDocumentHostTurnResult == "native-page" {
+                layoutState = .done
+                contentHostState = .contentViewAvailable
+            } else {
+                layoutState = requestedLocationState == nil ? .changing : .aboutToChange
+            }
         }
 
         if shouldPublishVisibleFields {
@@ -5607,6 +5689,22 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         guard let navigator, navigator.hasAttachedWebView else { return false }
         if probe.probeError != nil && !probe.hasStableRenderablePaginationSurface { return false }
         if !contentHostSequence.isStable { return false }
+        if sameDocumentHostTurnResult == "native-page",
+           let nativeTargetPageIndex = sameDocumentHostTurnTargetPageIndex {
+            let probePageIndices = [
+                probe.currentPage,
+                probe.sameDocumentHostTurnCurrentPageIndex,
+                probe.sameDocumentHostTurnTargetPageIndex,
+                probe.sameDocumentHostTurnDatasetCurrentPageIndex,
+                probe.layoutCurrentPageIndex,
+                probe.livePageIndex,
+                probe.liveChunkPageIndex,
+                probe.viewportCenterChunkPageIndex
+            ].compactMap { $0 }
+            if probePageIndices.contains(where: { $0 != nativeTargetPageIndex }) {
+                return false
+            }
+        }
         switch probe.contentHostState {
         case .some(.initial), .some(.waitingOnContentView), .some(.preparingContentView), .some(.preparingForReuse):
             return false
@@ -5703,6 +5801,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         _ direction: PageTurnDirection,
         preferredFrameOverride: WKFrameInfo? = nil
     ) async -> ReaderPageTurnFastTurnResult? {
+        if let nativeResult = await performNativePaginationTurn(direction) {
+            return nativeResult
+        }
         let script =
         """
         (() => {
@@ -5804,6 +5905,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         _ pageIndex: Int,
         preferredFrameOverride: WKFrameInfo? = nil
     ) async -> ReaderPageTurnFastTurnResult? {
+        if let nativeResult = await performNativePaginationPageNavigation(pageIndex) {
+            return nativeResult
+        }
         let script =
         """
         (() => {
@@ -5844,6 +5948,243 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             preferredFrameOverride: preferredFrameOverride,
             timeoutNanoseconds: 2_000_000_000,
             allowFrameFallback: false
+        )
+    }
+
+    private func performNativePaginationTurn(
+        _ direction: PageTurnDirection
+    ) async -> ReaderPageTurnFastTurnResult? {
+        guard let pageCount = resolvedNativePaginationPageCount(),
+              pageCount > 1 else {
+            return nil
+        }
+        let before = nativeFastTurnState(status: nil)
+        guard let currentPage = before.currentPage else {
+            return nil
+        }
+        switch ReaderNativePaginationSupport.turnTarget(
+            direction: direction,
+            currentPage: currentPage,
+            pageCount: pageCount,
+            canNext: canNext,
+            canPrev: canPrev
+        ) {
+        case .semanticFallback:
+            return nil
+        case .boundary(let targetPageIndex):
+            publishAttemptedPastEndForDiagnostics(direction: direction)
+            return ReaderPageTurnFastTurnResult(
+                direction: direction.rawValue,
+                status: "blocked:nativePaginationBoundary",
+                moved: false,
+                before: before,
+                after: before,
+                targetPageIndex: targetPageIndex,
+                targetSectionIndex: before.currentSectionIndex
+            )
+        case .page(let targetPageIndex):
+            return await performNativePaginationPageNavigation(
+                targetPageIndex,
+                direction: direction,
+                before: before,
+                status: "native-page"
+            )
+        }
+    }
+
+    private func performNativePaginationPageNavigation(
+        _ pageIndex: Int,
+        direction: PageTurnDirection? = nil,
+        before: ReaderPageTurnFastState? = nil,
+        status: String = "native-page"
+    ) async -> ReaderPageTurnFastTurnResult? {
+        guard let navigator,
+              let paginationState = lastKnownState.paginationState,
+              paginationState.isAppliedToMountedHost,
+              paginationState.appliedConfiguration?.mode.isPaginated == true,
+              let pageCount = resolvedNativePaginationPageCount(),
+              pageCount > 0 else {
+            return nil
+        }
+        let targetPageIndex = max(0, min(pageCount - 1, pageIndex))
+        let baseline = before ?? nativeFastTurnState(status: nil)
+        guard let position = await ReaderNativePaginationSupport.setPage(
+            targetPageIndex,
+            pageCount: pageCount,
+            paginationState: paginationState,
+            navigator: navigator,
+            reportedCurrentPage: paginationState.currentPageIndex
+                ?? currentPage
+                ?? layoutCurrentPageIndex
+        ) else {
+            return nil
+        }
+        publishNativePaginationPagePosition(position, direction: direction)
+        let after = nativeFastTurnState(status: status)
+        let moved = after.currentPage != baseline.currentPage
+            || after.pageCount != baseline.pageCount
+            || after.currentSectionIndex != baseline.currentSectionIndex
+        if let direction {
+            publishNavigationEvent(
+                direction == .forward ? .nextPage : .previousPage,
+                direction: direction
+            )
+        }
+        return ReaderPageTurnFastTurnResult(
+            direction: direction?.rawValue ?? "direct",
+            status: status,
+            moved: moved,
+            before: baseline,
+            after: after,
+            targetPageIndex: targetPageIndex,
+            targetSectionIndex: baseline.currentSectionIndex
+        )
+    }
+
+    private func resolvedNativePaginationPageCount() -> Int? {
+        ReaderNativePaginationSupport.resolvedPageCount([
+            lastKnownState.paginationState?.pageCount,
+            pageCount,
+            layoutPageRecordCount
+        ])
+    }
+
+    private func nativeFastTurnState(status: String?) -> ReaderPageTurnFastState {
+        let currentPageIndex = currentPage
+            ?? lastKnownState.paginationState?.currentPageIndex
+            ?? layoutCurrentPageIndex
+        let resolvedPageCount = resolvedNativePaginationPageCount() ?? pageCount
+        return ReaderPageTurnFastState(
+            hasView: hasView,
+            hasRenderer: hasRenderer,
+            sameDocumentMode: true,
+            currentPage: currentPageIndex,
+            pageCount: resolvedPageCount,
+            currentSectionIndex: currentSectionIndex,
+            currentSectionHref: currentSectionHref,
+            canForward: nativeCanMoveForward(currentPageIndex: currentPageIndex, pageCount: resolvedPageCount),
+            canBackward: nativeCanMoveBackward(currentPageIndex: currentPageIndex),
+            pageProgressionDirection: pageProgressionDirection.rawValue,
+            forwardDestinationAvailability: nativeDestinationAvailability(
+                for: .forward,
+                currentPageIndex: currentPageIndex,
+                pageCount: resolvedPageCount
+            ),
+            backwardDestinationAvailability: nativeDestinationAvailability(
+                for: .backward,
+                currentPageIndex: currentPageIndex,
+                pageCount: resolvedPageCount
+            ),
+            layoutVisibleUnitKind: layoutVisibleUnitKind,
+            layoutVisibleUnitAxis: layoutVisibleUnitAxis,
+            layoutVisiblePageCount: layoutVisiblePageCount,
+            layoutWritingMode: layoutWritingMode,
+            currentPageTextSample: currentPageTextSample,
+            currentPageDisplayLabel: resolvedNativePageDisplayLabel(
+                currentPageIndex: currentPageIndex,
+                pageCount: resolvedPageCount
+            ),
+            currentPhysicalPageLabel: currentPhysicalPageLabel,
+            pageLabelDisplayMode: pageLabelDisplayMode,
+            usesPhysicalPageLabels: usesPhysicalPageLabels,
+            allowsMultipleLabelsInMultiUnitLayout: allowsMultipleLabelsInMultiUnitLayout,
+            sameDocumentHostTurnPhase: status == nil ? sameDocumentHostTurnPhase : "native-pagination-positioned",
+            sameDocumentHostTurnTargetPageIndex: currentPageIndex,
+            sameDocumentHostTurnResult: status,
+            lastFastTurnStatus: status
+        )
+    }
+
+    private func nativeCanMoveForward(currentPageIndex: Int?, pageCount: Int?) -> Bool {
+        ReaderNativePaginationSupport.canMoveForward(
+            currentPageIndex: currentPageIndex,
+            pageCount: pageCount,
+            canNext: canNext,
+            fallback: canForward
+        )
+    }
+
+    private func nativeCanMoveBackward(currentPageIndex: Int?) -> Bool {
+        ReaderNativePaginationSupport.canMoveBackward(
+            currentPageIndex: currentPageIndex,
+            canPrev: canPrev,
+            fallback: canBackward
+        )
+    }
+
+    private func nativeDestinationAvailability(
+        for direction: PageTurnDirection,
+        currentPageIndex: Int?,
+        pageCount: Int?
+    ) -> String {
+        ReaderNativePaginationSupport.destinationAvailability(
+            for: direction,
+            currentPageIndex: currentPageIndex,
+            pageCount: pageCount,
+            canNext: canNext,
+            canPrev: canPrev,
+            fallbackForward: canForward,
+            fallbackBackward: canBackward
+        )
+    }
+
+    private func resolvedNativePageDisplayLabel(currentPageIndex: Int?, pageCount: Int?) -> String? {
+        ReaderNativePaginationSupport.displayLabel(
+            currentPageIndex: currentPageIndex,
+            pageCount: pageCount
+        )
+    }
+
+    private func publishNativePaginationPagePosition(
+        _ position: ReaderNativePaginationPagePosition,
+        direction: PageTurnDirection?
+    ) {
+        let pageIndex = position.pageIndex
+        let pageCount = position.pageCount
+        currentPage = pageIndex
+        layoutCurrentPageIndex = pageIndex
+        self.pageCount = pageCount
+        pageOffsetsDisplayed = [pageIndex]
+        visiblePageIndices = [pageIndex]
+        currentSpread = WebViewPaginationSpread(
+            index: pageIndex,
+            slots: [WebViewPaginationSpreadSlot(kind: .page, pageIndex: pageIndex)]
+        )
+        destinationSpread = nil
+        spreadSequence = WebViewPaginationSpreadSequence(
+            spreads: (0..<pageCount).map { index in
+                WebViewPaginationSpread(
+                    index: index,
+                    slots: [WebViewPaginationSpreadSlot(kind: .page, pageIndex: index)]
+                )
+            },
+            currentIndex: pageIndex
+        )
+        canForward = nativeCanMoveForward(currentPageIndex: pageIndex, pageCount: pageCount)
+        canBackward = nativeCanMoveBackward(currentPageIndex: pageIndex)
+        forwardDestinationAvailability = nativeDestinationAvailability(
+            for: .forward,
+            currentPageIndex: pageIndex,
+            pageCount: pageCount
+        )
+        backwardDestinationAvailability = nativeDestinationAvailability(
+            for: .backward,
+            currentPageIndex: pageIndex,
+            pageCount: pageCount
+        )
+        currentContentLocation = .leading
+        updateReason = .userInteraction
+        layoutState = .done
+        sameDocumentHostTurnPhase = "native-pagination-positioned"
+        sameDocumentHostTurnDirection = direction?.rawValue
+        sameDocumentHostTurnCurrentPageIndex = pageIndex
+        sameDocumentHostTurnTargetPageIndex = pageIndex
+        sameDocumentHostTurnPageCount = pageCount
+        sameDocumentHostTurnDatasetCurrentPageIndex = pageIndex
+        sameDocumentHostTurnResult = "native-page"
+        currentPageDisplayLabel = resolvedNativePageDisplayLabel(
+            currentPageIndex: pageIndex,
+            pageCount: pageCount
         )
     }
 
@@ -6149,6 +6490,13 @@ fileprivate extension ReaderPageTurnNavigationProbe {
         !(currentPageDisplayLabel?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
+    private var hasNativePaginationSurface: Bool {
+        guard paginationComplete == true else { return false }
+        guard hasUsablePageWindow else { return false }
+        guard hasResolvedVisiblePageIdentity else { return false }
+        return hasCurrentPageDisplayLabel
+    }
+
     var hasRenderablePageShell: Bool {
         layoutLiveRootExists == true
             || layoutLiveCurrentPageExists == true
@@ -6165,6 +6513,9 @@ fileprivate extension ReaderPageTurnNavigationProbe {
     }
 
     var hasStableRenderablePaginationSurface: Bool {
+        if hasNativePaginationSurface {
+            return true
+        }
         guard hasRenderablePageShell else { return false }
         guard hasRenderablePageText else { return false }
         guard pageScrollerAnimationIsRunning != true else { return false }
@@ -6187,6 +6538,9 @@ fileprivate extension ReaderPageTurnNavigationProbe {
     }
 
     var pageTurnReadiness: ReaderPageTurnReadinessState {
+        if hasNativePaginationSurface && supportsActivePageTurn {
+            return .init(phase: .turnReady, reason: nil)
+        }
         if !hasView || !hasRenderer {
             return .init(phase: .bootstrapping, reason: "rendererUnavailable")
         }
@@ -6243,10 +6597,20 @@ fileprivate extension ReaderPageTurnNavigationProbe {
     }
 
     var supportsActivePageTurn: Bool {
-        hasView
-        && hasRenderer
-        && (canNext || canPrev)
-        && hasSectionLayoutController
+        let hasNativeForwardPage = (currentPage ?? 0) + 1 < (pageCount ?? 0)
+        let hasNativeBackwardPage = (currentPage ?? 0) > 0 && (pageCount ?? 0) > 0
+        let hasDirectionalNavigation = canNext
+            || canPrev
+            || canForward
+            || canBackward
+            || hasNativeForwardPage
+            || hasNativeBackwardPage
+        if hasNativePaginationSurface {
+            return hasDirectionalNavigation
+        }
+        return (hasView && hasRenderer)
+            && hasDirectionalNavigation
+            && hasSectionLayoutController
     }
 
     private var spreadGraph: ReaderPageTurnSpreadGraph {
@@ -8503,6 +8867,10 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         if let fastResult = await bridge.performFastTurn(direction) {
             if fastResult.status != "unavailable",
                !fastResult.status.hasPrefix("error:") {
+                syncControllerFromBridge()
+                let publishedSnapshot = await makeProbeSnapshot()
+                probeModel.update(publishedSnapshot)
+                logProbeSnapshotIfEnabled(publishedSnapshot)
                 return ReaderPageTurnFastTurnResult(
                     direction: fastResult.direction,
                     status: fastResult.status,
