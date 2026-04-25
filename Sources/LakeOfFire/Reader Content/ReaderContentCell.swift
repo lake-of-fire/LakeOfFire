@@ -297,6 +297,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
 
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
+    @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     @State private var clearBorderedLabelHeight: CGFloat = 0
 
@@ -587,6 +588,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             }
         }
         .foregroundStyle(.secondary)
+        .frame(height: scaledSmallNewBadgeHeight)
     }
 
     @ViewBuilder

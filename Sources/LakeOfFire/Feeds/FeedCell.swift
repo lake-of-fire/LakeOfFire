@@ -57,6 +57,7 @@ public struct FeedCell: View {
     var horizontalSpacing: CGFloat = 10
     
     @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 40
+    @ScaledMetric(relativeTo: .caption2) private var scaledNewBadgeHeight: CGFloat = 19
     
     private var showsAudioIndicator: Bool {
         feed.firstEntryHasAudio
@@ -115,6 +116,7 @@ public struct FeedCell: View {
                                         .foregroundColor(.secondary)
                                 }
                             }
+                            .frame(height: scaledNewBadgeHeight)
                         }
 
                         if includesDescription, let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
