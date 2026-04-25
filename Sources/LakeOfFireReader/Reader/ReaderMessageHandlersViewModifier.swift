@@ -1747,16 +1747,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             readerModeViewModel.readabilityContainerSelector = nil
             readerModeViewModel.readabilityContainerFrameInfo = nil
         }
-        debugPrint(
-            "# NEWSTATS",
-            "lake.showOriginal.begin",
-            [
-                "contentURL": contentURL.absoluteString,
-                "pageURL": readerContent.pageURL.absoluteString,
-                "hasCapturedReadabilityContent": hasCapturedReadabilityContent,
-                "shouldRestoreStoredFullContent": shouldRestoreStoredFullContent
-            ] as [String: Any]
-        )
         await showOriginalWillBeginHandler?(contentURL, readerContent.pageURL)
         debugPrint(
             "# 404 reader.showOriginal.begin",

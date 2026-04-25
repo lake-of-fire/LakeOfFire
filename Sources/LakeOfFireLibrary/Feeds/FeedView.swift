@@ -120,7 +120,8 @@ public struct FeedView: View {
                             entrySelection: contentSelection,
                             useDefaultRowInsets: true,
                             showsNewBadges: showsReaderContentNewBadges,
-                            separateRowsIntoSections: true
+                            separateRowsIntoSections: true,
+                            listSectionSpacing: 10
                         ) {
                         } emptyStateView: {
                             EmptyStateBoxView(

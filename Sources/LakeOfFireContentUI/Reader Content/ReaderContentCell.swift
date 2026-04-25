@@ -378,6 +378,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     @State private var resolvedContentFile: ContentFile?
     @State private var contentFileLookupStarted = false
+    @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
     
     static var buttonSize: CGFloat {
         return 26
@@ -697,6 +698,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .foregroundStyle(.secondary)
             }
         }
+        .frame(height: scaledSmallNewBadgeHeight)
     }
 
     @ViewBuilder
