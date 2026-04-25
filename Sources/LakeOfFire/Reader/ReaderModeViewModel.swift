@@ -190,14 +190,18 @@ internal func buildCanonicalReadabilityHTML(
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
     let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
-    let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
+    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<a class=\"reader-view-original\">View Original</a>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
         : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
-    let publicationDateText = publishedTime.map(escapeReadabilityText) ?? ""
-    let metaLine = """
-    <div id="reader-meta-line" class="byline-meta-line"><span id="reader-publication-date">\(publicationDateText)</span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>
-    """
+    let publicationDateText = publishedTime.map(escapeReadabilityText)
+    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }, viewOriginal]
+        .compactMap { $0 }
+    let metaLine = metaItems.isEmpty
+        ? ""
+        : """
+        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\"></span>"))</div>
+        """
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
     let bodyStyle = ManabiSystemUIFontCSS.cssDeclarations(from: ManabiSystemUIFontCSS.fallbackSizeMap())

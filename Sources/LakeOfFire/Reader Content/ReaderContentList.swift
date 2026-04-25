@@ -261,9 +261,10 @@ struct ReaderContentListAppearance: Sendable {
     }
 }
 
-private struct FeedCellLayoutLog: View {
+struct ReaderContentLayoutLog: View {
     let label: String
     let details: String
+    var prefix = "# FEEDCELL"
 
     var body: some View {
         GeometryReader { proxy in
@@ -279,7 +280,7 @@ private struct FeedCellLayoutLog: View {
 
     private func log(frame: CGRect) {
         debugPrint(
-            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
+            "\(prefix) \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
         )
     }
 }
@@ -761,9 +762,10 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         }
         .padding(appearance.usesNativeRowInsets ? 0 : 11)
         .background(
-            FeedCellLayoutLog(
+            ReaderContentLayoutLog(
                 label: "reader-content-cell-wrapper",
-                details: "title=\(String(item.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
+                details: "title=\(String(item.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)",
+                prefix: item is HistoryRecord ? "# HISTORY" : "# FEEDCELL"
             )
         )
     }
@@ -938,9 +940,10 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .background(
-            FeedCellLayoutLog(
+            ReaderContentLayoutLog(
                 label: "reader-content-row",
-                details: "title=\(String(content.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
+                details: "title=\(String(content.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)",
+                prefix: content is HistoryRecord ? "# HISTORY" : "# FEEDCELL"
             )
         )
         .environmentObject(cloudDriveSyncStatusModel)
@@ -1456,7 +1459,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                         customMenuOptions: customMenuOptions
                                     )
                                 }
-                                .readerContentListRowStyle()
+                                .readerContentListRowStyle(
+                                    useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                                )
                             } header: {
                                 Text(section.title)
                                     .foregroundStyle(.secondary)
@@ -1484,7 +1489,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                         customMenuOptions: customMenuOptions
                                     )
                                 }
-                                .readerContentListRowStyle()
+                                .readerContentListRowStyle(
+                                    useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                                )
                             } header: {
                                 Text(section.title)
                                     .bold()

@@ -331,6 +331,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var buttonSize: CGFloat { Self.buttonSize }
 
+    private var layoutLogPrefix: String {
+        item is HistoryRecord ? "# HISTORY" : "# FEEDCELL"
+    }
+
+    private var layoutLogDetails: String {
+        "title=\(String(displayTitle.prefix(80))) style=\(String(describing: readerContentCellStyle)) hasThumbnail=\(hasVisibleThumbnail) contentColumnHeight=\(contentColumnHeight.map(String.init(describing:)) ?? "nil") maxCellHeight=\(appearance.maxCellHeight) buttonSize=\(buttonSize)"
+    }
+
     private var thumbnailEdgeLength: CGFloat {
         max(1, appearance.thumbnailDimension ?? appearance.maxCellHeight)
     }
@@ -530,19 +538,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         readerContentCellStyle == .plain
     }
 
-    private var clearBorderedSmallMinHeight: CGFloat {
-        30
-    }
-
-    private var clearBorderedVerticalInset: CGFloat {
-        let measuredHeight = clearBorderedLabelHeight > 0 ? clearBorderedLabelHeight : buttonSize
-        return max(0, (clearBorderedSmallMinHeight - measuredHeight) / 2)
-    }
-
-    private var cardBottomRowOffset: CGFloat {
-        4 + clearBorderedVerticalInset
-    }
-
     private var showsAudioBadge: Bool {
         item.hasAudio
     }
@@ -593,7 +588,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var metadataRow: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .bottom, spacing: 6) {
             if let publicationDate = publicationDateText {
                 Text(publicationDate)
                     .lineLimit(1)
@@ -608,9 +603,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
                 .labelStyle(.iconOnly)
                 .imageScale(.small)
-                .frame(width: buttonSize, height: buttonSize)
+                .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
 
             controlsRow
+                .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
         }
         .foregroundStyle(.secondary)
         .buttonStyle(.clearBordered)
@@ -643,6 +639,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .allowsTightening(true)
                 }
             }
+            .background(
+                ReaderContentLayoutLog(
+                    label: "reader-content-progress-row",
+                    details: layoutLogDetails,
+                    prefix: layoutLogPrefix
+                )
+            )
         }
     }
 
@@ -653,7 +656,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             .lineLimit(titleLineLimit)
             .multilineTextAlignment(.leading)
             .environment(\._lineHeightMultiple, 0.875)
-            .layoutPriority(1)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -755,41 +757,50 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private func thumbnailView(for thumbnailChoice: ThumbnailChoice) -> some View {
-        switch thumbnailChoice {
-        case .image(let imageURL):
-            if appearance.isEbookStyle {
-                BookCoverImageView(imageURL: imageURL, dimension: thumbnailEdgeLength)
-            } else {
-                ReaderImage(
-                    imageURL,
-                    maxWidth: thumbnailEdgeLength,
-                    minHeight: thumbnailEdgeLength,
-                    maxHeight: thumbnailEdgeLength
+        Group {
+            switch thumbnailChoice {
+            case .image(let imageURL):
+                if appearance.isEbookStyle {
+                    BookCoverImageView(imageURL: imageURL, dimension: thumbnailEdgeLength)
+                } else {
+                    ReaderImage(
+                        imageURL,
+                        maxWidth: thumbnailEdgeLength,
+                        minHeight: thumbnailEdgeLength,
+                        maxHeight: thumbnailEdgeLength
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+                }
+            case .icon(let sourceIconURL):
+                ReaderContentThumbnailTile(
+                    content: .icon(sourceIconURL, placeholder: fallbackInitial),
+                    width: thumbnailEdgeLength,
+                    height: thumbnailEdgeLength,
+                    cornerRadius: thumbnailCornerRadius
                 )
-                .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+            case .initial(let letter):
+                ReaderContentThumbnailTile(
+                    content: .initial(letter),
+                    width: thumbnailEdgeLength,
+                    height: thumbnailEdgeLength,
+                    cornerRadius: thumbnailCornerRadius
+                )
+            case .symbol(let systemName):
+                ReaderContentThumbnailTile(
+                    content: .symbol(systemName),
+                    width: thumbnailEdgeLength,
+                    height: thumbnailEdgeLength,
+                    cornerRadius: thumbnailCornerRadius
+                )
             }
-        case .icon(let sourceIconURL):
-            ReaderContentThumbnailTile(
-                content: .icon(sourceIconURL, placeholder: fallbackInitial),
-                width: thumbnailEdgeLength,
-                height: thumbnailEdgeLength,
-                cornerRadius: thumbnailCornerRadius
-            )
-        case .initial(let letter):
-            ReaderContentThumbnailTile(
-                content: .initial(letter),
-                width: thumbnailEdgeLength,
-                height: thumbnailEdgeLength,
-                cornerRadius: thumbnailCornerRadius
-            )
-        case .symbol(let systemName):
-            ReaderContentThumbnailTile(
-                content: .symbol(systemName),
-                width: thumbnailEdgeLength,
-                height: thumbnailEdgeLength,
-                cornerRadius: thumbnailCornerRadius
-            )
         }
+        .background(
+            ReaderContentLayoutLog(
+                label: "reader-content-thumbnail",
+                details: layoutLogDetails,
+                prefix: layoutLogPrefix
+            )
+        )
     }
 
     var body: some View {
@@ -817,8 +828,23 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             progressRow
                             metadataRow
                         }
+                        .layoutPriority(3)
+                        .background(
+                            ReaderContentLayoutLog(
+                                label: "reader-content-bottom-block",
+                                details: layoutLogDetails,
+                                prefix: layoutLogPrefix
+                            )
+                        )
                     }
                     .frame(maxWidth: .infinity, minHeight: contentColumnHeight, maxHeight: contentColumnHeight, alignment: .top)
+                    .background(
+                        ReaderContentLayoutLog(
+                            label: "reader-content-column",
+                            details: layoutLogDetails,
+                            prefix: layoutLogPrefix
+                        )
+                    )
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -834,12 +860,33 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             progressRow
                             metadataRow
                         }
-                        .offset(y: cardBottomRowOffset)
+                        .layoutPriority(3)
+                        .background(
+                            ReaderContentLayoutLog(
+                                label: "reader-content-bottom-block",
+                                details: layoutLogDetails,
+                                prefix: layoutLogPrefix
+                            )
+                        )
                     }
                     .frame(height: contentColumnHeight, alignment: .top)
+                    .background(
+                        ReaderContentLayoutLog(
+                            label: "reader-content-column",
+                            details: layoutLogDetails,
+                            prefix: layoutLogPrefix
+                        )
+                    )
                 }
             }
         }
+        .background(
+            ReaderContentLayoutLog(
+                label: "reader-content-cell",
+                details: layoutLogDetails,
+                prefix: layoutLogPrefix
+            )
+        )
         .frame(
             minWidth: appearance.maxCellHeight,
             minHeight: readerContentCellStyle == .card ? effectiveCardCellHeight : nil,
