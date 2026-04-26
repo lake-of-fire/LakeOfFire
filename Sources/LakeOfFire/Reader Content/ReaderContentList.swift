@@ -1385,6 +1385,74 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     @ViewBuilder
+    private func groupedRowContent(
+        section: ReaderContentGroupingSection<C>,
+        index: Array<C>.Index,
+        content: C
+    ) -> some View {
+        let lastIndex = section.items.indices.last ?? section.items.startIndex
+        ReaderContentInnerListItem(
+            content: content,
+            entrySelection: $entrySelection,
+            includeSource: includeSource,
+            appearance: ReaderContentListAppearance(
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                showSeparators: false,
+                useCardBackground: false
+            ),
+            isFirst: index == section.items.startIndex,
+            isLast: index == lastIndex,
+            viewModel: viewModel,
+            onRequestDelete: onRequestDeleteSingle,
+            customMenuOptions: customMenuOptions
+        )
+        .readerContentListRowStyle(
+            useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+        )
+    }
+
+    @ViewBuilder
+    private func groupedRows(section: ReaderContentGroupingSection<C>) -> some View {
+        if separateRowsIntoSections {
+            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+                sectionWithSpacing(
+                    Section {
+                        groupedRowContent(section: section, index: index, content: content)
+                    } header: {
+                        if index == section.items.startIndex {
+                            Text(section.title)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .headerProminence(.increased)
+                )
+            }
+        } else {
+            let lastIndex = section.items.indices.last ?? section.items.startIndex
+            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+                ReaderContentInnerListItem(
+                    content: content,
+                    entrySelection: $entrySelection,
+                    includeSource: includeSource,
+                    appearance: ReaderContentListAppearance(
+                        alwaysShowThumbnails: alwaysShowThumbnails,
+                        showSeparators: false,
+                        useCardBackground: false
+                    ),
+                    isFirst: index == section.items.startIndex,
+                    isLast: index == lastIndex,
+                    viewModel: viewModel,
+                    onRequestDelete: onRequestDeleteSingle,
+                    customMenuOptions: customMenuOptions
+                )
+            }
+            .readerContentListRowStyle(
+                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+            )
+        }
+    }
+
+    @ViewBuilder
     private var listContent: some View {
         if showsHeaderSection {
             Section {
@@ -1438,30 +1506,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 }
             } else {
                 ForEach(groupedSections) { section in
-                    if #available(iOS 17, macOS 14, *) {
+                    if separateRowsIntoSections {
+                        groupedRows(section: section)
+                    } else if #available(iOS 17, macOS 14, *) {
                         sectionWithSpacing(
                             Section(isExpanded: binding(for: section.id)) {
-                                let lastIndex = section.items.indices.last ?? section.items.startIndex
-                                ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
-                                    ReaderContentInnerListItem(
-                                        content: content,
-                                        entrySelection: $entrySelection,
-                                        includeSource: includeSource,
-                                        appearance: ReaderContentListAppearance(
-                                            alwaysShowThumbnails: alwaysShowThumbnails,
-                                            showSeparators: false,
-                                            useCardBackground: false
-                                        ),
-                                        isFirst: index == section.items.startIndex,
-                                        isLast: index == lastIndex,
-                                        viewModel: viewModel,
-                                        onRequestDelete: onRequestDeleteSingle,
-                                        customMenuOptions: customMenuOptions
-                                    )
-                                }
-                                .readerContentListRowStyle(
-                                    useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
-                                )
+                                groupedRows(section: section)
                             } header: {
                                 Text(section.title)
                                     .foregroundStyle(.secondary)
@@ -1471,27 +1521,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     } else {
                         sectionWithSpacing(
                             Section {
-                                let lastIndex = section.items.indices.last ?? section.items.startIndex
-                                ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
-                                    ReaderContentInnerListItem(
-                                        content: content,
-                                        entrySelection: $entrySelection,
-                                        includeSource: includeSource,
-                                        appearance: ReaderContentListAppearance(
-                                            alwaysShowThumbnails: alwaysShowThumbnails,
-                                            showSeparators: false,
-                                            useCardBackground: false
-                                        ),
-                                        isFirst: index == section.items.startIndex,
-                                        isLast: index == lastIndex,
-                                        viewModel: viewModel,
-                                        onRequestDelete: onRequestDeleteSingle,
-                                        customMenuOptions: customMenuOptions
-                                    )
-                                }
-                                .readerContentListRowStyle(
-                                    useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
-                                )
+                                groupedRows(section: section)
                             } header: {
                                 Text(section.title)
                                     .bold()
@@ -1808,6 +1838,7 @@ public extension ReaderContentProtocol {
         useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
         showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1828,6 +1859,7 @@ public extension ReaderContentProtocol {
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
             showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
@@ -1852,6 +1884,7 @@ public extension ReaderContentProtocol {
         useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
         showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
@@ -1871,6 +1904,7 @@ public extension ReaderContentProtocol {
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
             showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
