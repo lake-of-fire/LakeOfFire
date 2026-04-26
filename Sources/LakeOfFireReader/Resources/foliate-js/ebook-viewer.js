@@ -569,6 +569,14 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     }
     console.error("Error replacing text:", error)
     return text
+    } finally {
+    if (
+    !isCacheWarmer
+    && globalThis.__manabiCacheWarmerOpenRequested
+    && (globalThis.__manabiInflightReplaceTextCount ?? 0) === 0
+    ) {
+    void maybeOpenDeferredCacheWarmer()
+    }
     }
 }
 
@@ -2809,11 +2817,23 @@ class CacheWarmer {
         this.pageCounts = new Map()
         this.lastLoadedSectionIndex = null
         this.lastLoadedSectionHref = null
+        this.settledSectionHrefs = new Set()
         globalThis.cacheWarmerPageCounts = this.pageCounts
         globalThis.cacheWarmerTotalPages = 0
     }
     #normalizeSectionHref(href) {
         return normalizeSpineHref(href)
+    }
+    #mergeSettledSectionHrefs(settledSectionHrefs = []) {
+        for (const href of settledSectionHrefs || []) {
+            const normalizedHref = this.#normalizeSectionHref(href)
+            if (normalizedHref) this.settledSectionHrefs.add(normalizedHref)
+        }
+        for (const href of liveSettledSectionHrefSet()) {
+            const normalizedHref = this.#normalizeSectionHref(href)
+            if (normalizedHref) this.settledSectionHrefs.add(normalizedHref)
+        }
+        return Array.from(this.settledSectionHrefs).sort()
     }
     #nextUnsettledSectionIndex(settledSectionHrefs = []) {
         const sections = Array.isArray(this.view?.book?.sections) ? this.view.book.sections : []
@@ -2833,7 +2853,7 @@ class CacheWarmer {
         return null
     }
     async #openFirstUnsettledSection() {
-        const targetIndex = this.#nextUnsettledSectionIndex(Array.from(liveSettledSectionHrefSet()))
+        const targetIndex = this.#nextUnsettledSectionIndex(this.#mergeSettledSectionHrefs())
         if (!Number.isInteger(targetIndex)) {
             return
         }
@@ -2855,6 +2875,7 @@ class CacheWarmer {
     }
 
     async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
+        settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
         if (!Number.isInteger(targetIndex)) {
             return
