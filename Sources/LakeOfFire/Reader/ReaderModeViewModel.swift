@@ -1339,6 +1339,7 @@ public class ReaderModeViewModel: ObservableObject {
             metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
         }
         print("# EPUB", "sharedReaderFont.inject", metadata)
+        print("# FONT", "sharedReaderFont.inject", metadata)
     }
 
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {

@@ -54,6 +54,20 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     }
 };
 
+const logMarkReadNav = (event, detail = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...detail,
+    };
+    const line = `# MARKREAD ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
 // We only need a no-op logger for nav diagnostics.
 const logFix = (event, detail = {}) => {
@@ -411,6 +425,16 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
+        logMarkReadNav('hideNavigation.navHUD.set', {
+            source,
+            previous,
+            requestedHide: !!shouldHide,
+            appliedHide: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            context,
+        });
         logEPUBNav('nav.visibility.scroll-toggle', {
             source,
             previous,
