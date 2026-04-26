@@ -71,6 +71,27 @@ public struct ReaderContentSyncStatusPresentation: Sendable {
     }
 }
 
+public enum ReaderContentSyncStatusPresentationBuilder {
+    public static func menuPresentation(
+        for itemURL: URL,
+        externalPresentation: ReaderContentSyncStatusPresentation?
+    ) -> ReaderContentSyncStatusPresentation {
+        if itemURL.absoluteString.contains("reader-file://file/load/icloud/") {
+            return ReaderContentSyncStatusPresentation(title: "Sync Status: iCloud", imageName: "icloud")
+        }
+
+        if let externalPresentation {
+            return ReaderContentSyncStatusPresentation(
+                title: "Sync Status: \(externalPresentation.title)",
+                imageName: externalPresentation.imageName,
+                imageIsSystemSymbol: externalPresentation.imageIsSystemSymbol
+            )
+        }
+
+        return ReaderContentSyncStatusPresentation(title: "Sync Status: Local Only", imageName: "internaldrive")
+    }
+}
+
 public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
     case content
     case media

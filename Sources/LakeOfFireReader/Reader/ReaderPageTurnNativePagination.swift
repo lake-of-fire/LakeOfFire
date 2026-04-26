@@ -87,6 +87,7 @@ enum ReaderNativePaginationSupport {
         return "Page \(currentPageIndex + 1) of \(pageCount)"
     }
 
+    @MainActor
     static func setPage(
         _ pageIndex: Int,
         pageCount: Int,

@@ -488,6 +488,15 @@ const allowOversizeChunkOverflow = (chunkNode, chunkBody) => {
 
 const applyPageRootLayoutStyles = root => {
     if (!(root instanceof HTMLElement)) return
+    // The tracking pre-bake path can leave physical width/height values on the
+    // source container. The same-document page strip must be sized from the
+    // live viewport, not from stale cached content geometry.
+    root.style.removeProperty('width')
+    root.style.removeProperty('height')
+    root.style.removeProperty('min-width')
+    root.style.removeProperty('min-height')
+    root.style.removeProperty('max-width')
+    root.style.removeProperty('max-height')
     root.style.position = 'relative'
     root.style.left = '0px'
     root.style.top = '0px'
@@ -500,6 +509,8 @@ const applyPageRootLayoutStyles = root => {
     // consistently. Individual page content still retains its own document
     // direction and writing mode.
     root.style.direction = 'ltr'
+    root.style.writingMode = 'horizontal-tb'
+    root.style.webkitWritingMode = 'horizontal-tb'
     root.style.inlineSize = '100%'
     root.style.minInlineSize = '100%'
     root.style.maxInlineSize = 'none'
@@ -526,13 +537,25 @@ const resolvePageViewportSize = root => {
         return { inlineSize: null, blockSize: null }
     }
     const rect = root.getBoundingClientRect?.() ?? null
+    const viewportWidth = root.ownerDocument?.defaultView?.innerWidth ?? 0
+    const viewportHeight = root.ownerDocument?.defaultView?.innerHeight ?? 0
     const inlineSize = Math.max(
         1,
-        Math.round(rect?.width || root.clientWidth || root.offsetWidth || 0)
+        Math.round(Math.max(
+            rect?.width || 0,
+            root.clientWidth || 0,
+            root.offsetWidth || 0,
+            viewportWidth || 0
+        ))
     )
     const blockSize = Math.max(
         1,
-        Math.round(rect?.height || root.clientHeight || root.offsetHeight || 0)
+        Math.round(Math.max(
+            rect?.height || 0,
+            root.clientHeight || 0,
+            root.offsetHeight || 0,
+            viewportHeight || 0
+        ))
     )
     return {
         inlineSize: Number.isFinite(inlineSize) ? inlineSize : null,
@@ -550,6 +573,9 @@ const applyPageLayoutStyles = (pageNode, { inlineSize = null, blockSize = null, 
     pageNode.style.display = 'flex'
     pageNode.style.flexDirection = 'row'
     pageNode.style.flex = '0 0 auto'
+    pageNode.style.direction = 'ltr'
+    pageNode.style.writingMode = 'horizontal-tb'
+    pageNode.style.webkitWritingMode = 'horizontal-tb'
     if (Number.isFinite(inlineSize) && inlineSize > 0) {
         const inlineSizeCSS = `${inlineSize}px`
         pageNode.style.inlineSize = inlineSizeCSS
@@ -574,31 +600,62 @@ const applyPageLayoutStyles = (pageNode, { inlineSize = null, blockSize = null, 
     pageNode.style.overflow = 'hidden'
 }
 
-const applyChunkLayoutStyles = (chunkNode, chunkBody) => {
+const writingModeForMetrics = metrics => {
+    if (metrics?.vertical === true) {
+        return metrics?.verticalRTL === false ? 'vertical-lr' : 'vertical-rl'
+    }
+    return 'horizontal-tb'
+}
+
+const directionForMetrics = metrics => {
+    if (metrics?.rtl === true) return 'rtl'
+    return 'ltr'
+}
+
+const applyChunkLayoutStyles = (chunkNode, chunkBody, metrics = null) => {
+    const contentWritingMode = writingModeForMetrics(metrics)
+    const contentDirection = directionForMetrics(metrics)
     if (chunkNode instanceof HTMLElement) {
-        chunkNode.style.display = 'flex'
+        chunkNode.style.setProperty('display', 'flex', 'important')
+        chunkNode.style.position = 'relative'
         chunkNode.style.flexDirection = 'column'
         chunkNode.style.flex = '1 1 0'
         chunkNode.style.minInlineSize = '0'
         chunkNode.style.minBlockSize = '0'
         chunkNode.style.inlineSize = '100%'
         chunkNode.style.blockSize = '100%'
+        chunkNode.style.setProperty('width', '100%', 'important')
+        chunkNode.style.setProperty('height', '100%', 'important')
         chunkNode.style.boxSizing = 'border-box'
         chunkNode.style.overflow = 'hidden'
+        // Keep page/chunk wrappers in physical horizontal axes. Only the body
+        // carries book writing mode; otherwise vertical flex sizing collapses
+        // the available block extent and clips tategaki columns.
+        chunkNode.style.writingMode = 'horizontal-tb'
+        chunkNode.style.webkitWritingMode = 'horizontal-tb'
+        chunkNode.style.direction = 'ltr'
     }
     if (chunkBody instanceof HTMLElement) {
-        chunkBody.style.display = 'block'
+        chunkBody.style.setProperty('display', 'block', 'important')
+        chunkBody.style.position = 'absolute'
+        chunkBody.style.inset = '0'
         chunkBody.style.flex = '1 1 auto'
         chunkBody.style.minInlineSize = '0'
         chunkBody.style.minBlockSize = '0'
         chunkBody.style.inlineSize = '100%'
         chunkBody.style.blockSize = '100%'
+        chunkBody.style.setProperty('width', '100%', 'important')
+        chunkBody.style.setProperty('height', '100%', 'important')
+        chunkBody.style.alignSelf = 'stretch'
         chunkBody.style.boxSizing = 'border-box'
         chunkBody.style.overflow = 'hidden'
+        chunkBody.style.writingMode = contentWritingMode
+        chunkBody.style.webkitWritingMode = contentWritingMode
+        chunkBody.style.direction = contentDirection
     }
 }
 
-const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersion, runtime }) => {
+const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersion, runtime, metrics }) => {
     const chunkNode = doc.createElement('section')
     chunkNode.className = 'manabi-semantic-section manabi-page-column-chunk'
     chunkNode.dataset.manabiTrackingOrigin = 'js'
@@ -609,7 +666,7 @@ const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersi
     chunkNode.dataset.manabiTrackingSectionId = chunkNode.dataset.manabiChunkId
     const chunkBody = doc.createElement('div')
     chunkBody.className = 'manabi-page-column-body'
-    applyChunkLayoutStyles(chunkNode, chunkBody)
+    applyChunkLayoutStyles(chunkNode, chunkBody, metrics)
     chunkNode.appendChild(chunkBody)
     pageNode.appendChild(chunkNode)
     return { chunkNode, chunkBody }
@@ -1388,6 +1445,7 @@ export class EbookSectionLayout {
             columnIndex: 0,
             layoutVersion,
             runtime,
+            metrics,
         })
         const chunkRecord = {
             pageIndex: 0,
@@ -1477,6 +1535,7 @@ export class EbookSectionLayout {
             columnIndex: state.columnIndex,
             layoutVersion: state.layoutVersion,
             runtime: state.runtime,
+            metrics: state.metrics,
         })
         state.chunkNode = next.chunkNode
         state.chunkBody = next.chunkBody
@@ -1567,9 +1626,17 @@ export class EbookSectionLayout {
     _commitStagingRootToLiveRoot({ liveRoot, stagingRoot }) {
         if (!(liveRoot instanceof HTMLElement) || !(stagingRoot instanceof HTMLElement)) return
         const commitStart = perfNow()
+        const committedInlineSize = stagingRoot.style.inlineSize
+        const committedMinInlineSize = stagingRoot.style.minInlineSize
+        const committedBlockSize = stagingRoot.style.blockSize
+        const committedMinBlockSize = stagingRoot.style.minBlockSize
         liveRoot.className = stagingRoot.className
         liveRoot.dataset.manabiLayoutVersion = stagingRoot.dataset.manabiLayoutVersion || ''
-        liveRoot.style.cssText = stagingRoot.style.cssText
+        applyPageRootLayoutStyles(liveRoot)
+        if (committedInlineSize) liveRoot.style.inlineSize = committedInlineSize
+        if (committedMinInlineSize) liveRoot.style.minInlineSize = committedMinInlineSize
+        if (committedBlockSize) liveRoot.style.blockSize = committedBlockSize
+        if (committedMinBlockSize) liveRoot.style.minBlockSize = committedMinBlockSize
         liveRoot.innerHTML = stagingRoot.innerHTML
         logReaderPerf('ebook-layout-commit-live-root', {
             childCount: liveRoot.childElementCount,

@@ -1981,8 +1981,15 @@ class View {
     async load(src, afterLoad, beforeRender, sectionIndex = null, sectionLocation = null) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         if (this._sameDocumentMode) {
-            globalThis.manabiLoadEBookLastState = 'paginator-load-same-document-begin'
-            return await this._loadSameDocument(src, afterLoad, beforeRender, sectionIndex, sectionLocation)
+            const shouldOwnBookLoadState = globalThis.manabiLoadEBookReady !== true
+            if (shouldOwnBookLoadState) {
+                globalThis.manabiLoadEBookLastState = 'paginator-load-same-document-begin'
+            }
+            const result = await this._loadSameDocument(src, afterLoad, beforeRender, sectionIndex, sectionLocation)
+            if (shouldOwnBookLoadState && globalThis.manabiLoadEBookReady !== true) {
+                globalThis.manabiLoadEBookLastState = 'paginator-load-same-document-complete'
+            }
+            return result
         }
         globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-begin'
         this._iframeShownForBake = false

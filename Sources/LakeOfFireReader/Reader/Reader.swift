@@ -2988,6 +2988,10 @@ struct ReaderResolvedPaginationContext {
             .map { $0 + 1 }
     }
 
+    private static func largestPositivePageCount(_ candidates: [Int?]) -> Int? {
+        candidates.compactMap { $0 }.filter { $0 > 0 }.max()
+    }
+
     private var bridgePageStateIsAuthoritative: Bool {
         guard let bridgeCurrentPage else { return false }
         if bridgePageOffsetsDisplayed?.contains(bridgeCurrentPage) == true {
@@ -3003,9 +3007,11 @@ struct ReaderResolvedPaginationContext {
     }
 
     var pageCount: Int? {
-        runtimeDerivedPageCount
-            ?? paginationState?.pageCount
-            ?? bridgePageCount
+        Self.largestPositivePageCount([
+            runtimeDerivedPageCount,
+            paginationState?.pageCount,
+            bridgePageCount
+        ])
     }
 
     var currentContentLocation: PageTurnCurrentContentLocation {
@@ -4370,10 +4376,14 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         paginationState: WebViewPaginationState?,
         supportsActivePageTurn: Bool
     ) -> ReaderPageTurnContentHostState {
+        let hasStableAppliedPaginationHost =
+            paginationState?.mountedHostIdentifier != nil
+            && paginationState?.isAppliedToMountedHost == true
+            && paginationState?.paginationComplete == true
         if !webViewState.hasReaderRenderReady && !loadEBookStarted {
             return .initial
         }
-        if webViewState.isProvisionallyNavigating {
+        if webViewState.isProvisionallyNavigating && !hasStableAppliedPaginationHost {
             return .preparingForReuse
         }
         if webViewState.isLoading, paginationState?.mountedHostIdentifier == nil {
@@ -4443,8 +4453,6 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             mountedHostIdentifier != nil
             && isAppliedToMountedHost
             && paginationState?.paginationComplete == true
-            && !webViewState.isLoading
-            && !webViewState.isProvisionallyNavigating
 
         let hostIdentityChanged =
             contentHostSequence.mountedHostIdentifier != mountedHostIdentifier
@@ -6045,8 +6053,21 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         ReaderNativePaginationSupport.resolvedPageCount([
             lastKnownState.paginationState?.pageCount,
             pageCount,
-            layoutPageRecordCount
+            layoutPageRecordCount,
+            parsedDisplayLabelPageCount(currentPageDisplayLabel),
+            parsedDisplayLabelPageCount(lastKnownState.paginationState?.currentPageDisplayLabel)
         ])
+    }
+
+    private func parsedDisplayLabelPageCount(_ label: String?) -> Int? {
+        guard let suffix = label?.components(separatedBy: " of ").last else {
+            return nil
+        }
+        let digits = suffix.filter { $0.isNumber }
+        guard !digits.isEmpty else {
+            return nil
+        }
+        return Int(digits)
     }
 
     private func nativeFastTurnState(status: String?) -> ReaderPageTurnFastState {
@@ -6497,6 +6518,34 @@ fileprivate extension ReaderPageTurnNavigationProbe {
         return hasCurrentPageDisplayLabel
     }
 
+    private var contentHostCanRenderLivePage: Bool {
+        switch contentHostState {
+        case .some(.initial), .some(.waitingOnContentView), .some(.preparingContentView), .some(.preparingForReuse):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private var hasVisibleLivePaginationGeometry: Bool {
+        func isPositive(_ value: Int?) -> Bool {
+            (value ?? 0) > 0
+        }
+
+        guard contentHostCanRenderLivePage else { return false }
+        guard layoutLiveRootExists == true else { return false }
+        guard layoutLiveCurrentPageExists == true else { return false }
+        guard layoutLiveCurrentChunkExists == true else { return false }
+        guard layoutLiveCurrentChunkDisplay != "none" else { return false }
+        guard isPositive(layoutLiveRootRectWidth), isPositive(layoutLiveRootRectHeight) else { return false }
+        guard isPositive(layoutLiveCurrentPageRectWidth), isPositive(layoutLiveCurrentPageRectHeight) else { return false }
+        guard isPositive(layoutLiveCurrentChunkRectWidth), isPositive(layoutLiveCurrentChunkRectHeight) else { return false }
+        if layoutCurrentChunkClientWidth != nil || layoutCurrentChunkClientHeight != nil {
+            guard isPositive(layoutCurrentChunkClientWidth), isPositive(layoutCurrentChunkClientHeight) else { return false }
+        }
+        return true
+    }
+
     var hasRenderablePageShell: Bool {
         layoutLiveRootExists == true
             || layoutLiveCurrentPageExists == true
@@ -6513,17 +6562,19 @@ fileprivate extension ReaderPageTurnNavigationProbe {
     }
 
     var hasStableRenderablePaginationSurface: Bool {
-        if hasNativePaginationSurface {
-            return true
-        }
         guard hasRenderablePageShell else { return false }
         guard hasRenderablePageText else { return false }
+        guard contentHostCanRenderLivePage else { return false }
         guard pageScrollerAnimationIsRunning != true else { return false }
         guard liveResizeActive != true else { return false }
+        if hasNativePaginationSurface {
+            return hasVisibleLivePaginationGeometry
+        }
         let hasSettledLiveSameDocumentSurface =
             layoutLiveRootExists == true
             && layoutLiveCurrentPageExists == true
             && layoutLiveCurrentChunkExists == true
+            && hasVisibleLivePaginationGeometry
             && hasUsablePageWindow
             && hasResolvedVisiblePageIdentity
         if layoutComplete == true {
@@ -6539,6 +6590,24 @@ fileprivate extension ReaderPageTurnNavigationProbe {
 
     var pageTurnReadiness: ReaderPageTurnReadinessState {
         if hasNativePaginationSurface && supportsActivePageTurn {
+            if !loadEBookReady && !hasStableRenderablePaginationSurface {
+                return .init(phase: .startupLoading, reason: "loadEBookNotReady")
+            }
+            if !contentHostCanRenderLivePage {
+                return .init(phase: .paginationPending, reason: "contentHost:\(contentHostState?.rawValue ?? "unknown")")
+            }
+            if pageScrollerAnimationIsRunning == true {
+                return .init(phase: .paginationPending, reason: "pageScrollerAnimation")
+            }
+            if liveResizeActive == true {
+                return .init(phase: .paginationPending, reason: "liveResize")
+            }
+            if !hasRenderablePageText {
+                return .init(phase: .paginationPending, reason: "visibleTextUnavailable")
+            }
+            if !hasVisibleLivePaginationGeometry {
+                return .init(phase: .paginationPending, reason: "visibleGeometryUnavailable")
+            }
             return .init(phase: .turnReady, reason: nil)
         }
         if !hasView || !hasRenderer {
@@ -8260,6 +8329,37 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         let resolvedLoadEBookReady = bridge.loadEBookReady || (loadedViewerBool("loadedReady") == true)
         let resolvedHasLivePageText =
             !(bridge.currentPageTextSample?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            || (bridge.layoutLiveCurrentChunkTextLength ?? 0) > 0
+            || (bridge.layoutCurrentChunkBodyTextLength ?? 0) > 0
+        let resolvedContentHostCanRender: Bool = switch bridge.contentHostState {
+        case .initial, .waitingOnContentView, .preparingContentView, .preparingForReuse:
+            false
+        case .placeholderViewAvailable, .contentViewAvailable:
+            true
+        }
+        func bridgePositiveGeometry(_ value: Int?) -> Bool {
+            (value ?? 0) > 0
+        }
+        let resolvedHasVisibleLiveGeometry =
+            resolvedContentHostCanRender
+            && bridge.layoutLiveRootExists == true
+            && bridge.layoutLiveCurrentPageExists == true
+            && bridge.layoutLiveCurrentChunkExists == true
+            && bridge.layoutLiveCurrentChunkDisplay != "none"
+            && bridgePositiveGeometry(bridge.layoutLiveRootRectWidth)
+            && bridgePositiveGeometry(bridge.layoutLiveRootRectHeight)
+            && bridgePositiveGeometry(bridge.layoutLiveCurrentPageRectWidth)
+            && bridgePositiveGeometry(bridge.layoutLiveCurrentPageRectHeight)
+            && bridgePositiveGeometry(bridge.layoutLiveCurrentChunkRectWidth)
+            && bridgePositiveGeometry(bridge.layoutLiveCurrentChunkRectHeight)
+            && (
+                bridge.layoutCurrentChunkClientWidth == nil
+                    || bridge.layoutCurrentChunkClientHeight == nil
+                    || (
+                        bridgePositiveGeometry(bridge.layoutCurrentChunkClientWidth)
+                            && bridgePositiveGeometry(bridge.layoutCurrentChunkClientHeight)
+                    )
+            )
         let resolvedProductionTurnReady =
             readiness.isReady
             || (
@@ -8267,6 +8367,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
                     && resolvedHasRenderer
                     && bridge.hasSectionLayoutController
                     && resolvedLoadEBookReady
+                    && resolvedHasVisibleLiveGeometry
                     && resolvedHasLivePageText
                     && resolvedPageCount > 0
             )
@@ -8883,21 +8984,30 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             }
         }
 
-        Task { @MainActor in
-            do {
-                try await bridge.commitTurn(direction)
-            } catch {
-                return
-            }
+        do {
+            try await bridge.commitTurn(direction)
+            _ = await bridge.refreshNavigationState()
+            syncControllerFromBridge()
+            let publishedSnapshot = await makeProbeSnapshot()
+            probeModel.update(publishedSnapshot)
+            logProbeSnapshotIfEnabled(publishedSnapshot)
+            return ReaderPageTurnFastTurnResult(
+                direction: direction.rawValue,
+                status: "committed",
+                moved: true,
+                before: baselineState,
+                after: await bridge.fetchFastTurnState(),
+                targetPageIndex: publishedSnapshot.sameDocumentHostTurnTargetPageIndex
+            )
+        } catch {
+            return ReaderPageTurnFastTurnResult(
+                direction: direction.rawValue,
+                status: "error:\(direction.rawValue):\(error.localizedDescription)",
+                moved: false,
+                before: baselineState,
+                after: baselineState
+            )
         }
-
-        return ReaderPageTurnFastTurnResult(
-            direction: direction.rawValue,
-            status: "accepted",
-            moved: false,
-            before: baselineState,
-            after: baselineState
-        )
     }
 
     @MainActor

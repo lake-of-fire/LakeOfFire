@@ -39,6 +39,8 @@
                     --manabi-red: #ff4500;
                     --secondary-color: #7a7a7a;
                     --tertiary-color: #c3c3c3;
+                    --manabi-toolbar-bottom-offset: 0px;
+                    --manabi-obscured-bottom-inset: 0px;
                     --nav-primary-font-size: 0.72rem;
                     --nav-secondary-font-size: calc(0.86rem + 2px);
                     --nav-accent-color: #3d3d3d;
@@ -122,7 +124,10 @@
                 }
                 #reader-stage {
                     position: absolute;
-                    inset: 0;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) + var(--manabi-obscured-bottom-inset, 0px));
                     overflow: hidden;
                     z-index: 1;
                 }
@@ -442,6 +447,16 @@
                     opacity: 0;
                     pointer-events: none;
                 }
+                body[data-is-ebook="true"] #progress-slider,
+                body[data-is-ebook="true"] #progress-ticks,
+                body.nav-hidden #progress-slider,
+                body.nav-hidden #progress-ticks,
+                #nav-bar.nav-hidden-due-to-scroll #progress-slider,
+                #nav-bar.nav-hidden-due-to-scroll #progress-ticks {
+                    visibility: hidden !important;
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
                 #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
                 #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row {
                     opacity: 0;
@@ -494,6 +509,9 @@
                     pointer-events: none;
                     direction: ltr;
                     unicode-bidi: isolate;
+                    writing-mode: horizontal-tb;
+                    -webkit-writing-mode: horizontal-tb;
+                    text-orientation: mixed;
                 }
                 #nav-section-progress-leading {
                     left: var(--nav-horizontal-padding);

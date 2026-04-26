@@ -606,6 +606,81 @@ const timeoutPromise = (ms, message) =>
         setTimeout(() => reject(new Error(message)), ms)
     })
 
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 4000, timeoutMessage = 'fetch-timeout') => {
+    const AbortControllerClass = globalThis.AbortController
+    if (!AbortControllerClass) {
+        return Promise.race([
+            fetch(url, options),
+            timeoutPromise(timeoutMs, timeoutMessage),
+        ])
+    }
+
+    const controller = new AbortControllerClass()
+    const timer = setTimeout(() => {
+        try { controller.abort(timeoutMessage) } catch (_err) { controller.abort() }
+    }, timeoutMs)
+    try {
+        return await fetch(url, {
+            ...options,
+            signal: controller.signal,
+        })
+    } catch (error) {
+        const message = String(error?.message || error || '')
+        if (controller.signal?.aborted && !message.includes(timeoutMessage)) {
+            throw new Error(timeoutMessage)
+        }
+        throw error
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+const nativeSchemeRequestWithTimeout = (url, {
+    headers = {},
+    timeoutMs = 4000,
+    timeoutMessage = 'native-request-timeout',
+    responseType = 'arraybuffer',
+} = {}) => new Promise((resolve, reject) => {
+    const XMLHttpRequestClass = globalThis.XMLHttpRequest
+    if (!XMLHttpRequestClass) {
+        reject(new Error('native-request-xhr-unavailable'))
+        return
+    }
+
+    const xhr = new XMLHttpRequestClass()
+    xhr.open('GET', url, true)
+    xhr.timeout = timeoutMs
+    xhr.responseType = responseType
+    for (const [name, value] of Object.entries(headers || {})) {
+        try { xhr.setRequestHeader(name, value) } catch (_err) {}
+    }
+
+    xhr.onload = () => {
+        const status = Number.isFinite(xhr.status) ? xhr.status : 0
+        const ok = (status >= 200 && status < 300) || (status === 0 && xhr.response != null)
+        resolve({
+            ok,
+            status,
+            headers: {
+                get: name => {
+                    try { return xhr.getResponseHeader(name) } catch (_err) { return null }
+                },
+            },
+            json: async () => JSON.parse(xhr.responseText || '{}'),
+            arrayBuffer: async () => {
+                if (xhr.response instanceof ArrayBuffer) return xhr.response
+                if (xhr.response instanceof Blob) return xhr.response.arrayBuffer()
+                if (typeof xhr.response === 'string') return new TextEncoder().encode(xhr.response).buffer
+                return new ArrayBuffer(0)
+            },
+        })
+    }
+    xhr.onerror = () => reject(new Error(`native-request-error:${url}`))
+    xhr.ontimeout = () => reject(new Error(timeoutMessage))
+    xhr.onabort = () => reject(new Error(timeoutMessage))
+    xhr.send()
+})
+
 const sleepPromise = ms =>
     new Promise(resolve => setTimeout(resolve, ms))
 
@@ -631,14 +706,19 @@ const shouldRetryNativeEntryError = error => {
 }
 
 const fetchNativeEntries = async sourceURL => {
-    const response = await Promise.race([
-        fetch(`ebook://ebook/entries?${makeNativeSourceURLQuery(sourceURL)}`, {
-            headers: {
-                'X-Ebook-Source-URL': sourceURL,
-            },
-        }),
-        timeoutPromise(4000, 'native-entries-timeout'),
-    ])
+    const requestURL = `ebook://ebook/entries?${makeNativeSourceURLQuery(sourceURL)}`
+    logFix('nativeEntries:fetch:start', {
+        sourceURL,
+        timeoutMs: 4000,
+    })
+    const response = await nativeSchemeRequestWithTimeout(requestURL, {
+        headers: {
+            'X-Ebook-Source-URL': sourceURL,
+        },
+        timeoutMs: 4000,
+        timeoutMessage: 'native-entries-timeout',
+        responseType: 'text',
+    })
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(
             `# EBOOKFETCH entries status=${response.status} ok=${response.ok} source=${sourceURL}`
@@ -667,14 +747,15 @@ const fetchNativeEntryResponse = async (sourceURL, subpath, { attemptNumber = 1,
         timeoutMs,
         isCacheWarmer: !!isCacheWarmer,
     })
-    const response = await Promise.race([
-        fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
-            headers: {
-                'X-Ebook-Source-URL': sourceURL,
-            },
-        }),
-        timeoutPromise(timeoutMs, `native-entry-timeout:${subpath}:attempt-${attemptNumber}`),
-    ])
+    const requestURL = `ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`
+    const response = await nativeSchemeRequestWithTimeout(requestURL, {
+        headers: {
+            'X-Ebook-Source-URL': sourceURL,
+        },
+        timeoutMs,
+        timeoutMessage: `native-entry-timeout:${subpath}:attempt-${attemptNumber}`,
+        responseType: 'arraybuffer',
+    })
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(
             `# EBOOKFETCH entry status=${response.status} ok=${response.ok} subpath=${subpath} attempt=${attemptNumber} source=${sourceURL}`
@@ -1200,6 +1281,16 @@ body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-
     color: inherit !important;
     /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
     height: inherit !important;
+}
+.manabi-page-column-body * {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+}
+.manabi-page-column-body {
+    inline-size: 100% !important;
+    block-size: 100% !important;
+    overflow: hidden !important;
 }
 body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(manabi-segment *) {
 max-height: 99vh;
@@ -3975,60 +4066,91 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
     }
 };
 
+const makeLightweightPageTurnProbeSnapshot = probeError => {
+    const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
+    const derivedWritingMode =
+        globalThis.manabiTrackingWritingMode
+        ?? globalThis.manabiResolveReaderWritingDirection?.()?.writingMode
+        ?? null;
+    const renderer = globalThis.reader?.view?.renderer ?? null;
+    return {
+        hasView: !!globalThis.reader?.view,
+        hasRenderer: !!renderer,
+        canNext: typeof globalThis.reader?.view?.next === 'function',
+        canPrev: typeof globalThis.reader?.view?.prev === 'function',
+        canForward: false,
+        canBackward: false,
+        hasSectionLayoutController: !!(
+            globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
+            ?? globalThis.manabiEbookSectionLayoutController
+        ),
+        bookDirection: globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? null,
+        isRightToLeft: !!(
+            writingDirectionSnapshot?.rtl
+            ?? ((globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? '').toLowerCase() === 'rtl')
+        ),
+        isVertical: writingDirectionSnapshot?.vertical === true
+            || derivedWritingMode === 'vertical-rl'
+            || derivedWritingMode === 'vertical-lr',
+        isVerticalRightToLeft: writingDirectionSnapshot?.verticalRTL === true
+            || derivedWritingMode === 'vertical-rl',
+        currentSectionIndex: Number.isFinite(renderer?.currentIndex)
+            ? renderer.currentIndex
+            : null,
+        currentSectionHref: Number.isFinite(renderer?.currentIndex)
+            ? (
+                renderer?.sections?.[renderer.currentIndex]?.href
+                ?? renderer?.sections?.[renderer.currentIndex]?.url
+                ?? globalThis.reader?.book?.sections?.[renderer.currentIndex]?.href
+                ?? globalThis.reader?.book?.sections?.[renderer.currentIndex]?.url
+                ?? globalThis.reader?.view?.book?.sections?.[renderer.currentIndex]?.href
+                ?? globalThis.reader?.view?.book?.sections?.[renderer.currentIndex]?.url
+                ?? null
+            )
+            : null,
+        currentPage: null,
+        pageCount: null,
+        computedFontSizeCSS: globalThis.getComputedStyle?.(globalThis.document?.body ?? null)?.fontSize ?? null,
+        currentPageTextSample: null,
+        nextPageTextSample: null,
+        livePageIndex: null,
+        liveChunkPageIndex: null,
+        viewportCenterChunkPageIndex: null,
+        loadEBookStarted: !!globalThis.manabiLoadEBookStarted,
+        loadEBookReady: !!globalThis.manabiLoadEBookReady,
+        loadEBookAttemptCount: Number(globalThis.manabiLoadEBookAttemptCount || 0) || 0,
+        loadEBookStartAgeMs: (() => {
+            const startedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
+            return startedAt > 0 ? Math.max(0, Date.now() - startedAt) : null;
+        })(),
+        loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
+        probeError,
+    };
+};
+
 window.manabiGetPageTurnProbeSnapshotJSON = async () => {
     try {
+        const loadingState = String(globalThis.manabiLoadEBookLastState ?? '');
+        const shouldUseLightweightProbe =
+            !globalThis.reader?.view?.renderer
+            || (
+                globalThis.manabiLoadEBookStarted === true
+                && globalThis.manabiLoadEBookReady !== true
+                && (
+                    loadingState.includes('awaiting')
+                    || loadingState.includes('loading')
+                    || loadingState.includes('loadreplaced')
+                    || loadingState.includes('replace-text')
+                )
+            );
+        if (shouldUseLightweightProbe) {
+            return JSON.stringify(makeLightweightPageTurnProbeSnapshot(
+                `probe-deferred:${loadingState || 'renderer-loading'}`
+            ));
+        }
         return JSON.stringify(await window.manabiGetPageTurnProbeSnapshot());
     } catch (error) {
-        const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
-        const derivedWritingMode =
-            globalThis.manabiTrackingWritingMode
-            ?? globalThis.manabiResolveReaderWritingDirection?.()?.writingMode
-            ?? null;
-        return JSON.stringify({
-            hasView: !!globalThis.reader?.view,
-            hasRenderer: !!globalThis.reader?.view?.renderer,
-            canNext: typeof globalThis.reader?.view?.next === 'function',
-            canPrev: typeof globalThis.reader?.view?.prev === 'function',
-            canForward: false,
-            canBackward: false,
-            hasSectionLayoutController: !!(
-                globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
-                ?? globalThis.manabiEbookSectionLayoutController
-            ),
-            bookDirection: globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? null,
-            isRightToLeft: !!(
-                writingDirectionSnapshot?.rtl
-                ?? ((globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? '').toLowerCase() === 'rtl')
-            ),
-            isVertical: writingDirectionSnapshot?.vertical === true
-                || derivedWritingMode === 'vertical-rl'
-                || derivedWritingMode === 'vertical-lr',
-            isVerticalRightToLeft: writingDirectionSnapshot?.verticalRTL === true
-                || derivedWritingMode === 'vertical-rl',
-            currentSectionIndex: Number.isFinite(globalThis.reader?.view?.renderer?.currentIndex)
-                ? globalThis.reader.view.renderer.currentIndex
-                : null,
-            currentSectionHref: Number.isFinite(globalThis.reader?.view?.renderer?.currentIndex)
-                ? (
-                    globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
-                    ?? globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
-                    ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
-                    ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
-                    ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
-                    ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
-                    ?? null
-                )
-                : null,
-            currentPage: null,
-            pageCount: null,
-            computedFontSizeCSS: globalThis.getComputedStyle?.(globalThis.document?.body ?? null)?.fontSize ?? null,
-            currentPageTextSample: null,
-            nextPageTextSample: null,
-            livePageIndex: null,
-            liveChunkPageIndex: null,
-            viewportCenterChunkPageIndex: null,
-            probeError: `probe-json-wrapper:${String(error)}`,
-        });
+        return JSON.stringify(makeLightweightPageTurnProbeSnapshot(`probe-json-wrapper:${String(error)}`));
     }
 };
 

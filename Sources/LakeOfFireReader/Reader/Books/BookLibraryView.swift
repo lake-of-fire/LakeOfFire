@@ -128,6 +128,22 @@ fileprivate struct EditorsPicksView: View {
 }
 
 @available(macOS 13.0, iOS 16.0, *)
+func makeBookLibraryContents(
+    nativeFiles: [ContentFile],
+    importedExternalBooks: [Bookmark]
+) -> [Bookmark] {
+    var combinedBooks = [Bookmark]()
+    combinedBooks.reserveCapacity(nativeFiles.count + importedExternalBooks.count)
+    combinedBooks.append(contentsOf: nativeFiles.map { $0 as Bookmark })
+    combinedBooks.append(contentsOf: importedExternalBooks)
+
+    return Dictionary(grouping: combinedBooks, by: \.compoundKey)
+        .values
+        .compactMap { $0.max(by: { $0.modifiedAt < $1.modifiedAt }) }
+        .sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+}
+
+@available(macOS 13.0, iOS 16.0, *)
 public struct BookLibraryView: View {
     @ObservedObject private var viewModel: BookLibraryViewModel
     private let showsInlineAddButton: Bool
@@ -181,21 +197,16 @@ public struct BookLibraryView: View {
             bookmark.url.isReaderBookURL && !bookmark.url.isEBookURL
         }
 
-        var combinedBooks = [Bookmark]()
-        combinedBooks.reserveCapacity(nativeFiles.count + importedExternalBooks.count)
-        combinedBooks.append(contentsOf: nativeFiles.map { $0 as Bookmark })
-        combinedBooks.append(contentsOf: importedExternalBooks)
-
-        let deduplicatedBooks = Dictionary(grouping: combinedBooks, by: \.compoundKey)
-            .values
-            .compactMap { $0.max(by: { $0.modifiedAt < $1.modifiedAt }) }
-            .sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+        let deduplicatedBooks = makeBookLibraryContents(
+            nativeFiles: nativeFiles,
+            importedExternalBooks: importedExternalBooks
+        )
         debugPrint(
             "# APR21b",
             "source=BookLibraryView.reloadMyBooks.result",
             "nativeFiles=\(nativeFiles.count)",
             "importedExternalBooks=\(importedExternalBooks.count)",
-            "combinedBooks=\(combinedBooks.count)",
+            "combinedBooks=\(nativeFiles.count + importedExternalBooks.count)",
             "deduplicatedBooks=\(deduplicatedBooks.count)"
         )
         viewModel.hasLocalFiles = !deduplicatedBooks.isEmpty

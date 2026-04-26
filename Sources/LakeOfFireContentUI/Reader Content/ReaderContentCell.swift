@@ -750,26 +750,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ViewBuilder
     private var trailingMenuButton: some View {
         let deletable = (self.item as? (any DeletableReaderContent))
+        let menuSyncStatusPresentation = ReaderContentSyncStatusPresentationBuilder.menuPresentation(
+            for: item.url,
+            externalPresentation: viewModel.syncStatusPresentation
+        )
 
         Menu {
-            if let item = self.item as? ContentFile {
-                let summaryTitle = item.url.absoluteString.contains("reader-file://file/load/icloud/") ? "Sync Status: iCloud" : "Sync Status: Local Only"
-                Label(summaryTitle, systemImage: item.url.absoluteString.contains("reader-file://file/load/icloud/") ? "icloud" : "internaldrive")
-                Divider()
-            } else if let syncStatusPresentation = viewModel.syncStatusPresentation {
-                ReaderContentSyncStatusLabel(
-                    presentation: .init(
-                        title: "Sync Status: \(syncStatusPresentation.title)",
-                        imageName: syncStatusPresentation.imageName,
-                        imageIsSystemSymbol: syncStatusPresentation.imageIsSystemSymbol
-                    ),
-                    iconOnly: false
-                )
-                Divider()
-            } else {
-                Label("Sync Status: Local Only", systemImage: "internaldrive")
-                Divider()
-            }
+            ReaderContentSyncStatusLabel(presentation: menuSyncStatusPresentation, iconOnly: false)
+            Divider()
 
             AnyView(self.item.bookmarkButtonView())
 

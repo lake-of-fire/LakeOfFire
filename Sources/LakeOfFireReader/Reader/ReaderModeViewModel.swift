@@ -56,6 +56,10 @@ fileprivate actor ReaderModePreprocessMetricsAccumulator {
     }
 }
 
+private struct ReaderModeRenderOperation: @unchecked Sendable {
+    let run: (UUID) async -> Void
+}
+
 private func readerFontPayloadHash(_ payload: String) -> String {
     let digest = SHA256.hash(data: Data(payload.utf8))
     return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
@@ -1003,6 +1007,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
         let generation = UUID()
         activeRenderGenerationByURL[key] = generation
+        let renderOperation = ReaderModeRenderOperation(run: operation)
         debugPrint(
             "# READERPERF readerMode.render.singleFlight.start",
             "url=\(canonicalURL.absoluteString)",
@@ -1022,7 +1027,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "generation=\(generation.uuidString)",
                 "elapsedSinceSchedule=\(String(format: "%.3f", Date().timeIntervalSince(scheduleStartedAt)))s"
             )
-            await operation(generation)
+            await renderOperation.run(generation)
             await self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
         }
 
@@ -2830,7 +2835,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let transformedPreview = Self.snippetPreview(transformedContent, maxLength: 240)
             let snippetLoaderPreview = url.isSnippetURL ? (transformedPreview ?? "<empty>") : nil
             let mainActorSnapshotStartedAt = Date()
-            let mainActorSnapshot = await MainActor.run { () -> (pageURL: URL, frameIsMain: Bool, hostDocumentURL: URL, hostDocumentIsLoader: Bool, navigator: WebViewNavigator?) in
+            let mainActorSnapshot = await MainActor.run { () -> (pageURL: URL, frameIsMain: Bool, hostDocumentURL: URL, hostDocumentIsLoader: Bool, hasNavigator: Bool) in
                 let pageURL = readerContent.pageURL
                 let hostDocumentURL = resolvedFrameInfo?.request.url ?? pageURL
                 return (
@@ -2838,7 +2843,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     frameIsMain: frameInfo?.isMainFrame ?? true,
                     hostDocumentURL: hostDocumentURL,
                     hostDocumentIsLoader: hostDocumentURL.isReaderURLLoaderURL,
-                    navigator: navigator
+                    hasNavigator: navigator != nil
                 )
             }
             let mainActorSnapshotElapsed = Date().timeIntervalSince(mainActorSnapshotStartedAt)
@@ -2847,7 +2852,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "contentURL=\(url.absoluteString)",
                 "elapsed=\(String(format: "%.3f", mainActorSnapshotElapsed))s",
                 "frameIsMain=\(mainActorSnapshot.frameIsMain)",
-                "hasNavigator=\(mainActorSnapshot.navigator != nil)"
+                "hasNavigator=\(mainActorSnapshot.hasNavigator)"
             )
             let urlsMatch = url.matchesReaderURL(mainActorSnapshot.pageURL)
             debugPrint(
@@ -2899,7 +2904,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 }
                 return shouldPersistCanonicalSnippetHTML ? transformedContent : nil
             }
-            guard let navigator = mainActorSnapshot.navigator else {
+            guard mainActorSnapshot.hasNavigator else {
                 await MainActor.run {
                     print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
                     cancelReaderModeLoad(for: url, reason: "showReadabilityContent.navigatorMissing")
@@ -2951,7 +2956,12 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             }
 
             let mainActorDispatchQueuedAt = Date()
-            let loadDispatch = await MainActor.run { () -> Date in
+            let loadDispatch = await MainActor.run { () -> Date? in
+                guard let navigator else {
+                    print("ReaderModeViewModel: navigator missing while dispatching readability content for", url.absoluteString)
+                    cancelReaderModeLoad(for: url, reason: "showReadabilityContent.navigatorMissingAtDispatch")
+                    return nil
+                }
                 let mainActorDispatchStartedAt = Date()
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.mainActorDispatch.begin",
@@ -2975,6 +2985,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "renderBaseURL=\(renderBaseURL.absoluteString)"
                 )
                 return loadDispatch
+            }
+            guard let loadDispatch else {
+                return shouldPersistCanonicalSnippetHTML ? transformedContent : nil
             }
             debugPrint(
                 "# READER readability.navigatorLoad.dispatched",
