@@ -103,6 +103,25 @@ const postMarkReadLog = (event, details = {}) => {
     }
 };
 
+const postVisibleRangeLog = (event, details = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        // optional native logger
+    }
+    try {
+        console.log(line);
+    } catch (_error) {
+        // optional console logger
+    }
+};
+
 const describeMarkReadNode = (node) => {
     if (!node) return null;
     const element = node.nodeType === Node.ELEMENT_NODE
@@ -247,6 +266,9 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             responseTextLength: typeof cachedHTML === 'string' ? cachedHTML.length : null,
             ...captureEPUBOverlapState(),
         });
+        if (!isCacheWarmer) {
+            window.manabi_recordLiveSettledSection?.(href);
+        }
         return cachedHTML;
     }
     if (replaceTextInFlightCache.has(cacheKey)) {
@@ -275,6 +297,9 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             responseTextLength: typeof html === 'string' ? html.length : null,
             ...captureEPUBOverlapState(),
         });
+        if (!isCacheWarmer) {
+            window.manabi_recordLiveSettledSection?.(href);
+        }
         return html;
     }
     const run = async () => {
@@ -424,6 +449,9 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 : null,
             ...captureEPUBOverlapState(),
         });
+        if (!isCacheWarmer) {
+            window.manabi_recordLiveSettledSection?.(href);
+        }
         if (!isCacheWarmer) {
             markEPUBPerf('replace-text.first-non-cache', {
                 href,
@@ -630,6 +658,9 @@ window.manabi_recordLiveSettledSection = (href) => {
             ...captureEPUBOverlapState(),
         });
     }
+    if (globalThis.__manabiCacheWarmerOpenRequested) {
+        void maybeOpenDeferredCacheWarmer();
+    }
 };
 
 window.manabi_syncLiveSettledSections = (payload = {}) => {
@@ -658,6 +689,9 @@ window.manabi_syncLiveSettledSections = (payload = {}) => {
         settledSectionHrefs: nextSettledSectionHrefs,
         ...captureEPUBOverlapState(),
     });
+    if (globalThis.__manabiCacheWarmerOpenRequested) {
+        void maybeOpenDeferredCacheWarmer();
+    }
 };
 
 const isForegroundReaderIdle = () => {
@@ -672,26 +706,16 @@ const isForegroundReaderIdle = () => {
         && !globalThis.__manabiCacheWarmerReady;
 };
 
-const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
+const maybeOpenDeferredCacheWarmer = async () => {
     if (globalThis.__manabiCacheWarmerOpenPromise) {
         return await globalThis.__manabiCacheWarmerOpenPromise;
     }
-    window.webkit?.messageHandlers?.syncCacheWarmerLiveSettledSections?.postMessage?.({
-        topWindowURL: window.top.location.href,
-    });
     if (!isForegroundReaderIdle()) {
         const firstLiveHref = firstLiveSectionHref();
         const firstLiveSettled = !!firstLiveHref && liveSettledSectionHrefSet().has(firstLiveHref);
-        const retryDelayMs = Math.min(250 + (attempt * 150), 1500);
-        clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
-        globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
-            void maybeOpenDeferredCacheWarmer(attempt + 1);
-        }, retryDelayMs);
         if (!globalThis.__manabiDeferredCacheWarmerLogged) {
             globalThis.__manabiDeferredCacheWarmerLogged = true;
             postEPUBLog('ebook.perf.cache-warmer.deferred', {
-                attempt,
-                retryDelayMs,
                 bodyLoading: !!document.body?.classList?.contains?.('loading'),
                 firstLiveHref: firstLiveHref ?? null,
                 firstLiveSettled,
@@ -699,8 +723,6 @@ const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
                 ...captureEPUBOverlapState(),
             });
             postReplaceTextPerfLog('cache-warmer.deferred', {
-                attempt,
-                retryDelayMs,
                 bodyLoading: !!document.body?.classList?.contains?.('loading'),
                 firstLiveHref: firstLiveHref ?? null,
                 firstLiveSettled,
@@ -711,6 +733,7 @@ const maybeOpenDeferredCacheWarmer = async (attempt = 0) => {
         return;
     }
     const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
+    globalThis.__manabiCacheWarmerOpenRequested = false;
     postReplaceTextPerfLog('cache-warmer.unblocked', {
         firstLiveHref: firstLiveSectionHref(),
         settledSectionCount: liveSettledSectionHrefSet().size,
@@ -735,21 +758,17 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 600) => {
     if (globalThis.__manabiCacheWarmerReady || globalThis.__manabiCacheWarmerOpenInFlight) {
         return;
     }
-    clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
+    globalThis.__manabiCacheWarmerOpenRequested = true;
     globalThis.__manabiDeferredCacheWarmerLogged = false;
     postEPUBLog('ebook.perf.cache-warmer.schedule', {
         reason,
-        delayMs,
         ...captureEPUBOverlapState(),
     });
     postReplaceTextPerfLog('cache-warmer.schedule', {
         reason,
-        delayMs,
         ...captureEPUBOverlapState(),
     });
-    globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
-        void maybeOpenDeferredCacheWarmer(0);
-    }, delayMs);
+    void maybeOpenDeferredCacheWarmer();
 };
 
 const postOpenReaderGoToSheetRequest = (source, targetID = null) => {
@@ -1486,6 +1505,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const viewportHeight = doc.documentElement?.clientHeight || doc.defaultView?.innerHeight || 0;
     const allSegmentNodes = Array.from(doc.querySelectorAll('manabi-segment'));
     const queryCompletedAt = performance.now();
+    const useVisibleRange = !!visibleRange && visibleRange.collapsed !== true;
+    const useViewportFallback = !visibleRange;
     const rangeCommonAncestor = visibleRange?.commonAncestorContainer ?? null;
     const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
         ? rangeCommonAncestor
@@ -1496,6 +1517,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     postMarkReadLog('visibleRange.collect.start', {
         documentURL: doc.URL || doc.location?.href || null,
         hasVisibleRange: !!visibleRange,
+        usingVisibleRange: useVisibleRange,
         segmentCandidateCount: allSegmentNodes.length,
         ancestorSegmentCandidateCount,
         viewportWidth,
@@ -1509,6 +1531,19 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         rangeCommonAncestor: describeMarkReadNode(rangeCommonAncestor),
         rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
         rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+    });
+    postVisibleRangeLog('collect.start', {
+        documentURL: doc.URL || doc.location?.href || null,
+        hasVisibleRange: !!visibleRange,
+        usingVisibleRange: useVisibleRange,
+        rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+        segmentCandidateCount: allSegmentNodes.length,
+        ancestorSegmentCandidateCount,
+        viewportWidth,
+        viewportHeight,
+        rangeStartContainer: visibleRange?.startContainer?.nodeName || null,
+        rangeEndContainer: visibleRange?.endContainer?.nodeName || null,
+        rangeCommonAncestor: describeMarkReadNode(rangeCommonAncestor),
     });
     const visibleSegments = [];
     let totalSegmentCount = 0;
@@ -1535,7 +1570,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         const rect = segmentNode.getBoundingClientRect();
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
-        const isInVisibleRange = visibleRange
+        const isInVisibleRange = useVisibleRange
             ? (() => {
                 const rangeStartedAt = performance.now();
                 try {
@@ -1549,7 +1584,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
                     return false;
                 }
             })()
-            : rectIntersectsViewport(rect, viewportWidth, viewportHeight);
+            : (useViewportFallback && rectIntersectsViewport(rect, viewportWidth, viewportHeight));
         if (!isInVisibleRange) {
             outOfViewportCount += 1;
             continue;
@@ -1562,10 +1597,90 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
+    if (useVisibleRange && visibleSegments.length === 0 && totalSegmentCount > 0) {
+        const fallbackStartedAt = performance.now();
+        const fallbackSegments = [];
+        let fallbackHiddenTooltipCount = 0;
+        let fallbackMissingIdentifierCount = 0;
+        let fallbackOutOfViewportCount = 0;
+        let fallbackRectMeasureCount = 0;
+        let fallbackRectMeasureElapsedMs = 0;
+        for (const segmentNode of allSegmentNodes) {
+            if (segmentNode.closest('.tippy-box')) {
+                fallbackHiddenTooltipCount += 1;
+                continue;
+            }
+            const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+            if (!segmentIdentifier) {
+                fallbackMissingIdentifierCount += 1;
+                continue;
+            }
+            const rectStartedAt = performance.now();
+            const rect = segmentNode.getBoundingClientRect();
+            fallbackRectMeasureCount += 1;
+            fallbackRectMeasureElapsedMs += performance.now() - rectStartedAt;
+            if (!rectIntersectsViewport(rect, viewportWidth, viewportHeight)) {
+                fallbackOutOfViewportCount += 1;
+                continue;
+            }
+            const sentenceNode = segmentNode.closest('manabi-sentence');
+            fallbackSegments.push({
+                node: segmentNode,
+                rect,
+                segmentIdentifier,
+                sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
+            });
+        }
+        postMarkReadLog('visibleRange.collect.fallback', {
+            documentURL: doc.URL || doc.location?.href || null,
+            reason: 'range-empty',
+            segmentCandidateCount: allSegmentNodes.length,
+            fallbackVisibleSegmentCount: fallbackSegments.length,
+            fallbackHiddenTooltipCount,
+            fallbackMissingIdentifierCount,
+            fallbackOutOfViewportCount,
+            fallbackRectMeasureCount,
+            fallbackRectMeasureElapsedMs: safeRound(fallbackRectMeasureElapsedMs, 2),
+            fallbackElapsedMs: safeRound(performance.now() - fallbackStartedAt, 2),
+            rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
+            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+        });
+        postVisibleRangeLog('collect.fallback', {
+            documentURL: doc.URL || doc.location?.href || null,
+            reason: 'range-empty',
+            fallbackVisibleSegmentCount: fallbackSegments.length,
+            fallbackOutOfViewportCount,
+            fallbackElapsedMs: safeRound(performance.now() - fallbackStartedAt, 2),
+            rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+        });
+        if (fallbackSegments.length > 0) {
+            visibleSegments.push(...fallbackSegments);
+            hiddenTooltipCount = fallbackHiddenTooltipCount;
+            missingIdentifierCount = fallbackMissingIdentifierCount;
+            outOfViewportCount = fallbackOutOfViewportCount;
+        }
+    } else if (visibleRange?.collapsed === true) {
+        postMarkReadLog('visibleRange.collect.collapsedSkipped', {
+            documentURL: doc.URL || doc.location?.href || null,
+            reason: 'collapsed-range',
+            segmentCandidateCount: allSegmentNodes.length,
+            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
+            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+        });
+        postVisibleRangeLog('collect.collapsedSkipped', {
+            documentURL: doc.URL || doc.location?.href || null,
+            reason: 'collapsed-range',
+            segmentCandidateCount: allSegmentNodes.length,
+            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
+            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+        });
+    }
     const completedAt = performance.now();
     postMarkReadLog('visibleRange.collect.end', {
         documentURL: doc.URL || doc.location?.href || null,
         hasVisibleRange: !!visibleRange,
+        usingVisibleRange: useVisibleRange,
         segmentCandidateCount: allSegmentNodes.length,
         totalSegmentCount,
         visibleSegmentCount: visibleSegments.length,
@@ -1591,6 +1706,21 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             : null,
         totalElapsedMs: safeRound(completedAt - startedAt, 2),
         loopElapsedMs: safeRound(completedAt - queryCompletedAt, 2),
+    });
+    postVisibleRangeLog('collect.end', {
+        documentURL: doc.URL || doc.location?.href || null,
+        hasVisibleRange: !!visibleRange,
+        usingVisibleRange: useVisibleRange,
+        rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+        segmentCandidateCount: allSegmentNodes.length,
+        visibleSegmentCount: visibleSegments.length,
+        outOfViewportCount,
+        visibleRangeCheckCount,
+        visibleRangeErrorCount,
+        rectMeasureCount,
+        rectMeasureElapsedMs: safeRound(rectMeasureElapsedMs, 2),
+        rangeCheckElapsedMs: safeRound(rangeCheckElapsedMs, 2),
+        totalElapsedMs: safeRound(completedAt - startedAt, 2),
     });
     return {
         visibleSegments,
@@ -2071,8 +2201,8 @@ reader-sentinel {
     reader-sentinel {
          position: relative !important;
          display: inline-block !important;
-         width: 0 !important;
-         height: 0 !important;
+         width: 1px !important;
+         height: 1px !important;
          padding: 0 !important;
          contain: strict !important;
          pointer-events: none !important;
@@ -2941,6 +3071,17 @@ class Reader {
         const shouldShowPageTracking = !!completionAction || hasStates;
         container.hidden = !shouldShowPageTracking;
         buttonHost.hidden = !shouldShowPageTracking;
+        this.#logMarkRead('pageTracking.render', {
+            reason,
+            shouldShowPageTracking,
+            stateCount: pageTrackingStates.length,
+            hasCompletionAction: !!completionAction,
+            completionActionType: completionAction?.type ?? null,
+            containerHidden: container.hidden,
+            buttonHostHidden: buttonHost.hidden,
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            navHidden: this.navHUD?.navHidden ?? null,
+        });
         if (!shouldShowPageTracking) {
             buttonHost.innerHTML = '';
             this.navHUD?.refreshAuxiliaryLayout?.();

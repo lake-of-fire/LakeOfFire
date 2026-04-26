@@ -194,7 +194,6 @@ export class NavigationHUD {
         this.navPrimaryText = document.getElementById('nav-primary-text');
         this.navPrimaryTextFull = document.getElementById('nav-primary-text-full');
         this.navPrimaryTextCompact = document.getElementById('nav-primary-text-compact');
-        this.navPrimaryPercent = document.getElementById('nav-primary-percent');
         this.navHiddenOverlay = {
             text: document.getElementById('nav-hidden-primary-text'),
             percent: document.getElementById('nav-hidden-primary-percent'),
@@ -844,23 +843,24 @@ export class NavigationHUD {
     }
 
     _updateCompactPercent(detail) {
-        if (!this.navPrimaryPercent) return;
-        const primary = this.navPrimaryPercent;
         const overlay = this.navHiddenOverlay?.percent;
-        primary.textContent = '';
-        primary.hidden = true;
-        primary.setAttribute('aria-hidden', 'true');
+        const fraction = this._fractionForPercent(detail);
+        const hasValue = typeof fraction === 'number' && Number.isFinite(fraction);
+        const percentText = hasValue ? this.formatPercent(Math.max(0, Math.min(1, fraction))) : '';
         if (overlay) {
-            overlay.textContent = '';
-            overlay.hidden = true;
-            overlay.setAttribute('aria-hidden', 'true');
+            overlay.textContent = percentText;
+            overlay.hidden = !hasValue;
+            if (hasValue) overlay.removeAttribute('aria-hidden');
+            else overlay.setAttribute('aria-hidden', 'true');
         }
         logNavHide('hud:compact-percent', {
             isCompact: this.navPrimaryText?.dataset?.labelVariant === 'compact',
-            hasValue: false,
+            hasValue,
             labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
             locationLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
             compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            primaryPercent: '',
+            primaryPercentHidden: true,
             overlayLabel: this.navHiddenOverlay?.text?.textContent || '',
             overlayLabelHidden: this.navHiddenOverlay?.text?.hidden ?? null,
             overlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
@@ -967,7 +967,6 @@ export class NavigationHUD {
         );
         const primaryPercentReserve = Math.max(
             0,
-            this.navPrimaryPercent?.offsetWidth ?? 0,
             this.navHiddenOverlay?.percent?.offsetWidth ?? 0,
             this.navPrimaryText?.dataset?.labelVariant === 'compact'
                 ? this.navPrimaryTextCompact?.offsetWidth ?? 0
@@ -988,7 +987,6 @@ export class NavigationHUD {
         }
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
-        styleTarget.style.setProperty('--nav-primary-percent-reserve', `${Math.ceil(percentReserve)}px`);
         logNavHide('hud:aux-layout', {
             leftInset,
             rightInset,
@@ -1292,8 +1290,6 @@ export class NavigationHUD {
             this.navSectionProgress?.leading,
             this.navSectionProgress?.trailing,
             this.navSectionProgress?.center,
-            this.navPrimaryText,
-            this.navPrimaryPercent,
         ].filter(Boolean);
         fadeTargets.forEach(el => {
             if (shouldShow) {
@@ -1302,23 +1298,10 @@ export class NavigationHUD {
                 el.classList.remove('nav-fade-out');
             }
         });
-        if (this.navPrimaryText) {
-            this.navPrimaryText.hidden = shouldShow;
-            if (shouldShow) {
-                this.navPrimaryText.setAttribute('aria-hidden', 'true');
-            } else {
-                this.navPrimaryText.removeAttribute('aria-hidden');
-            }
-        }
-        if (this.navPrimaryPercent) {
-            if (shouldShow) {
-                this.navPrimaryPercent.hidden = true;
-                this.navPrimaryPercent.setAttribute('aria-hidden', 'true');
-            } else {
-                const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
-                this._updateCompactPercent(descriptor);
-            }
-        }
+        this.navPrimaryText?.removeAttribute?.('aria-hidden');
+        if (this.navPrimaryText) this.navPrimaryText.hidden = false;
+        const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
+        this._updateCompactPercent(descriptor);
         requestAnimationFrame(() => this._updateAuxiliaryInsets());
     }
 

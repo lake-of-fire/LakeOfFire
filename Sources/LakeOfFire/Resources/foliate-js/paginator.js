@@ -1000,7 +1000,104 @@ export class Paginator extends HTMLElement {
 
                 sentinelVisibilityObserver.disconnect()
 
-                resolve?.(visibleSentinelIDs)
+                const elements = Array.from(this.#view.document.body.getElementsByTagName('reader-sentinel'))
+                let visibleIDSet = new Set(visibleSentinelIDs)
+                let visibleSource = 'observer'
+                if (visibleIDSet.size === 0) {
+                    const containerRect = this.#container && typeof this.#container.getBoundingClientRect === 'function'
+                        ? this.#container.getBoundingClientRect()
+                        : null
+                    const frameElement = this.#view?.document?.defaultView?.frameElement ?? null
+                    const iframeRect = frameElement && typeof frameElement.getBoundingClientRect === 'function'
+                        ? frameElement.getBoundingClientRect()
+                        : null
+                    if (containerRect && iframeRect) {
+                        for (const element of elements) {
+                            const rect = element.getBoundingClientRect?.()
+                            if (!rect || rect.width <= 0 || rect.height <= 0) continue
+                            const translated = {
+                                left: iframeRect.left + rect.left,
+                                right: iframeRect.left + rect.right,
+                                top: iframeRect.top + rect.top,
+                                bottom: iframeRect.top + rect.bottom,
+                            }
+                            if (
+                                translated.right > containerRect.left
+                                && translated.left < containerRect.right
+                                && translated.bottom > containerRect.top
+                                && translated.top < containerRect.bottom
+                            ) {
+                                visibleIDSet.add(element.id)
+                            }
+                        }
+                        visibleSource = 'geometry'
+                    }
+                }
+                const visibleIndexes = elements
+                    .map((element, index) => visibleIDSet.has(element.id) ? index : -1)
+                    .filter(index => index >= 0)
+                let expandedSentinelIDs = Array.from(visibleIDSet)
+                if (visibleIndexes.length > 0) {
+                    const firstIndex = Math.min(...visibleIndexes)
+                    const lastIndex = Math.max(...visibleIndexes)
+                    const expandedStart = Math.max(0, firstIndex - 1)
+                    const expandedEnd = Math.min(elements.length - 1, lastIndex + 1)
+                    expandedSentinelIDs = elements
+                        .slice(expandedStart, expandedEnd + 1)
+                        .map(element => element.id)
+                        .filter(Boolean)
+                    const payload = {
+                        event: 'sentinelRange.expanded',
+                        timestamp: Date.now(),
+                        source: visibleSource,
+                        visibleSentinelCount: visibleIDSet.size,
+                        expandedSentinelCount: expandedSentinelIDs.length,
+                        firstVisibleSentinelID: elements[firstIndex]?.id || null,
+                        lastVisibleSentinelID: elements[lastIndex]?.id || null,
+                        firstExpandedSentinelID: elements[expandedStart]?.id || null,
+                        lastExpandedSentinelID: elements[expandedEnd]?.id || null,
+                        totalSentinelCount: elements.length,
+                    }
+                    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`
+                    console.log(line)
+                    window.webkit?.messageHandlers?.print?.postMessage?.(line)
+                } else {
+                    const containerRect = this.#container && typeof this.#container.getBoundingClientRect === 'function'
+                        ? this.#container.getBoundingClientRect()
+                        : null
+                    const frameElement = this.#view?.document?.defaultView?.frameElement ?? null
+                    const iframeRect = frameElement && typeof frameElement.getBoundingClientRect === 'function'
+                        ? frameElement.getBoundingClientRect()
+                        : null
+                    const payload = {
+                        event: 'sentinelRange.empty',
+                        timestamp: Date.now(),
+                        source: visibleSource,
+                        observerVisibleSentinelCount: visibleSentinelIDs.length,
+                        totalSentinelCount: elements.length,
+                        containerRect: containerRect
+                            ? {
+                                left: Math.round(containerRect.left),
+                                top: Math.round(containerRect.top),
+                                width: Math.round(containerRect.width),
+                                height: Math.round(containerRect.height),
+                            }
+                            : null,
+                        iframeRect: iframeRect
+                            ? {
+                                left: Math.round(iframeRect.left),
+                                top: Math.round(iframeRect.top),
+                                width: Math.round(iframeRect.width),
+                                height: Math.round(iframeRect.height),
+                            }
+                            : null,
+                    }
+                    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`
+                    console.log(line)
+                    window.webkit?.messageHandlers?.print?.postMessage?.(line)
+                }
+
+                resolve?.(expandedSentinelIDs)
             }, {
                 root: null,
                 threshold: [0],

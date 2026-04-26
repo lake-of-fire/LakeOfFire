@@ -63,7 +63,6 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --nav-primary-percent-reserve: var(--nav-compact-percent-min-width);
                     --manabi-nav-bar-height: 56px;
                     --manabi-toolbar-bottom-offset: 0px;
                     --manabi-obscured-bottom-inset: 0px;
@@ -346,22 +345,6 @@
                     padding: 0;
                     text-decoration: none;
                 }
-                #nav-primary-percent {
-                    font-weight: 500;
-                    color: var(--secondary-color);
-                    font-size: 10px !important;
-                    line-height: 12px;
-                    position: absolute;
-                    top: 0;
-                    right: var(--nav-horizontal-padding);
-                    min-width: var(--nav-compact-percent-min-width);
-                    text-align: right;
-                    direction: ltr;
-                    unicode-bidi: isolate;
-                    pointer-events: none;
-                    height: 12px;
-                    opacity: 0;
-                }
                 .nav-primary-layer {
                     grid-area: 1 / 1;
                     display: block;
@@ -395,15 +378,9 @@
                     opacity: 0.8;
                     transform: translateY(0);
                 }
-                #nav-primary-percent:not([hidden]) {
-                    opacity: 0.8;
-                }
                 #nav-primary-text-compact {
                     text-align: center;
                     box-sizing: border-box;
-                }
-                #nav-primary-percent[hidden] {
-                    display: none;
                 }
                 #nav-hidden-overlay {
                     display: none !important;
@@ -431,6 +408,11 @@
                     opacity: 1 !important;
                     pointer-events: auto !important;
                     transform: translate(-50%, 0);
+                }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container {
+                    opacity: 1 !important;
+                    visibility: visible !important;
+                    pointer-events: auto !important;
                 }
                 #nav-bar.nav-hidden-due-to-scroll {
                     -webkit-backdrop-filter: none;
@@ -538,8 +520,6 @@
                     opacity: 0;
                     pointer-events: none;
                 }
-                #nav-bar.nav-hidden-due-to-scroll #nav-primary-cluster,
-                #nav-bar.nav-hidden-due-to-scroll #nav-primary-text,
                 #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-leading,
                 #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-trailing,
                 #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-center {
@@ -733,9 +713,9 @@
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button {
                     box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 0%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 0%, transparent);
-                    opacity: 0.5;
+                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 18%, transparent),
+                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    opacity: 1;
                     width: calc(var(--page-read-button-height) * 0.85);
                     height: calc(var(--page-read-button-height) * 0.85);
                     min-width: calc(var(--page-read-button-height) * 0.85);
@@ -1440,7 +1420,6 @@
                             <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
                         </a>
                     </div>
-                    <div id="nav-primary-percent" aria-live="polite" hidden></div>
                     <div id="nav-section-progress-leading" class="nav-section-progress" aria-live="polite"></div>
                     <div id="nav-section-progress-trailing" class="nav-section-progress" aria-live="polite"></div>
                     <a id="nav-section-progress-center" class="nav-section-progress nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite"></a>

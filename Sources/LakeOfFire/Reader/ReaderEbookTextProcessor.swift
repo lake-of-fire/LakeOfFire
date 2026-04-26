@@ -33,6 +33,12 @@ private func apr20ContainsSpacingProbe(_ text: String) -> Bool {
     text.contains { apr20SpacingProbeCharacters.contains($0) }
 }
 
+private func apr20IsASCIILetterOrNumber(_ character: Character) -> Bool {
+    character.unicodeScalars.allSatisfy {
+        $0.isASCII && CharacterSet.alphanumerics.contains($0)
+    }
+}
+
 private func apr20SpacingContexts(_ text: String, limit: Int = 8) -> String {
     let characters = Array(text)
     let matches = characters.enumerated().filter { apr20SpacingProbeCharacters.contains($0.element) }
@@ -87,35 +93,29 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
     var idx = 0
     
     func findSplitOffset(_ text: String, desiredOffset: Int, maxDistance: Int) -> Int {
-        let utf8view = text.utf8
-        let len = utf8view.count
+        let characters = Array(text)
+        let len = characters.count
         guard desiredOffset > 0 && desiredOffset < len else {
             return desiredOffset
-        }
-        // Access a byte in the UTF-8 view by index
-        func byte(at offset: Int) -> UInt8 {
-            return utf8view[utf8view.index(utf8view.startIndex, offsetBy: offset)]
         }
         var bestOffset = desiredOffset
         var bestScore = Int.min
         for dist in 0...maxDistance {
             for offset in [desiredOffset - dist, desiredOffset + dist] {
                 if offset <= 0 || offset >= len { continue }
-                let curr = byte(at: offset)
-                let prev = byte(at: offset - 1)
+                let curr = characters[offset]
+                let prev = characters[offset - 1]
                 var score = 0
                 // Prefer splitting at ASCII whitespace
-                if curr == 0x20 || curr == 0x09 || curr == 0x0A || curr == 0x0C || curr == 0x0D ||
-                    prev == 0x20 || prev == 0x09 || prev == 0x0A || prev == 0x0C || prev == 0x0D {
+                if curr.isWhitespace || prev.isWhitespace {
                     score += 3
                 }
                 // Treat punctuation via precomputed splitPunctuation set
-                if splitPunctuation.contains(curr) || splitPunctuation.contains(prev) {
+                if splitPunctuation.contains(Array(String(curr).utf8)) || splitPunctuation.contains(Array(String(prev).utf8)) {
                     score += 3
                 }
                 // Avoid splitting in the middle of ASCII alphanumeric words
-                if ((curr >= 0x30 && curr <= 0x39) || (curr >= 0x41 && curr <= 0x5A) || (curr >= 0x61 && curr <= 0x7A)) &&
-                    ((prev >= 0x30 && prev <= 0x39) || (prev >= 0x41 && prev <= 0x5A) || (prev >= 0x61 && prev <= 0x7A)) {
+                if apr20IsASCIILetterOrNumber(curr) && apr20IsASCIILetterOrNumber(prev) {
                     score -= 4
                 }
                 // Avoid splitting at very start or end
@@ -136,7 +136,23 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
     }
     
     do {
-        var textNodes = body.textNodes()
+        func bodyTextNodesInDocumentOrder() -> [TextNode] {
+            (try? body.getAllElements().flatMap { $0.textNodes() }) ?? []
+        }
+
+        var textNodes = bodyTextNodesInDocumentOrder()
+        let initialTextNodeCount = textNodes.count
+        let initialTextCharacterCount = textNodes.reduce(0) { $0 + $1.text().count }
+        var splitAttemptCount = 0
+        var splitRejectedCount = 0
+        var splitFailedCount = 0
+        print(
+            "# VISIBLERANGE",
+            "sentinelPreprocess.start",
+            "textNodeCount=\(initialTextNodeCount)",
+            "textCharacterCount=\(initialTextCharacterCount)",
+            "interval=\(interval)"
+        )
         var nodeIdx = 0
         while nodeIdx < textNodes.count {
             var node = textNodes[nodeIdx]
@@ -156,15 +172,30 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
             // Attempt to insert as many sentinels as needed inside this node
             while charCount + (node.text().count - offsetInNode) >= nextThreshold {
                 let nodeText = node.text()
-                let desiredOffset = nextThreshold - charCount - offsetInNode
+                let desiredOffset = nextThreshold - charCount
                 let splitOffset = findSplitOffset(
                     nodeText,
                     desiredOffset: desiredOffset,
                     maxDistance: interval * 2
                 )
-                let splitIndex = offsetInNode + splitOffset
+                let splitIndex = splitOffset
+                splitAttemptCount += 1
                 // Sanity check
-                if splitIndex <= 0 || splitIndex >= nodeText.count { break }
+                if splitIndex <= 0 {
+                    splitRejectedCount += 1
+                    nextThreshold += interval
+                    continue
+                }
+                if splitIndex >= nodeText.count {
+                    let sentinel = Element(Tag("reader-sentinel"), "")
+                    try sentinel.attr("id", "reader-sentinel-\(idx)")
+                    idx += 1
+                    _ = try? node.after(sentinel)
+                    charCount = nextThreshold
+                    nextThreshold += interval
+                    offsetInNode = nodeText.count
+                    break
+                }
 
                 if apr20ContainsSpacingProbe(nodeText) {
                     let characters = Array(nodeText)
@@ -203,7 +234,7 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
                 if let newTextNode = newTextNode {
                     _ = try? sentinel.after(newTextNode)
                     // Re-fetch text nodes to include the split part
-                    textNodes = body.textNodes()
+                    textNodes = bodyTextNodesInDocumentOrder()
                     // Advance counters for next threshold
                     charCount = nextThreshold
                     nextThreshold += interval
@@ -212,6 +243,7 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
                     offsetInNode = 0
                     continue  // re‑enter inner while with updated node
                 } else {
+                    splitFailedCount += 1
                     break
                 }
             }
@@ -226,6 +258,17 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
             try sentinel.attr("id", "reader-sentinel-0")
             _ = try? body.prependChild(sentinel)
         }
+        print(
+            "# VISIBLERANGE",
+            "sentinelPreprocess.end",
+            "initialTextNodeCount=\(initialTextNodeCount)",
+            "initialTextCharacterCount=\(initialTextCharacterCount)",
+            "sentinelCount=\(idx == 0 ? 1 : idx)",
+            "usedFallbackSentinel=\(idx == 0)",
+            "splitAttemptCount=\(splitAttemptCount)",
+            "splitRejectedCount=\(splitRejectedCount)",
+            "splitFailedCount=\(splitFailedCount)"
+        )
         if let bodyHtml = try? body.html(), apr20ContainsSpacingProbe(bodyHtml) {
             print(
                 "# APR20",
