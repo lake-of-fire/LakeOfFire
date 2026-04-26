@@ -1067,6 +1067,7 @@ private struct ReaderWebViewInternal: View {
     let sharedReaderFontAsset: SharedReaderFontAsset?
     var handler: ReaderWebViewHandler
 
+    @State private var webViewHostSize: CGSize = .zero
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     @StateObject private var webViewPrewarmer = WebViewPrewarmer(
         warmUpCount: 1,
@@ -1103,7 +1104,111 @@ private struct ReaderWebViewInternal: View {
         || readerContent.content?.url.isEBookURL == true
     }
 
-    private var paginationConfiguration: WebViewPaginationConfiguration {
+    private func ebookViewerChromeInsetsKey(_ insets: EdgeInsets) -> String {
+        [
+            isEbookContent ? "ebook" : "non-ebook",
+            state.pageURL.absoluteString,
+            String(format: "%.1f", insets.top),
+            String(format: "%.1f", insets.bottom),
+            String(format: "%.1f", insets.leading),
+            String(format: "%.1f", insets.trailing)
+        ].joined(separator: "|")
+    }
+
+    private func ebookViewerChromeInsetsScript(
+        toolbarBottomOffset: Double,
+        obscuredBottomInset: Double
+    ) -> String {
+        """
+        (function() {
+          const toolbar = Math.max(0, Number(\(toolbarBottomOffset)) || 0);
+          const obscured = Math.max(0, Number(\(obscuredBottomInset)) || 0);
+          const shouldApply = () => {
+            try {
+              return location.protocol === 'ebook:'
+                || !!document.getElementById('reader-stage')
+                || document.body?.classList?.contains?.('ebook-viewer') === true;
+            } catch (_error) {
+              return false;
+            }
+          };
+          const apply = (doc) => {
+            if (!shouldApply()) return;
+            if (!doc?.documentElement) return;
+            doc.documentElement.style.setProperty('--manabi-toolbar-bottom-offset', `${toolbar}px`);
+            doc.documentElement.style.setProperty('--manabi-obscured-bottom-inset', `${obscured}px`);
+            if (doc.body?.dataset) doc.body.dataset.isEbook = 'true';
+          };
+          apply(document);
+          document.addEventListener?.('DOMContentLoaded', () => apply(document), { once: true });
+          requestAnimationFrame(() => {
+            try { window.dispatchEvent(new Event('resize')); } catch (_error) {}
+            try { globalThis.reader?.view?.requestTrackingSectionGeometryBake?.({ reason: 'native-chrome-insets', restoreLocation: true, immediate: true }); } catch (_error) {}
+          });
+          return `toolbar=${toolbar}px obscured=${obscured}px`;
+        })();
+        """
+    }
+
+    private func ebookViewerChromeInsetsUserScript(_ insets: EdgeInsets) -> WebViewUserScript? {
+        return WebViewUserScript(
+            source: ebookViewerChromeInsetsScript(
+                toolbarBottomOffset: 0,
+                obscuredBottomInset: max(0, Double(insets.bottom))
+            ),
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: .page,
+            allowedDomains: []
+        )
+    }
+
+    @MainActor
+    private func applyEBookViewerChromeInsets(_ insets: EdgeInsets) async {
+        for attempt in 0..<12 {
+            if scriptCaller.hasAsyncCaller { break }
+            if attempt == 11 {
+                debugPrint(
+                    "# EPUB  ebook.viewer.insets.apply.skipped",
+                    "pageURL=\(state.pageURL.absoluteString)",
+                    "reason=noAsyncCaller"
+                )
+                return
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        let obscuredBottomInset = max(0, Double(insets.bottom))
+        let toolbarBottomOffset = 0.0
+        do {
+            let result = try await scriptCaller.evaluateJavaScript(
+                ebookViewerChromeInsetsScript(
+                    toolbarBottomOffset: toolbarBottomOffset,
+                    obscuredBottomInset: obscuredBottomInset
+                ),
+                duplicateInMultiTargetFrames: true
+            )
+            debugPrint(
+                "# EPUB  ebook.viewer.insets.apply",
+                "pageURL=\(state.pageURL.absoluteString)",
+                "toolbarBottomOffset=\(String(format: "%.1f", toolbarBottomOffset))",
+                "obscuredBottomInset=\(String(format: "%.1f", obscuredBottomInset))",
+                "result=\(String(describing: result))"
+            )
+        } catch {
+            debugPrint(
+                "# EPUB  ebook.viewer.insets.apply.failed",
+                "pageURL=\(state.pageURL.absoluteString)",
+                "obscuredBottomInset=\(String(format: "%.1f", obscuredBottomInset))",
+                "error=\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func paginationConfiguration(
+        hostSize: CGSize,
+        obscuredInsets: EdgeInsets
+    ) -> WebViewPaginationConfiguration {
         guard isEbookContent, ebookViewerLayout == "paginated" else {
             return .disabled
         }
@@ -1118,33 +1223,69 @@ private struct ReaderWebViewInternal: View {
             fallbackMode = .leftToRight
         }
         let mode = readerResolvedPaginationMode ?? fallbackMode
+        let visibleLayoutSize: CGSize
+        if hostSize.width > 0, hostSize.height > 0 {
+            visibleLayoutSize = CGSize(
+                width: hostSize.width,
+                height: max(1, hostSize.height - max(0, obscuredInsets.bottom))
+            )
+        } else {
+            visibleLayoutSize = .zero
+        }
+        let explicitPageLength: CGFloat
+        if visibleLayoutSize != .zero, max(0, obscuredInsets.bottom) > 0 {
+            explicitPageLength = mode.usesViewHeightAsPageLength
+                ? visibleLayoutSize.height
+                : visibleLayoutSize.width
+        } else {
+            explicitPageLength = 0
+        }
 
         return WebViewPaginationConfiguration(
             mode: mode,
-            storedPageLength: 0,
+            storedPageLength: explicitPageLength,
             gapBetweenPages: 24,
-            behavesLikeColumns: true
+            behavesLikeColumns: true,
+            layoutSize: visibleLayoutSize
         )
     }
     
     public var body: some View {
         let resolvedContentRules = contentBlockingEnabled ? contentBlockingRules : nil
+        let resolvedObscuredInsets = totalObscuredInsets(
+            additionalInsets: EdgeInsets(
+                top: 0,
+                leading: 0,
+                bottom: max(0, additionalBottomSafeAreaInset ?? 0),
+                trailing: 0
+            )
+        )
+        let resolvedUserScripts: [WebViewUserScript] = {
+            guard let chromeInsetsScript = ebookViewerChromeInsetsUserScript(resolvedObscuredInsets) else {
+                return userScripts
+            }
+            return userScripts + [chromeInsetsScript]
+        }()
         let webViewConfig: WebViewConfig = {
+            let resolvedPaginationConfiguration = paginationConfiguration(
+                hostSize: webViewHostSize,
+                obscuredInsets: resolvedObscuredInsets
+            )
             if useTransparentWebViewBackground {
                 return WebViewConfig(
                     contentRules: resolvedContentRules,
                     dataDetectorsEnabled: false,
                     isOpaque: false,
                     backgroundColor: .clear,
-                    userScripts: userScripts,
-                    paginationConfiguration: paginationConfiguration
+                    userScripts: resolvedUserScripts,
+                    paginationConfiguration: resolvedPaginationConfiguration
                 )
             }
             return WebViewConfig(
                 contentRules: resolvedContentRules,
                 dataDetectorsEnabled: false,
-                userScripts: userScripts,
-                paginationConfiguration: paginationConfiguration
+                userScripts: resolvedUserScripts,
+                paginationConfiguration: resolvedPaginationConfiguration
             )
         }()
         
@@ -1153,14 +1294,7 @@ private struct ReaderWebViewInternal: View {
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
-            obscuredInsets: totalObscuredInsets(
-                additionalInsets: EdgeInsets(
-                    top: 0,
-                    leading: 0,
-                    bottom: max(0, additionalBottomSafeAreaInset ?? 0),
-                    trailing: 0
-                )
-            ),
+            obscuredInsets: resolvedObscuredInsets,
             bounces: bounces,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
@@ -1196,6 +1330,17 @@ private struct ReaderWebViewInternal: View {
         }
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
+        }
+        .task(id: ebookViewerChromeInsetsKey(resolvedObscuredInsets)) { @MainActor in
+            await applyEBookViewerChromeInsets(resolvedObscuredInsets)
+        }
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .task(id: geometry.size) { @MainActor in
+                        webViewHostSize = geometry.size
+                    }
+            }
         }
     }
 }

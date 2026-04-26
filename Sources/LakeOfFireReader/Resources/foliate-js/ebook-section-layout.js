@@ -521,15 +521,12 @@ const applyPageRootLayoutStyles = root => {
 
 const updatePageRootLayoutExtent = (root, { inlineSize = null, pageCount = 1 } = {}) => {
     if (!(root instanceof HTMLElement)) return
-    if (Number.isFinite(inlineSize) && inlineSize > 0) {
-        const totalInlineSize = Math.max(1, pageCount) * inlineSize
-        const totalInlineSizeCSS = `${totalInlineSize}px`
-        root.style.inlineSize = totalInlineSizeCSS
-        root.style.minInlineSize = totalInlineSizeCSS
-    } else {
-        root.style.inlineSize = '100%'
-        root.style.minInlineSize = '100%'
-    }
+    // Native WebKit pagination paginates document overflow. The page-turn host
+    // already owns page movement with absolutely positioned page cards and a
+    // transform, so making the root pageCount * pageWidth creates a second
+    // horizontal pagination surface and can leave the selected page offscreen.
+    root.style.inlineSize = '100%'
+    root.style.minInlineSize = '100%'
 }
 
 const resolvePageViewportSize = root => {
@@ -539,24 +536,25 @@ const resolvePageViewportSize = root => {
     const rect = root.getBoundingClientRect?.() ?? null
     const viewportWidth = root.ownerDocument?.defaultView?.innerWidth ?? 0
     const viewportHeight = root.ownerDocument?.defaultView?.innerHeight ?? 0
-    const inlineSize = Math.max(
-        1,
-        Math.round(Math.max(
-            rect?.width || 0,
-            root.clientWidth || 0,
-            root.offsetWidth || 0,
-            viewportWidth || 0
-        ))
-    )
-    const blockSize = Math.max(
-        1,
-        Math.round(Math.max(
-            rect?.height || 0,
-            root.clientHeight || 0,
-            root.offsetHeight || 0,
-            viewportHeight || 0
-        ))
-    )
+    const firstPositiveSize = values => {
+        for (const value of values) {
+            const number = Math.round(Number(value) || 0)
+            if (Number.isFinite(number) && number > 0) return number
+        }
+        return 1
+    }
+    const inlineSize = firstPositiveSize([
+        rect?.width,
+        root.clientWidth,
+        root.offsetWidth,
+        viewportWidth,
+    ])
+    const blockSize = firstPositiveSize([
+        rect?.height,
+        root.clientHeight,
+        root.offsetHeight,
+        viewportHeight,
+    ])
     return {
         inlineSize: Number.isFinite(inlineSize) ? inlineSize : null,
         blockSize: Number.isFinite(blockSize) ? blockSize : null,
@@ -1216,14 +1214,15 @@ export class EbookSectionLayout {
     }
 
     _effectivePageCount() {
-        if (this._pageRecords.length === 0) return 0
-        const lastPageRecord = this._pageRecords[this._pageRecords.length - 1]
-        const hasOnlyEmptyChunks = lastPageRecord?.chunkRecords?.length > 0
-            && lastPageRecord.chunkRecords.every(record => record.startUnitIndex == null)
-        if (hasOnlyEmptyChunks && this._buildState) {
-            return Math.max(0, this._pageRecords.length - 1)
+        let count = this._pageRecords.length
+        while (count > 0) {
+            const pageRecord = this._pageRecords[count - 1]
+            const hasOnlyEmptyChunks = pageRecord?.chunkRecords?.length > 0
+                && pageRecord.chunkRecords.every(record => record.startUnitIndex == null)
+            if (!hasOnlyEmptyChunks) break
+            count -= 1
         }
-        return this._pageRecords.length
+        return count
     }
 
     _runWithSuppressedMutations(callback) {

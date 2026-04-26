@@ -447,6 +447,8 @@
                     opacity: 0;
                     pointer-events: none;
                 }
+                body[data-is-ebook="true"] #nav-bottom-row,
+                body[data-is-ebook="true"] #progress-wrapper,
                 body[data-is-ebook="true"] #progress-slider,
                 body[data-is-ebook="true"] #progress-ticks,
                 body.nav-hidden #progress-slider,
@@ -456,6 +458,14 @@
                     visibility: hidden !important;
                     opacity: 0 !important;
                     pointer-events: none !important;
+                }
+                body[data-is-ebook="true"] #nav-bottom-row,
+                body[data-is-ebook="true"] #progress-wrapper {
+                    height: 0 !important;
+                    min-height: 0 !important;
+                    padding-top: 0 !important;
+                    padding-bottom: 0 !important;
+                    overflow: hidden !important;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
                 #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row {
@@ -1040,7 +1050,7 @@
                  */
             </style>
     </head>
-    <body class="ebook-viewer">
+    <body class="ebook-viewer" data-is-ebook="true">
         <div id="loading-indicator" aria-hidden="true">
             <div class="ispinner">
                 <div class="ispinner-blade"></div>

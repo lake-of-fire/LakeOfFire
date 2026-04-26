@@ -6050,12 +6050,19 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     }
 
     private func resolvedNativePaginationPageCount() -> Int? {
-        ReaderNativePaginationSupport.resolvedPageCount([
+        if let labelPageCount = parsedDisplayLabelPageCount(currentPageDisplayLabel), labelPageCount > 0 {
+            return labelPageCount
+        }
+        if let pageCount, pageCount > 0 {
+            return pageCount
+        }
+        if let labelPageCount = parsedDisplayLabelPageCount(lastKnownState.paginationState?.currentPageDisplayLabel),
+           labelPageCount > 0 {
+            return labelPageCount
+        }
+        return ReaderNativePaginationSupport.resolvedPageCount([
             lastKnownState.paginationState?.pageCount,
-            pageCount,
-            layoutPageRecordCount,
-            parsedDisplayLabelPageCount(currentPageDisplayLabel),
-            parsedDisplayLabelPageCount(lastKnownState.paginationState?.currentPageDisplayLabel)
+            layoutPageRecordCount
         ])
     }
 
@@ -6128,7 +6135,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     private func nativeCanMoveBackward(currentPageIndex: Int?) -> Bool {
         ReaderNativePaginationSupport.canMoveBackward(
             currentPageIndex: currentPageIndex,
-            canPrev: canPrev,
+            canPrev: canPrev && ((currentSectionIndex ?? 0) > 0),
             fallback: canBackward
         )
     }
@@ -6143,7 +6150,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             currentPageIndex: currentPageIndex,
             pageCount: pageCount,
             canNext: canNext,
-            canPrev: canPrev,
+            canPrev: canPrev && ((currentSectionIndex ?? 0) > 0),
             fallbackForward: canForward,
             fallbackBackward: canBackward
         )

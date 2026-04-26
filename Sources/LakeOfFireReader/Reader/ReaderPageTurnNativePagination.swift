@@ -129,8 +129,12 @@ enum ReaderNativePaginationSupport {
                 : scrollView.contentOffset.y
             let forwardMappedIndex = Int(round(currentOffset / fittedStride))
             let reverseMappedIndex = Int(round((maxOffset - currentOffset) / fittedStride))
-            let usesReversePhysicalMapping = reportedCurrentPage == reverseMappedIndex
-                && reportedCurrentPage != forwardMappedIndex
+            let usesReversePhysicalMapping = mode == .rightToLeft
+                || mode == .bottomToTop
+                || (
+                    reportedCurrentPage == reverseMappedIndex
+                    && reportedCurrentPage != forwardMappedIndex
+                )
             let rawTargetOffset = usesReversePhysicalMapping
                 ? maxOffset - (CGFloat(pageIndex) * fittedStride)
                 : CGFloat(pageIndex) * fittedStride

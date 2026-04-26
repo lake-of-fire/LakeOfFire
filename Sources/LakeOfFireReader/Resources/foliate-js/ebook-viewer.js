@@ -549,6 +549,9 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     'data-manabi-has-sentences': sentenceCount > 0 ? 'true' : null,
     'data-manabi-has-segments': segmentCount > 0 ? 'true' : null,
     })
+    if (!isCacheWarmer) {
+    window.manabi_recordLiveSettledSection?.(href)
+    }
     return html
     } catch (error) {
     const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
@@ -1291,6 +1294,18 @@ body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-
     inline-size: 100% !important;
     block-size: 100% !important;
     overflow: hidden !important;
+    opacity: 1 !important;
+    color: CanvasText !important;
+    -webkit-text-fill-color: CanvasText !important;
+}
+.manabi-page-root,
+.manabi-page,
+.manabi-page-column-chunk,
+.manabi-page-column-body,
+.manabi-page-column-body * {
+    opacity: 1 !important;
+    color: CanvasText !important;
+    -webkit-text-fill-color: CanvasText !important;
 }
 body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(manabi-segment *) {
 max-height: 99vh;
@@ -3183,6 +3198,26 @@ window.manabi_recordLiveSettledSection = (href) => {
     const normalizedHref = normalizeSpineHref(href);
     if (!normalizedHref) { return; }
     liveSettledSectionHrefSet().add(normalizedHref);
+    if (globalThis.__manabiCacheWarmerOpenRequested) {
+        void maybeOpenDeferredCacheWarmer();
+    }
+};
+
+window.manabi_syncLiveSettledSections = (payload = {}) => {
+    const rawHrefs =
+        (Array.isArray(payload.hrefs) && payload.hrefs)
+        || (Array.isArray(payload.settledSectionHrefs) && payload.settledSectionHrefs)
+        || [];
+    const nextSettledSectionHrefs = Array.from(new Set(
+        rawHrefs.map((href) => normalizeSpineHref(href)).filter(Boolean)
+    )).sort();
+    globalThis.__manabiLiveSettledSectionHrefs = new Set(nextSettledSectionHrefs);
+    if (typeof payload.firstLiveHref === 'string' && payload.firstLiveHref.length > 0) {
+        globalThis.__manabiFirstLiveSectionHref = normalizeSpineHref(payload.firstLiveHref);
+    }
+    if (globalThis.__manabiCacheWarmerOpenRequested) {
+        void maybeOpenDeferredCacheWarmer();
+    }
 };
 
 const isForegroundReaderIdle = () => {
@@ -3200,12 +3235,9 @@ const maybeOpenDeferredCacheWarmer = async () => {
         return await globalThis.__manabiCacheWarmerOpenPromise;
     }
     if (!isForegroundReaderIdle()) {
-        clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
-        globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
-            void maybeOpenDeferredCacheWarmer();
-        }, 250);
         return;
     }
+    globalThis.__manabiCacheWarmerOpenRequested = false;
     const openPromise = window.cacheWarmer.open(window.bookSource);
     globalThis.__manabiCacheWarmerOpenPromise = openPromise;
     try {
@@ -3218,6 +3250,7 @@ const maybeOpenDeferredCacheWarmer = async () => {
 const scheduleDeferredCacheWarmerOpen = (delayMs = 600) => {
     clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer);
     globalThis.__manabiDeferredCacheWarmerTimer = setTimeout(() => {
+        globalThis.__manabiCacheWarmerOpenRequested = true;
         void maybeOpenDeferredCacheWarmer();
     }, delayMs);
 };
@@ -4162,7 +4195,7 @@ const resetSameDocumentEBookShell = reason => {
         document
             .querySelectorAll('[data-manabi-same-document-section-style="true"]')
             .forEach(node => node?.remove?.())
-        document.body?.removeAttribute?.('data-is-ebook')
+        if (document.body?.dataset) document.body.dataset.isEbook = 'true'
         document.body?.classList?.remove?.(
             'reader-vertical-writing',
             'reader-tategaki-display-transform',
@@ -4229,6 +4262,7 @@ window.loadEBook = ({
     window.bookSource = source
     globalThis.__manabiLiveSettledSectionHrefs = new Set()
     globalThis.__manabiFirstLiveSectionHref = null
+    globalThis.__manabiCacheWarmerOpenRequested = false
     globalThis.__manabiCacheWarmerOpenPromise = null
     clearTimeout(globalThis.__manabiDeferredCacheWarmerTimer)
     if (layoutMode) {
