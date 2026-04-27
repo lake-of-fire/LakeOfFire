@@ -823,7 +823,7 @@ public struct ReaderContentLoader {
         normalizeSnippetSourceHTML(html)
     }
 
-    public static let snippetReaderTitleSuppressionBodyClass = "manabi-hide-redundant-snippet-reader-title"
+    public static let snippetReaderTitleSuppressionBodyClass = "mnb-hide-redundant-snippet-reader-title"
 
     public static func resolvedDisplayTitle(
         _ rawTitle: String,
@@ -1248,7 +1248,7 @@ This snippet loads when the pasteboard is empty in a debug build.
         try await _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, rssContainsFullContent: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
     }
 
-    private static let snippetWrapperClass = "manabi-snippet"
+    private static let snippetWrapperClass = "mnb-snippet"
 
     static func normalizeSnippetSourceHTML(_ html: String) -> String {
         guard let doc = try? SwiftSoup.parse(html),

@@ -192,17 +192,20 @@ actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
     let ebookTextProcessor: EbookTextProcessor?
     let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
+    let processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?
     let processHTML: ((String, Bool) async -> String)?
     
     init(
         ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?,
         ebookTextProcessor: EbookTextProcessor?,
         processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+        processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
         processHTML: ((String, Bool) async -> String)?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
+        self.processHTMLBytes = processHTMLBytes
         self.processHTML = processHTML
     }
     
@@ -235,6 +238,7 @@ actor EBookProcessingActor {
             text,
             isCacheWarmer,
             processReadabilityContent,
+            processHTMLBytes,
             processHTML
         )
         debugPrint(
@@ -294,7 +298,7 @@ fileprivate actor EBookLoadingActor {
 
         if let base64, !base64.isEmpty {
             let payload = """
-            <script id="manabi-font-css-base64" type="application/json">\(base64)</script>
+            <script id="mnb-font-css-base64" type="application/json">\(base64)</script>
             <script>
             (function() {
                 try {
@@ -339,8 +343,9 @@ public actor EbookURLSchemeActor {
 
 typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
 typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
+typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLProcessor?) async throws -> String
+typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
 typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
 typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
@@ -355,6 +360,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
     public var readerFileManager: ReaderFileManager?
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
+    nonisolated(unsafe) var processHTMLBytes: EbookHTMLBytesProcessor?
     nonisolated(unsafe) var processHTML: EbookHTMLProcessor?
     nonisolated(unsafe) public var sharedFontCSSBase64: String?
     nonisolated(unsafe) var sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
@@ -403,6 +409,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
         let ebookTextProcessor = self.ebookTextProcessor
         let processReadabilityContent = self.processReadabilityContent
+        let processHTMLBytes = self.processHTMLBytes
         let processHTML = self.processHTML
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
@@ -443,6 +450,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                     ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                                     ebookTextProcessor: ebookTextProcessor,
                                     processReadabilityContent: processReadabilityContent,
+                                    processHTMLBytes: processHTMLBytes,
                                     processHTML: processHTML
                                 )
                                 return try await processingActor.process(

@@ -116,7 +116,7 @@ async function getBodylessComputedStyle(sourceDoc) {
 
     // 2. Deep-clone the <head>, stripping unwanted styles/scripts
     const clonedHead = sourceDoc.head.cloneNode(true);
-    ['manabi-font-data', 'manabi-custom-fonts'].forEach(id => {
+    ['mnb-font-data', 'mnb-custom-fonts'].forEach(id => {
         const el = clonedHead.querySelector(`#${id}`);
         if (el) el.remove();
     });
@@ -219,10 +219,10 @@ const isJapaneseLanguageTag = value => {
 }
 
 const getJapaneseLayoutFlags = doc => {
-    const hasManabiSentences = !!doc?.body?.matches?.('[data-manabi-has-sentences="true"]')
-        || !!doc?.querySelector?.('manabi-sentence')
-    const hasManabiSegments = !!doc?.body?.matches?.('[data-manabi-has-segments="true"]')
-        || !!doc?.querySelector?.('manabi-segment')
+    const hasManabiSentences = !!doc?.body?.matches?.('[data-mnb-has-sentences="true"]')
+        || !!doc?.querySelector?.('mnb-sen')
+    const hasManabiSegments = !!doc?.body?.matches?.('[data-mnb-has-segments="true"]')
+        || !!doc?.querySelector?.('mnb-seg')
     const lang =
         doc?.documentElement?.getAttribute?.('lang')
         || doc?.documentElement?.getAttribute?.('xml:lang')
@@ -773,7 +773,7 @@ export class Paginator extends HTMLElement {
                     }
                 }
             }
-            #top.manabi-vertical-paginated {
+            #top.mnb-vertical-paginated {
                 grid-template-rows: 0 minmax(0, 1fr) 0;
             }
             #top.reader-loading {
@@ -793,7 +793,7 @@ export class Paginator extends HTMLElement {
                 will-change: transform;
                 transform: translateZ(0);
             }
-            #top.manabi-vertical-paginated #container {
+            #top.mnb-vertical-paginated #container {
                 grid-row: 1 / -1;
             }
             :host([flow="scrolled"]) #container {
@@ -813,8 +813,8 @@ export class Paginator extends HTMLElement {
             #header, #footer {
                 display: grid;
             }
-            #top.manabi-vertical-paginated #header,
-            #top.manabi-vertical-paginated #footer {
+            #top.mnb-vertical-paginated #header,
+            #top.mnb-vertical-paginated #footer {
                 display: none;
                 height: 0;
             }
@@ -1164,7 +1164,7 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
-        this.#top.classList.toggle('manabi-vertical-paginated', vertical && flow !== 'scrolled')
+        this.#top.classList.toggle('mnb-vertical-paginated', vertical && flow !== 'scrolled')
 
         // New:
         const {
@@ -1933,7 +1933,7 @@ export class Paginator extends HTMLElement {
         //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
         //            console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
 
-        // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
+        // Find the first and last visible content node, skipping <reader-sentinel> and mnb-* elements
 
         const doc = this.#view.document
 

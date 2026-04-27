@@ -279,10 +279,10 @@ const nodeToParts = (node, offset) => {
     }
     const tagName = node.nodeType === 1 ? node.localName?.toLowerCase() : ''
     const part = { id, index, offset }
-    // remove IDs for generated manabi- and reader-sentinel elements
+    // Generated mnb-* IDs are per-render implementation details; do not persist them in CFI.
     if (
-        part.id?.startsWith('manabi-') ||
-        tagName?.startsWith('manabi-') ||
+        part.id?.startsWith('mnb-') ||
+        tagName?.startsWith('mnb-') ||
         tagName === 'reader-sentinel'
         ) {
             delete part.id

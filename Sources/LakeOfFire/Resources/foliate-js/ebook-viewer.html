@@ -45,7 +45,7 @@
                     overscroll-behavior-x: contain;
                 }
                 body {
-                    --manabi-red: #ff4500;
+                    --mnb-red: #ff4500;
                     --secondary-color: #7a7a7a;
                     --tertiary-color: #c3c3c3;
                     --theme-background-color: white;
@@ -63,15 +63,16 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --manabi-nav-bar-height: 56px;
-                    --manabi-toolbar-bottom-offset: 0px;
-                    --manabi-obscured-bottom-inset: 0px;
-                    --manabi-toolbar-visual-drop: 6px;
+                    --mnb-nav-bar-height: 56px;
+                    --mnb-obscured-top-inset: 0px;
+                    --mnb-toolbar-bottom-offset: 0px;
+                    --mnb-obscured-bottom-inset: 0px;
+                    --mnb-toolbar-visual-drop: 6px;
                     --nav-primary-hidden-shift-y: 14px;
-                    --manabi-reader-stage-bottom-inset: calc(
-                        var(--manabi-nav-bar-height)
-                        + var(--manabi-toolbar-bottom-offset, 0px)
-                        - var(--manabi-toolbar-visual-drop, 0px)
+                    --mnb-reader-stage-bottom-inset: calc(
+                        var(--mnb-nav-bar-height)
+                        + var(--mnb-toolbar-bottom-offset, 0px)
+                        - var(--mnb-toolbar-visual-drop, 0px)
                     );
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
@@ -220,7 +221,7 @@
                 }
                 
                 .toolbar button[data-button-type="next"]:has(.button-label:not(:empty)) {
-                    color: var(--manabi-red);
+                    color: var(--mnb-red);
                 }
                 .button-stack{
                     display: grid;
@@ -236,20 +237,20 @@
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px));
-                    height: var(--manabi-nav-bar-height) !important;
-                    min-height: var(--manabi-nav-bar-height);
-                    max-height: var(--manabi-nav-bar-height);
-                    flex: 0 0 var(--manabi-nav-bar-height);
+                    bottom: calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px));
+                    height: var(--mnb-nav-bar-height) !important;
+                    min-height: var(--mnb-nav-bar-height);
+                    max-height: var(--mnb-nav-bar-height);
+                    flex: 0 0 var(--mnb-nav-bar-height);
                     -webkit-backdrop-filter: blur(30px);
                     contain: layout size style;
                     padding: 0;
                 }
                 #reader-stage {
                     position: absolute;
-                    top: 0;
+                    top: var(--mnb-obscured-top-inset, 0px);
                     right: 0;
-                    bottom: var(--manabi-reader-stage-bottom-inset, 0px);
+                    bottom: var(--mnb-reader-stage-bottom-inset, 0px);
                     left: 0;
                     overflow: hidden;
                     z-index: 1;
@@ -298,7 +299,7 @@
                     position: relative;
                     display: block;
                     padding: 0 var(--nav-horizontal-padding);
-                    height: var(--manabi-nav-bar-height);
+                    height: var(--mnb-nav-bar-height);
                     box-sizing: border-box;
                 }
                 #nav-primary-cluster {
@@ -306,7 +307,7 @@
                     top: 0;
                     left: var(--nav-horizontal-padding);
                     right: var(--nav-horizontal-padding);
-                    height: var(--manabi-nav-bar-height);
+                    height: var(--mnb-nav-bar-height);
                     min-width: 0;
                     pointer-events: none;
                 }
@@ -453,8 +454,8 @@
                     position: absolute;
                     top: auto;
                     bottom: calc(
-                        var(--manabi-toolbar-bottom-offset, 0px)
-                        - var(--manabi-toolbar-visual-drop, 0px)
+                        var(--mnb-toolbar-bottom-offset, 0px)
+                        - var(--mnb-toolbar-visual-drop, 0px)
                         + 8px
                         + ((var(--page-read-button-height) - 26px) / 2)
                     );
@@ -623,7 +624,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: calc(var(--manabi-toolbar-bottom-offset, 0px) - var(--manabi-toolbar-visual-drop, 0px) + 7px);
+                    bottom: calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px) + 7px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -708,8 +709,13 @@
                     overflow: hidden;
                     white-space: nowrap;
                 }
-                .page-read-button:hover:not(:disabled) {
-                    border: 1px solid CanvasText;
+                @media (hover: hover) and (pointer: fine) {
+                    .page-read-button:hover:not(:disabled) {
+                        border: 1px solid CanvasText;
+                    }
+                }
+                .page-read-button:focus:not(:focus-visible) {
+                    outline: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button {
                     box-shadow:
@@ -724,7 +730,7 @@
                     gap: 0;
                     justify-content: center;
                 }
-                .page-read-button .manabi-tracking-button-status {
+                .page-read-button .mnb-tracking-button-status {
                     padding: var(--word-tracking-status-outline-offset);
                     width: calc(var(--word-tracking-status-size));
                     height: calc(var(--word-tracking-status-size)) !important;
@@ -736,7 +742,7 @@
                     transition: background-color 500ms ease-in-out, opacity 200ms ease-in-out;
                     flex: 0 0 auto;
                 }
-                .page-read-button .manabi-tracking-status-checkmark {
+                .page-read-button .mnb-tracking-status-checkmark {
                     display: inline-block;
                     position: relative;
                     width: var(--word-tracking-status-size);
@@ -744,7 +750,7 @@
                     opacity: 1;
                     transition: opacity 160ms ease-in-out 0ms;
                 }
-                .page-read-button .manabi-tracking-status-checkmark::after {
+                .page-read-button .mnb-tracking-status-checkmark::after {
                     opacity: 1;
                     height: var(--word-tracking-checkmark-height);
                     width: var(--word-tracking-checkmark-width);
@@ -758,7 +764,7 @@
                     transform: scaleX(-1) rotate(135deg);
                     transition: border-color 500ms ease-in-out;
                 }
-                .page-read-button .manabi-tracking-button-label {
+                .page-read-button .mnb-tracking-button-label {
                     display: inline-block;
                     max-width: 0;
                     opacity: 0;
@@ -780,7 +786,7 @@
                     padding-inline-end: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px);
                     gap: 6px;
                 }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .manabi-tracking-button-label {
+                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .mnb-tracking-button-label {
                     max-width: 96px;
                     opacity: 1;
                 }
@@ -805,24 +811,24 @@
                     border-color: CanvasText;
                     border-width: 1px;
                 }
-                #page-tracking-container .page-read-button[data-completion-action] .manabi-tracking-button-status,
-                #page-tracking-container .page-read-button[data-completion-action] .manabi-tracking-status-checkmark {
+                #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-status,
+                #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-status-checkmark {
                     display: none;
                 }
-                #page-tracking-container .page-read-button[data-completion-action] .manabi-tracking-button-label {
+                #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-label {
                     max-width: 180px;
                     opacity: 1;
                     color: CanvasText;
                 }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .manabi-tracking-status-checkmark {
+                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .mnb-tracking-status-checkmark {
                     opacity: 1;
                     transition-delay: 140ms;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button .manabi-tracking-status-checkmark {
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button .mnb-tracking-status-checkmark {
                     opacity: 0;
                     transition-delay: 220ms;
                 }
-                .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) {
+                .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
                     opacity: 1;
                     border: none;
                     background-color: var(--theme-tracking-read-color);
@@ -838,38 +844,38 @@
                     gap: 0;
                     justify-content: center;
                 }
-                .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) .manabi-tracking-button-status {
+                .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
                     background-color: transparent;
                 }
-                .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) .manabi-tracking-status-checkmark::after {
+                .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark::after {
                     border-right-color: white;
                     border-top-color: white;
                 }
-                .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) .manabi-tracking-button-label {
+                .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
                     max-width: 0;
                     opacity: 0;
                 }
                 .page-read-button[data-read-state="pending"] {
-                    border-color: var(--manabi-red);
+                    border-color: var(--mnb-red);
                     box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--manabi-red) 15%, transparent),
+                        0px 1px 6px 1px color-mix(in srgb, var(--mnb-red) 15%, transparent),
                         0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
                 }
-                .page-read-button[data-read-state="pending"] .manabi-tracking-button-status {
-                    background-color: var(--manabi-red);
+                .page-read-button[data-read-state="pending"] .mnb-tracking-button-status {
+                    background-color: var(--mnb-red);
                 }
-                .page-read-button[data-read-state="pending"] .manabi-tracking-status-checkmark::after {
+                .page-read-button[data-read-state="pending"] .mnb-tracking-status-checkmark::after {
                     border-right-color: white;
                     border-top-color: white;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) {
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
                     opacity: 1;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) .manabi-tracking-status-checkmark {
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
                     opacity: 1;
                     transition-delay: 0ms;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-manabi-tracking-section-read="true"]:not([data-completion-action]) .manabi-tracking-button-label {
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
                     max-width: 0;
                     opacity: 0;
                 }
@@ -886,7 +892,7 @@
                         0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 22%, transparent),
                         0px 6px 16px -8px color-mix(in srgb, black 17%, transparent);
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-completion-action] .manabi-tracking-button-label {
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-label {
                     max-width: 180px;
                     opacity: 1;
                 }

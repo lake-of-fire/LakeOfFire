@@ -234,13 +234,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
             guard let self else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
             try await self.scriptCaller.evaluateJavaScript("""
-                if (document.body?.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
-                    document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
+                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
+                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
                 }
-                if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
-                    document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
+                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
                 }
-                document.body?.style?.setProperty('--manabi-reader-max-width-override', '\(maxWidthOverride)');
+                document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }

@@ -139,7 +139,7 @@ const getPrimaryRendererContentIndex = (renderer) => {
 
 const getRendererContentHref = (renderer) => {
     const content = getPrimaryRendererContent(renderer);
-    const datasetHref = content?.doc?.body?.dataset?.manabiSourceHref;
+    const datasetHref = content?.doc?.body?.dataset?.mnbSourceHref;
     if (typeof datasetHref === 'string' && datasetHref.trim()) {
         return datasetHref;
     }
@@ -1255,7 +1255,7 @@ export class NavigationHUD {
             }
         }
         const hrefCandidates = [
-            { source: 'renderer.contents[0].doc.body.dataset.manabiSourceHref', value: getRendererContentHref(renderer) },
+            { source: 'renderer.contents[0].doc.body.dataset.mnbSourceHref', value: getRendererContentHref(renderer) },
             { source: 'detail.tocItem.href', value: detail?.tocItem?.href },
             { source: 'renderer.tocItem.href', value: renderer?.tocItem?.href },
             { source: 'last-location.tocItem.href', value: globalThis.reader?.view?.lastLocation?.tocItem?.href },
@@ -1367,10 +1367,6 @@ export class NavigationHUD {
         }
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
         if (sectionResolution.index == null) return null;
-        const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
-        if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
-            return null;
-        }
         if (refreshSnapshot) {
             await this._refreshRendererSnapshot();
         }
@@ -1379,6 +1375,16 @@ export class NavigationHUD {
             return null;
         }
         const currentPageNumber = localCurrentIndex + 1;
+        const liveSectionTotal = typeof this.rendererPageSnapshot?.total === 'number'
+            ? this.rendererPageSnapshot.total
+            : null;
+        if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
+            return Math.max(0, liveSectionTotal - currentPageNumber);
+        }
+        const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
+        if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
+            return null;
+        }
         return Math.max(0, cachedSectionTotal - currentPageNumber);
     }
     

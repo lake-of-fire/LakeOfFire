@@ -196,6 +196,7 @@ internal func ebookTextProcessor(
     content: String,
     isCacheWarmer: Bool,
     processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+    processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
@@ -243,29 +244,59 @@ internal func ebookTextProcessor(
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
         
-        var html = try doc.outerHtml()
+        var htmlBytes = try doc.outerHtmlUTF8()
         print(
             "# EPUB",
             "ebookTextProcessor.output",
             "contentURL=\(contentURL.absoluteString)",
             "sectionLocation=\(sectionLocation)",
             "isCacheWarmer=\(isCacheWarmer)",
-            "segmentCount=\(html.components(separatedBy: "<manabi-segment").count - 1)",
-            "sentenceCount=\(html.components(separatedBy: "<manabi-sentence").count - 1)"
+            "segmentCount=\(bytePatternCount(Array("<mnb-seg".utf8), in: htmlBytes))",
+            "sentenceCount=\(bytePatternCount(Array("<mnb-sen".utf8), in: htmlBytes))"
         )
-        
-        if let processHTML {
-            html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
-                await processHTML(
-                    html,
+
+        if let processHTMLBytes {
+            htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                await processHTMLBytes(
+                    htmlBytes,
                     isCacheWarmer
                 )
             }
         }
 
-        return html
+        if let processHTML {
+            let html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                await processHTML(
+                    String(decoding: htmlBytes, as: UTF8.self),
+                    isCacheWarmer
+                )
+            }
+            htmlBytes = Array(html.utf8)
+        }
+
+        return String(decoding: htmlBytes, as: UTF8.self)
     } catch {
         debugPrint("Error processing readability content for ebook", error)
     }
     return content
+}
+
+private func bytePatternCount(_ needle: [UInt8], in haystack: [UInt8]) -> Int {
+    guard !needle.isEmpty, haystack.count >= needle.count else { return 0 }
+    var count = 0
+    var index = 0
+    while index <= haystack.count - needle.count {
+        var matched = true
+        for offset in needle.indices where haystack[index + offset] != needle[offset] {
+            matched = false
+            break
+        }
+        if matched {
+            count += 1
+            index += needle.count
+        } else {
+            index += 1
+        }
+    }
+    return count
 }

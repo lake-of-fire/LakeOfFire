@@ -160,11 +160,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             const hasRenderer = !!globalThis.reader?.view?.renderer;
                             const hasSectionLayoutController = !!globalThis.manabiEbookSectionLayoutController
                                 || !!globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController;
-                            const hasLivePageRoot = !!document?.querySelector?.('.manabi-page-root');
-                            const hasLiveChunk = !!document?.querySelector?.('.manabi-page-root .manabi-page-column-chunk');
-                            const hasLiveChunkBody = !!document?.querySelector?.('.manabi-page-root .manabi-page-column-body');
+                            const hasLivePageRoot = !!document?.querySelector?.('.mnb-page-root');
+                            const hasLiveChunk = !!document?.querySelector?.('.mnb-page-root .mnb-page-column-chunk');
+                            const hasLiveChunkBody = !!document?.querySelector?.('.mnb-page-root .mnb-page-column-body');
                             const hasLiveChunkText = (() => {
-                                const node = document?.querySelector?.('.manabi-page-root .manabi-page-column-chunk');
+                                const node = document?.querySelector?.('.mnb-page-root .mnb-page-column-chunk');
                                 const text = node?.textContent || '';
                                 return text.trim().length > 0;
                             })();
@@ -664,9 +664,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 if content.rssContainsFullContent && !content.isReaderModeByDefault {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
-                            document.body.dataset.manabiReaderModeAvailable = 'true';
-                            document.body.dataset.manabiReaderModeAvailableConfidently = 'true';
-                            document.body.dataset.manabiReaderModeAvailableFor = window.location.href;
+                            document.body.dataset.mnbReaderModeAvailable = 'true';
+                            document.body.dataset.mnbReaderModeAvailableConfidently = 'true';
+                            document.body.dataset.mnbReaderModeAvailableFor = window.location.href;
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
@@ -806,7 +806,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
-                            document.body.dataset.manabiReaderModeAvailableConfidently = 'true';
+                            document.body.dataset.mnbReaderModeAvailableConfidently = 'true';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)

@@ -57,7 +57,7 @@ public func readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: Double?) -> S
 }
 
 public func readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: Double?) -> String {
-    "--manabi-reader-max-width-override: \(readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize));"
+    "--mnb-reader-max-width-override: \(readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize));"
 }
 
 struct ReaderSettingsForm: View {

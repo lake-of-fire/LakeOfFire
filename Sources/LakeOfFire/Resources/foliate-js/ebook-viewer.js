@@ -60,6 +60,16 @@ const postReplaceTextPerfLog = (event, details = {}) => {
     }
 };
 
+const postBookRotateLog = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    const line = `# BOOKROTATE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 const PAGE_NUM_DEDUP_EVENTS = new Set([
     'goto.snapshot',
     'nav.sections.handoff',
@@ -222,11 +232,11 @@ const describeMarkReadNode = (node) => {
             ? element.className.split(/\s+/).filter(Boolean).slice(0, 4)
             : [],
         segmentIdentifier: segmentIdentifierForNode(element),
-        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('manabi-sentence') || null),
+        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('mnb-sen') || null),
     };
 };
 
-const MANABI_RESTORE_LOCATOR_PREFIX = 'manabi-loc-v1:';
+const MANABI_RESTORE_LOCATOR_PREFIX = 'mnb-loc-v1:';
 
 const makeSyntheticRestoreLocator = ({ sectionIndex, localSectionIndex, rendererTotal }) => {
     if (![sectionIndex, localSectionIndex, rendererTotal].every((value) => Number.isFinite(value))) {
@@ -464,18 +474,18 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         postReaderLog('ebook.replaceText.responseSummary', {
             href,
             isCacheWarmer: !!isCacheWarmer,
-            containsSegmentTag: html.includes('<manabi-segment'),
-            containsSentenceTag: html.includes('<manabi-sentence'),
-            firstSegmentIndex: html.indexOf('<manabi-segment'),
-            firstSentenceIndex: html.indexOf('<manabi-sentence'),
+            containsSegmentTag: html.includes('<mnb-seg'),
+            containsSentenceTag: html.includes('<mnb-sen'),
+            firstSegmentIndex: html.indexOf('<mnb-seg'),
+            firstSentenceIndex: html.indexOf('<mnb-sen'),
         });
-        const sentenceCount = (html.match(/<manabi-sentence\b/g) || []).length;
-        const segmentCount = (html.match(/<manabi-segment\b/g) || []).length;
+        const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
+        const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
         html = injectBodyDatasetAttributes(html, {
             'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
-            'data-manabi-source-href': href,
-            'data-manabi-has-sentences': sentenceCount > 0 ? 'true' : null,
-            'data-manabi-has-segments': segmentCount > 0 ? 'true' : null,
+            'data-mnb-source-href': href,
+            'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
+            'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
         });
         const transformElapsedMs = safeRound(performanceNowMs() - transformStartedAt, 1);
         logReplaceTextOnce(
@@ -687,6 +697,136 @@ const summarizeDocumentFontState = (doc) => ({
     isCacheWarmerDocument: isCacheWarmerDocument(doc),
 });
 
+const captureDocumentFontApplicationState = (doc) => {
+    if (!doc?.defaultView) {
+        return {
+            computedFontFamily: null,
+            sampleTag: null,
+            sampleText: null,
+        };
+    }
+    const sample =
+        doc.body?.querySelector?.('p, li, div, span, ruby, mnb-sen, mnb-seg')
+        || doc.body
+        || doc.documentElement
+        || null;
+    let computedFontFamily = null;
+    try {
+        computedFontFamily = sample
+            ? doc.defaultView.getComputedStyle(sample).fontFamily
+            : null;
+    } catch {}
+    return {
+        computedFontFamily,
+        sampleTag: sample?.tagName || null,
+        sampleText: sample?.textContent?.trim?.()?.slice?.(0, 60) || null,
+        injectedFontFamily: doc.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
+        fontInjected: doc.documentElement?.dataset?.mnbFontInjected ?? null,
+    };
+};
+
+const postFontLog = (event, details = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            ...details,
+        }));
+    } catch {}
+};
+
+const getLoadedEbookDocuments = (explicitDoc = null) => {
+    const docs = [];
+    const addDoc = (doc) => {
+        if (!doc || doc === document || docs.includes(doc)) return;
+        docs.push(doc);
+    };
+    addDoc(explicitDoc);
+    try {
+        const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
+        for (const content of contents) {
+            addDoc(content?.doc ?? content?.document ?? null);
+        }
+    } catch {}
+    return docs;
+};
+
+const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unknown') => {
+    if (!doc || doc === document) return false;
+    if (!sourceFontStyle) {
+        postFontLog('ebook.document.fonts.forward.skip', {
+            reason: 'missing-outer-custom-font-style',
+            forwardReason: reason,
+            documentURL: doc?.location?.href || null,
+            outerLocation: document?.location?.href || null,
+            ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
+            ebookInjectedFontFamily: doc?.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
+            ebookFontInjected: doc?.documentElement?.dataset?.mnbFontInjected ?? null,
+        });
+        return false;
+    }
+    let targetFontStyle = doc.getElementById('mnb-custom-fonts-inline');
+    const sourceTag = sourceFontStyle.tagName?.toLowerCase();
+    const desiredTag = sourceTag === 'link' ? 'link' : 'style';
+    if (targetFontStyle && targetFontStyle.tagName?.toLowerCase() !== desiredTag) {
+        targetFontStyle.remove();
+        targetFontStyle = null;
+    }
+    if (!targetFontStyle) {
+        targetFontStyle = doc.createElement(desiredTag);
+        targetFontStyle.id = 'mnb-custom-fonts-inline';
+        (doc.head || doc.documentElement).appendChild(targetFontStyle);
+    }
+    if (desiredTag === 'link') {
+        targetFontStyle.rel = sourceFontStyle.rel || 'stylesheet';
+        targetFontStyle.href = sourceFontStyle.href;
+    } else {
+        targetFontStyle.textContent = sourceFontStyle.textContent || '';
+    }
+    for (const [key, value] of Object.entries(sourceFontStyle.dataset || {})) {
+        targetFontStyle.dataset[key] = value;
+    }
+    if (doc.documentElement && sourceFontStyle.dataset?.mnbInjectedFontFamily) {
+        doc.documentElement.dataset.mnbInjectedFontFamily = sourceFontStyle.dataset.mnbInjectedFontFamily;
+        doc.documentElement.dataset.mnbFontInjected = '1';
+    }
+    postFontLog('ebook.document.fonts.forwarded', {
+        reason,
+        documentURL: doc?.location?.href || null,
+        sourceTag: sourceFontStyle.tagName || null,
+        targetTag: targetFontStyle.tagName || null,
+        href: targetFontStyle.href || null,
+        family: targetFontStyle.dataset?.mnbInjectedFontFamily || null,
+        ...captureDocumentFontApplicationState(doc),
+    });
+    return true;
+};
+
+window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
+    const docs = getLoadedEbookDocuments(explicitDoc);
+    const sourceFontStyle = document.getElementById('mnb-custom-fonts-inline')
+        || docs.map((doc) => doc?.getElementById?.('mnb-custom-fonts-inline')).find(Boolean)
+        || null;
+    let forwardedCount = 0;
+    for (const doc of docs) {
+        if (copyCustomReaderFontStyleToDocument(sourceFontStyle, doc, reason)) {
+            forwardedCount += 1;
+        }
+    }
+    postFontLog('ebook.document.fonts.forward.summary', {
+        reason,
+        documentCount: docs.length,
+        forwardedCount,
+        outerHasCustomFontStyle: !!sourceFontStyle,
+        outerLocation: document?.location?.href || null,
+    });
+    return {
+        documentCount: docs.length,
+        forwardedCount,
+        outerHasCustomFontStyle: !!sourceFontStyle,
+    };
+};
+
 const cacheWarmerSourceForCurrentBook = () => {
     return window.ebookSource
         || makeFileSource(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname));
@@ -775,6 +915,21 @@ const isForegroundReaderIdle = () => {
         && !globalThis.__manabiCacheWarmerReady;
 };
 
+const nextUsefulCacheWarmerSectionIndex = () => {
+    const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
+        ? globalThis.reader.view.book.sections
+        : [];
+    const settled = liveSettledSectionHrefSet();
+    for (let index = 0; index < sections.length; index += 1) {
+        const section = sections[index];
+        if (section?.linear === 'no') continue;
+        const sectionHref = normalizeSpineHref(section?.href ?? section?.id ?? null);
+        if (!sectionHref || settled.has(sectionHref) || isLikelyMetadataSectionHref(sectionHref)) continue;
+        return index;
+    }
+    return null;
+};
+
 const maybeOpenDeferredCacheWarmer = async () => {
     if (globalThis.__manabiCacheWarmerOpenPromise) {
         return await globalThis.__manabiCacheWarmerOpenPromise;
@@ -801,10 +956,28 @@ const maybeOpenDeferredCacheWarmer = async () => {
         }
         return;
     }
+    const nextUsefulIndex = nextUsefulCacheWarmerSectionIndex();
+    if (!Number.isInteger(nextUsefulIndex)) {
+        globalThis.__manabiCacheWarmerOpenRequested = false;
+        globalThis.__manabiCacheWarmerFinished = true;
+        globalThis.__manabiCacheWarmerReady = true;
+        postReplaceTextPerfLog('cache-warmer.finished', {
+            trigger: 'preflight-no-unsettled',
+            sectionURL: null,
+            sectionIndex: null,
+            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+            uniqueSentenceCount: 0,
+            firstLiveHref: firstLiveSectionHref(),
+            settledSectionCount: liveSettledSectionHrefSet().size,
+            ...captureEPUBOverlapState(),
+        });
+        return;
+    }
     const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
     globalThis.__manabiCacheWarmerOpenRequested = false;
     postReplaceTextPerfLog('cache-warmer.unblocked', {
         firstLiveHref: firstLiveSectionHref(),
+        targetSectionIndex: nextUsefulIndex,
         settledSectionCount: liveSettledSectionHrefSet().size,
         sourceKind: cacheWarmerSource?.kind || 'nil',
         ...captureEPUBOverlapState(),
@@ -1089,6 +1262,7 @@ const parseChromeInsetPixelValue = (value) => {
 };
 
 const createDefaultChromeInsetState = () => ({
+    obscuredTopInset: '0px',
     toolbarBottomOffset: '0px',
     obscuredBottomInset: '0px',
     source: 'default',
@@ -1097,6 +1271,7 @@ const createDefaultChromeInsetState = () => ({
 
 const normalizeChromeInsetState = (rawState, fallbackSource = 'unknown') => {
     const normalizedState = {
+        obscuredTopInset: normalizeChromeInsetCSSValue(rawState?.obscuredTopInset),
         toolbarBottomOffset: normalizeChromeInsetCSSValue(rawState?.toolbarBottomOffset),
         obscuredBottomInset: normalizeChromeInsetCSSValue(rawState?.obscuredBottomInset),
         source: typeof rawState?.source === 'string' && rawState.source.trim().length > 0
@@ -1146,6 +1321,7 @@ const getAncestorChromeInsetState = () => {
     } catch {}
     for (const candidate of candidates.filter(Boolean)) {
         if (
+            parseChromeInsetPixelValue(candidate.obscuredTopInset) > 0 ||
             parseChromeInsetPixelValue(candidate.toolbarBottomOffset) > 0 ||
             parseChromeInsetPixelValue(candidate.obscuredBottomInset) > 0
         ) {
@@ -1158,6 +1334,7 @@ const getAncestorChromeInsetState = () => {
 const getStoredPositiveChromeInsetState = () => {
     const currentState = getStoredChromeInsetState();
     if (
+        parseChromeInsetPixelValue(currentState.obscuredTopInset) > 0 ||
         parseChromeInsetPixelValue(currentState.toolbarBottomOffset) > 0 ||
         parseChromeInsetPixelValue(currentState.obscuredBottomInset) > 0
     ) {
@@ -1165,6 +1342,7 @@ const getStoredPositiveChromeInsetState = () => {
     }
     const localPositiveState = normalizeChromeInsetState(globalThis.__manabiLastPositiveChromeInsets, 'stored-positive');
     if (
+        parseChromeInsetPixelValue(localPositiveState.obscuredTopInset) > 0 ||
         parseChromeInsetPixelValue(localPositiveState.toolbarBottomOffset) > 0 ||
         parseChromeInsetPixelValue(localPositiveState.obscuredBottomInset) > 0
     ) {
@@ -1185,9 +1363,99 @@ const getNextChromeInsetRevision = () => {
 
 const applyResolvedChromeInsetState = (state) => {
     for (const target of [document.documentElement, document.body].filter(Boolean)) {
-        target.style.setProperty('--manabi-toolbar-bottom-offset', state.toolbarBottomOffset);
-        target.style.setProperty('--manabi-obscured-bottom-inset', state.obscuredBottomInset);
+        target.style.setProperty('--mnb-obscured-top-inset', state.obscuredTopInset);
+        target.style.setProperty('--mnb-toolbar-bottom-offset', state.toolbarBottomOffset);
+        target.style.setProperty('--mnb-obscured-bottom-inset', state.obscuredBottomInset);
     }
+};
+
+const formatLandscapeInsetRect = (rect) => {
+    if (!rect) return null;
+    return {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+    };
+};
+
+const captureLandscapeInsetLayoutProbe = () => {
+    const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
+        .find((view) => view?.dataset?.isCache !== 'true') || null;
+    const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
+    const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+    const visibleFrame = Array.from(livePaginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []).find((frame) => {
+        const rect = frame?.getBoundingClientRect?.();
+        return rect && rect.width > 0 && rect.height > 0;
+    }) ?? null;
+    let iframeBodyRect = null;
+    try {
+        const frameRect = visibleFrame?.getBoundingClientRect?.() ?? null;
+        const bodyRect = visibleFrame?.contentDocument?.body?.getBoundingClientRect?.() ?? null;
+        if (frameRect && bodyRect) {
+            iframeBodyRect = {
+                x: frameRect.left + bodyRect.left,
+                y: frameRect.top + bodyRect.top,
+                width: bodyRect.width,
+                height: bodyRect.height,
+                top: frameRect.top + bodyRect.top,
+                bottom: frameRect.top + bodyRect.bottom,
+            };
+        }
+    } catch {}
+    return {
+        windowInner: `${window.innerWidth ?? 0}x${window.innerHeight ?? 0}`,
+        visualViewport: window.visualViewport ? `${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)}` : null,
+        cssTop: getComputedStyle(document.documentElement).getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
+        cssStageBottom: getComputedStyle(document.documentElement).getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+        documentElementRect: formatLandscapeInsetRect(document.documentElement?.getBoundingClientRect?.() ?? null),
+        bodyRect: formatLandscapeInsetRect(document.body?.getBoundingClientRect?.() ?? null),
+        readerStageRect: formatLandscapeInsetRect(document.getElementById('reader-stage')?.getBoundingClientRect?.() ?? null),
+        foliateViewRect: formatLandscapeInsetRect(liveFoliateView?.getBoundingClientRect?.() ?? null),
+        paginatorRect: formatLandscapeInsetRect(livePaginator?.getBoundingClientRect?.() ?? null),
+        paginatorContainer: livePaginatorContainer ? `${livePaginatorContainer.clientWidth}x${livePaginatorContainer.clientHeight}` : null,
+        iframeRect: formatLandscapeInsetRect(visibleFrame?.getBoundingClientRect?.() ?? null),
+        iframeBodyRect: formatLandscapeInsetRect(iframeBodyRect),
+    };
+};
+
+const postLandscapeInsetLayoutProbe = (reason) => {
+    const state = getStoredChromeInsetState();
+    const probe = captureLandscapeInsetLayoutProbe();
+    const cssTop = parseChromeInsetPixelValue(state.obscuredTopInset);
+    const stageTop = Number.isFinite(probe.readerStageRect?.top) ? probe.readerStageRect.top : null;
+    const stageHeight = Number.isFinite(probe.readerStageRect?.height) ? probe.readerStageRect.height : null;
+    const viewportHeight = Number.isFinite(window.visualViewport?.height) ? window.visualViewport.height : window.innerHeight;
+    const hasTopInset = cssTop > 0;
+    const hasUnexpectedStageOffset = cssTop === 0 && stageTop != null && stageTop > 1;
+    const hasSuspiciousStageHeight =
+        stageHeight != null
+        && Number.isFinite(viewportHeight)
+        && viewportHeight > 0
+        && stageHeight < Math.max(80, viewportHeight * 0.5);
+    if (!hasTopInset && !hasUnexpectedStageOffset && !hasSuspiciousStageHeight) return;
+    const key = JSON.stringify({
+        reason,
+        cssTop: probe.cssTop,
+        documentElementRect: probe.documentElementRect,
+        bodyRect: probe.bodyRect,
+        readerStageRect: probe.readerStageRect,
+        foliateViewRect: probe.foliateViewRect,
+        paginatorRect: probe.paginatorRect,
+        iframeRect: probe.iframeRect,
+        iframeBodyRect: probe.iframeBodyRect,
+    });
+    if (globalThis.__manabiLastLandscapeInsetLayoutProbeKey === key) return;
+    globalThis.__manabiLastLandscapeInsetLayoutProbeKey = key;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
+            stage: 'ebookChromeInsets.layoutProbe',
+            reason,
+            ...probe,
+        }));
+    } catch {}
 };
 
 const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
@@ -1213,10 +1481,12 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
 
     const shouldInheritPositiveAncestorState =
         !incomingState &&
+        parseChromeInsetPixelValue(nextState.obscuredTopInset) === 0 &&
         parseChromeInsetPixelValue(nextState.toolbarBottomOffset) === 0 &&
         parseChromeInsetPixelValue(nextState.obscuredBottomInset) === 0 &&
         !!ancestorPositiveState &&
         (
+            parseChromeInsetPixelValue(ancestorPositiveState.obscuredTopInset) > 0 ||
             parseChromeInsetPixelValue(ancestorPositiveState.toolbarBottomOffset) > 0 ||
             parseChromeInsetPixelValue(ancestorPositiveState.obscuredBottomInset) > 0
         );
@@ -1230,9 +1500,11 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
 
     const incomingWouldZeroPositiveState =
         !!incomingState &&
+        parseChromeInsetPixelValue(nextState.obscuredTopInset) === 0 &&
         parseChromeInsetPixelValue(nextState.toolbarBottomOffset) === 0 &&
         parseChromeInsetPixelValue(nextState.obscuredBottomInset) === 0 &&
         (
+            parseChromeInsetPixelValue(storedPositiveState.obscuredTopInset) > 0 ||
             parseChromeInsetPixelValue(storedPositiveState.toolbarBottomOffset) > 0 ||
             parseChromeInsetPixelValue(storedPositiveState.obscuredBottomInset) > 0
         );
@@ -1241,8 +1513,10 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         const shortOverwriteLog = {
             reason,
             message: 'preserved existing non-zero inset over zero candidate',
+            attemptedObscuredTopInset: nextState.obscuredTopInset,
             attemptedToolbarBottomOffset: nextState.toolbarBottomOffset,
             attemptedObscuredBottomInset: nextState.obscuredBottomInset,
+            lastPositiveObscuredTopInset: storedPositiveState.obscuredTopInset,
             lastPositiveToolbarBottomOffset: storedPositiveState.toolbarBottomOffset,
             lastPositiveObscuredBottomInset: storedPositiveState.obscuredBottomInset,
             attemptedSource: nextState.source,
@@ -1264,12 +1538,44 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
 
     globalThis.__manabiChromeInsets = nextState;
     if (
+        parseChromeInsetPixelValue(nextState.obscuredTopInset) > 0 ||
         parseChromeInsetPixelValue(nextState.toolbarBottomOffset) > 0 ||
         parseChromeInsetPixelValue(nextState.obscuredBottomInset) > 0
     ) {
         globalThis.__manabiLastPositiveChromeInsets = nextState;
     }
     applyResolvedChromeInsetState(nextState);
+    const landscapeInsetKey = JSON.stringify({
+        locationHref: globalThis.location?.href ?? null,
+        appliedObscuredTopInset: nextState.obscuredTopInset,
+        appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
+        appliedObscuredBottomInset: nextState.obscuredBottomInset,
+        source: nextState.source,
+        inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
+    });
+    const shouldLogAppliedInsetChange =
+        parseChromeInsetPixelValue(nextState.obscuredTopInset) > 0 ||
+        parseChromeInsetPixelValue(nextState.toolbarBottomOffset) > 0 ||
+        parseChromeInsetPixelValue(nextState.obscuredBottomInset) > 0 ||
+        shouldInheritPositiveAncestorState;
+    if (shouldLogAppliedInsetChange && globalThis.__manabiLastLandscapeInsetLogKey !== landscapeInsetKey) {
+        globalThis.__manabiLastLandscapeInsetLogKey = landscapeInsetKey;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
+                stage: 'ebookChromeInsets.appliedChanged',
+                reason,
+                locationHref: globalThis.location?.href ?? null,
+                incomingObscuredTopInset: incomingState?.obscuredTopInset ?? null,
+                appliedObscuredTopInset: nextState.obscuredTopInset,
+                appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
+                appliedObscuredBottomInset: nextState.obscuredBottomInset,
+                source: nextState.source,
+                revision: nextState.revision,
+                inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
+                layout: captureLandscapeInsetLayoutProbe(),
+            }));
+        } catch {}
+    }
 
     const chromeInsetsLog = {
         reason,
@@ -1289,12 +1595,15 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
             }
         })(),
         toolbarBottomOffset: nextState.toolbarBottomOffset,
+        obscuredTopInset: nextState.obscuredTopInset,
         obscuredBottomInset: nextState.obscuredBottomInset,
         source: nextState.source,
         revision: nextState.revision,
         inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
+        inheritedAncestorObscuredTopInset: shouldInheritPositiveAncestorState ? ancestorPositiveState?.obscuredTopInset ?? null : null,
         inheritedAncestorToolbarBottomOffset: shouldInheritPositiveAncestorState ? ancestorPositiveState?.toolbarBottomOffset ?? null : null,
         inheritedAncestorObscuredBottomInset: shouldInheritPositiveAncestorState ? ancestorPositiveState?.obscuredBottomInset ?? null : null,
+        ancestorPositiveObscuredTopInset: ancestorPositiveState?.obscuredTopInset ?? null,
         ancestorPositiveToolbarBottomOffset: ancestorPositiveState?.toolbarBottomOffset ?? null,
         ancestorPositiveObscuredBottomInset: ancestorPositiveState?.obscuredBottomInset ?? null,
         ancestorPositiveSource: ancestorPositiveState?.source ?? null,
@@ -1504,6 +1813,85 @@ const parseEntryIDs = (rawValue) => {
     }
 };
 
+// Mirrors manabi_reader.js sidecar expansion. The HTML sidecar stores table-compressed
+// segment tuples so EPUB sections do not repeat large lookup attrs thousands of times.
+const segmentMetadataBootstrap = (doc) => {
+    if (!doc?.querySelectorAll) {
+        return { byID: new Map(), idsByEntryID: new Map() };
+    }
+    const sidecars = Array.from(doc.querySelectorAll('[data-mnb-seg-meta]'));
+    const sidecarSignature = sidecars
+        .map((sidecar) => String((sidecar.textContent || '').length))
+        .join('|');
+    if (doc.manabiSegmentMetadataByID && doc.manabiSegmentMetadataSidecarSignature === sidecarSignature) {
+        return {
+            byID: doc.manabiSegmentMetadataByID,
+            idsByEntryID: doc.manabiSegmentIDsByEntryID || new Map(),
+        };
+    }
+    const byID = new Map();
+    const idsByEntryID = new Map();
+    const tableValue = (table, index, fallback = null) => (
+        Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
+            ? table[index]
+            : fallback
+    );
+    const expandSegmentMetadataPayload = (payload) => {
+        if (payload?.v === 2 && payload?.t && Array.isArray(payload.s)) {
+            const tables = payload.t;
+            return payload.s.map((segment) => ({
+                i: segment?.[0], // segment element ID
+                sid: segment?.[1], // stable selection ID when available
+                j: tableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
+                n: tableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
+                s: tableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
+                ns: tableValue(tables.ns, segment?.[5], null), // JMNEDict lookup string from table index
+                p: tableValue(tables.p, segment?.[6], null), // part-of-speech from table index
+                l: segment?.[7], // JLPT level, 1..5
+            }));
+        }
+        return [];
+    };
+    const indexEntryIDs = (segmentID, entryIDs) => {
+        for (const entryID of entryIDs || []) {
+            if (typeof entryID !== 'number' || !Number.isFinite(entryID)) continue;
+            const key = String(entryID);
+            if (!idsByEntryID.has(key)) idsByEntryID.set(key, new Set());
+            idsByEntryID.get(key).add(segmentID);
+        }
+    };
+    for (const sidecar of sidecars) {
+        try {
+            const payload = JSON.parse(sidecar.textContent || '{}');
+            for (const segment of expandSegmentMetadataPayload(payload)) {
+                if (!segment?.i) continue;
+                byID.set(segment.i, segment);
+                indexEntryIDs(segment.i, segment.j);
+                indexEntryIDs(segment.i, segment.n);
+            }
+        } catch (_error) {}
+    }
+    doc.manabiSegmentMetadataByID = byID;
+    doc.manabiSegmentIDsByEntryID = idsByEntryID;
+    doc.manabiSegmentMetadataSidecarSignature = sidecarSignature;
+    return { byID, idsByEntryID };
+};
+
+const segmentMetadataForNode = (segmentNode) => {
+    if (!segmentNode) return null;
+    const doc = segmentNode.ownerDocument || document;
+    return segmentMetadataBootstrap(doc).byID.get(segmentNode.id) || null;
+};
+
+const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
+    const metadata = segmentMetadataForNode(segmentNode);
+    const jmdictEntryIds = Array.isArray(metadata?.j) ? metadata.j : [];
+    const jmnedictEntryIds = Array.isArray(metadata?.n) ? metadata.n : [];
+    if (kind === 'jmdict') return jmdictEntryIds;
+    if (kind === 'jmnedict') return jmnedictEntryIds;
+    return jmdictEntryIds.length ? jmdictEntryIds : jmnedictEntryIds;
+};
+
 const normalizeArticleReadingProgress = (articleReadingProgress = {}) => ({
     sentenceIdentifiersRead: Array.isArray(articleReadingProgress?.sentenceIdentifiersRead)
         ? articleReadingProgress.sentenceIdentifiersRead
@@ -1518,27 +1906,22 @@ const normalizeArticleReadingProgress = (articleReadingProgress = {}) => ({
 });
 
 const sentenceIdentifierForNode = (sentenceNode) => {
-    const sentenceIdentifier = sentenceNode?.dataset?.sentenceIdentifier || sentenceNode?.dataset?.textHash;
+    const sentenceIdentifier = sentenceNode?.getAttribute?.('sid') || sentenceNode?.getAttribute?.('h');
     return typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0
         ? sentenceIdentifier
         : null;
 };
 
 const segmentIdentifierForNode = (segmentNode) => {
-    const sentenceNode = segmentNode?.closest?.('manabi-sentence');
-    const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
-    const segmentHash = segmentNode?.dataset?.segmentHash;
-    if (typeof sentenceIdentifier !== 'string' || sentenceIdentifier.length === 0) {
-        return null;
+    const metadata = segmentMetadataForNode(segmentNode);
+    if (metadata?.sid) {
+        return metadata.sid;
     }
-    if (typeof segmentHash !== 'string' || segmentHash.length === 0) {
-        return null;
-    }
-    return `${sentenceIdentifier}-${segmentHash}`;
+    return segmentNode?.id || null;
 };
 
 const buildExampleSentenceForSegment = (segmentNode) => {
-    const sentenceNode = segmentNode?.closest?.('manabi-sentence');
+    const sentenceNode = segmentNode?.closest?.('mnb-sen');
     if (!(sentenceNode instanceof Element)) {
         return {
             sentenceHTML: null,
@@ -1546,8 +1929,8 @@ const buildExampleSentenceForSegment = (segmentNode) => {
         };
     }
     const sentenceJMDictIDs = new Set();
-    for (const nestedSegment of sentenceNode.querySelectorAll('manabi-segment')) {
-        for (const entryID of parseEntryIDs(nestedSegment.dataset?.jmdictEntryIds || '[]')) {
+    for (const nestedSegment of sentenceNode.querySelectorAll('mnb-seg')) {
+        for (const entryID of segmentEntryIDsForNode(nestedSegment, 'jmdict')) {
             sentenceJMDictIDs.add(entryID);
         }
     }
@@ -1582,7 +1965,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const startedAt = performance.now();
     const viewportWidth = doc.documentElement?.clientWidth || doc.defaultView?.innerWidth || 0;
     const viewportHeight = doc.documentElement?.clientHeight || doc.defaultView?.innerHeight || 0;
-    const allSegmentNodes = Array.from(doc.querySelectorAll('manabi-segment'));
+    const allSegmentNodes = Array.from(doc.querySelectorAll('mnb-seg'));
     const queryCompletedAt = performance.now();
     const useVisibleRange = !!visibleRange && visibleRange.collapsed !== true;
     const useViewportFallback = !visibleRange;
@@ -1591,7 +1974,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         ? rangeCommonAncestor
         : (rangeCommonAncestor?.parentElement || null);
     const ancestorSegmentCandidateCount = rangeCommonAncestorElement?.querySelectorAll
-        ? rangeCommonAncestorElement.querySelectorAll('manabi-segment').length
+        ? rangeCommonAncestorElement.querySelectorAll('mnb-seg').length
         : null;
     postMarkReadLog('visibleRange.collect.start', {
         documentURL: doc.URL || doc.location?.href || null,
@@ -1668,7 +2051,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             outOfViewportCount += 1;
             continue;
         }
-        const sentenceNode = segmentNode.closest('manabi-sentence');
+        const sentenceNode = segmentNode.closest('mnb-sen');
         visibleSegments.push({
             node: segmentNode,
             rect,
@@ -1702,7 +2085,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
                 fallbackOutOfViewportCount += 1;
                 continue;
             }
-            const sentenceNode = segmentNode.closest('manabi-sentence');
+            const sentenceNode = segmentNode.closest('mnb-sen');
             fallbackSegments.push({
                 node: segmentNode,
                 rect,
@@ -1831,7 +2214,8 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     const sentencesByIdentifier = new Map();
     for (const item of visibleSegments) {
         if (!dedupedSegments.has(item.segmentIdentifier)) {
-            const searchString = item.node.dataset?.jmdictSearchString || item.node.dataset?.jmnedictSearchString;
+            const metadata = segmentMetadataForNode(item.node);
+            const searchString = metadata?.s || metadata?.ns;
             if (typeof searchString !== 'string' || searchString.length === 0) {
                 skippedMissingSearchStringCount += 1;
                 continue;
@@ -1839,8 +2223,8 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             visibleSegmentIdentifiers.add(item.segmentIdentifier);
             const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node);
             dedupedSegments.set(item.segmentIdentifier, {
-                jmdictEntryIds: parseEntryIDs(item.node.dataset?.jmdictEntryIds || '[]'),
-                jmnedictEntryIds: parseEntryIDs(item.node.dataset?.jmnedictEntryIds || '[]'),
+                jmdictEntryIds: segmentEntryIDsForNode(item.node, 'jmdict'),
+                jmnedictEntryIds: segmentEntryIDsForNode(item.node, 'jmnedict'),
                 searchString,
                 displayText: item.node.textContent?.trim?.() || searchString,
                 segmentIdentifier: item.segmentIdentifier,
@@ -1849,8 +2233,8 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             });
         }
         if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
-            const sentenceNode = item.node.closest('manabi-sentence');
-            const allSegmentIdentifiers = Array.from(sentenceNode?.querySelectorAll?.('manabi-segment') || [])
+            const sentenceNode = item.node.closest('mnb-sen');
+            const allSegmentIdentifiers = Array.from(sentenceNode?.querySelectorAll?.('mnb-seg') || [])
                 .map((segmentNode) => segmentIdentifierForNode(segmentNode))
                 .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
             sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifiers);
@@ -2188,10 +2572,10 @@ const getCSSForBookContent = ({
     html:lang(ja),
     body:lang(ja),
     :lang(ja),
-    body[data-manabi-has-sentences="true"],
-    body[data-manabi-has-segments="true"],
-    body[data-manabi-has-sentences="true"] manabi-sentence,
-    body[data-manabi-has-segments="true"] manabi-segment {
+    body[data-mnb-has-sentences="true"],
+    body[data-mnb-has-segments="true"],
+    body[data-mnb-has-sentences="true"] mnb-sen,
+    body[data-mnb-has-segments="true"] mnb-seg {
         line-break: strict;
         -webkit-line-break: strict;
         word-break: normal;
@@ -2246,7 +2630,7 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
-    manabi-segment {
+    mnb-seg {
         /* Keep book segments atomic so page turns never split a segment across pages. */
         display: inline-block !important;
         vertical-align: baseline !important;
@@ -2258,11 +2642,11 @@ const getCSSForBookContent = ({
         -webkit-column-break-inside: avoid !important;
     }
 
-    body *:not(.manabi-tracking-container *):not(manabi-segment *) {
+    body *:not(.mnb-tracking-container *):not(mnb-seg *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
     }
-    body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(manabi-segment *) {
+    body.reader-is-single-media-element-without-text *:not(.mnb-tracking-container *):not(mnb-seg *) {
         max-height: 99vh;
     }
 /*
@@ -2761,8 +3145,41 @@ class Reader {
             }
             this.#markPageClusterAsRead(stateID).catch((error) => console.error(error));
         });
-        window.addEventListener('resize', () => this.#queueLayoutDiagnostics('window-resize'));
-        window.visualViewport?.addEventListener?.('resize', () => this.#queueLayoutDiagnostics('visual-viewport-resize'));
+        window.addEventListener('resize', () => {
+            postBookRotateLog('window.resize', {
+                innerWidth: window.innerWidth ?? null,
+                innerHeight: window.innerHeight ?? null,
+                visualViewportWidth: window.visualViewport?.width ?? null,
+                visualViewportHeight: window.visualViewport?.height ?? null,
+                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+                orientationType: screen.orientation?.type ?? null,
+            });
+            this.#queueLayoutDiagnostics('window-resize');
+        });
+        window.visualViewport?.addEventListener?.('resize', () => {
+            postBookRotateLog('visualViewport.resize', {
+                innerWidth: window.innerWidth ?? null,
+                innerHeight: window.innerHeight ?? null,
+                visualViewportWidth: window.visualViewport?.width ?? null,
+                visualViewportHeight: window.visualViewport?.height ?? null,
+                visualViewportOffsetLeft: window.visualViewport?.offsetLeft ?? null,
+                visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
+                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+                orientationType: screen.orientation?.type ?? null,
+            });
+            this.#queueLayoutDiagnostics('visual-viewport-resize');
+        });
+        screen.orientation?.addEventListener?.('change', () => {
+            postBookRotateLog('screen.orientation.change', {
+                innerWidth: window.innerWidth ?? null,
+                innerHeight: window.innerHeight ?? null,
+                visualViewportWidth: window.visualViewport?.width ?? null,
+                visualViewportHeight: window.visualViewport?.height ?? null,
+                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+                orientationType: screen.orientation?.type ?? null,
+            });
+            this.#queueLayoutDiagnostics('screen-orientation-change');
+        });
     }
     #logPageTracking(event, details = {}) {
         postReaderLog(event, details);
@@ -2808,11 +3225,32 @@ class Reader {
         this.#queueLayoutDiagnostics(reason, extra);
     }
     #queueLayoutDiagnostics(reason = 'unknown', extra = null) {
+        postBookRotateLog('layout.queue', {
+            reason,
+            hadPending: !!this.layoutDiagnosticsHandle,
+            extra,
+            innerWidth: window.innerWidth ?? null,
+            innerHeight: window.innerHeight ?? null,
+            visualViewportWidth: window.visualViewport?.width ?? null,
+            visualViewportHeight: window.visualViewport?.height ?? null,
+            orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+            orientationType: screen.orientation?.type ?? null,
+        });
         if (this.layoutDiagnosticsHandle) {
             cancelAnimationFrame(this.layoutDiagnosticsHandle);
         }
         this.layoutDiagnosticsHandle = requestAnimationFrame(() => {
             this.layoutDiagnosticsHandle = null;
+            postBookRotateLog('layout.flush', {
+                reason,
+                extra,
+                innerWidth: window.innerWidth ?? null,
+                innerHeight: window.innerHeight ?? null,
+                visualViewportWidth: window.visualViewport?.width ?? null,
+                visualViewportHeight: window.visualViewport?.height ?? null,
+                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+                orientationType: screen.orientation?.type ?? null,
+            });
             this.#logLayoutDiagnostics(reason, extra);
         });
     }
@@ -3048,9 +3486,10 @@ class Reader {
             extra,
             currentPercent: typeof primaryLabelDiagnostics?.currentPercent === 'number' ? primaryLabelDiagnostics.currentPercent : null,
             cssInsets: [
-                `toolbar=${computedStyle?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || 'nil'}`,
-                `obscured=${computedStyle?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || 'nil'}`,
-                `stage=${computedStyle?.getPropertyValue('--manabi-reader-stage-bottom-inset')?.trim() || 'nil'}`,
+                `top=${computedStyle?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || 'nil'}`,
+                `toolbar=${computedStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || 'nil'}`,
+                `obscured=${computedStyle?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || 'nil'}`,
+                `stage=${computedStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || 'nil'}`,
             ].join(' '),
             windowInnerBox: this.#formatBox(window.innerWidth ?? null, window.innerHeight ?? null),
             visualViewportBox: this.#formatBox(window.visualViewport?.width ?? null, window.visualViewport?.height ?? null),
@@ -3119,6 +3558,27 @@ class Reader {
     }
     #logLayoutDiagnostics(reason = 'unknown', extra = null) {
         const layoutSnapshot = this.#buildLayoutSnapshot(reason, extra);
+        postBookRotateLog('layout.snapshot', {
+            reason,
+            currentPercent: layoutSnapshot.currentPercent,
+            cssInsets: layoutSnapshot.cssInsets,
+            windowInnerBox: layoutSnapshot.windowInnerBox,
+            visualViewportBox: layoutSnapshot.visualViewportBox,
+            visualViewportOffset: layoutSnapshot.visualViewportOffset,
+            documentClientBox: layoutSnapshot.documentClientBox,
+            bodyClientBox: layoutSnapshot.bodyClientBox,
+            livePaginatorBox: layoutSnapshot.livePaginatorBox,
+            navBarRect: layoutSnapshot.navBarRect,
+            readerStageRect: layoutSnapshot.readerStageRect,
+            liveFoliateViewRect: layoutSnapshot.liveFoliateViewRect,
+            livePaginatorRect: layoutSnapshot.livePaginatorRect,
+            visibleTextRect: layoutSnapshot.visibleTextRect,
+            visibleTextRectCount: layoutSnapshot.visibleTextRectCount,
+            toolbarGapPx: layoutSnapshot.toolbarGapPx,
+            stageGapPx: layoutSnapshot.stageGapPx,
+            navHiddenClass: document.getElementById('nav-bar')?.classList?.contains('nav-hidden-due-to-scroll') ?? null,
+            bodyLoading: layoutSnapshot.bodyLoading,
+        });
         if (!layoutSnapshot.bodyLoading
             && typeof layoutSnapshot.currentPercent === 'number'
             && layoutSnapshot.livePaginatorBox != null) {
@@ -3180,15 +3640,15 @@ class Reader {
             const isBusy = !!this.completionActionBusy;
             buttonHost.innerHTML = `
                 <button
-                    class="page-read-button manabi-tracking-button"
+                    class="page-read-button mnb-tracking-button"
                     data-completion-action="${completionAction.type}"
                     data-completion-tone="${completionAction.tone}"
-                    data-manabi-force-expanded="true"
+                    data-mnb-force-expanded="true"
                     aria-label="${completionAction.label}"
                     ${isBusy ? 'disabled' : ''}
                 >
-                    <span class="manabi-tracking-button-status" aria-hidden="true"></span>
-                    <span class="manabi-tracking-button-label" aria-hidden="true">${completionAction.label}</span>
+                    <span class="mnb-tracking-button-status" aria-hidden="true"></span>
+                    <span class="mnb-tracking-button-label" aria-hidden="true">${completionAction.label}</span>
                     <span class="sr-only">${completionAction.label}</span>
                 </button>
             `;
@@ -3204,17 +3664,17 @@ class Reader {
             const readState = isBusy ? 'pending' : (state.isRead ? 'complete' : 'ready');
             return `
                 <button
-                    class="page-read-button manabi-tracking-button"
+                    class="page-read-button mnb-tracking-button"
                     data-page-tracking-id="${state.id}"
                     data-read-state="${readState}"
-                    data-manabi-tracking-section-read="${state.isRead ? 'true' : 'false'}"
+                    data-mnb-tracking-section-read="${state.isRead ? 'true' : 'false'}"
                     aria-label="${state.fullLabel}"
                     ${state.isRead || isBusy ? 'disabled' : ''}
                 >
-                    <span class="manabi-tracking-button-status" aria-hidden="true">
-                        <span class="manabi-tracking-status-checkmark" aria-hidden="true"></span>
+                    <span class="mnb-tracking-button-status" aria-hidden="true">
+                        <span class="mnb-tracking-status-checkmark" aria-hidden="true"></span>
                     </span>
-                    <span class="manabi-tracking-button-label" aria-hidden="true">${state.shortLabel}</span>
+                    <span class="mnb-tracking-button-label" aria-hidden="true">${state.shortLabel}</span>
                     <span class="sr-only">${state.fullLabel}</span>
                 </button>
             `;
@@ -4385,6 +4845,7 @@ class Reader {
         requestAnimationFrame(() => {
             const livePaginator = this.view?.renderer?.querySelector?.('foliate-paginator');
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            postLandscapeInsetLayoutProbe('reader.didDisplay.raf');
             markEPUBPerf('did-display.raf.first', {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
@@ -4406,6 +4867,9 @@ class Reader {
         }
     }) {
         applyStoredChromeInsets('reader.documentLoad');
+        requestAnimationFrame(() => {
+            postLandscapeInsetLayoutProbe('reader.documentLoad.raf');
+        });
         markEPUBPerf('document.load.first', {
             documentURL: doc?.location?.href || null,
             isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
@@ -4431,46 +4895,17 @@ class Reader {
             ...summarizeDocumentFontState(doc),
             ...captureEPUBOverlapState(),
         });
+        postFontLog('ebook.document.fonts.state', {
+            documentURL: doc?.location?.href || null,
+            ...summarizeDocumentFontState(doc),
+            outerHasCustomFontStyle: !!document.getElementById('mnb-custom-fonts-inline'),
+            ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
+            ebookInjectedFontFamily: doc?.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
+            ebookFontInjected: doc?.documentElement?.dataset?.mnbFontInjected ?? null,
+            ...captureDocumentFontApplicationState(doc),
+        });
         try {
-            window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
-                event: 'ebook.document.fonts.state',
-                timestamp: Date.now(),
-                documentURL: doc?.location?.href || null,
-                ...summarizeDocumentFontState(doc),
-            }));
-        } catch {}
-        try {
-            const sourceFontStyle = document.getElementById('manabi-custom-fonts-inline');
-            if (doc && doc !== document && sourceFontStyle) {
-                let targetFontStyle = doc.getElementById('manabi-custom-fonts-inline');
-                if (!targetFontStyle) {
-                    targetFontStyle = doc.createElement(sourceFontStyle.tagName?.toLowerCase() === 'link' ? 'link' : 'style');
-                    targetFontStyle.id = 'manabi-custom-fonts-inline';
-                    (doc.head || doc.documentElement).appendChild(targetFontStyle);
-                }
-                if (sourceFontStyle.tagName?.toLowerCase() === 'link') {
-                    targetFontStyle.rel = sourceFontStyle.rel || 'stylesheet';
-                    targetFontStyle.href = sourceFontStyle.href;
-                } else {
-                    targetFontStyle.textContent = sourceFontStyle.textContent || '';
-                }
-                for (const [key, value] of Object.entries(sourceFontStyle.dataset || {})) {
-                    targetFontStyle.dataset[key] = value;
-                }
-                if (doc.documentElement && sourceFontStyle.dataset?.manabiInjectedFontFamily) {
-                    doc.documentElement.dataset.manabiInjectedFontFamily = sourceFontStyle.dataset.manabiInjectedFontFamily;
-                    doc.documentElement.dataset.manabiFontInjected = '1';
-                }
-                window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
-                    event: 'ebook.document.fonts.forwarded',
-                    timestamp: Date.now(),
-                    documentURL: doc?.location?.href || null,
-                    sourceTag: sourceFontStyle.tagName || null,
-                    targetTag: targetFontStyle.tagName || null,
-                    href: targetFontStyle.href || null,
-                    family: targetFontStyle.dataset?.manabiInjectedFontFamily || null,
-                }));
-            }
+            window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
         } catch (error) {
             try {
                 window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
@@ -4497,6 +4932,7 @@ class Reader {
                         documentURL: doc?.location?.href || null,
                         elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
                         ...summarizeDocumentFontState(doc),
+                        ...captureDocumentFontApplicationState(doc),
                         bodyTextLength: doc?.body?.innerText?.length ?? null,
                     }));
                 } catch {}
@@ -4812,6 +5248,15 @@ class Reader {
                 ...captureEPUBOverlapState(),
             });
         }
+        postBookRotateLog('reader.relocate', {
+            reason: detail?.reason || null,
+            fraction: safeRound(detail?.fraction),
+            currentPercent,
+            currentLocation: detail?.location?.current ?? null,
+            totalLocation: detail?.location?.total ?? null,
+            orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+            orientationType: screen.orientation?.type ?? null,
+        });
         this.#queueLayoutDiagnostics('relocate', {
             reason: detail?.reason || null,
             currentPercent,
@@ -4939,6 +5384,7 @@ class CacheWarmer {
             const section = sections[index]
             if (section?.linear === 'no') continue
             const normalizedHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
+            if (isLikelyMetadataSectionHref(normalizedHref)) continue
             if (normalizedHref && settled.has(normalizedHref)) continue
             return index
         }
@@ -5195,13 +5641,13 @@ class CacheWarmer {
             index,
         }
     }) {
-        const sentenceNodes = Array.from(doc?.querySelectorAll?.('manabi-sentence') || []);
-        const segmentNodes = Array.from(doc?.querySelectorAll?.('manabi-segment') || []);
+        const sentenceNodes = Array.from(doc?.querySelectorAll?.('mnb-sen') || []);
+        const segmentNodes = Array.from(doc?.querySelectorAll?.('mnb-seg') || []);
         const indexedSectionHref =
             Number.isInteger(index)
             ? this.view?.book?.sections?.[index]?.href || null
             : null;
-        const sourceHref = doc?.body?.dataset?.manabiSourceHref || indexedSectionHref || null;
+        const sourceHref = doc?.body?.dataset?.mnbSourceHref || indexedSectionHref || null;
         const sectionHref = indexedSectionHref || sourceHref || null;
         this.lastLoadedSectionIndex = Number.isInteger(index) ? index : null;
         this.lastLoadedSectionHref = sectionHref || location || null;

@@ -288,6 +288,18 @@ internal func sharedReaderFontResponse(
           src: url("\(fontURL.absoluteString)") format("\(asset.format)");
           font-display: swap;
         }
+        :root {
+          --mnb-content-font: '\(familyName)';
+          --mnb-content-vertical-font: '\(familyName)';
+        }
+        html,
+        body,
+        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(mnb-sen rt) {
+          font-family: '\(familyName)' !important;
+        }
+        mnb-sen rt {
+          font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
+        }
         """
         let data = Data(css.utf8)
         let response = sharedReaderFontHTTPResponse(
@@ -306,6 +318,7 @@ internal func sharedReaderFontResponse(
                     "fontURL": fontURL.absoluteString,
                     "byteCount": String(data.count),
                     "containsAtFontFace": css.contains("@font-face") ? "1" : "0",
+                    "containsFontFamilyApplyRule": css.contains("font-family: '\\(familyName)' !important") ? "1" : "0",
                 ],
                 uniquingKeysWith: { _, new in new }
             )
