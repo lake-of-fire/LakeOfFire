@@ -43,7 +43,7 @@ private class ReaderWebViewHandler {
         guard !html.isEmpty else { return false }
         do {
             let document = try SwiftSoup.parse(html)
-            if (try? document.getElementsByTag("manabi-segment").size()) ?? 0 > 0 {
+            if (try? document.getElementsByTag("mnb-seg").size()) ?? 0 > 0 {
                 return true
             }
             if (try? document.getElementById("reader-content")) != nil {
@@ -113,8 +113,8 @@ private class ReaderWebViewHandler {
                     (() => {
                       const firstTrackingButton = document.querySelector('.manabi-mark-section-as-read-button');
                       const finishedReadingButton = document.getElementById('manabi-finished-reading-button');
-                      const firstSegment = document.querySelector('manabi-segment');
-                      const firstSurface = document.querySelector('manabi-surface');
+                      const firstSegment = document.querySelector('mnb-seg');
+                      const firstSurface = document.querySelector('mnb-sur');
                       const readerSections = document.getElementsByClassName('manabi-tracking-section');
                       const styleFor = (element) => element ? getComputedStyle(element) : null;
                       const trackingStyle = styleFor(firstTrackingButton);
@@ -135,7 +135,7 @@ private class ReaderWebViewHandler {
                         finishedReadingButtonWidth: finishedReadingButton?.getBoundingClientRect?.().width ?? null,
                         finishedReadingButtonHeight: finishedReadingButton?.getBoundingClientRect?.().height ?? null,
                         sectionCount: readerSections.length,
-                        segmentCount: document.getElementsByTagName('manabi-segment').length,
+                        segmentCount: document.getElementsByTagName('mnb-seg').length,
                         firstTrackingButtonDisplay: trackingStyle?.display ?? null,
                         firstTrackingButtonVisibility: trackingStyle?.visibility ?? null,
                         firstTrackingButtonOpacity: trackingStyle?.opacity ?? null,
@@ -217,8 +217,8 @@ private class ReaderWebViewHandler {
                         const style = getComputedStyle(button);
                         return style.display !== 'none' && style.visibility !== 'hidden' && Number.parseFloat(style.opacity || '1') > 0.01;
                       }) ?? null;
-                      const firstSegment = document.querySelector('manabi-segment');
-                      const firstSurface = document.querySelector('manabi-surface');
+                      const firstSegment = document.querySelector('mnb-seg');
+                      const firstSurface = document.querySelector('mnb-sur');
                       const describe = (node) => {
                         if (!node) return null;
                         const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
@@ -250,10 +250,10 @@ private class ReaderWebViewHandler {
                           return style.display !== 'none' && style.visibility !== 'hidden' && Number.parseFloat(style.opacity || '1') > 0.01;
                         }).length,
                         sectionCount: document.querySelectorAll('.manabi-tracking-section').length,
-                        segmentCount: document.querySelectorAll('manabi-segment').length,
+                        segmentCount: document.querySelectorAll('mnb-seg').length,
                         elementAtCenter: describe(elementAtCenter),
-                        centerClosestSegment: describe(elementAtCenter?.closest?.('manabi-segment') ?? null),
-                        centerClosestSurface: describe(elementAtCenter?.closest?.('manabi-surface') ?? null),
+                        centerClosestSegment: describe(elementAtCenter?.closest?.('mnb-seg') ?? null),
+                        centerClosestSurface: describe(elementAtCenter?.closest?.('mnb-sur') ?? null),
                         firstVisibleButton: describe(firstVisibleButton),
                         firstSegment: describe(firstSegment),
                         firstSurface: describe(firstSurface)

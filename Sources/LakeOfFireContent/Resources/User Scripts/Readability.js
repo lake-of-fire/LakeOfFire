@@ -407,7 +407,7 @@ Readability.prototype = {
   },
 
   /**
-   * Removes the class="" attribute from every element in the given
+   * Removes the  attribute from every element in the given
    * subtree, except those that match CLASSES_TO_PRESERVE and
    * the classesToPreserve array from the options object.
    *

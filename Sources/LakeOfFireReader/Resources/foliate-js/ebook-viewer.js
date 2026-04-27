@@ -16,6 +16,39 @@ const logEBookPagination = () => {};
 // Perf logger (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail });
 
+const logReplaceTextCacheWarmer = (event, detail = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# REPLACETEXT ${JSON.stringify({ event, ...detail })}`);
+    } catch (_error) {
+        // Diagnostics only.
+    }
+};
+
+const logEPUBFlash = (event, detail = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EPUBFLASH ${JSON.stringify({
+            event,
+            bodyLoading: !!document.body?.classList?.contains?.('loading'),
+            ...detail,
+        })}`);
+    } catch (_error) {
+        // Diagnostics only.
+    }
+};
+
+const runWithEPUBFlashNavigationIntent = async (intent, operation) => {
+    const previousIntent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
+    globalThis.__manabiEPUBFlashNavigationIntent = {
+        timestamp: Date.now(),
+        ...intent,
+    };
+    try {
+        return await operation();
+    } finally {
+        globalThis.__manabiEPUBFlashNavigationIntent = previousIntent;
+    }
+};
+
 const VIEWER_PAGE_NUM_WHITELIST = new Set([
     'relocate',
     'relocate:label',
@@ -76,7 +109,7 @@ const maybeLogEBookHTML = (
         mediaType,
         isCacheWarmer,
         length: html.length,
-        segmentCount: (html.match(/<manabi-segment(\s|>)/g) || []).length,
+        segmentCount: (html.match(/<mnb-seg(\s|>)/g) || []).length,
         hasMarker,
         isTargetHref,
         force,
@@ -535,8 +568,8 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     timeoutPromise(5000, `replace-text-response-body-timeout:${href}`),
     ])
     globalThis.manabiLoadEBookLastState = `replace-text-response-decoded:${href}`
-    const sentenceCount = (html.match(/<manabi-sentence\b/g) || []).length;
-    const segmentCount = (html.match(/<manabi-segment\b/g) || []).length;
+    const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
+    const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
     maybeLogEBookHTML('js.replaceText.responseProcessed', {
     href,
     mediaType,
@@ -1229,8 +1262,8 @@ body:lang(ja),
 :lang(ja),
 body[data-manabi-has-sentences="true"],
 body[data-manabi-has-segments="true"],
-body[data-manabi-has-sentences="true"] manabi-sentence,
-body[data-manabi-has-segments="true"] manabi-segment {
+body[data-manabi-has-sentences="true"] mnb-sen,
+body[data-manabi-has-segments="true"] mnb-seg {
 line-break: strict;
 -webkit-line-break: strict;
 word-break: normal;
@@ -1285,7 +1318,7 @@ display: none;
 contain: style layout !important;
 }
 
-body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-container):not(manabi-sentence, manabi-sentence *):not(#manabi-tracking-section-subscription-preview-inline-notice) {
+body *:not([class^="manabi-"]):not(mnb-seg, mnb-seg *):not(mnb-con):not(mnb-sen, mnb-sen *):not(#manabi-tracking-section-subscription-preview-inline-notice) {
     font-family: inherit !important;
     font-weight: inherit !important;
     background: inherit !important;
@@ -1315,7 +1348,7 @@ body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-
     color: CanvasText !important;
     -webkit-text-fill-color: CanvasText !important;
 }
-body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(manabi-segment *) {
+body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(mnb-seg *) {
 max-height: 99vh;
 }
 /*
@@ -2853,11 +2886,36 @@ class CacheWarmer {
         return null
     }
     async #openFirstUnsettledSection() {
-        const targetIndex = this.#nextUnsettledSectionIndex(this.#mergeSettledSectionHrefs())
+        const settledSectionHrefs = this.#mergeSettledSectionHrefs()
+        const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        const settled = new Set(settledSectionHrefs)
+        const sections = Array.isArray(this.view?.book?.sections) ? this.view.book.sections : []
+        const sectionSample = sections.slice(0, 12).map((section, index) => {
+            const href = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
+            let skipReason = null
+            if (section?.linear === 'no') skipReason = 'non-linear'
+            else if (!href) skipReason = 'missing-href'
+            else if (settled.has(href)) skipReason = 'settled'
+            return { index, href, linear: section?.linear ?? null, skipReason }
+        })
+        logReplaceTextCacheWarmer('cache-warmer.open.scan', {
+            targetSectionIndex: targetIndex,
+            targetSectionHref: Number.isInteger(targetIndex)
+                ? this.#normalizeSectionHref(sections[targetIndex]?.href ?? sections[targetIndex]?.id ?? null)
+                : null,
+            settledSectionCount: settledSectionHrefs.length,
+            settledSectionHrefs,
+            sectionCount: sections.length,
+            sectionSample,
+        })
         if (!Number.isInteger(targetIndex)) {
             return
         }
-        await this.view.renderer.goTo({ index: targetIndex })
+        await runWithEPUBFlashNavigationIntent({
+            source: 'cache-warmer.open',
+            target: 'renderer.goTo',
+            sectionIndex: targetIndex,
+        }, () => this.view.renderer.goTo({ index: targetIndex }))
     }
     async open(source) {
     this.source = source
@@ -2884,7 +2942,11 @@ class CacheWarmer {
             await this.view.renderer.nextSection()
             return
         }
-        await this.view.renderer.goTo({ index: targetIndex })
+        await runWithEPUBFlashNavigationIntent({
+            source: 'cache-warmer.advance',
+            target: 'renderer.goTo',
+            sectionIndex: targetIndex,
+        }, () => this.view.renderer.goTo({ index: targetIndex }))
     }
 
     async _onLoad({
@@ -2984,7 +3046,7 @@ const getVisibleReaderFrames = () => {
             try {
                 const frameWindow = frame.contentWindow;
                 const frameDocument = frameWindow?.document;
-                const hasReaderContent = !!frameDocument?.querySelector?.('manabi-sentence[data-sentence-identifier]');
+                const hasReaderContent = !!frameDocument?.querySelector?.('mnb-sen[data-sentence-identifier]');
                 if (!hasReaderContent) { return null; }
                 const rect = frame.getBoundingClientRect();
                 const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
@@ -3215,6 +3277,28 @@ const firstLiveSectionHref = () => {
     return normalizedHref || null;
 };
 
+const nextUnsettledCacheWarmerSection = ({ sections, settledSectionHrefs, afterIndex = -1 } = {}) => {
+    const normalizedSettled = new Set((settledSectionHrefs || []).map((href) => normalizeSpineHref(href)).filter(Boolean));
+    const sectionList = Array.isArray(sections) ? sections : [];
+    const sectionSample = sectionList.slice(0, 8).map((section, index) => {
+        const href = normalizeSpineHref(section?.href ?? section?.id ?? null);
+        return {
+            index,
+            href,
+            linear: section?.linear ?? null,
+            skipReason: section?.linear === 'no' ? 'non-linear' : (href && normalizedSettled.has(href) ? 'settled' : null),
+        };
+    });
+    for (let index = Math.max(-1, afterIndex) + 1; index < sectionList.length; index += 1) {
+        const section = sectionList[index];
+        if (section?.linear === 'no') continue;
+        const href = normalizeSpineHref(section?.href ?? section?.id ?? null);
+        if (href && normalizedSettled.has(href)) continue;
+        return { index, href, sectionCount: sectionList.length, sectionSample };
+    }
+    return { index: null, href: null, sectionCount: sectionList.length, sectionSample };
+};
+
 window.manabi_recordLiveSettledSection = (href) => {
     const normalizedHref = normalizeSpineHref(href);
     if (!normalizedHref) { return; }
@@ -3256,6 +3340,33 @@ const maybeOpenDeferredCacheWarmer = async () => {
         return await globalThis.__manabiCacheWarmerOpenPromise;
     }
     if (!isForegroundReaderIdle()) {
+        return;
+    }
+    const settledSectionHrefs = Array.from(liveSettledSectionHrefSet()).sort();
+    const preflight = nextUnsettledCacheWarmerSection({
+        sections: globalThis.reader?.book?.sections,
+        settledSectionHrefs,
+    });
+    logReplaceTextCacheWarmer('cache-warmer.preflight.scan', {
+        firstLiveHref: firstLiveSectionHref(),
+        settledSectionCount: settledSectionHrefs.length,
+        settledSectionHrefs,
+        sectionCount: preflight.sectionCount,
+        targetSectionIndex: preflight.index,
+        targetSectionHref: preflight.href,
+        sectionSample: preflight.sectionSample,
+    });
+    if (preflight.sectionCount > 0 && !Number.isInteger(preflight.index)) {
+        globalThis.__manabiCacheWarmerOpenRequested = false;
+        logReplaceTextCacheWarmer('cache-warmer.finished', {
+            trigger: 'preflight-no-unsettled',
+            firstLiveHref: firstLiveSectionHref(),
+            settledSectionCount: settledSectionHrefs.length,
+            sectionIndex: null,
+            sectionURL: null,
+            highestSectionIndex: null,
+            uniqueSentenceCount: 0,
+        });
         return;
     }
     globalThis.__manabiCacheWarmerOpenRequested = false;

@@ -2656,7 +2656,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let docBytesAfterProcessor = documentByteCount(doc)
             let headBytesAfterProcessor = headByteCount(doc)
             let bodyBytesAfterProcessor = bodyByteCount(doc)
-            let segmentCountAfterReadability = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
+            let segmentCountAfterReadability = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
             debugPrint(
                 "# READERINJECT readability.docSegments",
                 "stage=afterProcessReadabilityContent",
@@ -2756,10 +2756,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let headBytesAfterFontEmbed = headByteCount(doc)
             let bodyBytesAfterFontEmbed = bodyByteCount(doc)
             let sharedFontStyleElementBytes = styleElementByteCount(doc, "manabi-custom-fonts-inline")
-            let segmentCountAfterProcessing = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
+            let segmentCountAfterProcessing = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
             let readerTitleElement = try? doc.getElementById("reader-title")
             let readerTitleTextBytes = (try? readerTitleElement?.text(trimAndNormaliseWhitespace: false).utf8.count) ?? 0
-            let readerTitleContainerCount = (try? readerTitleElement?.getElementsByTag("manabi-container").size()) ?? 0
+            let readerTitleContainerCount = (try? readerTitleElement?.getElementsByTag("mnb-con").size()) ?? 0
             let readerTitleDisplayTokenCount = (try? readerTitleElement?.select("[data-manabi-display-token='1']").size()) ?? 0
             let readerTitlePreview = (try? readerTitleElement?.text(trimAndNormaliseWhitespace: false).truncate(96)) ?? ""
             debugPrint(
@@ -2805,7 +2805,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 processHTMLElapsed = Date().timeIntervalSince(processHTMLStartedAt)
             }
             processHTMLOutputBytes = html.utf8.count
-            let htmlSegmentCount = max(html.components(separatedBy: "manabi-segment").count - 1, 0)
+            let htmlSegmentCount = max(html.components(separatedBy: "mnb-seg").count - 1, 0)
             debugPrint(
                 "# READERINJECT readability.htmlSegments",
                 "stage=afterProcessHTML",
@@ -5481,7 +5481,7 @@ private func readerModeProcessBodyByteCount(for document: SwiftSoup.Document) ->
 }
 
 private func readerModeProcessSegmentCount(for document: SwiftSoup.Document) -> Int {
-    (try? document.getElementsByTag("manabi-segment").size()) ?? 0
+    (try? document.getElementsByTag("mnb-seg").size()) ?? 0
 }
 
 private func readerModeProcessGrowthString(outputBytes: Int, inputBytes: Int) -> String {

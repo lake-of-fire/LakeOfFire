@@ -192,7 +192,7 @@ private func logEbookHTML(
     isCacheWarmer: Bool,
     html: String
 ) {
-    let segmentCount = html.components(separatedBy: "<manabi-segment").count - 1
+    let segmentCount = html.components(separatedBy: "<mnb-seg").count - 1
     let hasTrackingFlag = html.contains("data-manabi-tracking-enabled")
     print("# EBOOKHTML stage=\(stage) cacheWarmer=\(isCacheWarmer) contentURL=\(contentURL.absoluteString) sectionLocation=\(sectionLocation) length=\(html.utf8.count) segmentCount=\(max(segmentCount, 0)) hasTrackingFlag=\(hasTrackingFlag)")
 }

@@ -765,7 +765,7 @@ class Loader {
                 stage: 'js.epub.loadReplaced.segmentCount.raw',
                 href,
                 mediaType,
-                segmentCount: (replacedStr.match(/<manabi-segment(\s|>)/g) || []).length,
+                segmentCount: (replacedStr.match(/<mnb-seg(\s|>)/g) || []).length,
                 hasTrackingEnabledFlag: replacedStr.includes('data-manabi-tracking-enabled'),
             })
         }
@@ -780,7 +780,7 @@ class Loader {
                     stage: 'js.epub.loadReplaced.segmentCount.parsed',
                     href,
                     mediaType,
-                    segmentCount: doc.querySelectorAll('manabi-segment').length,
+                    segmentCount: doc.querySelectorAll('mnb-seg').length,
                     trackingEnabled: doc.body?.getAttribute?.('data-manabi-tracking-enabled') ?? null,
                     bodyClass: doc.body?.getAttribute?.('class') ?? null,
                 })
@@ -859,7 +859,7 @@ class Loader {
                     stage: 'js.epub.loadReplaced.segmentCount.serialized',
                     href,
                     mediaType: item.mediaType,
-                    segmentCount: (textResult.match(/<manabi-segment(\s|>)/g) || []).length,
+                    segmentCount: (textResult.match(/<mnb-seg(\s|>)/g) || []).length,
                     hasTrackingEnabledFlag: textResult.includes('data-manabi-tracking-enabled'),
                 })
             }

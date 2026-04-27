@@ -1,5 +1,5 @@
 const CHUNK_ATOMIC_TAG_NAMES = new Set([
-    'manabi-segment',
+    'mnb-seg',
     'img',
     'picture',
     'video',
@@ -257,7 +257,7 @@ const shouldKeepChunkTextNode = textNode => {
     const display = parentElement.ownerDocument?.defaultView?.getComputedStyle?.(parentElement)?.display || ''
     if (display.startsWith('inline')) return true
     return parentElement.matches?.(
-        'span, ruby, rb, rt, rp, em, strong, b, i, small, sub, sup, mark, code, a, manabi-sentence'
+        'span, ruby, rb, rt, rp, em, strong, b, i, small, sub, sup, mark, code, a, mnb-sen'
     ) === true
 }
 
@@ -332,7 +332,7 @@ const collectEbookChunkUnits = rootNode => {
         if (CHUNK_ATOMIC_TAG_NAMES.has(tagName) || node.dataset?.manabiChunkAtomic === 'true') {
             units.push({
                 type: 'element',
-                kind: tagName === 'manabi-segment' ? 'segment' : 'atomic',
+                kind: tagName === 'mnb-seg' ? 'segment' : 'atomic',
                 sourceNode: node,
                 ancestors: chunkAncestorChainForNode(node.parentNode, rootNode),
             })
@@ -1876,8 +1876,8 @@ export class EbookSectionLayout {
     _sentenceIdentifierForNode(node) {
         if (!node) return null
         const sentenceNode = node.nodeType === Node.ELEMENT_NODE
-            ? node.closest?.('manabi-sentence')
-            : node.parentElement?.closest?.('manabi-sentence')
+            ? node.closest?.('mnb-sen')
+            : node.parentElement?.closest?.('mnb-sen')
         return sentenceNode?.dataset?.sentenceIdentifier || null
     }
 

@@ -27,8 +27,8 @@ body.readability-mode:lang(ja),
 body.readability-mode #reader-header:lang(ja),
 body.readability-mode #reader-content:lang(ja),
 body.readability-mode #reader-content :lang(ja),
-body.readability-mode manabi-sentence,
-body.readability-mode manabi-segment {
+body.readability-mode mnb-sen,
+body.readability-mode mnb-seg {
     line-break: strict;
     -webkit-line-break: strict;
     word-break: normal;

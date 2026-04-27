@@ -1351,7 +1351,7 @@ private func repairedSnippetSourceHTML(from html: String) -> String? {
     guard !trimmedReaderContentHTML.isEmpty else { return nil }
 
     let unwrappedSegments = trimmedReaderContentHTML.replacingOccurrences(
-        of: #"(?is)</?manabi-segment\b[^>]*>"#,
+        of: #"(?is)</?mnb-seg\b[^>]*>"#,
         with: "",
         options: .regularExpression
     )
