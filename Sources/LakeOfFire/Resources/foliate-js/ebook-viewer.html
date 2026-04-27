@@ -67,22 +67,27 @@
                     --mnb-obscured-top-inset: 0px;
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-obscured-bottom-inset: 0px;
+                    --mnb-system-bottom-inset: env(safe-area-inset-bottom, 0px);
                     --mnb-toolbar-visual-drop: 6px;
+                    --mnb-toolbar-physical-bottom-inset: max(
+                        calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px)),
+                        calc(var(--mnb-obscured-bottom-inset, 0px) + var(--mnb-system-bottom-inset, 0px))
+                    );
                     --nav-primary-hidden-shift-y: 14px;
                     --mnb-reader-stage-bottom-inset: calc(
                         var(--mnb-nav-bar-height)
-                        + var(--mnb-toolbar-bottom-offset, 0px)
-                        - var(--mnb-toolbar-visual-drop, 0px)
+                        + var(--mnb-toolbar-physical-bottom-inset, 0px)
                     );
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
+                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
                     
                     margin: 0 auto;
                     height: 100%;
                     /*height: 100dvh;*/
                     font: menu;
-                    font-family: system-ui, sans-serif;
+                    font-family: var(--mnb-ui-font-family);
                 }
                 @media (prefers-color-scheme: dark) {
                     body {
@@ -237,7 +242,7 @@
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px));
+                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
                     height: var(--mnb-nav-bar-height) !important;
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);
@@ -312,6 +317,7 @@
                     pointer-events: none;
                 }
                 #nav-primary-text {
+                    font-family: var(--mnb-ui-font-family) !important;
                     font-weight: 500;
                     color: var(--secondary-color);
                     text-align: center;
@@ -345,6 +351,23 @@
                     margin: 0;
                     padding: 0;
                     text-decoration: none;
+                }
+                #nav-primary-text-full,
+                #nav-primary-text-compact,
+                #nav-hidden-primary-text,
+                #nav-hidden-primary-percent,
+                #nav-hidden-overlay .nav-hidden-label,
+                #nav-hidden-overlay .nav-hidden-percent,
+                .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
+                #nav-section-progress-center,
+                #percent-jump-container,
+                #percent-jump-container label,
+                #percent-jump-container input,
+                #percent-jump-container span,
+                #percent-jump-container button {
+                    font-family: var(--mnb-ui-font-family) !important;
                 }
                 .nav-primary-layer {
                     grid-area: 1 / 1;
@@ -454,8 +477,7 @@
                     position: absolute;
                     top: auto;
                     bottom: calc(
-                        var(--mnb-toolbar-bottom-offset, 0px)
-                        - var(--mnb-toolbar-visual-drop, 0px)
+                        var(--mnb-toolbar-physical-bottom-inset, 0px)
                         + 8px
                         + ((var(--page-read-button-height) - 26px) / 2)
                     );
@@ -624,7 +646,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px) + 7px);
+                    bottom: calc(var(--mnb-toolbar-physical-bottom-inset, 0px) + 7px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -675,6 +697,7 @@
                     flex: 0 0 auto;
                     opacity: 1;
                     visibility: visible !important;
+                    font-family: var(--mnb-ui-font-family) !important;
                     font-size: inherit;
                     box-sizing: content-box;
                     border-radius: 9999px;
@@ -770,6 +793,7 @@
                     opacity: 0;
                     overflow: hidden;
                     white-space: nowrap;
+                    font-family: var(--mnb-ui-font-family) !important;
                     font-size: 0.85rem;
                     line-height: 1;
                     font-weight: 400;

@@ -326,6 +326,14 @@ const rememberReplaceTextResult = (key, value) => {
     }
 };
 
+const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
+    if (!isCacheWarmer) return html;
+    return injectBodyDatasetAttributes(html, {
+        'data-is-cache-warmer': 'true',
+        'data-mnb-source-href': href,
+    });
+};
+
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
@@ -336,15 +344,27 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         text,
         isCacheWarmer: !!isCacheWarmer,
     });
-    if (replaceTextResultCache.has(cacheKey)) {
-        const cachedHTML = replaceTextResultCache.get(cacheKey);
-        replaceTextResultCache.delete(cacheKey);
-        replaceTextResultCache.set(cacheKey, cachedHTML);
+    const liveEquivalentCacheKey = isCacheWarmer
+        ? makeReplaceTextCacheKey({ href, text, isCacheWarmer: false })
+        : null;
+    const resultCacheKey = replaceTextResultCache.has(cacheKey)
+        ? cacheKey
+        : liveEquivalentCacheKey && replaceTextResultCache.has(liveEquivalentCacheKey)
+            ? liveEquivalentCacheKey
+            : null;
+    if (resultCacheKey) {
+        const cachedSourceHTML = replaceTextResultCache.get(resultCacheKey);
+        const cachedHTML = resultCacheKey === cacheKey
+            ? cachedSourceHTML
+            : adaptReplaceTextHTMLForMode(cachedSourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
+        replaceTextResultCache.delete(resultCacheKey);
+        replaceTextResultCache.set(resultCacheKey, cachedSourceHTML);
         postEPUBLog('ebook.perf.replace-text.cache-hit', {
             href,
             mediaType,
             isCacheWarmer: !!isCacheWarmer,
             cacheKey,
+            sourceCacheKey: resultCacheKey,
             responseTextLength: typeof cachedHTML === 'string' ? cachedHTML.length : null,
             ...captureEPUBOverlapState(),
         });
@@ -353,6 +373,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             mediaType,
             isCacheWarmer: !!isCacheWarmer,
             cacheKey,
+            sourceCacheKey: resultCacheKey,
             responseTextLength: typeof cachedHTML === 'string' ? cachedHTML.length : null,
             ...captureEPUBOverlapState(),
         });
@@ -361,13 +382,19 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         }
         return cachedHTML;
     }
-    if (replaceTextInFlightCache.has(cacheKey)) {
+    const inFlightCacheKey = replaceTextInFlightCache.has(cacheKey)
+        ? cacheKey
+        : liveEquivalentCacheKey && replaceTextInFlightCache.has(liveEquivalentCacheKey)
+            ? liveEquivalentCacheKey
+            : null;
+    if (inFlightCacheKey) {
         const cacheWaitStartedAt = performanceNowMs();
         postEPUBLog('ebook.perf.replace-text.cache-wait', {
             href,
             mediaType,
             isCacheWarmer: !!isCacheWarmer,
             cacheKey,
+            sourceCacheKey: inFlightCacheKey,
             ...captureEPUBOverlapState(),
         });
         postReplaceTextPerfLog('cache-wait', {
@@ -375,14 +402,19 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             mediaType,
             isCacheWarmer: !!isCacheWarmer,
             cacheKey,
+            sourceCacheKey: inFlightCacheKey,
             ...captureEPUBOverlapState(),
         });
-        const html = await replaceTextInFlightCache.get(cacheKey);
+        const sourceHTML = await replaceTextInFlightCache.get(inFlightCacheKey);
+        const html = inFlightCacheKey === cacheKey
+            ? sourceHTML
+            : adaptReplaceTextHTMLForMode(sourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
         postReplaceTextPerfLog('cache-wait-resolved', {
             href,
             mediaType,
             isCacheWarmer: !!isCacheWarmer,
             cacheKey,
+            sourceCacheKey: inFlightCacheKey,
             waitElapsedMs: safeRound(performanceNowMs() - cacheWaitStartedAt, 1),
             responseTextLength: typeof html === 'string' ? html.length : null,
             ...captureEPUBOverlapState(),
@@ -735,6 +767,29 @@ const postFontLog = (event, details = {}) => {
     } catch {}
 };
 
+const postEPUBFlashLog = (event, details = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+            event,
+            bodyLoading: !!document.body?.classList?.contains?.('loading'),
+            ...details,
+        }));
+    } catch {}
+};
+
+const runWithEPUBFlashNavigationIntent = async (intent, operation) => {
+    const previousIntent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
+    globalThis.__manabiEPUBFlashNavigationIntent = {
+        timestamp: Date.now(),
+        ...intent,
+    };
+    try {
+        return await operation();
+    } finally {
+        globalThis.__manabiEPUBFlashNavigationIntent = previousIntent;
+    }
+};
+
 const getLoadedEbookDocuments = (explicitDoc = null) => {
     const docs = [];
     const addDoc = (doc) => {
@@ -844,6 +899,24 @@ const firstLiveSectionHref = () => {
     return normalizedHref || null;
 };
 
+const sectionHref = (section) => normalizeSpineHref(section?.href ?? section?.id ?? null);
+
+const activeForegroundSectionHref = () => {
+    const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
+        ? globalThis.reader.view.book.sections
+        : [];
+    const contentIndex = getPrimaryRendererContentIndex(globalThis.reader?.view?.renderer);
+    const activeHref = Number.isInteger(contentIndex)
+        ? sectionHref(sections[contentIndex])
+        : null;
+    return activeHref || firstLiveSectionHref();
+};
+
+const activeForegroundSectionHrefSet = () => {
+    const href = activeForegroundSectionHref();
+    return href ? new Set([href]) : new Set();
+};
+
 window.manabi_recordLiveSettledSection = (href) => {
     const normalizedHref = normalizeSpineHref(href);
     if (!normalizedHref) return;
@@ -915,19 +988,59 @@ const isForegroundReaderIdle = () => {
         && !globalThis.__manabiCacheWarmerReady;
 };
 
-const nextUsefulCacheWarmerSectionIndex = () => {
+const cacheWarmerSectionScan = ({ startIndex = 0, warmedSectionHrefs = activeForegroundSectionHrefSet() } = {}) => {
     const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
         ? globalThis.reader.view.book.sections
         : [];
-    const settled = liveSettledSectionHrefSet();
-    for (let index = 0; index < sections.length; index += 1) {
+    const resolvedStartIndex = Number.isInteger(startIndex)
+        ? Math.max(0, startIndex)
+        : 0;
+    const activeHref = activeForegroundSectionHref();
+    const warmed = warmedSectionHrefs instanceof Set
+        ? new Set(warmedSectionHrefs)
+        : new Set(Array.isArray(warmedSectionHrefs) ? warmedSectionHrefs : []);
+    if (activeHref) warmed.add(activeHref);
+    const sample = [];
+    let targetIndex = null;
+    let targetHref = null;
+    for (let index = resolvedStartIndex; index < sections.length; index += 1) {
         const section = sections[index];
-        if (section?.linear === 'no') continue;
-        const sectionHref = normalizeSpineHref(section?.href ?? section?.id ?? null);
-        if (!sectionHref || settled.has(sectionHref) || isLikelyMetadataSectionHref(sectionHref)) continue;
-        return index;
+        const normalizedSectionHref = sectionHref(section);
+        const isNonLinear = section?.linear === 'no';
+        const isWarmed = !!normalizedSectionHref && warmed.has(normalizedSectionHref);
+        // Do not skip "metadata-looking" hrefs here. Files like title.xhtml can
+        // contain real reader text. Only the actively displayed foreground
+        // section is skipped; other live-loaded sections still need warmer scans.
+        let skipReason = null;
+        if (isNonLinear) skipReason = 'non-linear';
+        else if (!normalizedSectionHref) skipReason = 'missing-href';
+        else if (normalizedSectionHref === activeHref) skipReason = 'active-foreground';
+        else if (isWarmed) skipReason = 'warmed';
+        if (sample.length < 12) {
+            sample.push({
+                index,
+                href: normalizedSectionHref,
+                linear: section?.linear ?? null,
+                skipReason,
+            });
+        }
+        if (targetIndex === null && skipReason === null) {
+            targetIndex = index;
+            targetHref = normalizedSectionHref;
+        }
     }
-    return null;
+    return {
+        sectionCount: sections.length,
+        startIndex: resolvedStartIndex,
+        activeForegroundHref: activeHref,
+        targetIndex,
+        targetHref,
+        sample,
+    };
+};
+
+const nextUsefulCacheWarmerSectionIndex = () => {
+    return cacheWarmerSectionScan().targetIndex;
 };
 
 const maybeOpenDeferredCacheWarmer = async () => {
@@ -956,7 +1069,20 @@ const maybeOpenDeferredCacheWarmer = async () => {
         }
         return;
     }
-    const nextUsefulIndex = nextUsefulCacheWarmerSectionIndex();
+    const preflightScan = cacheWarmerSectionScan();
+    const nextUsefulIndex = preflightScan.targetIndex;
+    postReplaceTextPerfLog('cache-warmer.preflight.scan', {
+        firstLiveHref: firstLiveSectionHref(),
+        settledSectionCount: liveSettledSectionHrefSet().size,
+        settledSectionHrefs: Array.from(liveSettledSectionHrefSet()).sort(),
+        targetSectionIndex: preflightScan.targetIndex,
+        targetSectionHref: preflightScan.targetHref,
+        startIndex: preflightScan.startIndex,
+        activeForegroundHref: preflightScan.activeForegroundHref,
+        sectionCount: preflightScan.sectionCount,
+        sectionSample: preflightScan.sample,
+        ...captureEPUBOverlapState(),
+    });
     if (!Number.isInteger(nextUsefulIndex)) {
         globalThis.__manabiCacheWarmerOpenRequested = false;
         globalThis.__manabiCacheWarmerFinished = true;
@@ -1386,6 +1512,12 @@ const captureLandscapeInsetLayoutProbe = () => {
         .find((view) => view?.dataset?.isCache !== 'true') || null;
     const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
     const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+    const htmlStyle = getComputedStyle(document.documentElement);
+    const bodyStyle = document.body ? getComputedStyle(document.body) : null;
+    const navBar = document.getElementById('nav-bar');
+    const readerStage = document.getElementById('reader-stage');
+    const navBarRect = navBar?.getBoundingClientRect?.() ?? null;
+    const readerStageRect = readerStage?.getBoundingClientRect?.() ?? null;
     const visibleFrame = Array.from(livePaginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []).find((frame) => {
         const rect = frame?.getBoundingClientRect?.();
         return rect && rect.width > 0 && rect.height > 0;
@@ -1408,11 +1540,35 @@ const captureLandscapeInsetLayoutProbe = () => {
     return {
         windowInner: `${window.innerWidth ?? 0}x${window.innerHeight ?? 0}`,
         visualViewport: window.visualViewport ? `${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)}` : null,
-        cssTop: getComputedStyle(document.documentElement).getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
-        cssStageBottom: getComputedStyle(document.documentElement).getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+        htmlCssTop: htmlStyle.getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
+        htmlCssToolbarBottom: htmlStyle.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
+        htmlCssObscuredBottom: htmlStyle.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
+        htmlCssSystemBottom: htmlStyle.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
+        htmlCssToolbarPhysicalBottom: htmlStyle.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
+        htmlCssStageBottom: htmlStyle.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+        bodyCssTop: bodyStyle?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
+        bodyCssToolbarBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
+        bodyCssObscuredBottom: bodyStyle?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
+        bodyCssSystemBottom: bodyStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
+        bodyCssToolbarPhysicalBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
+        bodyCssStageBottom: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+        readyState: document.readyState ?? null,
+        bodyLoading: !!document.body?.classList?.contains?.('loading'),
+        hasReader: !!globalThis.reader,
+        hasReaderView: !!globalThis.reader?.view,
+        hasRenderer: !!globalThis.reader?.view?.renderer,
+        hasLiveFoliateView: !!liveFoliateView,
+        hasLivePaginator: !!livePaginator,
         documentElementRect: formatLandscapeInsetRect(document.documentElement?.getBoundingClientRect?.() ?? null),
         bodyRect: formatLandscapeInsetRect(document.body?.getBoundingClientRect?.() ?? null),
-        readerStageRect: formatLandscapeInsetRect(document.getElementById('reader-stage')?.getBoundingClientRect?.() ?? null),
+        navBarRect: formatLandscapeInsetRect(navBarRect),
+        readerStageRect: formatLandscapeInsetRect(readerStageRect),
+        navBarBottomGapToViewport: Number.isFinite(navBarRect?.bottom)
+            ? Math.round(((window.visualViewport?.height ?? window.innerHeight ?? 0) - navBarRect.bottom) * 10) / 10
+            : null,
+        readerStageBottomGapToViewport: Number.isFinite(readerStageRect?.bottom)
+            ? Math.round(((window.visualViewport?.height ?? window.innerHeight ?? 0) - readerStageRect.bottom) * 10) / 10
+            : null,
         foliateViewRect: formatLandscapeInsetRect(liveFoliateView?.getBoundingClientRect?.() ?? null),
         paginatorRect: formatLandscapeInsetRect(livePaginator?.getBoundingClientRect?.() ?? null),
         paginatorContainer: livePaginatorContainer ? `${livePaginatorContainer.clientWidth}x${livePaginatorContainer.clientHeight}` : null,
@@ -1438,10 +1594,16 @@ const postLandscapeInsetLayoutProbe = (reason) => {
     if (!hasTopInset && !hasUnexpectedStageOffset && !hasSuspiciousStageHeight) return;
     const key = JSON.stringify({
         reason,
-        cssTop: probe.cssTop,
+        htmlCssTop: probe.htmlCssTop,
+        htmlCssStageBottom: probe.htmlCssStageBottom,
+        bodyCssTop: probe.bodyCssTop,
+        bodyCssStageBottom: probe.bodyCssStageBottom,
         documentElementRect: probe.documentElementRect,
         bodyRect: probe.bodyRect,
+        navBarRect: probe.navBarRect,
         readerStageRect: probe.readerStageRect,
+        navBarBottomGapToViewport: probe.navBarBottomGapToViewport,
+        readerStageBottomGapToViewport: probe.readerStageBottomGapToViewport,
         foliateViewRect: probe.foliateViewRect,
         paginatorRect: probe.paginatorRect,
         iframeRect: probe.iframeRect,
@@ -1454,6 +1616,44 @@ const postLandscapeInsetLayoutProbe = (reason) => {
             stage: 'ebookChromeInsets.layoutProbe',
             reason,
             ...probe,
+        }));
+    } catch {}
+};
+
+const postLandscapeInsetLifecycleProbe = (reason, extra = {}) => {
+    const state = getStoredChromeInsetState();
+    const probe = captureLandscapeInsetLayoutProbe();
+    const key = JSON.stringify({
+        reason,
+        windowInner: probe.windowInner,
+        visualViewport: probe.visualViewport,
+        readyState: probe.readyState,
+        bodyLoading: probe.bodyLoading,
+        hasReaderView: probe.hasReaderView,
+        hasRenderer: probe.hasRenderer,
+        hasLiveFoliateView: probe.hasLiveFoliateView,
+        hasLivePaginator: probe.hasLivePaginator,
+        documentElementRect: probe.documentElementRect,
+        bodyRect: probe.bodyRect,
+        navBarRect: probe.navBarRect,
+        readerStageRect: probe.readerStageRect,
+        foliateViewRect: probe.foliateViewRect,
+        paginatorRect: probe.paginatorRect,
+        extra,
+    });
+    if (globalThis.__manabiLastLandscapeInsetLifecycleProbeKey === key) return;
+    globalThis.__manabiLastLandscapeInsetLifecycleProbeKey = key;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
+            stage: 'ebookChromeInsets.lifecycle',
+            reason,
+            appliedToolbarBottomOffset: state.toolbarBottomOffset,
+            appliedObscuredBottomInset: state.obscuredBottomInset,
+            appliedObscuredTopInset: state.obscuredTopInset,
+            source: state.source,
+            revision: state.revision,
+            ...extra,
+            layout: probe,
         }));
     } catch {}
 };
@@ -1546,7 +1746,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
     }
     applyResolvedChromeInsetState(nextState);
     const landscapeInsetKey = JSON.stringify({
-        locationHref: globalThis.location?.href ?? null,
         appliedObscuredTopInset: nextState.obscuredTopInset,
         appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
         appliedObscuredBottomInset: nextState.obscuredBottomInset,
@@ -1564,7 +1763,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
             window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
                 stage: 'ebookChromeInsets.appliedChanged',
                 reason,
-                locationHref: globalThis.location?.href ?? null,
                 incomingObscuredTopInset: incomingState?.obscuredTopInset ?? null,
                 appliedObscuredTopInset: nextState.obscuredTopInset,
                 appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
@@ -1575,6 +1773,11 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
                 layout: captureLandscapeInsetLayoutProbe(),
             }));
         } catch {}
+    }
+    if (shouldLogAppliedInsetChange) {
+        postLandscapeInsetLifecycleProbe(reason, {
+            sourceKind: incomingState ? 'incoming' : 'stored',
+        });
     }
 
     const chromeInsetsLog = {
@@ -2697,8 +2900,19 @@ class Reader {
     setLoadingIndicator(visible) {
         const body = document.body;
         if (!body) return;
+        const previousVisible = body.classList.contains('loading');
         const nextVisible = !!visible;
         body.classList.toggle('loading', nextVisible);
+        if (previousVisible !== nextVisible) {
+            postEPUBFlashLog('js.loadingClass.changed', {
+                previous: previousVisible,
+                next: nextVisible,
+                hasReader: !!this.view,
+                hasRenderer: !!this.view?.renderer,
+                rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+                rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+            });
+        }
     }
     #tocView
     #chevronFadeTimers = {
@@ -2775,10 +2989,18 @@ class Reader {
                 fractionInSection: safeRound(fractionInSection, 6),
                 pageItemKey: descriptor.pageItemKey ?? null,
             });
-            await this.view.renderer.goTo({
+            await runWithEPUBFlashNavigationIntent({
+                source: 'goToDescriptor',
+                target: 'renderer.goTo',
+                sectionIndex: descriptor.sectionIndex,
+                localSectionIndex: descriptor.localSectionIndex,
+                rendererTotal: descriptor.rendererTotal,
+                fractionInSection,
+                pageItemKey: descriptor.pageItemKey ?? null,
+            }, () => this.view.renderer.goTo({
                 index: Math.max(0, Math.round(descriptor.sectionIndex)),
                 anchor: fractionInSection,
-            }).catch((error) => console.error(error));
+            })).catch((error) => console.error(error));
             return;
         }
         if (typeof descriptor.cfi === 'string' && descriptor.cfi) {
@@ -2791,7 +3013,12 @@ class Reader {
                 rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
                 pageItemKey: descriptor.pageItemKey ?? null,
             });
-            await this.view.goTo(descriptor.cfi).catch((error) => console.error(error));
+            await runWithEPUBFlashNavigationIntent({
+                source: 'goToDescriptor',
+                target: 'view.goTo',
+                cfiLength: descriptor.cfi.length,
+                pageItemKey: descriptor.pageItemKey ?? null,
+            }, () => this.view.goTo(descriptor.cfi)).catch((error) => console.error(error));
             return;
         }
         if (typeof descriptor.fraction === 'number' && Number.isFinite(descriptor.fraction)) {
@@ -2804,7 +3031,12 @@ class Reader {
                 rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
                 pageItemKey: descriptor.pageItemKey ?? null,
             });
-            await this.view.goToFraction(descriptor.fraction);
+            await runWithEPUBFlashNavigationIntent({
+                source: 'goToDescriptor',
+                target: 'view.goToFraction',
+                fraction: descriptor.fraction,
+                pageItemKey: descriptor.pageItemKey ?? null,
+            }, () => this.view.goToFraction(descriptor.fraction));
         }
     }
     async goToHref(href, source = 'unknown') {
@@ -2816,7 +3048,12 @@ class Reader {
             source,
             href,
         });
-        await this.view.goTo(href);
+        await runWithEPUBFlashNavigationIntent({
+            source: 'goToHref',
+            target: 'view.goTo',
+            href,
+            requestSource: source,
+        }, () => this.view.goTo(href));
         return true;
     }
     async goToPercent(percent, source = 'unknown') {
@@ -2835,7 +3072,13 @@ class Reader {
             percent: clampedPercent,
             fraction,
         });
-        await this.view.goToFraction(fraction);
+        await runWithEPUBFlashNavigationIntent({
+            source: 'goToPercent',
+            target: 'view.goToFraction',
+            percent: clampedPercent,
+            fraction,
+            requestSource: source,
+        }, () => this.view.goToFraction(fraction));
         return true;
     }
     async goToLocationNumber(locationNumber, source = 'unknown') {
@@ -2865,7 +3108,14 @@ class Reader {
             fraction: safeRound(fraction, 6),
             isRTL: !!this.isRTL,
         });
-        await this.view.goToFraction(fraction);
+        await runWithEPUBFlashNavigationIntent({
+            source: 'goToLocationNumber',
+            target: 'view.goToFraction',
+            locationNumber: clampedLocationNumber,
+            locationTotal: maxLocationNumber,
+            fraction,
+            requestSource: source,
+        }, () => this.view.goToFraction(fraction));
         return true;
     }
     async goToPageNumber(pageNumber, source = 'unknown') {
@@ -3098,7 +3348,11 @@ class Reader {
                 });
                 return;
             }
-            this.view.goToFraction(clampedFraction)
+            runWithEPUBFlashNavigationIntent({
+                source: 'live-schedule',
+                target: 'view.goToFraction',
+                fraction: clampedFraction,
+            }, () => this.view.goToFraction(clampedFraction))
                 .then(() => {
                     postPageNumLog('goto.live-schedule.resolved', {
                         clampedFraction,
@@ -3154,6 +3408,9 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            postLandscapeInsetLifecycleProbe('window-resize', {
+                sourceKind: 'resize-event',
+            });
             this.#queueLayoutDiagnostics('window-resize');
         });
         window.visualViewport?.addEventListener?.('resize', () => {
@@ -3167,6 +3424,9 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            postLandscapeInsetLifecycleProbe('visual-viewport-resize', {
+                sourceKind: 'resize-event',
+            });
             this.#queueLayoutDiagnostics('visual-viewport-resize');
         });
         screen.orientation?.addEventListener?.('change', () => {
@@ -3177,6 +3437,9 @@ class Reader {
                 visualViewportHeight: window.visualViewport?.height ?? null,
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
+            });
+            postLandscapeInsetLifecycleProbe('screen-orientation-change', {
+                sourceKind: 'orientation-event',
             });
             this.#queueLayoutDiagnostics('screen-orientation-change');
         });
@@ -3481,6 +3744,8 @@ class Reader {
         const documentBottom = Number.isFinite(visibleDocumentRect?.bottom) ? visibleDocumentRect.bottom : null;
         const bodyBottom = Number.isFinite(visibleBodyRect?.bottom) ? visibleBodyRect.bottom : null;
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
+        const navBarBottom = Number.isFinite(navBarRect?.bottom) ? navBarRect.bottom : null;
+        const viewportHeight = window.visualViewport?.height ?? window.innerHeight ?? null;
         return {
             reason,
             extra,
@@ -3489,7 +3754,17 @@ class Reader {
                 `top=${computedStyle?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || 'nil'}`,
                 `toolbar=${computedStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || 'nil'}`,
                 `obscured=${computedStyle?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || 'nil'}`,
+                `system=${computedStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || 'nil'}`,
+                `physical=${computedStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || 'nil'}`,
                 `stage=${computedStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || 'nil'}`,
+            ].join(' '),
+            htmlCssInsets: [
+                `top=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || 'nil'}`,
+                `toolbar=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || 'nil'}`,
+                `obscured=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || 'nil'}`,
+                `system=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || 'nil'}`,
+                `physical=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || 'nil'}`,
+                `stage=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || 'nil'}`,
             ].join(' '),
             windowInnerBox: this.#formatBox(window.innerWidth ?? null, window.innerHeight ?? null),
             visualViewportBox: this.#formatBox(window.visualViewport?.width ?? null, window.visualViewport?.height ?? null),
@@ -3504,6 +3779,12 @@ class Reader {
             ),
             navBarRect: this.#formatRect(navBarRect),
             readerStageRect: this.#formatRect(readerStageRect),
+            navBarBottomGapToViewport: navBarBottom != null && Number.isFinite(viewportHeight)
+                ? safeRound(viewportHeight - navBarBottom, 1)
+                : null,
+            readerStageBottomGapToViewport: readerStageBottom != null && Number.isFinite(viewportHeight)
+                ? safeRound(viewportHeight - readerStageBottom, 1)
+                : null,
             liveFoliateViewRect: this.#formatRect(liveFoliateViewRect),
             livePaginatorRect: this.#formatRect(livePaginatorRect),
             visibleFrameRect: this.#formatRect(visibleFrameRect),
@@ -4205,6 +4486,9 @@ class Reader {
         await this.#advanceAfterMarkRead();
     }
     async open(file) {
+        postEPUBFlashLog('js.reader.open.beforeLoading', {
+            fileKind: file?.kind || 'nil',
+        });
         this.setLoadingIndicator(true);
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
@@ -4524,7 +4808,11 @@ class Reader {
         });
         if (toc) {
             this.#tocView = createTOCView(toc, async (href) => {
-                await this.view.goTo(href).catch(e => console.error(e))
+                await runWithEPUBFlashNavigationIntent({
+                    source: 'toc',
+                    target: 'view.goTo',
+                    href,
+                }, () => this.view.goTo(href)).catch(e => console.error(e))
                 this.closeSideBar()
             })
             $('#toc-view').append(this.#tocView.element)
@@ -4821,11 +5109,30 @@ class Reader {
     #onGoTo({
         willLoadNewIndex
     }) {
+        postEPUBFlashLog('js.renderer.goTo', {
+            willLoadNewIndex: !!willLoadNewIndex,
+            intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+        });
+        if (!willLoadNewIndex) {
+            postEPUBFlashLog('js.renderer.goTo.skipLoading', {
+                reason: 'same-index',
+                intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+            });
+            return;
+        }
         this.setLoadingIndicator(true);
     }
     #onDidDisplay({}) {
         const navVisibilityBefore = captureNavVisibilityState();
+        postEPUBFlashLog('js.renderer.didDisplay.beforeLoadingClear', {
+            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+        });
         this.setLoadingIndicator(false);
+        postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
+            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+        });
         applyStoredChromeInsets('reader.didDisplay');
         if (this.navHUD?.hideNavigationDueToScroll) {
             this.navHUD.setHideNavigationDueToScroll(true, 'reader.didDisplay.reapply', {
@@ -4845,7 +5152,6 @@ class Reader {
         requestAnimationFrame(() => {
             const livePaginator = this.view?.renderer?.querySelector?.('foliate-paginator');
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
-            postLandscapeInsetLayoutProbe('reader.didDisplay.raf');
             markEPUBPerf('did-display.raf.first', {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
@@ -4867,9 +5173,6 @@ class Reader {
         }
     }) {
         applyStoredChromeInsets('reader.documentLoad');
-        requestAnimationFrame(() => {
-            postLandscapeInsetLayoutProbe('reader.documentLoad.raf');
-        });
         markEPUBPerf('document.load.first', {
             documentURL: doc?.location?.href || null,
             isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
@@ -4887,6 +5190,16 @@ class Reader {
             postReplaceTextPerfLog('document.load.first-non-cache', {
                 documentURL: doc?.location?.href || null,
                 ...summarizeDocumentFontState(doc),
+                ...captureEPUBOverlapState(),
+            });
+            postReplaceTextPerfLog('document.fonts.state.first-non-cache', {
+                documentURL: doc?.location?.href || null,
+                outerHasCustomFontStyle: !!document.getElementById('mnb-custom-fonts-inline'),
+                ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
+                ebookCustomFontTag: doc?.getElementById?.('mnb-custom-fonts-inline')?.tagName || null,
+                ebookCustomFontHref: doc?.getElementById?.('mnb-custom-fonts-inline')?.href || null,
+                ...summarizeDocumentFontState(doc),
+                ...captureDocumentFontApplicationState(doc),
                 ...captureEPUBOverlapState(),
             });
         }
@@ -4949,6 +5262,13 @@ class Reader {
                         documentURL: doc?.location?.href || null,
                         elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
                         bodyTextLength: doc?.body?.innerText?.length ?? null,
+                        bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                        outerHasCustomFontStyle: !!document.getElementById('mnb-custom-fonts-inline'),
+                        ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
+                        ebookCustomFontTag: doc?.getElementById?.('mnb-custom-fonts-inline')?.tagName || null,
+                        ebookCustomFontHref: doc?.getElementById?.('mnb-custom-fonts-inline')?.href || null,
+                        ...summarizeDocumentFontState(doc),
+                        ...captureDocumentFontApplicationState(doc),
                         ...captureEPUBOverlapState(),
                     });
                 }
@@ -5366,10 +5686,6 @@ class CacheWarmer {
             const normalizedHref = this.#normalizeSectionHref(href)
             if (normalizedHref) this.settledSectionHrefs.add(normalizedHref)
         }
-        for (const href of liveSettledSectionHrefSet()) {
-            const normalizedHref = this.#normalizeSectionHref(href)
-            if (normalizedHref) this.settledSectionHrefs.add(normalizedHref)
-        }
         return Array.from(this.settledSectionHrefs).sort()
     }
     #nextUnsettledSectionIndex(settledSectionHrefs = []) {
@@ -5379,12 +5695,13 @@ class CacheWarmer {
                 ? settledSectionHrefs.map((href) => this.#normalizeSectionHref(href)).filter(Boolean)
                 : []
         )
+        const activeHref = activeForegroundSectionHref()
+        if (activeHref) settled.add(activeHref)
         const currentIndex = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex : -1
         for (let index = currentIndex + 1; index < sections.length; index += 1) {
             const section = sections[index]
             if (section?.linear === 'no') continue
             const normalizedHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
-            if (isLikelyMetadataSectionHref(normalizedHref)) continue
             if (normalizedHref && settled.has(normalizedHref)) continue
             return index
         }
@@ -5393,6 +5710,35 @@ class CacheWarmer {
     async #openFirstUnsettledSection() {
         const settledSectionHrefs = this.#mergeSettledSectionHrefs()
         const firstUnsettledIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        const settled = new Set(settledSectionHrefs)
+        const activeHref = activeForegroundSectionHref()
+        if (activeHref) settled.add(activeHref)
+        const sectionSample = (this.view?.book?.sections ?? []).slice(0, 12).map((section, index) => {
+            const href = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
+            let skipReason = null
+            if (section?.linear === 'no') skipReason = 'non-linear'
+            else if (!href) skipReason = 'missing-href'
+            else if (href === activeHref) skipReason = 'active-foreground'
+            else if (settled.has(href)) skipReason = 'warmed'
+            return {
+                index,
+                href,
+                linear: section?.linear ?? null,
+                skipReason,
+            }
+        })
+        postReplaceTextPerfLog('cache-warmer.open.scan', {
+            targetSectionIndex: firstUnsettledIndex,
+            targetSectionHref: Number.isInteger(firstUnsettledIndex)
+                ? this.#normalizeSectionHref(this.view?.book?.sections?.[firstUnsettledIndex]?.href ?? this.view?.book?.sections?.[firstUnsettledIndex]?.id ?? null)
+                : null,
+            activeForegroundHref: activeHref,
+            settledSectionCount: settledSectionHrefs.length,
+            settledSectionHrefs,
+            sectionCount: this.view?.book?.sections?.length ?? 0,
+            sectionSample,
+            ...captureEPUBOverlapState(),
+        })
         if (!Number.isInteger(firstUnsettledIndex)) {
             globalThis.__manabiCacheWarmerFinished = true
             postEPUBLog('ebook.perf.cache-warmer.finished', {
@@ -5445,7 +5791,11 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        await this.view.renderer.goTo({ index: firstUnsettledIndex })
+        await runWithEPUBFlashNavigationIntent({
+            source: 'cache-warmer.open',
+            target: 'renderer.goTo',
+            sectionIndex: firstUnsettledIndex,
+        }, () => this.view.renderer.goTo({ index: firstUnsettledIndex }))
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
@@ -5478,6 +5828,7 @@ class CacheWarmer {
                 currentSectionHref: this.lastLoadedSectionHref,
                 targetSectionIndex: targetIndex,
                 targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+                activeForegroundHref: activeForegroundSectionHref(),
                 skippedSettledSectionHrefs: [],
                 settledSectionCount: settledSectionHrefs.length,
                 ...captureEPUBOverlapState(),
@@ -5497,6 +5848,7 @@ class CacheWarmer {
             currentSectionHref: this.lastLoadedSectionHref,
             skippedToSectionIndex: targetIndex,
             skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            activeForegroundHref: activeForegroundSectionHref(),
             skippedSettledSectionHrefs,
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
@@ -5507,6 +5859,7 @@ class CacheWarmer {
             currentSectionHref: this.lastLoadedSectionHref,
             skippedToSectionIndex: targetIndex,
             skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            activeForegroundHref: activeForegroundSectionHref(),
             skippedSettledSectionHrefs,
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
@@ -5517,11 +5870,16 @@ class CacheWarmer {
             currentSectionHref: this.lastLoadedSectionHref,
             targetSectionIndex: targetIndex,
             targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            activeForegroundHref: activeForegroundSectionHref(),
             skippedSettledSectionHrefs,
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        await this.view.renderer.goTo({ index: targetIndex })
+        await runWithEPUBFlashNavigationIntent({
+            source: 'cache-warmer.advance',
+            target: 'renderer.goTo',
+            sectionIndex: targetIndex,
+        }, () => this.view.renderer.goTo({ index: targetIndex }))
     }
     destroy() {
         if (this.view) {
@@ -5651,6 +6009,10 @@ class CacheWarmer {
         const sectionHref = indexedSectionHref || sourceHref || null;
         this.lastLoadedSectionIndex = Number.isInteger(index) ? index : null;
         this.lastLoadedSectionHref = sectionHref || location || null;
+        const normalizedLoadedSectionHref = this.#normalizeSectionHref(sectionHref || location || null);
+        if (normalizedLoadedSectionHref) {
+            this.settledSectionHrefs.add(normalizedLoadedSectionHref);
+        }
         const isLikelyTitlePage = typeof sourceHref === 'string' && /(?:^|\/)(title|cover)\.xhtml$/i.test(sourceHref);
         if (Number.isInteger(index)) {
             globalThis.__manabiCacheWarmerHighestSectionIndex = Math.max(
@@ -5821,8 +6183,8 @@ window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
 }
 
-window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
-    await window.cacheWarmer.loadNextSectionSkippingSettled(settledSectionHrefs)
+window.loadNextCacheWarmerSection = async () => {
+    await window.cacheWarmer.loadNextSectionSkippingSettled()
 }
 
 window.loadEBook = ({
@@ -6101,7 +6463,42 @@ window.loadLastPosition = async ({
             displayPercentChanged,
             sectionIndex: restoreState.sectionIndex,
         });
-        await globalThis.reader.view.goToFraction(fractionalCompletion);
+        const rendererPageCurrent = globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null;
+        const rendererPageTotal = globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null;
+        const targetRendererPage = typeof rendererPageTotal === 'number' && rendererPageTotal > 1
+            ? Math.max(1, Math.min(rendererPageTotal, Math.round(fractionalCompletion * (rendererPageTotal - 1)) + 1))
+            : null;
+        if (
+            typeof rendererPageCurrent === 'number'
+            && typeof targetRendererPage === 'number'
+            && rendererPageCurrent === targetRendererPage
+        ) {
+            postEPUBFlashLog('js.restore.reconcile.skipGoTo', {
+                reason: 'same-renderer-page',
+                reconcileReason: reason,
+                rendererPageCurrent,
+                rendererPageTotal,
+                targetRendererPage,
+            });
+            postMarkReadLog('restore.reconcile.skip', {
+                reason: 'same-renderer-page',
+                reconcileReason: reason,
+                drift: safeRound(delta, 6),
+                fromFraction: safeRound(restoreState.currentFraction, 6),
+                toFraction: safeRound(fractionalCompletion, 6),
+                rendererPageCurrent,
+                rendererPageTotal,
+                targetRendererPage,
+            });
+            return;
+        }
+        await runWithEPUBFlashNavigationIntent({
+            source: 'restore.reconcile',
+            reason,
+            target: 'view.goToFraction',
+            fraction: fractionalCompletion,
+            stageOnReconcile,
+        }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
         await waitForFrames(2);
         const reconciledState = captureRestoreState(stageOnReconcile, {
             drift: safeRound(delta, 6),
@@ -6129,7 +6526,14 @@ window.loadLastPosition = async ({
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
             });
-            await globalThis.reader.view.goToFraction(fractionalCompletion);
+            await runWithEPUBFlashNavigationIntent({
+                source: 'restore.synthetic-fraction',
+                target: 'view.goToFraction',
+                fraction: fractionalCompletion,
+                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
+                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
+                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
+            }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
             await waitForFrames(2);
             const fractionState = captureRestoreState('after-synthetic-fraction', {
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
@@ -6160,10 +6564,17 @@ window.loadLastPosition = async ({
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
             });
-            await globalThis.reader.view.renderer.goTo({
+            await runWithEPUBFlashNavigationIntent({
+                source: 'restore.synthetic-locator',
+                target: 'renderer.goTo',
+                sectionIndex: syntheticRestoreLocator.sectionIndex,
+                anchor: syntheticRestoreLocator.fractionInSection,
+                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
+                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
+            }, () => globalThis.reader.view.renderer.goTo({
                 index: syntheticRestoreLocator.sectionIndex,
                 anchor: syntheticRestoreLocator.fractionInSection,
-            });
+            }));
             await waitForFrames(2);
             const syntheticState = captureRestoreState('after-synthetic-locator', {
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
@@ -6188,7 +6599,12 @@ window.loadLastPosition = async ({
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'cfi',
             });
-            await globalThis.reader.view.goTo(cfi).catch(async e => {
+            await runWithEPUBFlashNavigationIntent({
+                source: 'restore.cfi',
+                target: 'view.goTo',
+                cfiLength: cfi.length,
+                fraction: hasFractionalCompletion ? fractionalCompletion : null,
+            }, () => globalThis.reader.view.goTo(cfi)).catch(async e => {
                 postPageNumLog('restore.cfi.error', {
                     message: e?.message || String(e),
                     fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
@@ -6202,7 +6618,11 @@ window.loadLastPosition = async ({
                     postReaderLog('ebook.viewer.loadLastPosition.path', {
                         mode: 'fraction-fallback',
                     });
-                    await globalThis.reader.view.goToFraction(fractionalCompletion)
+                    await runWithEPUBFlashNavigationIntent({
+                        source: 'restore.cfi-fallback',
+                        target: 'view.goToFraction',
+                        fraction: fractionalCompletion,
+                    }, () => globalThis.reader.view.goToFraction(fractionalCompletion))
                 }
             });
             await waitForFrames(2);
@@ -6223,7 +6643,11 @@ window.loadLastPosition = async ({
                 mode: 'fraction',
             });
             try {
-                await globalThis.reader.view.goToFraction(fractionalCompletion);
+                await runWithEPUBFlashNavigationIntent({
+                    source: 'restore.fraction',
+                    target: 'view.goToFraction',
+                    fraction: fractionalCompletion,
+                }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
                 await waitForFrames(2);
                 const fractionState = captureRestoreState('after-fraction');
                 postRestoreMarkReadLog('after-fraction', fractionState);
@@ -6492,7 +6916,11 @@ window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
         });
         try {
             navHUD?.requestExplicitRelocateHistoryMutation?.('scrub-release');
-            await view.goToFraction(clampedFraction);
+            await runWithEPUBFlashNavigationIntent({
+                source: 'scrub-release',
+                target: 'view.goToFraction',
+                fraction: clampedFraction,
+            }, () => view.goToFraction(clampedFraction));
             postEBookJumpLog('scrub-release-resolved', {
                 requestedFraction: clampedFraction,
                 currentDescriptor: navHUD?._serializeDescriptorForJumpLog?.(navHUD?.getCurrentLocationDescriptor?.() ?? null) ?? null,

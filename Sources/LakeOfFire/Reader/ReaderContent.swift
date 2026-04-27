@@ -208,6 +208,9 @@ public class ReaderContent: ObservableObject {
             let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
                 || pageURL.matchesReaderURL(displayURL)
             if pageAlreadyMatchesDisplay {
+                logReaderLoad(
+                    "stage=readerContent.load.reuseExistingContent.sameDisplay requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString) currentPageURL=\(pageURL.absoluteString)"
+                )
                 return
             }
             if !pageURL.matchesReaderURL(url) {
