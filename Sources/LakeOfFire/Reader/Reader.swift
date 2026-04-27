@@ -7,18 +7,6 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
-private func logLandscapeInset(_ message: String) {
-    let sanitized = message
-        .split(separator: " ")
-        .filter {
-            !$0.hasPrefix("pageURL=")
-            && !$0.hasPrefix("contentURL=")
-            && !$0.hasPrefix("locationHref=")
-        }
-        .joined(separator: " ")
-    debugPrint("# LANDSCAPEINSET \(sanitized)")
-}
-
 private struct ReaderStatusBarFadeMask: ViewModifier {
     var topFadeHeight: CGFloat
     var edgeOpacity: CGFloat = 0.125
@@ -696,6 +684,7 @@ public struct Reader: View {
             "\(effectiveTopInset)",
             "\(effectiveBottomInset)",
             "\(effectiveToolbarBottomOffset)",
+            "\(readerViewModel.ebookChromeInsetsResyncID)",
         ].joined(separator: "|")
 
         //            VStack(spacing: 0) {
@@ -755,9 +744,6 @@ public struct Reader: View {
                             trailing: max(0, safeAreaInsets.trailing)
                         )
                         obscuredInsets = sampledInsets
-                        logLandscapeInset(
-                            "stage=reader.sampledObscuredInsets.changed size=\(Int(geometry.size.width))x\(Int(geometry.size.height)) safeAreaTop=\(sampledInsets.top) safeAreaBottom=\(sampledInsets.bottom) safeAreaLeading=\(sampledInsets.leading) safeAreaTrailing=\(sampledInsets.trailing) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomSafeAreaInset ?? 0)"
-                        )
                     }
             }
         }
@@ -778,9 +764,6 @@ public struct Reader: View {
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
-            logLandscapeInset(
-                "stage=ebookChromeInsets.swift.taskBegin sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) sampledBottom=\(sampledBottomInset) additionalBottom=\(additionalBottomInset) ebookChromeBottom=\(ebookChromeBottomInset) effectiveBottom=\(effectiveBottomInset) toolbarBottom=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary)"
-            )
             debugPrint(
                 "# EPUB  ebook.viewer.insets.task",
                 "pageURL=\(pageURL.absoluteString)",

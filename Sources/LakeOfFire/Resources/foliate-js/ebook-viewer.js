@@ -1540,13 +1540,6 @@ const captureLandscapeInsetLayoutProbe = () => {
     return {
         windowInner: `${window.innerWidth ?? 0}x${window.innerHeight ?? 0}`,
         visualViewport: window.visualViewport ? `${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)}` : null,
-        htmlCssTop: htmlStyle.getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
-        htmlCssToolbarBottom: htmlStyle.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
-        htmlCssObscuredBottom: htmlStyle.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
-        htmlCssSystemBottom: htmlStyle.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
-        htmlCssToolbarPhysicalBottom: htmlStyle.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
-        htmlCssStageBottom: htmlStyle.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
-        bodyCssTop: bodyStyle?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
         bodyCssToolbarBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
         bodyCssObscuredBottom: bodyStyle?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
         bodyCssSystemBottom: bodyStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
@@ -1554,13 +1547,8 @@ const captureLandscapeInsetLayoutProbe = () => {
         bodyCssStageBottom: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
         readyState: document.readyState ?? null,
         bodyLoading: !!document.body?.classList?.contains?.('loading'),
-        hasReader: !!globalThis.reader,
-        hasReaderView: !!globalThis.reader?.view,
-        hasRenderer: !!globalThis.reader?.view?.renderer,
         hasLiveFoliateView: !!liveFoliateView,
         hasLivePaginator: !!livePaginator,
-        documentElementRect: formatLandscapeInsetRect(document.documentElement?.getBoundingClientRect?.() ?? null),
-        bodyRect: formatLandscapeInsetRect(document.body?.getBoundingClientRect?.() ?? null),
         navBarRect: formatLandscapeInsetRect(navBarRect),
         readerStageRect: formatLandscapeInsetRect(readerStageRect),
         navBarBottomGapToViewport: Number.isFinite(navBarRect?.bottom)
@@ -1573,88 +1561,32 @@ const captureLandscapeInsetLayoutProbe = () => {
         paginatorRect: formatLandscapeInsetRect(livePaginator?.getBoundingClientRect?.() ?? null),
         paginatorContainer: livePaginatorContainer ? `${livePaginatorContainer.clientWidth}x${livePaginatorContainer.clientHeight}` : null,
         iframeRect: formatLandscapeInsetRect(visibleFrame?.getBoundingClientRect?.() ?? null),
-        iframeBodyRect: formatLandscapeInsetRect(iframeBodyRect),
+        iframeBodyRect: iframeBodyRect ? formatLandscapeInsetRect(iframeBodyRect) : null,
     };
 };
 
-const postLandscapeInsetLayoutProbe = (reason) => {
-    const state = getStoredChromeInsetState();
-    const probe = captureLandscapeInsetLayoutProbe();
-    const cssTop = parseChromeInsetPixelValue(state.obscuredTopInset);
-    const stageTop = Number.isFinite(probe.readerStageRect?.top) ? probe.readerStageRect.top : null;
-    const stageHeight = Number.isFinite(probe.readerStageRect?.height) ? probe.readerStageRect.height : null;
-    const viewportHeight = Number.isFinite(window.visualViewport?.height) ? window.visualViewport.height : window.innerHeight;
-    const hasTopInset = cssTop > 0;
-    const hasUnexpectedStageOffset = cssTop === 0 && stageTop != null && stageTop > 1;
-    const hasSuspiciousStageHeight =
-        stageHeight != null
-        && Number.isFinite(viewportHeight)
-        && viewportHeight > 0
-        && stageHeight < Math.max(80, viewportHeight * 0.5);
-    if (!hasTopInset && !hasUnexpectedStageOffset && !hasSuspiciousStageHeight) return;
-    const key = JSON.stringify({
-        reason,
-        htmlCssTop: probe.htmlCssTop,
-        htmlCssStageBottom: probe.htmlCssStageBottom,
-        bodyCssTop: probe.bodyCssTop,
-        bodyCssStageBottom: probe.bodyCssStageBottom,
-        documentElementRect: probe.documentElementRect,
-        bodyRect: probe.bodyRect,
-        navBarRect: probe.navBarRect,
-        readerStageRect: probe.readerStageRect,
-        navBarBottomGapToViewport: probe.navBarBottomGapToViewport,
-        readerStageBottomGapToViewport: probe.readerStageBottomGapToViewport,
-        foliateViewRect: probe.foliateViewRect,
-        paginatorRect: probe.paginatorRect,
-        iframeRect: probe.iframeRect,
-        iframeBodyRect: probe.iframeBodyRect,
-    });
-    if (globalThis.__manabiLastLandscapeInsetLayoutProbeKey === key) return;
-    globalThis.__manabiLastLandscapeInsetLayoutProbeKey = key;
+const postLandscapeInsetRestoreProbe = (stage, restoreState = null, extra = {}) => {
     try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
-            stage: 'ebookChromeInsets.layoutProbe',
-            reason,
-            ...probe,
-        }));
-    } catch {}
-};
-
-const postLandscapeInsetLifecycleProbe = (reason, extra = {}) => {
-    const state = getStoredChromeInsetState();
-    const probe = captureLandscapeInsetLayoutProbe();
-    const key = JSON.stringify({
-        reason,
-        windowInner: probe.windowInner,
-        visualViewport: probe.visualViewport,
-        readyState: probe.readyState,
-        bodyLoading: probe.bodyLoading,
-        hasReaderView: probe.hasReaderView,
-        hasRenderer: probe.hasRenderer,
-        hasLiveFoliateView: probe.hasLiveFoliateView,
-        hasLivePaginator: probe.hasLivePaginator,
-        documentElementRect: probe.documentElementRect,
-        bodyRect: probe.bodyRect,
-        navBarRect: probe.navBarRect,
-        readerStageRect: probe.readerStageRect,
-        foliateViewRect: probe.foliateViewRect,
-        paginatorRect: probe.paginatorRect,
-        extra,
-    });
-    if (globalThis.__manabiLastLandscapeInsetLifecycleProbeKey === key) return;
-    globalThis.__manabiLastLandscapeInsetLifecycleProbeKey = key;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
-            stage: 'ebookChromeInsets.lifecycle',
-            reason,
-            appliedToolbarBottomOffset: state.toolbarBottomOffset,
-            appliedObscuredBottomInset: state.obscuredBottomInset,
-            appliedObscuredTopInset: state.obscuredTopInset,
-            source: state.source,
-            revision: state.revision,
+        const payload = {
+            stage: 'ebookChromeInsets.restoreGeometry',
+            restoreStage: stage,
+            requestedRestoreFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
+                ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
+                : null,
+            landedFraction: typeof restoreState?.currentFraction === 'number'
+                ? safeRound(restoreState.currentFraction, 6)
+                : null,
+            landedSectionIndex: restoreState?.sectionIndex ?? null,
+            landedLocationCurrent: restoreState?.locationCurrent ?? null,
+            landedLocationTotal: restoreState?.locationTotal ?? null,
             ...extra,
-            layout: probe,
-        }));
+            layout: captureLandscapeInsetLayoutProbe(),
+        };
+        const key = JSON.stringify(payload);
+        if (globalThis.__manabiLastLandscapeInsetRestoreProbeKey !== key) {
+            globalThis.__manabiLastLandscapeInsetRestoreProbeKey = key;
+            window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify(payload));
+        }
     } catch {}
 };
 
@@ -1753,10 +1685,12 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
     });
     const shouldLogAppliedInsetChange =
-        parseChromeInsetPixelValue(nextState.obscuredTopInset) > 0 ||
-        parseChromeInsetPixelValue(nextState.toolbarBottomOffset) > 0 ||
-        parseChromeInsetPixelValue(nextState.obscuredBottomInset) > 0 ||
-        shouldInheritPositiveAncestorState;
+        reason === 'reader.didDisplay' && (
+            parseChromeInsetPixelValue(nextState.obscuredTopInset) > 0 ||
+            parseChromeInsetPixelValue(nextState.toolbarBottomOffset) > 0 ||
+            parseChromeInsetPixelValue(nextState.obscuredBottomInset) > 0 ||
+            shouldInheritPositiveAncestorState
+        );
     if (shouldLogAppliedInsetChange && globalThis.__manabiLastLandscapeInsetLogKey !== landscapeInsetKey) {
         globalThis.__manabiLastLandscapeInsetLogKey = landscapeInsetKey;
         try {
@@ -1774,12 +1708,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
             }));
         } catch {}
     }
-    if (shouldLogAppliedInsetChange) {
-        postLandscapeInsetLifecycleProbe(reason, {
-            sourceKind: incomingState ? 'incoming' : 'stored',
-        });
-    }
-
     const chromeInsetsLog = {
         reason,
         locationHref: globalThis.location?.href ?? null,
@@ -3408,9 +3336,6 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
-            postLandscapeInsetLifecycleProbe('window-resize', {
-                sourceKind: 'resize-event',
-            });
             this.#queueLayoutDiagnostics('window-resize');
         });
         window.visualViewport?.addEventListener?.('resize', () => {
@@ -3424,9 +3349,6 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
-            postLandscapeInsetLifecycleProbe('visual-viewport-resize', {
-                sourceKind: 'resize-event',
-            });
             this.#queueLayoutDiagnostics('visual-viewport-resize');
         });
         screen.orientation?.addEventListener?.('change', () => {
@@ -3437,9 +3359,6 @@ class Reader {
                 visualViewportHeight: window.visualViewport?.height ?? null,
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
-            });
-            postLandscapeInsetLifecycleProbe('screen-orientation-change', {
-                sourceKind: 'orientation-event',
             });
             this.#queueLayoutDiagnostics('screen-orientation-change');
         });
@@ -6704,6 +6623,10 @@ window.loadLastPosition = async ({
         }
         globalThis.reader.hasLoadedLastPosition = true
         const doneState = captureRestoreState('done');
+        postLandscapeInsetRestoreProbe('done', doneState, {
+            hasCFI: typeof cfi === 'string' && cfi.length > 0,
+            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
+        });
         postRestoreMarkReadLog('done', doneState);
         postReaderLog('ebook.viewer.loadLastPosition.done', {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,

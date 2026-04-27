@@ -138,6 +138,7 @@ public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
+    var hostLayoutPulseID: UInt64 = 0
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
@@ -177,6 +178,7 @@ public struct ReaderWebView: View {
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         usesEBookChromeInsets: Bool = false,
+        hostLayoutPulseID: UInt64 = 0,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
@@ -192,6 +194,7 @@ public struct ReaderWebView: View {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.usesEBookChromeInsets = usesEBookChromeInsets
+        self.hostLayoutPulseID = hostLayoutPulseID
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
@@ -221,6 +224,7 @@ public struct ReaderWebView: View {
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
             usesEBookChromeInsets: usesEBookChromeInsets,
+            hostLayoutPulseID: hostLayoutPulseID,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
@@ -261,6 +265,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
+    var hostLayoutPulseID: UInt64 = 0
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
@@ -287,9 +292,14 @@ fileprivate struct ReaderWebViewInternal: View {
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
-        let sampledBottom = usesEBookChromeInsets ? 0 : (obscuredInsets?.bottom ?? 0)
+        let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
+            ? 0
+            : (obscuredInsets?.top ?? 0)
+        let sampledBottom = additionalInsets.bottom > 0 || usesEBookChromeInsets
+            ? 0
+            : (obscuredInsets?.bottom ?? 0)
         return EdgeInsets(
-            top: max(0, (obscuredInsets?.top ?? 0) + additionalInsets.top),
+            top: max(0, sampledTop + additionalInsets.top),
             leading: max(0, (obscuredInsets?.leading ?? 0) + additionalInsets.leading),
             bottom: max(0, sampledBottom + additionalInsets.bottom),
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
@@ -319,6 +329,7 @@ fileprivate struct ReaderWebViewInternal: View {
             scriptCaller: scriptCaller,
             blockedHosts: blockedHosts,
             obscuredInsets: resolvedObscuredInsets,
+            hostLayoutPulseID: hostLayoutPulseID,
             bounces: bounces,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
