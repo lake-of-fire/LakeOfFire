@@ -138,6 +138,8 @@ const compactMarkReadDetails = (event, details = {}) => {
         selectedSentenceCount: details.selectedSentenceCount ?? 0,
         readSegmentCount: details.readSegmentCount ?? 0,
         readSentenceCount: details.readSentenceCount ?? 0,
+        recoveredTextSearchStringCount: details.recoveredTextSearchStringCount ?? 0,
+        skippedMissingSearchStringCount: details.skippedMissingSearchStringCount ?? 0,
         segmentIdentifierSample: details.segmentIdentifierSample ?? [],
         sentenceIdentifierSample: details.sentenceIdentifierSample ?? [],
         usedFoliateRange: details.usedFoliateRange ?? false,
@@ -174,6 +176,25 @@ const postMarkReadLog = (event, details = {}) => {
         ...compactDetails,
     };
     const line = `# MARKREAD ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        // optional native logger
+    }
+    try {
+        console.log(line);
+    } catch (_error) {
+        // optional console logger
+    }
+};
+
+const postMarkReadGoneLog = (event, details = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    const line = `# MARKREADGONE ${JSON.stringify(payload)}`;
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch (_error) {
@@ -2140,7 +2161,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const allSegmentNodes = Array.from(doc.querySelectorAll('mnb-seg'));
     const queryCompletedAt = performance.now();
     const useVisibleRange = !!visibleRange && visibleRange.collapsed !== true;
-    const useViewportFallback = !visibleRange;
+    const useViewportFallback = !visibleRange || visibleRange.collapsed === true;
     const rangeCommonAncestor = visibleRange?.commonAncestorContainer ?? null;
     const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
         ? rangeCommonAncestor
@@ -2294,18 +2315,21 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             missingIdentifierCount = fallbackMissingIdentifierCount;
             outOfViewportCount = fallbackOutOfViewportCount;
         }
-    } else if (visibleRange?.collapsed === true) {
+    }
+    if (visibleRange?.collapsed === true) {
         postMarkReadLog('visibleRange.collect.collapsedSkipped', {
             documentURL: doc.URL || doc.location?.href || null,
-            reason: 'collapsed-range',
+            reason: 'collapsed-range-viewport-fallback',
             segmentCandidateCount: allSegmentNodes.length,
+            fallbackVisibleSegmentCount: visibleSegments.length,
             rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
             rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
         });
         postVisibleRangeLog('collect.collapsedSkipped', {
             documentURL: doc.URL || doc.location?.href || null,
-            reason: 'collapsed-range',
+            reason: 'collapsed-range-viewport-fallback',
             segmentCandidateCount: allSegmentNodes.length,
+            fallbackVisibleSegmentCount: visibleSegments.length,
             rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
             rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
         });
@@ -2380,6 +2404,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
         outOfViewportCount,
     } = collectVisibleSegmentNodesFromRange(doc, visibleRange);
     const clusterAxis = !!doc?.body?.classList?.contains?.('reader-vertical-writing') ? 'block' : 'inline';
+    let recoveredTextSearchStringCount = 0;
     let skippedMissingSearchStringCount = 0;
     const dedupedSegments = new Map();
     const visibleSegmentIdentifiers = new Set();
@@ -2387,10 +2412,15 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     for (const item of visibleSegments) {
         if (!dedupedSegments.has(item.segmentIdentifier)) {
             const metadata = segmentMetadataForNode(item.node);
-            const searchString = metadata?.s || metadata?.ns;
+            let searchString = metadata?.s || metadata?.ns;
             if (typeof searchString !== 'string' || searchString.length === 0) {
-                skippedMissingSearchStringCount += 1;
-                continue;
+                const textSearchString = item.node.textContent?.trim?.() || '';
+                if (textSearchString.length === 0) {
+                    skippedMissingSearchStringCount += 1;
+                    continue;
+                }
+                searchString = textSearchString;
+                recoveredTextSearchStringCount += 1;
             }
             visibleSegmentIdentifiers.add(item.segmentIdentifier);
             const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node);
@@ -2446,6 +2476,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             hiddenTooltipCount,
             missingIdentifierCount,
             outOfViewportCount,
+            recoveredTextSearchStringCount,
             skippedMissingSearchStringCount,
             clusterCount: visibleSegments.length > 0 ? 1 : 0,
             stateCount: states.length,
@@ -2902,6 +2933,7 @@ class Reader {
     optimisticReadSegmentIdentifiers = new Set();
     optimisticSentenceIdentifiersRead = new Set();
     markReadSessionID = Math.random().toString(36).slice(2, 10);
+    lastPageTrackingVisibility = null;
     lastPageTrackingDiagnosticsKey = null;
     lastBookReadingProgressKey = null;
     pageTrackingRetryHandle = null;
@@ -3862,6 +3894,20 @@ class Reader {
         const shouldShowPageTracking = !!completionAction || hasStates;
         container.hidden = !shouldShowPageTracking;
         buttonHost.hidden = !shouldShowPageTracking;
+        if (this.lastPageTrackingVisibility !== null && this.lastPageTrackingVisibility && !shouldShowPageTracking) {
+            postMarkReadGoneLog('pageTracking.hidden', {
+                reason,
+                stateCount: pageTrackingStates.length,
+                hasCompletionAction: !!completionAction,
+                completionActionType: completionAction?.type ?? null,
+                containerHidden: container.hidden,
+                buttonHostHidden: buttonHost.hidden,
+                hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+                navHidden: this.navHUD?.navHidden ?? null,
+                pageTrackingBusyCount: this.pageTrackingBusyStateIDs.size,
+            });
+        }
+        this.lastPageTrackingVisibility = shouldShowPageTracking;
         this.#logMarkRead('pageTracking.render', {
             reason,
             shouldShowPageTracking,
@@ -4118,6 +4164,8 @@ class Reader {
             selectedSentenceCount: visibleScreenState?.payload?.sentenceIdentifiers?.length ?? 0,
             readSegmentCount: diagnostics.readSegmentCount,
             readSentenceCount: diagnostics.readSentenceCount,
+            recoveredTextSearchStringCount: diagnostics.recoveredTextSearchStringCount,
+            skippedMissingSearchStringCount: diagnostics.skippedMissingSearchStringCount,
             segmentIdentifierSample: (visibleScreenState?.payload?.segments ?? [])
                 .map((segment) => segment.segmentIdentifier)
                 .slice(0, 3),
@@ -4166,6 +4214,7 @@ class Reader {
             stateCount: diagnostics.stateCount,
             completedStateCount: diagnostics.completedStateCount,
             missingIdentifierCount: diagnostics.missingIdentifierCount,
+            recoveredTextSearchStringCount: diagnostics.recoveredTextSearchStringCount,
             skippedMissingSearchStringCount: diagnostics.skippedMissingSearchStringCount,
         });
         if (this.lastPageTrackingDiagnosticsKey === diagnosticsKey) {
@@ -4194,6 +4243,7 @@ class Reader {
             hiddenTooltipCount: diagnostics.hiddenTooltipCount,
             missingIdentifierCount: diagnostics.missingIdentifierCount,
             outOfViewportCount: diagnostics.outOfViewportCount,
+            recoveredTextSearchStringCount: diagnostics.recoveredTextSearchStringCount,
             skippedMissingSearchStringCount: diagnostics.skippedMissingSearchStringCount,
             clusterCount: diagnostics.clusterCount,
             stateCount: diagnostics.stateCount,
