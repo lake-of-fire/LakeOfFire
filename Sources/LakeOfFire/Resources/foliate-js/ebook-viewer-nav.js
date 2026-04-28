@@ -252,6 +252,7 @@ export class NavigationHUD {
         this.pendingRelocateJump = null;
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
+        this.lastTerminalPagesLeftSection = null;
         this.latestPrimaryLabel = '';
         this.previousRelocateVisibility = {
             back: null,
@@ -335,7 +336,7 @@ export class NavigationHUD {
     setIsRTL(isRTL) {
         this.isRTL = !!isRTL;
         this._applyRelocateButtonEdges();
-        this._updateSectionProgress();
+        this._updateSectionProgress({ source: 'rtl' });
         this._updateAuxiliaryInsets();
     }
 
@@ -416,7 +417,7 @@ export class NavigationHUD {
         // This prevents finish/restart controls from disappearing when the nav is hidden during scroll.
         const showingCompletion = !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
         this._toggleCompletionStack(showingCompletion);
-        this._updateSectionProgress();
+        this._updateSectionProgress({ source: 'nav-context' });
         this._updateRelocateButtons();
     }
     
@@ -747,7 +748,7 @@ export class NavigationHUD {
         this._logRelocateDetail(detail);
         this._updatePrimaryLine(detail);
         this._toggleCompletionStack();
-        await this._updateSectionProgress({ refreshSnapshot: false });
+        await this._updateSectionProgress({ refreshSnapshot: false, source: 'relocate' });
         this._updateRelocateButtons();
         this._pruneBackStackIfReturnedToOrigin(detail);
     }
@@ -1353,7 +1354,7 @@ export class NavigationHUD {
         requestAnimationFrame(() => this._updateAuxiliaryInsets());
     }
 
-    async _updateSectionProgress({ refreshSnapshot = true } = {}) {
+    async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
         const center = this.navSectionProgress?.center;
@@ -1366,7 +1367,23 @@ export class NavigationHUD {
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) return;
             if (sectionResolution.index == null) return;
-            if (!pagesLeft || pagesLeft <= 0) return;
+            if (!pagesLeft || pagesLeft <= 0) {
+                this.lastTerminalPagesLeftSection = sectionResolution.index;
+                return;
+            }
+            const isExplicitBackwardRelocate =
+                source === 'relocate'
+                && typeof this.lastRelocateDetail?.pageTurnDirection === 'string'
+                && this.lastRelocateDetail.pageTurnDirection.toLowerCase() === 'backward';
+            if (
+                this.lastTerminalPagesLeftSection === sectionResolution.index
+                && !isExplicitBackwardRelocate
+            ) {
+                return;
+            }
+            if (isExplicitBackwardRelocate || this.lastTerminalPagesLeftSection !== sectionResolution.index) {
+                this.lastTerminalPagesLeftSection = null;
+            }
             if (!center) return;
             const label = pagesLeft === 1
                 ? '1 page left in chapter'
@@ -1383,14 +1400,6 @@ export class NavigationHUD {
         const detail = this.lastRelocateDetail;
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
         if (sectionResolution.index == null) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.skip.no-section',
-                        refreshSnapshot,
-                    })
-                );
-            } catch {}
             return null;
         }
         if (refreshSnapshot) {
@@ -1398,18 +1407,6 @@ export class NavigationHUD {
         }
         const localCurrentIndex = this._rendererSnapshotIndex();
         if (!(typeof localCurrentIndex === 'number' && localCurrentIndex >= 0)) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.skip.no-snapshot-index',
-                        refreshSnapshot,
-                        sectionIndex: sectionResolution.index,
-                        snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                        snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                        snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-                    })
-                );
-            } catch {}
             return null;
         }
         const currentPageNumber = localCurrentIndex + 1;
@@ -1417,48 +1414,7 @@ export class NavigationHUD {
             ? this.rendererPageSnapshot.total
             : null;
         if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
-            let pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
-            // Guard against transient stale snapshot reads at chapter end (e.g. 45 -> 44 -> 45 jitter).
-            // If we think there is exactly one page left, re-sample once and trust the fresher terminal value.
-            if (pagesLeft === 1) {
-                await this._refreshRendererSnapshot();
-                const confirmedIndex = this._rendererSnapshotIndex();
-                const confirmedTotal = typeof this.rendererPageSnapshot?.total === 'number'
-                    ? this.rendererPageSnapshot.total
-                    : null;
-                if (typeof confirmedIndex === 'number' && confirmedIndex >= 0 && typeof confirmedTotal === 'number' && confirmedTotal > 0) {
-                    const confirmedCurrentPageNumber = confirmedIndex + 1;
-                    const confirmedPagesLeft = Math.max(0, confirmedTotal - confirmedCurrentPageNumber);
-                    if (confirmedPagesLeft !== pagesLeft) {
-                        try {
-                            window.webkit?.messageHandlers?.print?.postMessage?.(
-                                '# Pagesleft ' + JSON.stringify({
-                                    event: 'calculate.reconfirm.adjusted',
-                                    sectionIndex: sectionResolution.index,
-                                    initialCurrentPageNumber: currentPageNumber,
-                                    initialTotalPages: liveSectionTotal,
-                                    initialPagesLeft: pagesLeft,
-                                    confirmedCurrentPageNumber,
-                                    confirmedTotalPages: confirmedTotal,
-                                    confirmedPagesLeft,
-                                })
-                            );
-                        } catch {}
-                        pagesLeft = confirmedPagesLeft;
-                    }
-                }
-            }
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.result.snapshot',
-                        sectionIndex: sectionResolution.index,
-                        currentPageNumber,
-                        totalPages: liveSectionTotal,
-                        pagesLeft,
-                    })
-                );
-            } catch {}
+            const pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
             return pagesLeft;
         }
         // Fallback to relocate detail when renderer snapshot is not currently available.
@@ -1467,45 +1423,14 @@ export class NavigationHUD {
             const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
             if (current != null && current > 0 && total != null && total > 0) {
                 const pagesLeft = Math.max(0, total - current);
-                try {
-                    window.webkit?.messageHandlers?.print?.postMessage?.(
-                        '# Pagesleft ' + JSON.stringify({
-                            event: 'calculate.result.detail',
-                            sectionIndex: sectionResolution.index,
-                            currentPageNumber: current,
-                            totalPages: total,
-                            pagesLeft,
-                        })
-                    );
-                } catch {}
                 return pagesLeft;
             }
         }
         const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
         if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.skip.no-cache-total',
-                        sectionIndex: sectionResolution.index,
-                        currentPageNumber,
-                    })
-                );
-            } catch {}
             return null;
         }
         const pagesLeft = Math.max(0, cachedSectionTotal - currentPageNumber);
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(
-                '# Pagesleft ' + JSON.stringify({
-                    event: 'calculate.result.cache',
-                    sectionIndex: sectionResolution.index,
-                    currentPageNumber,
-                    totalPages: cachedSectionTotal,
-                    pagesLeft,
-                })
-            );
-        } catch {}
         return pagesLeft;
     }
     
@@ -2435,7 +2360,7 @@ export class NavigationHUD {
             backVisibility: backBtn ? window.getComputedStyle(backBtn).visibility : null,
             forwardVisibility: forwardBtn ? window.getComputedStyle(forwardBtn).visibility : null,
         });
-        this._updateSectionProgress();
+        this._updateSectionProgress({ source: 'relocate-buttons' });
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;
             this._logJumpDiagnostic('relocate-visibility', {
