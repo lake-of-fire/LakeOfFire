@@ -538,6 +538,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         readerContentCellStyle == .plain
     }
 
+    private var clearBorderedSmallMinHeight: CGFloat {
+        30
+    }
+
+    private var clearBorderedVerticalInset: CGFloat {
+        let measuredHeight = clearBorderedLabelHeight > 0 ? clearBorderedLabelHeight : buttonSize
+        return max(0, (clearBorderedSmallMinHeight - measuredHeight) / 2)
+    }
+
     private var showsAudioBadge: Bool {
         item.hasAudio
     }
@@ -604,9 +613,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 .labelStyle(.iconOnly)
                 .imageScale(.small)
                 .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
+                .offset(y: clearBorderedVerticalInset)
 
             controlsRow
                 .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
+                .offset(y: clearBorderedVerticalInset)
         }
         .foregroundStyle(.secondary)
         .buttonStyle(.clearBordered)

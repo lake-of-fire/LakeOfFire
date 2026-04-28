@@ -771,10 +771,51 @@ const postEPUBFlashLog = (event, details = {}) => {
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
             event,
+            timestamp: Date.now(),
             bodyLoading: !!document.body?.classList?.contains?.('loading'),
             ...details,
         }));
     } catch {}
+};
+
+const captureEPUBFlashVisualState = (view = null) => {
+    const safeRect = (el) => {
+        if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+        const rect = el.getBoundingClientRect();
+        return {
+            top: Number.isFinite(rect.top) ? Number(rect.top.toFixed(1)) : null,
+            bottom: Number.isFinite(rect.bottom) ? Number(rect.bottom.toFixed(1)) : null,
+            height: Number.isFinite(rect.height) ? Number(rect.height.toFixed(1)) : null,
+        };
+    };
+    const navBar = document.getElementById('nav-bar');
+    const readerStage = document.getElementById('reader-stage');
+    const resolvedView = view || globalThis.reader?.view || null;
+    const renderer = resolvedView?.renderer || null;
+    const paginator = renderer?.querySelector?.('foliate-paginator') || null;
+    const paginatorContainer = paginator?.shadowRoot?.getElementById?.('container') || null;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const currentIntent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
+    return {
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+        visualViewport: globalThis.visualViewport
+            ? `${Math.round(globalThis.visualViewport.width)}x${Math.round(globalThis.visualViewport.height)}`
+            : null,
+        cssObscuredTopInset: rootStyle.getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
+        cssObscuredBottomInset: rootStyle.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
+        cssToolbarBottomOffset: rootStyle.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
+        navHiddenDueToScrollClass: !!navBar?.classList?.contains?.('nav-hidden-due-to-scroll'),
+        navBarRect: safeRect(navBar),
+        readerStageRect: safeRect(readerStage),
+        paginatorRect: safeRect(paginator),
+        paginatorContainer: paginatorContainer
+            ? `${paginatorContainer.clientWidth}x${paginatorContainer.clientHeight}`
+            : null,
+        rendererPageCurrent: globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null,
+        rendererPageTotal: globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null,
+        intentSource: currentIntent?.source ?? null,
+        intentReason: currentIntent?.reason ?? null,
+    };
 };
 
 const runWithEPUBFlashNavigationIntent = async (intent, operation) => {
@@ -2839,6 +2880,7 @@ class Reader {
                 hasRenderer: !!this.view?.renderer,
                 rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
                 rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+                visual: captureEPUBFlashVisualState(this.view),
             });
         }
     }
@@ -5046,11 +5088,13 @@ class Reader {
         postEPUBFlashLog('js.renderer.didDisplay.beforeLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+            visual: captureEPUBFlashVisualState(this.view),
         });
         this.setLoadingIndicator(false);
         postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+            visual: captureEPUBFlashVisualState(this.view),
         });
         applyStoredChromeInsets('reader.didDisplay');
         if (this.navHUD?.hideNavigationDueToScroll) {
@@ -5071,6 +5115,11 @@ class Reader {
         requestAnimationFrame(() => {
             const livePaginator = this.view?.renderer?.querySelector?.('foliate-paginator');
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            postEPUBFlashLog('js.renderer.didDisplay.raf', {
+                rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+                rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+                visual: captureEPUBFlashVisualState(this.view),
+            });
             markEPUBPerf('did-display.raf.first', {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,

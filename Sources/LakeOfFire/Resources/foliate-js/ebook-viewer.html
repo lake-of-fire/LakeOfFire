@@ -63,7 +63,7 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --mnb-nav-bar-height: 56px;
+                    --mnb-nav-bar-height: 54px;
                     --mnb-obscured-top-inset: 0px;
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-obscured-bottom-inset: 0px;
@@ -646,7 +646,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: calc(var(--mnb-toolbar-physical-bottom-inset, 0px) + 7px);
+                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);

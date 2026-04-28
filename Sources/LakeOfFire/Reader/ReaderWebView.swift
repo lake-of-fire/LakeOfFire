@@ -138,7 +138,6 @@ public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
-    var hostLayoutPulseID: UInt64 = 0
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
@@ -178,7 +177,6 @@ public struct ReaderWebView: View {
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         usesEBookChromeInsets: Bool = false,
-        hostLayoutPulseID: UInt64 = 0,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
@@ -194,7 +192,6 @@ public struct ReaderWebView: View {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.usesEBookChromeInsets = usesEBookChromeInsets
-        self.hostLayoutPulseID = hostLayoutPulseID
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
@@ -224,7 +221,6 @@ public struct ReaderWebView: View {
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
             usesEBookChromeInsets: usesEBookChromeInsets,
-            hostLayoutPulseID: hostLayoutPulseID,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
@@ -265,7 +261,6 @@ fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
-    var hostLayoutPulseID: UInt64 = 0
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
@@ -329,7 +324,6 @@ fileprivate struct ReaderWebViewInternal: View {
             scriptCaller: scriptCaller,
             blockedHosts: blockedHosts,
             obscuredInsets: resolvedObscuredInsets,
-            hostLayoutPulseID: hostLayoutPulseID,
             bounces: bounces,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
