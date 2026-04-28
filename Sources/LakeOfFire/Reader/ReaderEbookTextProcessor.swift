@@ -2,6 +2,7 @@ import Foundation
 import SwiftSoup
 import LRUCache
 import LakeKit
+import JapaneseLanguageTools
 
 // Precomputed punctuation set for splitting
 private let splitPunctuation = ParsingStrings([
@@ -15,6 +16,11 @@ private func isASCIILetterOrNumber(_ character: Character) -> Bool {
     character.unicodeScalars.allSatisfy {
         $0.isASCII && CharacterSet.alphanumerics.contains($0)
     }
+}
+
+private func isJapaneseWordCharacter(_ character: Character) -> Bool {
+    let text = String(character)
+    return text.isKana || text.isKanji || text == "々" || text == "〻"
 }
 
 internal extension URL {
@@ -31,8 +37,10 @@ internal extension URL {
 }
 
 internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Document {
-    // Apply visibility sentinels
+    // Apply visibility sentinels. In the ebook pipeline this must run after
+    // reader tags are injected, so sentinels never split text before MeCab sees it.
     guard let body = doc.body() else { return doc }
+    try? body.getElementsByTag("reader-sentinel").remove()
     let interval = 16
     var charCount = 0
     var nextThreshold = interval
@@ -44,13 +52,16 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
         guard desiredOffset > 0 && desiredOffset < len else {
             return desiredOffset
         }
-        var bestOffset = desiredOffset
+        var bestOffset: Int?
         var bestScore = Int.min
         for dist in 0...maxDistance {
             for offset in [desiredOffset - dist, desiredOffset + dist] {
                 if offset <= 0 || offset >= len { continue }
                 let curr = characters[offset]
                 let prev = characters[offset - 1]
+                if isJapaneseWordCharacter(curr) && isJapaneseWordCharacter(prev) {
+                    continue
+                }
                 var score = 0
                 // Prefer splitting at ASCII whitespace
                 if curr.isWhitespace || prev.isWhitespace {
@@ -78,12 +89,43 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
             }
             if bestScore >= 3 { break }
         }
-        return bestOffset
+        return bestOffset ?? 0
     }
     
     do {
+        func closestAncestor(from node: Node, where predicate: (Element) -> Bool) -> Element? {
+            var current = node.parent()
+            while let ancestor = current {
+                if let element = ancestor as? Element, predicate(element) {
+                    return element
+                }
+                current = ancestor.parent()
+            }
+            return nil
+        }
+
+        func hasAncestorTag(_ tagNames: Set<String>, from node: Node) -> Bool {
+            closestAncestor(from: node) { tagNames.contains($0.tagNameNormal()) } != nil
+        }
+
+        func sentinelAnchor(for node: Node) -> Element? {
+            closestAncestor(from: node) { $0.tagNameNormal() == "mnb-seg" }
+        }
+
+        func sentinelAnchorKey(for anchor: Element) -> String {
+            if let id = try? anchor.attr("id"), !id.isEmpty {
+                return "id:\(id)"
+            }
+            if let selector = try? anchor.cssSelector(), !selector.isEmpty {
+                return "selector:\(selector)"
+            }
+            return "html:\((try? anchor.outerHtml()) ?? "")"
+        }
+
+        let ignoredTextAncestorTags: Set<String> = ["reader-sentinel", "script", "style", "rt", "rp"]
         func bodyTextNodesInDocumentOrder() -> [TextNode] {
-            (try? body.getAllElements().flatMap { $0.textNodes() }) ?? []
+            ((try? body.getAllElements().flatMap { $0.textNodes() }) ?? [])
+                .filter { !hasAncestorTag(ignoredTextAncestorTags, from: $0) }
         }
 
         var textNodes = bodyTextNodesInDocumentOrder()
@@ -100,9 +142,29 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
             "interval=\(interval)"
         )
         var nodeIdx = 0
+        var anchoredSentinelKeys = Set<String>()
         while nodeIdx < textNodes.count {
             var node = textNodes[nodeIdx]
             var offsetInNode = 0
+            if let anchor = sentinelAnchor(for: node) {
+                let nodeTextLength = node.text().count
+                let anchorKey = sentinelAnchorKey(for: anchor)
+                while charCount + nodeTextLength >= nextThreshold {
+                    if !anchoredSentinelKeys.contains(anchorKey) {
+                        let sentinel = Element(Tag("reader-sentinel"), "")
+                        try sentinel.attr("id", "reader-sentinel-\(idx)")
+                        idx += 1
+                        _ = try? anchor.after(sentinel)
+                        anchoredSentinelKeys.insert(anchorKey)
+                    } else {
+                        splitRejectedCount += 1
+                    }
+                    nextThreshold += interval
+                }
+                charCount += nodeTextLength
+                nodeIdx += 1
+                continue
+            }
 
             // Attempt to insert as many sentinels as needed inside this node
             while charCount + (node.text().count - offsetInNode) >= nextThreshold {
@@ -211,7 +273,7 @@ internal func ebookTextProcessor(
                 contentURL,
                 sectionLocationURL,
                 isCacheWarmer,
-                preprocessEbookContent(doc:)
+                { $0 }
             )
         }
         
@@ -227,7 +289,7 @@ internal func ebookTextProcessor(
             }
         }
         
-        guard let doc else {
+        guard var doc else {
             print("Error: Unexpectedly failed to receive doc")
             return content
         }
@@ -243,6 +305,7 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
+        doc = preprocessEbookContent(doc: doc)
         
         var htmlBytes = try doc.outerHtmlUTF8()
         print(

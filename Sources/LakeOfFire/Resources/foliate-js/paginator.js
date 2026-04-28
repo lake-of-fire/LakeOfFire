@@ -694,6 +694,7 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
+    #pendingPageTurnDirection = null
 
     #cachedSizes = null
     #cachedStart = null
@@ -2004,6 +2005,9 @@ export class Paginator extends HTMLElement {
             range,
             index
         }
+        if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
+            detail.pageTurnDirection = this.#pendingPageTurnDirection;
+        }
 
         if (this.scrolled) {
             detail.fraction = (await this.start()) / (await this.viewSize())
@@ -2340,14 +2344,19 @@ export class Paginator extends HTMLElement {
         if (this.#locked) return
 
         this.#locked = true
-        const prev = dir === -1
-        const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
-        if (shouldGo) await this.#goTo({
-            index: this.#adjacentIndex(dir),
-            anchor: prev ? () => 1 : () => 0,
-        })
-        if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-        this.#locked = false
+        this.#pendingPageTurnDirection = dir > 0 ? 'forward' : 'backward'
+        try {
+            const prev = dir === -1
+            const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+            if (shouldGo) await this.#goTo({
+                index: this.#adjacentIndex(dir),
+                anchor: prev ? () => 1 : () => 0,
+            })
+            if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+        } finally {
+            this.#pendingPageTurnDirection = null
+            this.#locked = false
+        }
     }
     async prev(distance) {
         return await this.#turnPage(-1, distance)

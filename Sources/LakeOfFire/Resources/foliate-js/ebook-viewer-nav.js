@@ -735,6 +735,7 @@ export class NavigationHUD {
         // Prefer the renderer's live snapshot, but prime it from detail when available
         this._updateRendererSnapshotFromDetail(detail);
         await this._refreshRendererSnapshot();
+        this._applyPageTurnNavigationVisibility(detail);
         this.lastRelocateDetail = detail;
         this._handleRelocateHistory(detail);
         this._logJumpBack('relocate-detail', {
@@ -749,6 +750,29 @@ export class NavigationHUD {
         await this._updateSectionProgress({ refreshSnapshot: false });
         this._updateRelocateButtons();
         this._pruneBackStackIfReturnedToOrigin(detail);
+    }
+
+    _applyPageTurnNavigationVisibility(detail) {
+        const direction = typeof detail?.pageTurnDirection === 'string'
+            ? detail.pageTurnDirection.toLowerCase()
+            : null;
+        if (direction !== 'forward' && direction !== 'backward') return;
+
+        const shouldHide = direction === 'forward';
+        this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
+            direction,
+            reason: detail?.reason ?? null,
+            sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+            pageNumber: this.rendererPageSnapshot?.current ?? null,
+            pageCount: this.rendererPageSnapshot?.total ?? null,
+        });
+        try {
+            window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+                hideNavigationDueToScroll: shouldHide,
+                source: 'relocate.page-turn',
+                direction,
+            });
+        } catch (_error) {}
     }
 
     _updateRendererSnapshotFromDetail(detail) {
@@ -1356,22 +1380,36 @@ export class NavigationHUD {
 
     
     async _calculatePagesLeftInSection({ refreshSnapshot = true } = {}) {
-        // Prefer relocate detail (already normalized to text pages) when available in paginated mode.
         const detail = this.lastRelocateDetail;
-        if (detail?.scrolled === false) {
-            const current = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
-            const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
-            if (current != null && current > 0 && total != null && total > 0) {
-                return Math.max(0, total - current);
-            }
-        }
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
-        if (sectionResolution.index == null) return null;
+        if (sectionResolution.index == null) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.skip.no-section',
+                        refreshSnapshot,
+                    })
+                );
+            } catch {}
+            return null;
+        }
         if (refreshSnapshot) {
             await this._refreshRendererSnapshot();
         }
         const localCurrentIndex = this._rendererSnapshotIndex();
         if (!(typeof localCurrentIndex === 'number' && localCurrentIndex >= 0)) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.skip.no-snapshot-index',
+                        refreshSnapshot,
+                        sectionIndex: sectionResolution.index,
+                        snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                        snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                        snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+                    })
+                );
+            } catch {}
             return null;
         }
         const currentPageNumber = localCurrentIndex + 1;
@@ -1379,13 +1417,96 @@ export class NavigationHUD {
             ? this.rendererPageSnapshot.total
             : null;
         if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
-            return Math.max(0, liveSectionTotal - currentPageNumber);
+            let pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
+            // Guard against transient stale snapshot reads at chapter end (e.g. 45 -> 44 -> 45 jitter).
+            // If we think there is exactly one page left, re-sample once and trust the fresher terminal value.
+            if (pagesLeft === 1) {
+                await this._refreshRendererSnapshot();
+                const confirmedIndex = this._rendererSnapshotIndex();
+                const confirmedTotal = typeof this.rendererPageSnapshot?.total === 'number'
+                    ? this.rendererPageSnapshot.total
+                    : null;
+                if (typeof confirmedIndex === 'number' && confirmedIndex >= 0 && typeof confirmedTotal === 'number' && confirmedTotal > 0) {
+                    const confirmedCurrentPageNumber = confirmedIndex + 1;
+                    const confirmedPagesLeft = Math.max(0, confirmedTotal - confirmedCurrentPageNumber);
+                    if (confirmedPagesLeft !== pagesLeft) {
+                        try {
+                            window.webkit?.messageHandlers?.print?.postMessage?.(
+                                '# Pagesleft ' + JSON.stringify({
+                                    event: 'calculate.reconfirm.adjusted',
+                                    sectionIndex: sectionResolution.index,
+                                    initialCurrentPageNumber: currentPageNumber,
+                                    initialTotalPages: liveSectionTotal,
+                                    initialPagesLeft: pagesLeft,
+                                    confirmedCurrentPageNumber,
+                                    confirmedTotalPages: confirmedTotal,
+                                    confirmedPagesLeft,
+                                })
+                            );
+                        } catch {}
+                        pagesLeft = confirmedPagesLeft;
+                    }
+                }
+            }
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.result.snapshot',
+                        sectionIndex: sectionResolution.index,
+                        currentPageNumber,
+                        totalPages: liveSectionTotal,
+                        pagesLeft,
+                    })
+                );
+            } catch {}
+            return pagesLeft;
+        }
+        // Fallback to relocate detail when renderer snapshot is not currently available.
+        if (detail?.scrolled === false) {
+            const current = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
+            const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
+            if (current != null && current > 0 && total != null && total > 0) {
+                const pagesLeft = Math.max(0, total - current);
+                try {
+                    window.webkit?.messageHandlers?.print?.postMessage?.(
+                        '# Pagesleft ' + JSON.stringify({
+                            event: 'calculate.result.detail',
+                            sectionIndex: sectionResolution.index,
+                            currentPageNumber: current,
+                            totalPages: total,
+                            pagesLeft,
+                        })
+                    );
+                } catch {}
+                return pagesLeft;
+            }
         }
         const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
         if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.skip.no-cache-total',
+                        sectionIndex: sectionResolution.index,
+                        currentPageNumber,
+                    })
+                );
+            } catch {}
             return null;
         }
-        return Math.max(0, cachedSectionTotal - currentPageNumber);
+        const pagesLeft = Math.max(0, cachedSectionTotal - currentPageNumber);
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(
+                '# Pagesleft ' + JSON.stringify({
+                    event: 'calculate.result.cache',
+                    sectionIndex: sectionResolution.index,
+                    currentPageNumber,
+                    totalPages: cachedSectionTotal,
+                    pagesLeft,
+                })
+            );
+        } catch {}
+        return pagesLeft;
     }
     
     _handleRelocateHistory(detail) {
