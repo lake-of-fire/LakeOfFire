@@ -111,6 +111,7 @@ const MARKREAD_ALLOWED_EVENTS = new Set([
     'completion.ignored',
     'completion.click',
     'completion.finish.dispatch',
+    'completion.finish.readState',
     'completion.restart.dispatch',
     'completion.restart.resetToFirstSection',
     'completion.unknown',
@@ -4351,12 +4352,27 @@ class Reader {
         try {
             switch (actionType) {
                 case 'finish':
+                    const sectionReadState = this.#currentSectionReadState();
+                    this.#logMarkRead('completion.finish.readState', sectionReadState);
                     this.#logMarkRead('completion.finish.dispatch', {
                         actionType,
                         label: this.completionAction?.label ?? null,
+                        allSectionsRead: sectionReadState.allSectionsRead,
+                        currentPageNumber: sectionReadState.currentPageNumber,
+                        totalPages: sectionReadState.totalPages,
+                        pagesLeft: sectionReadState.pagesLeft,
+                        segmentCount: sectionReadState.segmentCount,
+                        unreadSegmentCount: sectionReadState.unreadSegmentCount,
+                        optimisticReadSegmentCount: sectionReadState.optimisticReadSegmentCount,
                     });
                     window.webkit.messageHandlers.finishedReadingBook.postMessage({
                         topWindowURL: window.top.location.href,
+                        allSectionsRead: sectionReadState.allSectionsRead,
+                        currentPageNumber: sectionReadState.currentPageNumber,
+                        totalPages: sectionReadState.totalPages,
+                        pagesLeft: sectionReadState.pagesLeft,
+                        segmentCount: sectionReadState.segmentCount,
+                        unreadSegmentCount: sectionReadState.unreadSegmentCount,
                     });
                     break;
                 case 'restart':
@@ -4386,6 +4402,73 @@ class Reader {
                 });
             }
         }
+    }
+    #currentSectionReadState() {
+        const currentPageNumber = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+            ? this.navHUD.rendererPageSnapshot.current
+            : (typeof this.navHUD?.lastRelocateDetail?.pageNumber === 'number'
+                ? this.navHUD.lastRelocateDetail.pageNumber
+                : null);
+        const totalPages = typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
+            ? this.navHUD.rendererPageSnapshot.total
+            : (typeof this.navHUD?.lastRelocateDetail?.pageCount === 'number'
+                ? this.navHUD.lastRelocateDetail.pageCount
+                : null);
+        const pagesLeft = typeof currentPageNumber === 'number' && typeof totalPages === 'number'
+            ? Math.max(0, totalPages - currentPageNumber)
+            : null;
+        const contents = this.view?.renderer?.getContents?.() || [];
+        const doc = contents[0]?.doc;
+        if (!isDocumentLike(doc)) {
+            return {
+                allSectionsRead: true,
+                reason: 'missing-document',
+                documentURL: null,
+                currentPageNumber,
+                totalPages,
+                pagesLeft,
+                segmentCount: 0,
+                readSegmentCount: 0,
+                unreadSegmentCount: 0,
+                optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
+            };
+        }
+        const segmentIdentifiers = Array.from(doc.querySelectorAll('mnb-seg'))
+            .map((segmentNode) => segmentIdentifierForNode(segmentNode))
+            .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
+        if (segmentIdentifiers.length === 0) {
+            return {
+                allSectionsRead: true,
+                reason: 'empty-section',
+                documentURL: doc.URL || doc.location?.href || null,
+                currentPageNumber,
+                totalPages,
+                pagesLeft,
+                segmentCount: 0,
+                readSegmentCount: 0,
+                unreadSegmentCount: 0,
+                optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
+            };
+        }
+        const readSegmentIdentifiers = new Set([
+            ...normalizeArticleReadingProgress(this.articleReadingProgress).readSegmentIdentifiers,
+            ...this.optimisticReadSegmentIdentifiers,
+        ]);
+        const unreadSegmentCount = segmentIdentifiers
+            .filter((identifier) => !readSegmentIdentifiers.has(identifier))
+            .length;
+        return {
+            allSectionsRead: unreadSegmentCount === 0,
+            reason: 'segments',
+            documentURL: doc.URL || doc.location?.href || null,
+            currentPageNumber,
+            totalPages,
+            pagesLeft,
+            segmentCount: segmentIdentifiers.length,
+            readSegmentCount: segmentIdentifiers.length - unreadSegmentCount,
+            unreadSegmentCount,
+            optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
+        };
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);

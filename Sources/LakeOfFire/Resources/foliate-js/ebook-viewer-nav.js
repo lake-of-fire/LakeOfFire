@@ -1379,6 +1379,17 @@ export class NavigationHUD {
                 this.lastTerminalPagesLeftSection === sectionResolution.index
                 && !isExplicitBackwardRelocate
             ) {
+                try {
+                    window.webkit?.messageHandlers?.print?.postMessage?.(
+                        '# Pagesleft ' + JSON.stringify({
+                            event: 'label.suppress-terminal-regression',
+                            source,
+                            sectionIndex: sectionResolution.index,
+                            pagesLeft,
+                            pageTurnDirection: this.lastRelocateDetail?.pageTurnDirection ?? null,
+                        })
+                    );
+                } catch {}
                 return;
             }
             if (isExplicitBackwardRelocate || this.lastTerminalPagesLeftSection !== sectionResolution.index) {
@@ -1400,6 +1411,14 @@ export class NavigationHUD {
         const detail = this.lastRelocateDetail;
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
         if (sectionResolution.index == null) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.skip.no-section',
+                        refreshSnapshot,
+                    })
+                );
+            } catch {}
             return null;
         }
         if (refreshSnapshot) {
@@ -1407,6 +1426,18 @@ export class NavigationHUD {
         }
         const localCurrentIndex = this._rendererSnapshotIndex();
         if (!(typeof localCurrentIndex === 'number' && localCurrentIndex >= 0)) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.skip.no-snapshot-index',
+                        refreshSnapshot,
+                        sectionIndex: sectionResolution.index,
+                        snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                        snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                        snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+                    })
+                );
+            } catch {}
             return null;
         }
         const currentPageNumber = localCurrentIndex + 1;
@@ -1415,6 +1446,17 @@ export class NavigationHUD {
             : null;
         if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
             const pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.result.snapshot',
+                        sectionIndex: sectionResolution.index,
+                        currentPageNumber,
+                        totalPages: liveSectionTotal,
+                        pagesLeft,
+                    })
+                );
+            } catch {}
             return pagesLeft;
         }
         // Fallback to relocate detail when renderer snapshot is not currently available.
@@ -1423,14 +1465,45 @@ export class NavigationHUD {
             const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
             if (current != null && current > 0 && total != null && total > 0) {
                 const pagesLeft = Math.max(0, total - current);
+                try {
+                    window.webkit?.messageHandlers?.print?.postMessage?.(
+                        '# Pagesleft ' + JSON.stringify({
+                            event: 'calculate.result.detail',
+                            sectionIndex: sectionResolution.index,
+                            currentPageNumber: current,
+                            totalPages: total,
+                            pagesLeft,
+                        })
+                    );
+                } catch {}
                 return pagesLeft;
             }
         }
         const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
         if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(
+                    '# Pagesleft ' + JSON.stringify({
+                        event: 'calculate.skip.no-cache-total',
+                        sectionIndex: sectionResolution.index,
+                        currentPageNumber,
+                    })
+                );
+            } catch {}
             return null;
         }
         const pagesLeft = Math.max(0, cachedSectionTotal - currentPageNumber);
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(
+                '# Pagesleft ' + JSON.stringify({
+                    event: 'calculate.result.cache',
+                    sectionIndex: sectionResolution.index,
+                    currentPageNumber,
+                    totalPages: cachedSectionTotal,
+                    pagesLeft,
+                })
+            );
+        } catch {}
         return pagesLeft;
     }
     
