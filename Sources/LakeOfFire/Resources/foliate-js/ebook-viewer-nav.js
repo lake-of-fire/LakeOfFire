@@ -253,6 +253,8 @@ export class NavigationHUD {
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
         this.lastTerminalPagesLeftSection = null;
+        this.lastTerminalPagesLeftPageNumber = null;
+        this.sectionProgressRequestToken = 0;
         this.latestPrimaryLabel = '';
         this.previousRelocateVisibility = {
             back: null,
@@ -1355,45 +1357,68 @@ export class NavigationHUD {
     }
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
+        const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
         const center = this.navSectionProgress?.center;
+        const labelBefore = {
+            text: center?.textContent ?? null,
+            hidden: center?.hidden ?? null,
+            display: center ? getComputedStyle(center).display : null,
+            opacity: center ? getComputedStyle(center).opacity : null,
+        };
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
-        if (center) center.hidden = true;
+        if (center) {
+            center.hidden = true;
+            center.textContent = '';
+        }
         try {
             const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
-            const pagesLeft = await this._calculatePagesLeftInSection({ refreshSnapshot });
+            const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
+            const pagesLeft = result?.pagesLeft ?? null;
+            if (requestToken !== this.sectionProgressRequestToken) {
+                return;
+            }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
-            if (this.hideNavigationDueToScroll || showingCompletion) return;
-            if (sectionResolution.index == null) return;
+            if (this.hideNavigationDueToScroll || showingCompletion) {
+                return;
+            }
+            if (sectionResolution.index == null) {
+                return;
+            }
             if (!pagesLeft || pagesLeft <= 0) {
                 this.lastTerminalPagesLeftSection = sectionResolution.index;
+                this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
+                if (center) {
+                    center.textContent = '';
+                    center.hidden = true;
+                }
                 return;
             }
             const isExplicitBackwardRelocate =
                 source === 'relocate'
                 && typeof this.lastRelocateDetail?.pageTurnDirection === 'string'
                 && this.lastRelocateDetail.pageTurnDirection.toLowerCase() === 'backward';
+            const movedBeforeTerminalPage =
+                this.lastTerminalPagesLeftSection === sectionResolution.index
+                && typeof this.lastTerminalPagesLeftPageNumber === 'number'
+                && typeof result?.currentPageNumber === 'number'
+                && result.currentPageNumber < this.lastTerminalPagesLeftPageNumber;
             if (
                 this.lastTerminalPagesLeftSection === sectionResolution.index
                 && !isExplicitBackwardRelocate
+                && !movedBeforeTerminalPage
             ) {
-                try {
-                    window.webkit?.messageHandlers?.print?.postMessage?.(
-                        '# Pagesleft ' + JSON.stringify({
-                            event: 'label.suppress-terminal-regression',
-                            source,
-                            sectionIndex: sectionResolution.index,
-                            pagesLeft,
-                            pageTurnDirection: this.lastRelocateDetail?.pageTurnDirection ?? null,
-                        })
-                    );
-                } catch {}
                 return;
             }
-            if (isExplicitBackwardRelocate || this.lastTerminalPagesLeftSection !== sectionResolution.index) {
+            if (
+                isExplicitBackwardRelocate
+                || movedBeforeTerminalPage
+                || this.lastTerminalPagesLeftSection !== sectionResolution.index
+            ) {
                 this.lastTerminalPagesLeftSection = null;
+                this.lastTerminalPagesLeftPageNumber = null;
             }
             if (!center) return;
             const label = pagesLeft === 1
@@ -1407,18 +1432,10 @@ export class NavigationHUD {
     }
 
     
-    async _calculatePagesLeftInSection({ refreshSnapshot = true } = {}) {
+    async _calculatePagesLeftInSection({ refreshSnapshot = true, requestToken = null, source = 'unknown' } = {}) {
         const detail = this.lastRelocateDetail;
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
         if (sectionResolution.index == null) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.skip.no-section',
-                        refreshSnapshot,
-                    })
-                );
-            } catch {}
             return null;
         }
         if (refreshSnapshot) {
@@ -1426,18 +1443,6 @@ export class NavigationHUD {
         }
         const localCurrentIndex = this._rendererSnapshotIndex();
         if (!(typeof localCurrentIndex === 'number' && localCurrentIndex >= 0)) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.skip.no-snapshot-index',
-                        refreshSnapshot,
-                        sectionIndex: sectionResolution.index,
-                        snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                        snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                        snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-                    })
-                );
-            } catch {}
             return null;
         }
         const currentPageNumber = localCurrentIndex + 1;
@@ -1446,18 +1451,13 @@ export class NavigationHUD {
             : null;
         if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
             const pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.result.snapshot',
-                        sectionIndex: sectionResolution.index,
-                        currentPageNumber,
-                        totalPages: liveSectionTotal,
-                        pagesLeft,
-                    })
-                );
-            } catch {}
-            return pagesLeft;
+            return {
+                pagesLeft,
+                source: 'snapshot',
+                currentPageNumber,
+                totalPages: liveSectionTotal,
+                sectionIndex: sectionResolution.index,
+            };
         }
         // Fallback to relocate detail when renderer snapshot is not currently available.
         if (detail?.scrolled === false) {
@@ -1465,46 +1465,27 @@ export class NavigationHUD {
             const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
             if (current != null && current > 0 && total != null && total > 0) {
                 const pagesLeft = Math.max(0, total - current);
-                try {
-                    window.webkit?.messageHandlers?.print?.postMessage?.(
-                        '# Pagesleft ' + JSON.stringify({
-                            event: 'calculate.result.detail',
-                            sectionIndex: sectionResolution.index,
-                            currentPageNumber: current,
-                            totalPages: total,
-                            pagesLeft,
-                        })
-                    );
-                } catch {}
-                return pagesLeft;
+                return {
+                    pagesLeft,
+                    source: 'detail',
+                    currentPageNumber: current,
+                    totalPages: total,
+                    sectionIndex: sectionResolution.index,
+                };
             }
         }
         const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
         if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(
-                    '# Pagesleft ' + JSON.stringify({
-                        event: 'calculate.skip.no-cache-total',
-                        sectionIndex: sectionResolution.index,
-                        currentPageNumber,
-                    })
-                );
-            } catch {}
             return null;
         }
         const pagesLeft = Math.max(0, cachedSectionTotal - currentPageNumber);
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(
-                '# Pagesleft ' + JSON.stringify({
-                    event: 'calculate.result.cache',
-                    sectionIndex: sectionResolution.index,
-                    currentPageNumber,
-                    totalPages: cachedSectionTotal,
-                    pagesLeft,
-                })
-            );
-        } catch {}
-        return pagesLeft;
+        return {
+            pagesLeft,
+            source: 'cache',
+            currentPageNumber,
+            totalPages: cachedSectionTotal,
+            sectionIndex: sectionResolution.index,
+        };
     }
     
     _handleRelocateHistory(detail) {

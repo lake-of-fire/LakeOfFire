@@ -657,6 +657,7 @@ export class Paginator extends HTMLElement {
         this.#cachedSizes = null
         //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
+        this.#invalidateVisibleRangeCache()
 
         //        this.render()
         //        requestAnimationFrame(() => {
@@ -698,6 +699,9 @@ export class Paginator extends HTMLElement {
 
     #cachedSizes = null
     #cachedStart = null
+    #visibleRangeCache = null
+    #visibleRangeInFlight = null
+    #visibleRangeCacheVersion = 0
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
@@ -870,7 +874,6 @@ export class Paginator extends HTMLElement {
         this.#container.addEventListener('scroll', debounce(async () => {
             if (this.#view.isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
-                const range = await this.#getVisibleRange();
                 const index = this.#index;
                 let fraction = 0;
                 if (this.scrolled) {
@@ -886,7 +889,6 @@ export class Paginator extends HTMLElement {
                 this.dispatchEvent(new CustomEvent('relocate', {
                     detail: {
                         reason: 'live-scroll',
-                        range,
                         index,
                         fraction
                     }
@@ -941,6 +943,7 @@ export class Paginator extends HTMLElement {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
         }
+        this.#invalidateVisibleRangeCache()
         this.#view = new View({
             container: this,
             onBeforeExpand: this.#onBeforeExpand.bind(this),
@@ -964,6 +967,7 @@ export class Paginator extends HTMLElement {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
+        this.#invalidateVisibleRangeCache()
         this.#setLoading(true)
     }
     async #onExpand() {
@@ -971,6 +975,7 @@ export class Paginator extends HTMLElement {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
+        this.#invalidateVisibleRangeCache()
 
         if (this.#scrolledToAnchorOnLoad) {
             // wait a frame to ensure layout has settled before scrolling
@@ -982,6 +987,41 @@ export class Paginator extends HTMLElement {
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
+    }
+    #invalidateVisibleRangeCache() {
+        this.#visibleRangeCache = null
+        this.#visibleRangeInFlight = null
+        this.#visibleRangeCacheVersion += 1
+    }
+    async #visibleRangeCacheKey() {
+        await this.#awaitDirection()
+        const doc = this.#view?.document ?? null
+        const container = this.#container
+        if (!doc || !container) return null
+        const scrollProp = await this.scrollProp()
+        const scrollOffset = Math.round(container[scrollProp] || 0)
+        return {
+            doc,
+            key: [
+                this.#index,
+                this.scrolled ? 'scrolled' : 'paginated',
+                this.#vertical ? 'vertical' : 'horizontal',
+                this.#rtl ? 'rtl' : 'ltr',
+                scrollProp,
+                scrollOffset,
+                Math.round(container.clientWidth || 0),
+                Math.round(container.clientHeight || 0),
+                Math.round(container.scrollWidth || 0),
+                Math.round(container.scrollHeight || 0),
+            ].join('|')
+        }
+    }
+    #cloneRange(range) {
+        try {
+            return range?.cloneRange?.() ?? range
+        } catch {
+            return range
+        }
     }
     async #getSentinelVisibilities() {
         //        console.log("trackSentinelVisibilities...")
@@ -1313,6 +1353,7 @@ export class Paginator extends HTMLElement {
         if (!this.#view) {
             return
         }
+        this.#invalidateVisibleRangeCache()
 
         // avoid unwanted triggers
         //        this.#hasResizeObserverTriggered = false
@@ -1927,6 +1968,16 @@ export class Paginator extends HTMLElement {
     async #getVisibleRange() {
         //            console.log("getVisibleRange...")
         await this.#awaitDirection();
+        const cacheKey = await this.#visibleRangeCacheKey()
+        if (cacheKey && this.#visibleRangeCache?.doc === cacheKey.doc && this.#visibleRangeCache?.key === cacheKey.key) {
+            return this.#cloneRange(this.#visibleRangeCache.range)
+        }
+        if (cacheKey && this.#visibleRangeInFlight?.doc === cacheKey.doc && this.#visibleRangeInFlight?.key === cacheKey.key) {
+            const range = await this.#visibleRangeInFlight.promise
+            return this.#cloneRange(range)
+        }
+        const cacheVersion = this.#visibleRangeCacheVersion
+        const computeVisibleRange = async () => {
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
         const visibleSentinelIDs = await this.#getSentinelVisibilities()
         //            await new Promise(r => requestAnimationFrame(r));
@@ -1984,6 +2035,30 @@ export class Paginator extends HTMLElement {
             range.collapse(true);
         }
         return range;
+        }
+        const promise = computeVisibleRange()
+        if (cacheKey) {
+            this.#visibleRangeInFlight = {
+                doc: cacheKey.doc,
+                key: cacheKey.key,
+                promise
+            }
+        }
+        try {
+            const range = await promise
+            if (cacheKey && this.#visibleRangeCacheVersion === cacheVersion) {
+                this.#visibleRangeCache = {
+                    doc: cacheKey.doc,
+                    key: cacheKey.key,
+                    range
+                }
+            }
+            return this.#cloneRange(range)
+        } finally {
+            if (cacheKey && this.#visibleRangeInFlight?.promise === promise) {
+                this.#visibleRangeInFlight = null
+            }
+        }
     }
     async #afterScroll(reason) {
         if (this.#isCacheWarmer) {
@@ -2135,6 +2210,7 @@ export class Paginator extends HTMLElement {
 
                 this.#cachedSizes = null
                 this.#cachedStart = null
+                this.#invalidateVisibleRangeCache()
                 //                console.log("#display... scrolledToAnchorOnLoad = false")
                 this.#scrolledToAnchorOnLoad = false
 

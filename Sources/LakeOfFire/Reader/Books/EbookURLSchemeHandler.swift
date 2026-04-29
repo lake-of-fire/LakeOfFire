@@ -42,6 +42,8 @@ fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> Str
 
 fileprivate let ebookReplaceTextDetailedLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
+fileprivate let ebookReplaceTextVerboseLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_VERBOSE_LOGS"] == "1"
 fileprivate let ebookReplaceTextSlowSummaryThresholdMs = 5_000
 
 @inline(__always)
@@ -111,7 +113,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
         let startedAt = Date()
         if inFlightWaitersByKey[key] != nil {
             let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
-            if ebookReplaceTextDetailedLoggingEnabled {
+            if ebookReplaceTextVerboseLoggingEnabled {
                 debugPrint(
                     "# REPLACETEXT",
                     "native.process.deduper.join",
@@ -145,7 +147,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
         }
 
         inFlightWaitersByKey[key] = []
-        if ebookReplaceTextDetailedLoggingEnabled {
+        if ebookReplaceTextVerboseLoggingEnabled {
             debugPrint(
                 "# REPLACETEXT",
                 "native.process.deduper.leader",
@@ -216,7 +218,7 @@ actor EBookProcessingActor {
         isCacheWarmer: Bool
     ) async throws -> String {
         let startedAt = Date()
-        if ebookReplaceTextDetailedLoggingEnabled {
+        if ebookReplaceTextVerboseLoggingEnabled {
             debugPrint(
                 "# REPLACETEXT",
                 "native.process.actor.start",
@@ -241,18 +243,21 @@ actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
-        debugPrint(
-            "# REPLACETEXT",
-            "native.process.actor.end",
-            [
-                "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                "location": location,
-                "isCacheWarmer": isCacheWarmer,
-                "textLength": text.utf8.count,
-                "responseLength": result.utf8.count,
-                "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000)
-            ] as [String: Any]
-        )
+        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: elapsedMs) {
+            debugPrint(
+                "# REPLACETEXT",
+                "native.process.actor.end",
+                [
+                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
+                    "location": location,
+                    "isCacheWarmer": isCacheWarmer,
+                    "textLength": text.utf8.count,
+                    "responseLength": result.utf8.count,
+                    "elapsedMs": elapsedMs
+                ] as [String: Any]
+            )
+        }
         return result
     }
 }
@@ -427,7 +432,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: isCacheWarmer,
                             text: text
                         )
-                        if ebookReplaceTextDetailedLoggingEnabled {
+                        if ebookReplaceTextVerboseLoggingEnabled {
                             debugPrint(
                                 "# REPLACETEXT",
                                 "native.process.request.start",
@@ -482,7 +487,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                             return
                         }
+                        let responseDataEncodeStartedAt = Date()
                         if let respData = respText.data(using: .utf8) {
+                            let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
                             let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
                                 debugPrint(
@@ -496,16 +503,33 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                         "textFingerprint": processRequestKey.textFingerprint,
                                         "didCoalesce": didCoalesce,
                                         "responseLength": respData.count,
+                                        "responseDataEncodeMs": responseDataEncodeElapsedMs,
                                         "elapsedMs": responseReadyElapsedMs
                                     ] as [String: Any]
                                 )
                             }
+                            let httpResponseBuildStartedAt = Date()
                             let resp = HTTPURLResponse(
                                 url: url,
                                 mimeType: nil,
                                 expectedContentLength: respData.count,
                                 textEncodingName: "utf-8"
                             )
+                            let httpResponseBuildElapsedMs = Int(Date().timeIntervalSince(httpResponseBuildStartedAt) * 1000)
+                            if httpResponseBuildElapsedMs > 0 {
+                                debugPrint(
+                                    "# REPLACETEXT",
+                                    "native.process.request.httpResponseBuilt",
+                                    [
+                                        "contentURL": ebookProcessTextSample(contentURL.absoluteString),
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "responseLength": respData.count,
+                                        "httpResponseBuildMs": httpResponseBuildElapsedMs,
+                                        "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1000)
+                                    ] as [String: Any]
+                                )
+                            }
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     //                                    if !isCacheWarmer {

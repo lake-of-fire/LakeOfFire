@@ -247,7 +247,6 @@
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);
                     flex: 0 0 var(--mnb-nav-bar-height);
-                    -webkit-backdrop-filter: blur(30px);
                     contain: layout size style;
                     padding: 0;
                 }
@@ -438,10 +437,6 @@
                     visibility: visible !important;
                     pointer-events: auto !important;
                 }
-                #nav-bar.nav-hidden-due-to-scroll {
-                    -webkit-backdrop-filter: none;
-                    backdrop-filter: none;
-                }
                 .nav-section-progress {
                     font-size: 10px !important;
                     font-weight: 600;
@@ -450,7 +445,7 @@
                     transition: opacity 375ms ease-out;
                 }
                 .nav-section-progress[hidden] {
-                    display: none;
+                    display: none !important;
                 }
                 .toolbar .nav-relocate-button {
                     display: flex;
@@ -702,9 +697,7 @@
                     box-sizing: content-box;
                     border-radius: 9999px;
                     border: 1px solid var(--theme-tracking-unread-color);
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 22%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 17%, transparent);
+                    box-shadow: none;
                     margin: 0;
                     padding: 0;
                     gap: 0;
@@ -724,7 +717,6 @@
                         color 240ms ease,
                         opacity 240ms ease-in-out,
                         transform 240ms ease,
-                        box-shadow 240ms ease,
                         width 240ms ease,
                         padding 240ms ease,
                         gap 240ms ease,
@@ -912,9 +904,7 @@
                     padding-inline: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px) !important;
                     gap: 0;
                     justify-content: center;
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 22%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 17%, transparent);
+                    box-shadow: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-label {
                     max-width: 180px;
@@ -938,9 +928,8 @@
                     transform: translateX(-320px);
                     display: flex;
                     flex-direction: column;
-                    /*background: Canvas;*/
-                    background-color: rgba(0, 0, 0, .05);
-                    backdrop-filter: blur(20px);
+                    background-color: Canvas;
+                    background-color: -apple-system-secondary-background;
                     color: CanvasText;
                     box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
                     transition: visibility 0s linear 300ms, transform 300ms ease;
@@ -975,6 +964,11 @@
                     opacity: 0;
                     transition: visibility 0s linear 300ms, opacity 300ms ease;
                     contain: strict;
+                }
+                #loading-indicator[hidden],
+                #dimming-overlay[hidden],
+                #side-bar[hidden] {
+                    display: none !important;
                 }
                 #loading-indicator {
                     background: rgba(255, 255, 255, 1);
@@ -1082,7 +1076,8 @@
                 .ispinner {
                     position: relative;
                     width: 20px;
-                    height: 20px; }
+                    height: 20px;
+                    contain: strict; }
                 .ispinner .ispinner-blade {
                     position: absolute;
                     top: 6.5px;
@@ -1091,7 +1086,13 @@
                     height: 6.5px;
                     background-color: #8e8e93;
                     border-radius: 1.25px;
-                    animation: iSpinnerBlade 1s linear infinite;
+                    animation: none; }
+                body.loading #loading-indicator .ispinner-blade,
+                .ispinner.nav-spinner .ispinner-blade {
+                    animation-name: iSpinnerBlade;
+                    animation-duration: 1s;
+                    animation-timing-function: linear;
+                    animation-iteration-count: infinite;
                     will-change: opacity; }
                 .ispinner .ispinner-blade:nth-child(1) {
                     transform: rotate(45deg) translateY(-6.5px);
@@ -1199,6 +1200,8 @@
                     height: auto;
                     padding: 0;
                     background: none;
+                    contain: strict;
+                    box-shadow: none;
                     border: none;
                     cursor: pointer;
                     z-index: 5;
@@ -1206,12 +1209,14 @@
                     border-radius: 6px;
                 }
                 .side-nav.show-next .icon {
+                    visibility: visible;
                     opacity: 1 !important;
                     -webkit-user-select: none;
                     /*pointer-events: auto;*/
                 }
                 .side-nav .icon {
                     opacity: 0;
+                    visibility: hidden;
                     transition: opacity 0.25s ease-out;
                     /*pointer-events: none;*/
                     
@@ -1222,24 +1227,28 @@
                 }
                 .side-nav .icon {
                     opacity: 0;
+                    visibility: hidden;
                 }
                 .side-nav .icon.chevron-visible {
-                    transition: opacity 0.08s ease-in, filter 0.2s ease-in 0.1s;
+                    transition: opacity 0.08s ease-in;
                 }
                 .side-nav:active .icon,
                 .side-nav.pressed .icon,
                 .side-nav:active .icon.chevron-visible,
                 .side-nav.pressed .icon.chevron-visible {
-                    transition: opacity 0.02s ease-in, filter ease-in 0.03s;
+                    visibility: visible;
+                    transition: opacity 0.02s ease-in;
                 }
                 .side-nav:active .icon,
                 .side-nav.pressed .icon,
                 .side-nav .icon.chevron-visible {
+                    visibility: visible;
                     opacity: 1 !important;
                     stroke: CanvasText;
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .side-nav:hover .icon {
+                        visibility: visible;
                         opacity: 1;
                         stroke: CanvasText;
                         /*pointer-events: auto;*/
@@ -1247,6 +1256,7 @@
                 }
                 @media (hover: hover) and (pointer: fine) {
                     #nav-bar:hover ~ .side-nav .icon {
+                        visibility: visible;
                         opacity: 1;
                         stroke: CanvasText;
                     }
@@ -1395,7 +1405,7 @@
             </style>
     </head>
     <body class="ebook-viewer">
-        <div id="loading-indicator" aria-hidden="true">
+        <div id="loading-indicator" aria-hidden="true" hidden>
             <div class="ispinner">
                 <div class="ispinner-blade"></div>
                 <div class="ispinner-blade"></div>
@@ -1408,8 +1418,8 @@
             </div>
         </div>
         
-        <div id="dimming-overlay" aria-hidden="true"></div>
-        <div id="side-bar">
+        <div id="dimming-overlay" aria-hidden="true" hidden></div>
+        <div id="side-bar" hidden>
             <div id="side-bar-header">
                 <img id="side-bar-cover">
                     <div>

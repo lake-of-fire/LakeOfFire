@@ -4,6 +4,9 @@ import LRUCache
 import LakeKit
 import JapaneseLanguageTools
 
+private let ebookTextProcessorReplaceTextDetailedLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
+
 // Precomputed punctuation set for splitting
 private let splitPunctuation = ParsingStrings([
     "、","。","．","，","？","！","：","；","…","‥","ー","－",
@@ -262,12 +265,22 @@ internal func ebookTextProcessor(
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
+    let totalStartedAt = Date()
+    var readabilityProcessElapsedMs = 0
+    var fallbackParseElapsedMs = 0
+    var readerModeProcessElapsedMs = 0
+    var preprocessEbookElapsedMs = 0
+    var serializeElapsedMs = 0
+    var processHTMLBytesElapsedMs = 0
+    var processHTMLElapsedMs = 0
+    var responseDecodeElapsedMs = 0
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
     
     do {
         var doc: SwiftSoup.Document?
         
         if let processReadabilityContent {
+            let readabilityProcessStartedAt = Date()
             doc = try await processReadabilityContent(
                 content,
                 contentURL,
@@ -275,9 +288,11 @@ internal func ebookTextProcessor(
                 isCacheWarmer,
                 { $0 }
             )
+            readabilityProcessElapsedMs = Int(Date().timeIntervalSince(readabilityProcessStartedAt) * 1000)
         }
         
         if doc == nil {
+            let fallbackParseStartedAt = Date()
             // TODO: Consolidate our parsing boilerplate
             let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
             let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
@@ -287,6 +302,7 @@ internal func ebookTextProcessor(
             if isXML {
                 doc?.outputSettings().escapeMode(.xhtml)
             }
+            fallbackParseElapsedMs = Int(Date().timeIntervalSince(fallbackParseStartedAt) * 1000)
         }
         
         guard var doc else {
@@ -294,6 +310,7 @@ internal func ebookTextProcessor(
             return content
         }
         
+        let readerModeProcessStartedAt = Date()
         try processForReaderMode(
             doc: doc,
             url: sectionLocationURL, //nil,
@@ -305,9 +322,14 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
+        readerModeProcessElapsedMs = Int(Date().timeIntervalSince(readerModeProcessStartedAt) * 1000)
+        let preprocessEbookStartedAt = Date()
         doc = preprocessEbookContent(doc: doc)
+        preprocessEbookElapsedMs = Int(Date().timeIntervalSince(preprocessEbookStartedAt) * 1000)
         
+        let serializeStartedAt = Date()
         var htmlBytes = try doc.outerHtmlUTF8()
+        serializeElapsedMs = Int(Date().timeIntervalSince(serializeStartedAt) * 1000)
         print(
             "# EPUB",
             "ebookTextProcessor.output",
@@ -319,15 +341,18 @@ internal func ebookTextProcessor(
         )
 
         if let processHTMLBytes {
+            let processHTMLBytesStartedAt = Date()
             htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTMLBytes(
                     htmlBytes,
                     isCacheWarmer
                 )
             }
+            processHTMLBytesElapsedMs = Int(Date().timeIntervalSince(processHTMLBytesStartedAt) * 1000)
         }
 
         if let processHTML {
+            let processHTMLStartedAt = Date()
             let html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTML(
                     String(decoding: htmlBytes, as: UTF8.self),
@@ -335,9 +360,36 @@ internal func ebookTextProcessor(
                 )
             }
             htmlBytes = Array(html.utf8)
+            processHTMLElapsedMs = Int(Date().timeIntervalSince(processHTMLStartedAt) * 1000)
         }
 
-        return String(decoding: htmlBytes, as: UTF8.self)
+        let responseDecodeStartedAt = Date()
+        let response = String(decoding: htmlBytes, as: UTF8.self)
+        responseDecodeElapsedMs = Int(Date().timeIntervalSince(responseDecodeStartedAt) * 1000)
+        let elapsedMs = Int(Date().timeIntervalSince(totalStartedAt) * 1000)
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled || elapsedMs >= 1_000 {
+            debugPrint(
+                "# REPLACETEXT",
+                "native.ebookTextProcessor.responseSummary",
+                [
+                    "contentURL": String(contentURL.absoluteString.prefix(80)),
+                    "sectionLocation": sectionLocation,
+                    "isCacheWarmer": isCacheWarmer,
+                    "inputBytes": content.utf8.count,
+                    "responseBytes": htmlBytes.count,
+                    "readabilityProcessMs": readabilityProcessElapsedMs,
+                    "fallbackParseMs": fallbackParseElapsedMs,
+                    "readerModeProcessMs": readerModeProcessElapsedMs,
+                    "preprocessEbookMs": preprocessEbookElapsedMs,
+                    "serializeMs": serializeElapsedMs,
+                    "processHTMLBytesMs": processHTMLBytesElapsedMs,
+                    "processHTMLMs": processHTMLElapsedMs,
+                    "responseDecodeMs": responseDecodeElapsedMs,
+                    "elapsedMs": elapsedMs
+                ] as [String: Any]
+            )
+        }
+        return response
     } catch {
         debugPrint("Error processing readability content for ebook", error)
     }

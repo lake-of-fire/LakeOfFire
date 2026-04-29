@@ -547,6 +547,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return max(0, (clearBorderedSmallMinHeight - measuredHeight) / 2)
     }
 
+    private var metadataRowVerticalOffset: CGFloat {
+        guard readerContentCellStyle == .card else { return 0 }
+        return 4
+    }
+
     private var showsAudioBadge: Bool {
         item.hasAudio
     }
@@ -605,6 +610,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .minimumScaleFactor(0.9)
                     .font(.footnote)
                     .layoutPriority(2)
+                    .offset(y: metadataRowVerticalOffset)
             }
 
             Spacer(minLength: 0)
@@ -613,10 +619,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 .labelStyle(.iconOnly)
                 .imageScale(.small)
                 .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
+                .offset(y: metadataRowVerticalOffset)
                 .offset(y: clearBorderedVerticalInset)
 
             controlsRow
                 .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
+                .offset(y: metadataRowVerticalOffset)
                 .offset(y: clearBorderedVerticalInset)
         }
         .foregroundStyle(.secondary)
