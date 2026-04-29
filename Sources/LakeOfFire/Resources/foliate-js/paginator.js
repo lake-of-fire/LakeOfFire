@@ -696,6 +696,7 @@ export class Paginator extends HTMLElement {
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
     #pendingPageTurnDirection = null
+    #queuedPageTurn = null
 
     #cachedSizes = null
     #cachedStart = null
@@ -1755,7 +1756,7 @@ export class Paginator extends HTMLElement {
         //                ) {
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                const shouldFade = !(reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation');
+                const shouldFade = !(reason === 'page' || reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation');
                 postPaginatorPageNumLog('paginator.transition.begin', {
                     reason: reason ?? null,
                     shouldFade,
@@ -2417,7 +2418,10 @@ export class Paginator extends HTMLElement {
             if (this.sections[index]?.linear !== 'no') return index
     }
     async #turnPage(dir, distance) {
-        if (this.#locked) return
+        if (this.#locked) {
+            this.#queuedPageTurn = { dir, distance }
+            return
+        }
 
         this.#locked = true
         this.#pendingPageTurnDirection = dir > 0 ? 'forward' : 'backward'
@@ -2432,6 +2436,13 @@ export class Paginator extends HTMLElement {
         } finally {
             this.#pendingPageTurnDirection = null
             this.#locked = false
+            const queuedPageTurn = this.#queuedPageTurn
+            this.#queuedPageTurn = null
+            if (queuedPageTurn) {
+                queueMicrotask(() => {
+                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance)
+                })
+            }
         }
     }
     async prev(distance) {

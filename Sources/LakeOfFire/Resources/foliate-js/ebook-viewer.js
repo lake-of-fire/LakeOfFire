@@ -3077,6 +3077,15 @@ const getCSSForBookContent = ({
         -webkit-column-break-inside: avoid !important;
     }
 
+    mnb-sen ruby > rt {
+        /*
+           Keep Manabi-owned ruby annotations in the UI/Japanese sans stack.
+           Reader-selected surface fonts such as YuKyokasho should apply to the
+           sentence surface text, not to the compact annotation text.
+        */
+        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif !important;
+    }
+
     body *:not(.mnb-tracking-container *):not(mnb-seg *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
