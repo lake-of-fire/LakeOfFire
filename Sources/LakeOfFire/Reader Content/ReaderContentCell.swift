@@ -610,7 +610,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .minimumScaleFactor(0.9)
                     .font(.footnote)
                     .layoutPriority(2)
-                    .offset(y: metadataRowVerticalOffset)
             }
 
             Spacer(minLength: 0)

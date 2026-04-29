@@ -3077,13 +3077,14 @@ const getCSSForBookContent = ({
         -webkit-column-break-inside: avoid !important;
     }
 
-    mnb-sen ruby > rt {
+    mnb-sen ruby.mnb-gen > rt,
+    mnb-sen ruby.mbn-src > rt {
         /*
-           Keep Manabi-owned ruby annotations in the UI/Japanese sans stack.
+           Keep Manabi-owned ruby annotations in the historical Japanese sans stack.
            Reader-selected surface fonts such as YuKyokasho should apply to the
            sentence surface text, not to the compact annotation text.
         */
-        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif !important;
+        font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
     }
 
     body *:not(.mnb-tracking-container *):not(mnb-seg *) {
@@ -4733,6 +4734,23 @@ class Reader {
         const unreadSegmentCount = segmentIdentifiers
             .filter((identifier) => !readSegmentIdentifiers.has(identifier))
             .length;
+        if (unreadSegmentCount > 0) {
+            const unreadSegmentIdentifiers = segmentIdentifiers
+                .filter((identifier) => !readSegmentIdentifiers.has(identifier));
+            console.log('# UNREAD', JSON.stringify({
+                event: 'js.currentSectionReadState.unreadSegments',
+                documentURL: doc.URL || doc.location?.href || null,
+                currentPageNumber,
+                totalPages,
+                pagesLeft,
+                segmentCount: segmentIdentifiers.length,
+                readSegmentCount: segmentIdentifiers.length - unreadSegmentCount,
+                unreadSegmentCount,
+                optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
+                persistedReadSegmentCount: normalizeArticleReadingProgress(this.articleReadingProgress).readSegmentIdentifiers.length,
+                unreadSegmentIdentifierSample: unreadSegmentIdentifiers.slice(0, 20),
+            }));
+        }
         return {
             allSectionsRead: unreadSegmentCount === 0,
             reason: 'segments',
@@ -4745,6 +4763,103 @@ class Reader {
             unreadSegmentCount,
             optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
         };
+    }
+    async markAllSectionsAsRead() {
+        const contents = this.view?.renderer?.getContents?.() || [];
+        const doc = contents[0]?.doc;
+        if (!isDocumentLike(doc)) {
+            console.log('# UNREAD', JSON.stringify({
+                event: 'js.ebookMarkAllSectionsAsRead.skipped',
+                reason: 'missing-document',
+            }));
+            return 0;
+        }
+        const segmentNodes = Array.from(doc.querySelectorAll('mnb-seg'))
+            .filter((segmentNode) => !segmentNode.closest('.tippy-box'));
+        const segmentsByIdentifier = new Map();
+        const sentenceIdentifiers = new Set();
+        let skippedMissingIdentifierCount = 0;
+        let skippedMissingSearchStringCount = 0;
+        for (const segmentNode of segmentNodes) {
+            const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+            if (typeof segmentIdentifier !== 'string' || segmentIdentifier.length === 0) {
+                skippedMissingIdentifierCount += 1;
+                continue;
+            }
+            if (segmentsByIdentifier.has(segmentIdentifier)) {
+                continue;
+            }
+            const metadata = segmentMetadataForNode(segmentNode);
+            let searchString = metadata?.s || metadata?.ns;
+            if (typeof searchString !== 'string' || searchString.length === 0) {
+                searchString = segmentNode.textContent?.trim?.() || '';
+            }
+            if (searchString.length === 0) {
+                skippedMissingSearchStringCount += 1;
+                continue;
+            }
+            const sentenceNode = segmentNode.closest('mnb-sen');
+            const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
+            if (sentenceIdentifier) {
+                sentenceIdentifiers.add(sentenceIdentifier);
+            }
+            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(segmentNode);
+            segmentsByIdentifier.set(segmentIdentifier, {
+                jmdictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmdict'),
+                jmnedictEntryIds: segmentEntryIDsForNode(segmentNode, 'jmnedict'),
+                searchString,
+                displayText: segmentNode.textContent?.trim?.() || searchString,
+                segmentIdentifier,
+                exampleSentence: sentenceHTML,
+                exampleSentenceJMDictIDs: sentenceJMDictIDs,
+            });
+        }
+        const payloadSegments = Array.from(segmentsByIdentifier.values());
+        const payloadSentenceIdentifiers = Array.from(sentenceIdentifiers);
+        const payloadSegmentIdentifiers = payloadSegments
+            .map((segment) => segment.segmentIdentifier)
+            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
+        console.log('# UNREAD', JSON.stringify({
+            event: 'js.ebookMarkAllSectionsAsRead.dispatch',
+            documentURL: doc.URL || doc.location?.href || null,
+            segmentNodeCount: segmentNodes.length,
+            payloadSegmentCount: payloadSegments.length,
+            sentenceIdentifierCount: payloadSentenceIdentifiers.length,
+            skippedMissingIdentifierCount,
+            skippedMissingSearchStringCount,
+            segmentIdentifierSample: payloadSegmentIdentifiers.slice(0, 20),
+            segmentIdentifierTailSample: payloadSegmentIdentifiers.slice(-20),
+        }));
+        if (payloadSegments.length === 0) {
+            return 0;
+        }
+        window.webkit.messageHandlers.markSectionAsRead.postMessage({
+            segments: payloadSegments,
+            sentenceIdentifiers: payloadSentenceIdentifiers,
+        });
+        for (const segmentIdentifier of payloadSegmentIdentifiers) {
+            this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
+        }
+        for (const sentenceIdentifier of payloadSentenceIdentifiers) {
+            this.optimisticSentenceIdentifiersRead.add(sentenceIdentifier);
+        }
+        const optimisticProgress = normalizeArticleReadingProgress(this.articleReadingProgress);
+        optimisticProgress.readSegmentIdentifiers = Array.from(new Set([
+            ...optimisticProgress.readSegmentIdentifiers,
+            ...payloadSegmentIdentifiers,
+        ]));
+        optimisticProgress.sentenceIdentifiersRead = Array.from(new Set([
+            ...optimisticProgress.sentenceIdentifiersRead,
+            ...payloadSentenceIdentifiers,
+        ]));
+        this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-all-read');
+        console.log('# UNREAD', JSON.stringify({
+            event: 'js.ebookMarkAllSectionsAsRead.optimisticApplied',
+            documentURL: doc.URL || doc.location?.href || null,
+            optimisticReadSegmentCount: optimisticProgress.readSegmentIdentifiers.length,
+            optimisticSentenceReadCount: optimisticProgress.sentenceIdentifiersRead.length,
+        }));
+        return payloadSegments.length;
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
@@ -7585,6 +7700,10 @@ window.nextSection = async () => {
     } else {
         await globalThis.reader?.view?.renderer?.nextSection?.();
     }
+}
+
+window.manabi_markAllSectionsAsRead = async () => {
+    return await globalThis.reader?.markAllSectionsAsRead?.() ?? 0;
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
