@@ -165,7 +165,7 @@ export const compare = (a, b) => {
         if (typeof b === 'string') b = parse(b)
             if (a.start || b.start) return compare(collapse(a), collapse(b))
                 || compare(collapse(a, true), collapse(b, true))
-                
+
                 for (let i = 0; i < Math.max(a.length, b.length); i++) {
                     const p = a[i] ?? [], q = b[i] ?? []
                     const maxIndex = Math.max(p.length, q.length) - 1
@@ -231,14 +231,13 @@ const partsToNode = (node, parts) => {
         if (el) return { node: el, offset: 0 }
     }
     for (const { index } of parts) {
-        let currentIndex = index
-        let newNode = getNodeByIndex(node, currentIndex)
+        let newNode = getNodeByIndex(node, index)
         // skip over 'reader-sentinel' elements
         while (Array.isArray(newNode) ? false :
                newNode?.nodeType === 1 && newNode.localName?.toLowerCase() === 'reader-sentinel') {
             // increment index and get the next node
-            currentIndex++
-            newNode = getNodeByIndex(node, currentIndex)
+            index++
+            newNode = getNodeByIndex(node, index)
         }
         // handle non-existent nodes
         if (newNode === 'first') return { node: node.firstChild ?? node }
@@ -280,10 +279,10 @@ const nodeToParts = (node, offset) => {
     }
     const tagName = node.nodeType === 1 ? node.localName?.toLowerCase() : ''
     const part = { id, index, offset }
-    // remove IDs for generated manabi- and reader-sentinel elements
+    // Generated mnb-* IDs are per-render implementation details; do not persist them in CFI.
     if (
-        part.id?.startsWith('manabi-') ||
-        tagName?.startsWith('manabi-') ||
+        part.id?.startsWith('mnb-') ||
+        tagName?.startsWith('mnb-') ||
         tagName === 'reader-sentinel'
         ) {
             delete part.id

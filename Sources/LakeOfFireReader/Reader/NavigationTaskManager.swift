@@ -1,6 +1,4 @@
 import SwiftUI
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 internal class NavigationTaskManager: Identifiable {
     @MainActor
@@ -11,7 +9,7 @@ internal class NavigationTaskManager: Identifiable {
     var onNavigationFailedTask: Task<Void, Error>?
     @MainActor
     var onURLChangedTask: Task<Void, Error>?
-    
+
     @MainActor
     func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
         onNavigationCommittedTask?.cancel()
@@ -25,7 +23,7 @@ internal class NavigationTaskManager: Identifiable {
             }
         }
     }
-    
+
     @MainActor
     func startOnNavigationFinished(task: @escaping () async -> Void) {
         onNavigationFinishedTask?.cancel()
@@ -37,7 +35,7 @@ internal class NavigationTaskManager: Identifiable {
             await task()
         }
     }
-    
+
     @MainActor
     func startOnNavigationFailed(task: @escaping () async -> Void) {
         onNavigationFailedTask?.cancel()
@@ -49,7 +47,7 @@ internal class NavigationTaskManager: Identifiable {
             await task()
         }
     }
-    
+
     @MainActor
     func startOnURLChanged(task: @escaping () async -> Void) {
         Task { @MainActor in

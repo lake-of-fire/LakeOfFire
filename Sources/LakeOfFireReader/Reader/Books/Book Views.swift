@@ -4,22 +4,18 @@ import SwiftUIDownloads
 import LakeImage
 import LakeKit
 import Pow
-import ExpandableText
 import SwiftUIWebView
-import LakeOfFireCore
-import LakeOfFireAdblock
+import ExpandableText
 import LakeOfFireContent
 import LakeOfFireContentUI
 
-struct BookThumbnail: View { //, Equatable {
+struct BookThumbnail: View {
     let imageURL: URL
     var limitWidth: Bool = true
-    
+
     @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 100
     @ScaledMetric(relativeTo: .headline) var cellHeight: CGFloat = 140
-    
-    //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    
+
     var body: some View {
         let resolvedMaxWidth = limitWidth ? scaledImageWidth : nil
         VStack(spacing: 0) {
@@ -39,7 +35,7 @@ struct HorizontalBooks: View {
     let publications: [Publication]
     let isDownloadable: Bool
     var onSelected: ((Publication, Bool) -> Void)? = nil
- 
+
     var body: some View {
         ScrollView(.horizontal) {
             HStack {
@@ -49,23 +45,26 @@ struct HorizontalBooks: View {
                         title: publication.title,
                         author: publication.author,
                         publicationDate: publication.publicationDate,
-                        downloadURL: isDownloadable ? publication.downloadURL : nil) { wasAlreadyDownloaded in
-                            onSelected?(publication, wasAlreadyDownloaded)
-                        }
+                        downloadURL: isDownloadable ? publication.downloadURL : nil
+                    ) { wasAlreadyDownloaded in
+                        onSelected?(publication, wasAlreadyDownloaded)
+                    }
                 }
             }
             .modifier {
                 if #available(macOS 14, iOS 17, *) {
+                    $0.scrollTargetLayout()
+                } else {
                     $0
-                        .scrollTargetLayout()
-                } else { $0 }
+                }
             }
         }
         .modifier {
             if #available(macOS 14, iOS 17, *) {
+                $0.scrollTargetBehavior(.viewAligned)
+            } else {
                 $0
-                    .scrollTargetBehavior(.viewAligned)
-            } else { $0 }
+            }
         }
     }
 }
@@ -74,8 +73,9 @@ struct BookListRow: View {
     let publication: Publication
     var onSelected: ((Bool) -> Void)? = nil
     var onNavigateToReader: (() -> Void)? = nil
+
     @State private var downloadable: Downloadable?
-    
+
     var body: some View {
         Group {
             if let downloadable {
@@ -98,7 +98,7 @@ struct BookListRow: View {
             await refreshDownloadable()
         }
     }
-    
+
     private func refreshDownloadable() async {
         guard let downloadURL = publication.downloadURL else {
             downloadable = nil
@@ -112,7 +112,7 @@ struct BookListRow: View {
 
 fileprivate struct StaticBookListRow: View {
     let publication: Publication
-    
+
     var body: some View {
         BookListRowContent(
             imageURL: publication.coverURL,
@@ -134,12 +134,13 @@ fileprivate struct DownloadableBookListRow: View {
     let onSelected: ((Bool) -> Void)?
     let onNavigateToReader: (() -> Void)?
     @ObservedObject var downloadable: Downloadable
+
     @State private var wasDownloaded = false
     @ObservedObject private var downloadController = DownloadController.shared
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    
+
     var body: some View {
         BookListRowContent(
             imageURL: publication.coverURL,
@@ -163,7 +164,9 @@ fileprivate struct DownloadableBookListRow: View {
             .modifier {
                 if #available(macOS 13, iOS 16, *) {
                     $0.fontWeight(.bold)
-                } else { $0 }
+                } else {
+                    $0
+                }
             }
         }
         .contentShape(Rectangle())
@@ -176,40 +179,18 @@ fileprivate struct DownloadableBookListRow: View {
             }
         }
     }
-    
+
     private func buttonPress() {
         Task { @MainActor in
             let wasAlreadyDownloaded = await downloadable.existsLocally()
-            debugPrint(
-                "# APR21b",
-                "source=BookGridRow.buttonPress.begin",
-                "title=\(publication.title)",
-                "wasAlreadyDownloaded=\(wasAlreadyDownloaded)",
-                "downloadURL=\(publication.downloadURL?.absoluteString ?? "nil")"
-            )
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
-                debugPrint(
-                    "# APR21b",
-                    "source=BookGridRow.buttonPress.downloaded",
-                    "title=\(publication.title)",
-                    "downloadURL=\(publication.downloadURL?.absoluteString ?? "nil")"
-                )
                 try? await ReaderFileManager.shared.refreshAllFilesMetadata()
-                let localFilesAfterRefresh = ReaderFileManager.shared.files(ofTypes: [.epub, .epubZip]) ?? []
-                debugPrint(
-                    "# APR21b",
-                    "source=BookGridRow.buttonPress.refreshedMetadata",
-                    "title=\(publication.title)",
-                    "localFilesAfterRefresh=\(localFilesAfterRefresh.count)",
-                    "downloadURL=\(publication.downloadURL?.absoluteString ?? "nil")"
-                )
-                await BookLibraryViewModel.updateMediaLinks(for: [publication])
             }
             onSelected?(wasAlreadyDownloaded)
         }
     }
-    
+
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
@@ -232,7 +213,7 @@ fileprivate struct DownloadableBookListRow: View {
                         onNavigateToReader: onNavigateToReader
                     )
                 } catch {
-                    print("Failed to open downloaded book: \\(error)")
+                    print("Failed to open downloaded book: \(error)")
                 }
             } else {
                 buttonPress()
@@ -254,11 +235,12 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     @ScaledMetric(relativeTo: .title3) private var thumbnailWidth: CGFloat = 68
     private var thumbnailDimension: CGFloat { thumbnailWidth * 1.45 * (2.0 / 3.0) }
     private let cornerRadius: CGFloat = 18
+
     private var resolvedSummary: String? {
         let trimmed = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
     }
-    
+
     init(
         imageURL: URL?,
         title: String,
@@ -278,7 +260,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         self.onTopTap = onTopTap
         self.trailing = trailing
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             topHalf
@@ -304,10 +286,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     @ViewBuilder
     private var topHalf: some View {
         let content = HStack(alignment: .center, spacing: 12) {
-            BookListRowThumbnail(
-                imageURL: imageURL,
-                dimension: thumbnailDimension
-            )
+            BookListRowThumbnail(imageURL: imageURL, dimension: thumbnailDimension)
             VStack(alignment: .leading, spacing: 6) {
                 if let author, !author.isEmpty {
                     Text(author)
@@ -320,17 +299,16 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(3)
-                // Temporarily hide audiobook badge pending UX update.
-//                if hasContentAudio {
-//                    HStack(spacing: 6) {
-//                        Image(systemName: "headphones")
-//                            .imageScale(.small)
-//                        Text("Audiobook with Text")
-//                            .font(.caption)
-//                            .fontWeight(.semibold)
-//                    }
-//                    .foregroundStyle(.secondary)
-//                }
+                if hasContentAudio {
+                    HStack(spacing: 6) {
+                        Image(systemName: "headphones")
+                            .imageScale(.small)
+                        Text("Audiobook with Text")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.secondary)
+                }
                 if let publicationYearText {
                     Text(publicationYearText)
                         .font(.caption)
@@ -360,7 +338,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                 .contentShape(Rectangle())
         }
     }
-    
+
     private var summaryView: some View {
         Group {
             if let resolvedSummary {
@@ -380,11 +358,8 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
             }
         }
     }
-    private var trailingAsButton: (() -> Void)? {
-        nil // Trailing view is rendered; tap is handled by the surrounding Button to keep top-half tappable.
-    }
-    
-private var publicationYearText: String? {
+
+    private var publicationYearText: String? {
         guard let publicationDate else { return nil }
         let components = Calendar.current.dateComponents([.year], from: publicationDate)
         guard let year = components.year else { return nil }
@@ -392,25 +367,16 @@ private var publicationYearText: String? {
     }
 }
 
-private extension Optional where Wrapped == String {
-    var nonEmpty: String? {
-        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-        return value
-    }
-}
-
 fileprivate struct BookListRowThumbnail: View {
     let imageURL: URL?
     let dimension: CGFloat
+
     private var coverCornerRadius: CGFloat { max(1, dimension / 28) }
-    
+
     var body: some View {
         Group {
             if let imageURL {
-                BookCoverImageView(
-                    imageURL: imageURL,
-                    dimension: dimension
-                )
+                BookCoverImageView(imageURL: imageURL, dimension: dimension)
             } else {
                 RoundedRectangle(cornerRadius: coverCornerRadius, style: .continuous)
                     .fill(Color.secondary.opacity(0.12))

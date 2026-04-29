@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 public extension Document {
     func isEbook() -> Bool {
@@ -10,7 +8,7 @@ public extension Document {
             || select("html").hasAttr("xmlns:epub"))
         return isEbook ?? false
     }
-    
+
     func ebookSectionType() -> String? {
         return try? body()?.attr("epub:type")
     }

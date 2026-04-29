@@ -1,10 +1,12 @@
 import SwiftUI
 import Combine
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInternalReaderLoader.traceID"
 private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
+
+private func logReaderLoad(_ message: String) {
+    debugPrint("# READERLOAD \(message)")
+}
 
 private func logTitleTrace(_ message: String) {
     debugPrint("# TITLE \(message)")
@@ -12,11 +14,17 @@ private func logTitleTrace(_ message: String) {
 
 @MainActor
 public class ReaderContent: ObservableObject {
+    public typealias ContentResolver = @MainActor (_ url: URL, _ countsAsHistoryVisit: Bool, _ source: String) async throws -> (any ReaderContentProtocol)?
+
+    nonisolated(unsafe) public static var contentResolver: ContentResolver?
+
     @Published public var content: (any ReaderContentProtocol)? {
         didSet {
             logTitleTrace(
                 "stage=readerContent.content.didSet pageURL=\(pageURL.absoluteString) oldContentURL=\(oldValue?.url.absoluteString ?? "nil") newContentURL=\(content?.url.absoluteString ?? "nil") oldType=\(oldValue.map { String(describing: type(of: $0)) } ?? "nil") newType=\(content.map { String(describing: type(of: $0)) } ?? "nil") oldTitle=\(oldValue?.title.debugTitleFragment ?? "<nil>") newTitle=\(content?.title.debugTitleFragment ?? "<nil>") oldLocationBarTitle=\(oldValue?.locationBarTitle.debugTitleFragment ?? "<nil>") newLocationBarTitle=\(content?.locationBarTitle.debugTitleFragment ?? "<nil>")"
             )
+            syncLocationBarTitle()
+            syncContentTitle()
         }
     }// = ReaderContentLoader.unsavedHome
     @Published public var pageURL = URL(string: "about:blank")! {
@@ -24,12 +32,7 @@ public class ReaderContent: ObservableObject {
             logTitleTrace(
                 "stage=readerContent.pageURL.didSet oldPageURL=\(oldValue.absoluteString) newPageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") currentLocationBarTitle=\(locationBarTitle.debugTitleFragment)"
             )
-            let pointer = Unmanaged.passUnretained(self).toOpaque()
-            if pageURL.isSnippetURL {
-                debugPrint("# LOOKUPS ReaderContent.pageURL didSet snippet", pageURL.absoluteString, "self=", pointer)
-            } else {
-                debugPrint("# LOOKUPS ReaderContent.pageURL didSet", pageURL.absoluteString, "self=", pointer)
-            }
+            syncLocationBarTitle()
         }
     }
     @Published public var currentSectionIndex: Int?
@@ -38,42 +41,20 @@ public class ReaderContent: ObservableObject {
     @Published public var isRenderingReaderHTML = false
     @Published public private(set) var isReaderMainFrameNavigating = false
     @Published public private(set) var mainFrameNavigationURL: URL?
-    private var mainFrameNavigationTasks: [UUID: URL] = [:]
-    private var mainFrameNavigationTaskOrder: [UUID] = []
     public let contentTitleSubject = PassthroughSubject<String, Never>()
     public private(set) var contentTitle: String = ""
     private var contentTitleURL: URL?
-    private var cancellables = Set<AnyCancellable>()
+    private var mainFrameNavigationTasks: [UUID: URL] = [:]
+    private var mainFrameNavigationTaskOrder: [UUID] = []
+    public private(set) var snippetTitleIsGeneratedFromPrefix = false
+
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
+    private var loadingResolvedContentURL: URL?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
-    
+
     public init() {
-        $content
-            .sink { [weak self] newContent in
-                guard let self else { return }
-//                debugPrint("# new content", newContent?.url)
-                self.locationBarTitle = newContent?.locationBarTitle
-                guard let newContent else {
-                    logTitleTrace(
-                        "stage=readerContent.syncContentTitle action=preserve reason=noContent existingTitle=\(self.contentTitle.debugTitleFragment) pageURL=\(self.pageURL.absoluteString)"
-                    )
-                    return
-                }
-                let newTitle = newContent.title
-                let newTitleURL = newContent.url
-                guard self.contentTitle != newTitle || self.contentTitleURL?.absoluteString != newTitleURL.absoluteString else { return }
-                logTitleTrace(
-                    "stage=readerContent.syncContentTitle action=set oldTitle=\(self.contentTitle.debugTitleFragment) newTitle=\(newTitle.debugTitleFragment) oldContentURL=\(self.contentTitleURL?.absoluteString ?? "nil") newContentURL=\(newTitleURL.absoluteString) pageURL=\(self.pageURL.absoluteString)"
-                )
-                self.contentTitle = newTitle
-                self.contentTitleURL = newTitleURL
-                if !newTitle.isEmpty {
-                    self.contentTitleSubject.send(newTitle)
-                }
-            }
-            .store(in: &cancellables)
     }
 
     @MainActor
@@ -83,35 +64,82 @@ public class ReaderContent: ObservableObject {
         mainFrameNavigationTaskOrder.append(token)
         isReaderMainFrameNavigating = true
         mainFrameNavigationURL = url
-        debugPrint(
-            "# FLASH mainFrameNavigation.begin",
-            flashURLDescription(url),
-            "active=\(mainFrameNavigationTaskOrder.count)"
-        )
         return token
     }
 
     @MainActor
     public func endMainFrameNavigationTask(_ token: UUID) {
-        guard let url = mainFrameNavigationTasks.removeValue(forKey: token) else { return }
+        guard mainFrameNavigationTasks.removeValue(forKey: token) != nil else { return }
         if let index = mainFrameNavigationTaskOrder.firstIndex(of: token) {
             mainFrameNavigationTaskOrder.remove(at: index)
         }
-
         let remainingToken = mainFrameNavigationTaskOrder.last
-        let remainingURL = remainingToken.flatMap { mainFrameNavigationTasks[$0] }
-        mainFrameNavigationURL = remainingURL
+        mainFrameNavigationURL = remainingToken.flatMap { mainFrameNavigationTasks[$0] }
         isReaderMainFrameNavigating = !mainFrameNavigationTaskOrder.isEmpty
+    }
 
-        debugPrint(
-            "# FLASH mainFrameNavigation.end",
-            flashURLDescription(url),
-            "active=\(mainFrameNavigationTaskOrder.count)"
-        )
-
-        if isReaderMainFrameNavigating {
+    private func syncLocationBarTitle() {
+        guard pageURL.absoluteString != "about:blank" else {
+            snippetTitleIsGeneratedFromPrefix = false
+            locationBarTitle = nil
+            logTitleTrace(
+                "stage=readerContent.syncLocationBarTitle action=clear reason=aboutBlank pageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil")"
+            )
             return
         }
+        guard let content,
+              content.url.matchesReaderURL(pageURL) else {
+            snippetTitleIsGeneratedFromPrefix = false
+            locationBarTitle = nil
+            logTitleTrace(
+                "stage=readerContent.syncLocationBarTitle action=clear reason=contentMismatch pageURL=\(pageURL.absoluteString) contentURL=\(content?.url.absoluteString ?? "nil") contentType=\(content.map { String(describing: type(of: $0)) } ?? "nil") contentTitle=\(content?.title.debugTitleFragment ?? "<nil>")"
+            )
+            return
+        }
+        let trimmedTitle = resolvedLocationBarTitle(for: content)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        locationBarTitle = (trimmedTitle?.isEmpty == false) ? trimmedTitle : nil
+        logTitleTrace(
+            "stage=readerContent.syncLocationBarTitle action=set pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rawLocationBarTitle=\(content.locationBarTitle.debugTitleFragment) resolvedTitle=\(trimmedTitle.debugTitleFragment) finalLocationBarTitle=\(locationBarTitle.debugTitleFragment) snippetTitleIsGeneratedFromPrefix=\(snippetTitleIsGeneratedFromPrefix)"
+        )
+    }
+
+    private func resolvedLocationBarTitle(for content: any ReaderContentProtocol) -> String? {
+        guard content.url.isSnippetURL else {
+            snippetTitleIsGeneratedFromPrefix = false
+            return content.locationBarTitle
+        }
+
+        snippetTitleIsGeneratedFromPrefix = content.isTitlePrefixOfContent
+        return ReaderContentLoader.resolvedSnippetLocationBarTitle(
+            title: content.title,
+            createdAt: content.createdAt,
+            needsClipboardIndicator: content.needsClipboardIndicator,
+            isTitlePrefixOfContent: content.isTitlePrefixOfContent
+        )
+    }
+
+    private func syncContentTitle() {
+        guard let content else {
+            logTitleTrace(
+                "stage=readerContent.syncContentTitle action=preserve reason=noContent existingTitle=\(contentTitle.debugTitleFragment) pageURL=\(pageURL.absoluteString)"
+            )
+            return
+        }
+        let newTitle = content.title
+        let newTitleURL = content.url
+        guard contentTitle != newTitle || contentTitleURL?.absoluteString != newTitleURL.absoluteString else { return }
+        logTitleTrace(
+            "stage=readerContent.syncContentTitle action=set oldTitle=\(contentTitle.debugTitleFragment) newTitle=\(newTitle.debugTitleFragment) oldContentURL=\(contentTitleURL?.absoluteString ?? "nil") newContentURL=\(newTitleURL.absoluteString) pageURL=\(pageURL.absoluteString)"
+        )
+        contentTitle = newTitle
+        contentTitleURL = newTitleURL
+        guard !newTitle.isEmpty else { return }
+        contentTitleSubject.send(newTitle)
+    }
+
+    private func matchesResolvedContentURL(_ contentURL: URL, resolvedContentURL: URL) -> Bool {
+        contentURL.absoluteString == resolvedContentURL.absoluteString
+            || contentURL.matchesReaderURL(resolvedContentURL)
     }
 
     @MainActor
@@ -119,24 +147,24 @@ public class ReaderContent: ObservableObject {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
         guard resolvedTargetURL.absoluteString != "about:blank" else { return }
         suppressedTransientAboutBlankTargetURL = resolvedTargetURL
-        debugPrint(
-            "# READERLOAD stage=readerContent.load.suppressAboutBlank",
-            "targetURL=\(resolvedTargetURL.absoluteString)"
+        logReaderLoad(
+            "stage=readerContent.load.suppressAboutBlank targetURL=\(resolvedTargetURL.absoluteString)"
         )
     }
 
     @MainActor
     public func preloadResolvedContent(_ content: any ReaderContentProtocol, for targetURL: URL) {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
-        guard content.url.matchesReaderURL(resolvedTargetURL) else { return }
+        guard content.url.matchesReaderURL(resolvedTargetURL) else {
+            logReaderLoad(
+                "stage=readerContent.preload.skip targetURL=\(resolvedTargetURL.absoluteString) contentURL=\(content.url.absoluteString) reason=mismatch"
+            )
+            return
+        }
         preloadedResolvedContentURL = resolvedTargetURL
         preloadedContent = content
-        debugPrint(
-            "# READERLOAD stage=readerContent.preload",
-            "targetURL=\(resolvedTargetURL.absoluteString)",
-            "contentURL=\(content.url.absoluteString)",
-            "contentType=\(String(describing: type(of: content)))",
-            "key=\(content.compoundKey)"
+        logReaderLoad(
+            "stage=readerContent.preload targetURL=\(resolvedTargetURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
         )
     }
 
@@ -160,51 +188,28 @@ public class ReaderContent: ObservableObject {
         }
         return (traceID, requestURL)
     }
-    
+
     @MainActor
     public func load(url: URL) async throws {
-        let loadStartedAt = Date()
-        debugPrint("# FLASH ReaderContent.load start", "page=\(flashURLDescription(url))")
-        if url.isSnippetURL || url.isReaderURLLoaderURL {
-            debugPrint("# SNIPPETLOAD readerContent.load.start", "pageURL=\(url.absoluteString)")
-        }
-
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
-        if url.isReaderURLLoaderURL {
-            debugPrint(
-                "# READERRELOAD readerContent.load.loader",
-                "pageURL=\(url.absoluteString)",
-                "resolved=\(resolvedContentURL.absoluteString)",
-                "currentPage=\(pageURL.absoluteString)"
-            )
-        }
-        if resolvedContentURL.isSnippetURL {
-            debugPrint(
-                "# SNIPPETLOAD readerContent.load.resolvedURL",
-                "pageURL=\(url.absoluteString)",
-                "resolved=\(resolvedContentURL.absoluteString)"
-            )
-        }
+        logReaderLoad(
+            "stage=readerContent.load.begin requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil") hasLoadingTask=\(loadingTask != nil)"
+        )
 
         if resolvedContentURL.absoluteString == "about:blank",
            let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
            suppressedTargetURL.absoluteString != "about:blank" {
-            debugPrint(
-                "# READERLOAD stage=readerContent.load.skipTransientAboutBlank",
-                "requestURL=\(url.absoluteString)",
-                "targetURL=\(suppressedTargetURL.absoluteString)"
+            logReaderLoad(
+                "stage=readerContent.load.skipTransientAboutBlank requestURL=\(url.absoluteString) targetURL=\(suppressedTargetURL.absoluteString)"
             )
             return
         }
 
         if resolvedContentURL.absoluteString == "about:blank",
            let activeInternalLoaderWait = activeInternalLoaderWaitContext() {
-            debugPrint(
-                "# READERLOAD stage=readerContent.load.skipActiveInternalLoaderAboutBlank",
-                "requestURL=\(url.absoluteString)",
-                "activeLoaderURL=\(activeInternalLoaderWait.requestURL)",
-                "traceID=\(activeInternalLoaderWait.traceID)"
+            logReaderLoad(
+                "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString) activeLoaderURL=\(activeInternalLoaderWait.requestURL) traceID=\(activeInternalLoaderWait.traceID)"
             )
             return
         }
@@ -213,142 +218,107 @@ public class ReaderContent: ObservableObject {
             suppressedTransientAboutBlankTargetURL = nil
         }
 
-        let shouldMarkProvisional = resolvedContentURL.isSnippetURL
-        if shouldMarkProvisional && !isReaderProvisionallyNavigating {
-            isReaderProvisionallyNavigating = true
-            debugPrint("# FLASH provisional.mark", "page=\(flashURLDescription(url))", "state=true")
-        }
-
-        if let loadingTask, pageURL.matchesReaderURL(url) {
-            debugPrint("# FLASH ReaderContent.load in-flight", "page=\(flashURLDescription(url))")
+        if let loadingTask,
+           let loadingResolvedContentURL,
+           matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
+            let startedAt = CFAbsoluteTimeGetCurrent()
+            logReaderLoad(
+                "stage=readerContent.load.reuseLoadingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil")"
+            )
             _ = try await loadingTask.value
-            let elapsed = Date().timeIntervalSince(loadStartedAt)
-            debugPrint(
-                "# READERLOAD stage=readerContent.load.waitExisting",
-                "pageURL=\(url.absoluteString)",
-                "elapsed=\(String(format: "%.3fs", elapsed))",
-                "slow=\(elapsed >= 0.8)"
+            logReaderLoad(
+                "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
             )
             return
         }
 
-        if let existingContent = content, existingContent.url.matchesReaderURL(resolvedContentURL) {
-            debugPrint("# FLASH ReaderContent.load reuse existing content", "page=\(flashURLDescription(url))")
-            if !pageURL.matchesReaderURL(url) {
-                pageURL = displayURL
-                debugPrint("# FLASH ReaderContent.load updated pageURL only", "page=\(flashURLDescription(displayURL))")
-            }
-            if existingContent.url.isSnippetURL {
-                debugPrint(
-                    "# SNIPPETLOAD readerContent.load.reuse",
-                    "pageURL=\(url.absoluteString)",
-                    "contentURL=\(existingContent.url.absoluteString)"
+        if let existingContent = content,
+           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
+            let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
+                || pageURL.matchesReaderURL(displayURL)
+            if pageAlreadyMatchesDisplay {
+                logReaderLoad(
+                    "stage=readerContent.load.reuseExistingContent.sameDisplay requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString) currentPageURL=\(pageURL.absoluteString)"
                 )
+                return
             }
-            let elapsed = Date().timeIntervalSince(loadStartedAt)
-            debugPrint(
-                "# READERLOAD stage=readerContent.load.reuse",
-                "pageURL=\(url.absoluteString)",
-                "contentURL=\(existingContent.url.absoluteString)",
-                "elapsed=\(String(format: "%.3fs", elapsed))",
-                "slow=\(elapsed >= 0.8)"
-            )
+            if !pageURL.matchesReaderURL(url) {
+                logReaderLoad(
+                    "stage=readerContent.load.reuseExistingContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString)"
+                )
+                pageURL = displayURL
+            }
             return
         }
 
         if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+            logReaderLoad(
+                "stage=readerContent.load.usePreloadedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString) key=\(preloadedContent.compoundKey)"
+            )
             currentSectionIndex = nil
             content = preloadedContent
             pageURL = displayURL
-            debugPrint(
-                "# READERLOAD stage=readerContent.load.usePreloadedContent",
-                "requestURL=\(url.absoluteString)",
-                "resolvedContentURL=\(resolvedContentURL.absoluteString)",
-                "contentURL=\(preloadedContent.url.absoluteString)",
-                "key=\(preloadedContent.compoundKey)"
+            logReaderLoad(
+                "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString)"
             )
             return
         }
 
+        logReaderLoad(
+            "stage=readerContent.load.clearState requestURL=\(url.absoluteString) newPageURL=\(displayURL.absoluteString)"
+        )
         content = nil
         currentSectionIndex = nil
         pageURL = displayURL
-        if url.isReaderURLLoaderURL || displayURL.isReaderURLLoaderURL {
-            debugPrint(
-                "# READERRELOAD readerContent.load.pageURLSet",
-                "pageURL=\(displayURL.absoluteString)",
-                "incoming=\(url.absoluteString)"
-            )
-        }
 
         loadingTask?.cancel()
+        loadingResolvedContentURL = resolvedContentURL
         loadingTask = Task { @MainActor [weak self] in
             try Task.checkCancellation()
-            debugPrint("# FLASH ReaderContent.load task resolving content", "page=\(flashURLDescription(url))")
-            let content = try await ReaderContentLoader.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
-            try Task.checkCancellation()
+            let content = try await Self.contentResolver?(
+                url,
+                true,
+                "ReaderContent.load"
+            ) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(resolvedContentURL) else {
+                logReaderLoad(
+                    "stage=readerContent.load.mismatchedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
+                )
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
-                debugPrint("# FLASH ReaderContent.load mismatch", "page=\(flashURLDescription(url))", "content=\(flashURLDescription(content.url))")
-                if resolvedContentURL.isSnippetURL {
-                    debugPrint(
-                        "# SNIPPETLOAD readerContent.load.mismatch",
-                        "pageURL=\(url.absoluteString)",
-                        "resolved=\(resolvedContentURL.absoluteString)",
-                        "contentURL=\(content.url.absoluteString)"
-                    )
-                }
                 return nil
             }
             self?.content = content
-            let contentSummary = [
-                "url=\(content.url.absoluteString)",
-                "isSnippet=\(content.url.isSnippetURL)",
-                "hasHTML=\(content.hasHTML)",
-                "isReaderModeByDefault=\(content.isReaderModeByDefault)",
-                "rssContainsFullContent=\(content.rssContainsFullContent)",
-                "isFromClipboard=\(content.isFromClipboard)"
-            ].joined(separator: " | ")
-            debugPrint("# FLASH ReaderContent.load contentAssigned", contentSummary)
-            debugPrint("# FLASH ReaderContent.load task set content", "content=\(flashURLDescription(content.url))")
-            if content.url.isSnippetURL {
-                debugPrint(
-                    "# SNIPPETLOAD readerContent.load.contentAssigned",
-                    "contentURL=\(content.url.absoluteString)",
-                    "hasHTML=\(content.hasHTML)",
-                    "rssFull=\(content.rssContainsFullContent)",
-                    "clipboard=\(content.isFromClipboard)"
-                )
-            }
+            logReaderLoad(
+                "stage=readerContent.load.contentResolved requestURL=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
+            )
             return content
         }
-        try await loadingTask?.value
-        debugPrint("# FLASH ReaderContent.load completed", "page=\(flashURLDescription(url))")
-        let elapsed = Date().timeIntervalSince(loadStartedAt)
-        debugPrint(
-            "# READERLOAD stage=readerContent.load.completed",
-            "pageURL=\(url.absoluteString)",
-            "resolvedURL=\(resolvedContentURL.absoluteString)",
-            "contentURL=\(content?.url.absoluteString ?? "nil")",
-            "elapsed=\(String(format: "%.3fs", elapsed))",
-            "slow=\(elapsed >= 0.8)"
-        )
+        let loadedContent = try await loadingTask?.value
         loadingTask = nil
+        loadingResolvedContentURL = nil
+        let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
+        logReaderLoad(
+            "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
+        )
+    }
 
-        if shouldMarkProvisional && isReaderProvisionallyNavigating {
-            isReaderProvisionallyNavigating = false
-            debugPrint("# FLASH provisional.clear", "page=\(flashURLDescription(url))", "state=false")
-        }
+    @MainActor
+    public func prepareForDisplay(url: URL) async throws {
+        try await load(url: url)
     }
 
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
+        let startedAt = CFAbsoluteTimeGetCurrent()
         if let content {
-//            debugPrint("# FLASH ReaderContent.getContent cached", content.url)
             return content
         }
-        debugPrint("# FLASH ReaderContent.getContent awaiting loadingTask", pageURL)
-        return try await loadingTask?.value
+        let content = try await loadingTask?.value
+        let contentURL = content?.url.absoluteString ?? "nil"
+        logReaderLoad(
+            "stage=readerContent.getContent source=loadingTask contentURL=\(contentURL) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
+        )
+        return content
     }
 
     @MainActor
@@ -357,26 +327,36 @@ public class ReaderContent: ObservableObject {
         guard !trimmed.isEmpty else { return }
         guard let content else { return }
         guard trimmed != content.title else { return }
-
         logTitleTrace(
             "stage=readerContent.updateContentTitle begin pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) oldTitle=\(content.title.debugTitleFragment) requestedTitle=\(newTitle.debugTitleFragment) trimmedTitle=\(trimmed.debugTitleFragment)"
         )
-        contentTitle = trimmed
-        contentTitleURL = content.url
-        contentTitleSubject.send(trimmed)
+        let isTitlePrefixOfContent =
+            content.url.isSnippetURL &&
+            ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+                trimmed,
+                sourceHTML: content.html
+            )
+
+        content.title = trimmed
+        content.isTitlePrefixOfContent = isTitlePrefixOfContent
+        syncLocationBarTitle()
+        syncContentTitle()
 
         do {
             let contentURL = content.url
             try await ReaderContentLoader.updateContent(url: contentURL) { object in
-                guard object.title != trimmed else { return false }
+                guard object.title != trimmed || object.isTitlePrefixOfContent != isTitlePrefixOfContent else {
+                    return false
+                }
                 object.title = trimmed
+                object.isTitlePrefixOfContent = isTitlePrefixOfContent
                 return true
             }
             logTitleTrace(
-                "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment)"
+                "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment) isTitlePrefixOfContent=\(isTitlePrefixOfContent)"
             )
         } catch {
-            debugPrint("# READER contentTitle.update.failed", error.localizedDescription)
+            debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
         }
     }
 }
@@ -387,10 +367,7 @@ private extension String {
         if normalized.isEmpty {
             return "\"\""
         }
-        if normalized.count <= 120 {
-            return "\"\(normalized)\""
-        }
-        return "\"\(String(normalized.prefix(120)))...\""
+        return "\"\(normalized.truncate(120, trailing: "…"))\""
     }
 }
 

@@ -1,5 +1,16 @@
 const MAX_RELOCATE_STACK = 50;
 const FRACTION_EPSILON = 0.000001;
+const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
+    'bridge.goToReaderPage',
+    'bridge.goToReaderLocation',
+    'bridge.goToReaderPercent',
+    'bridge.goToReaderHref',
+    'goToPercent',
+    'goToLocation',
+    'goToHref',
+    'relocate-button',
+    'scrub-release',
+]);
 
 // Focused pagination/bake diagnostics (capped to avoid spam)
 let logEBookPageNumCounter = 0;
@@ -8,7 +19,7 @@ const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
-    'nav:page-metrics',
+    'nav:section-counts-state',
     'nav:relocate:input',
     'relocate',
     'relocate:label',
@@ -19,10 +30,45 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     const verbose = !!globalThis.manabiPageNumVerbose;
     const allow = verbose || NAV_PAGE_NUM_WHITELIST.has(event);
     if (!allow) return;
+    if (event === 'ui:primary-label') {
+        const signature = JSON.stringify({
+            label: detail?.label ?? '',
+            compactLabel: detail?.compactLabel ?? '',
+            currentPercent: detail?.currentPercent ?? null,
+            source: detail?.source ?? null,
+            hideNavigationDueToScroll: detail?.hideNavigationDueToScroll ?? null,
+        });
+        if (globalThis.__manabiLastUIPrimaryLabelSignature === signature) {
+            return;
+        }
+        globalThis.__manabiLastUIPrimaryLabelSignature = signature;
+    }
     if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return;
     logEBookPageNumCounter += 1;
     const payload = { event, count: logEBookPageNumCounter, ...detail };
-    const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`;
+    const line = `# PAGENUM ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
+const logPagesLeft = (event, detail = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            '# Pagesleft ' + JSON.stringify({ event, ...detail })
+        );
+    } catch {}
+};
+
+const logMarkReadNav = (event, detail = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...detail,
+    };
+    const line = `# MARKREAD ${JSON.stringify(payload)}`;
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch (_err) {
@@ -59,6 +105,72 @@ const logNavHide = (event, detail = {}) => {
     }
 };
 
+const logEPUBNav = (event, detail = {}) => {
+    const payload = { event, ...detail };
+    if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
+        const signature = JSON.stringify(payload);
+        const key = `__manabiLast${event.replace(/[^a-z0-9]/gi, '')}Signature`;
+        if (globalThis[key] === signature) {
+            return;
+        }
+        globalThis[key] = signature;
+    }
+    const line = `# PAGENUM ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
+const normalizeSpineHrefForPageNum = (href) => {
+    if (typeof href !== 'string') return null;
+    const trimmed = href.trim();
+    if (!trimmed) return null;
+    const hashIndex = trimmed.indexOf('#');
+    return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
+};
+
+const getPrimaryRendererContent = (renderer) => {
+    try {
+        const contents = renderer?.getContents?.();
+        return Array.isArray(contents) && contents.length > 0 ? contents[0] ?? null : null;
+    } catch (_error) {
+        return null;
+    }
+};
+
+const getPrimaryRendererContentIndex = (renderer) => {
+    const content = getPrimaryRendererContent(renderer);
+    return typeof content?.index === 'number' ? content.index : null;
+};
+
+const getRendererContentHref = (renderer) => {
+    const content = getPrimaryRendererContent(renderer);
+    const datasetHref = content?.doc?.body?.dataset?.mnbSourceHref;
+    if (typeof datasetHref === 'string' && datasetHref.trim()) {
+        return datasetHref;
+    }
+    const locationHref = content?.doc?.location?.href;
+    if (typeof locationHref !== 'string' || !locationHref.trim()) return null;
+    try {
+        const url = new URL(locationHref);
+        const subpath = url.searchParams.get('subpath');
+        return subpath && subpath.trim() ? subpath : null;
+    } catch (_error) {
+        return null;
+    }
+};
+
+const deriveLocationIndexFromFraction = (fraction, total) => {
+    if (typeof fraction !== 'number' || !isFinite(fraction)) return null;
+    if (typeof total !== 'number' || !isFinite(total) || total <= 0) return null;
+    const clampedFraction = Math.max(0, Math.min(1, fraction));
+    const clampedTotal = Math.max(1, Math.round(total));
+    if (clampedTotal <= 1) return 0;
+    return Math.max(0, Math.min(clampedTotal - 1, Math.round(clampedFraction * (clampedTotal - 1))));
+};
+
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
     for (const item of items) {
@@ -88,17 +200,22 @@ const ensurePageKey = (item, fallbackIndex = 0) => {
     return key;
 };
 
+const safeRound = (value, digits = 1) =>
+    globalThis.__manabiSafeRound?.(value, digits)
+        ?? (typeof value === 'number' && Number.isFinite(value)
+            ? Number(value.toFixed(digits))
+            : null);
+
 export class NavigationHUD {
     constructor({ onJumpRequest, getRenderer, formatPercent } = {}) {
         this.onJumpRequest = onJumpRequest;
         this.getRenderer = getRenderer;
         this.formatPercent = formatPercent ?? (value => `${Math.round(value * 100)}%`);
-        
+
         this.navBar = document.getElementById('nav-bar');
         this.navPrimaryText = document.getElementById('nav-primary-text');
         this.navPrimaryTextFull = document.getElementById('nav-primary-text-full');
         this.navPrimaryTextCompact = document.getElementById('nav-primary-text-compact');
-        this.navPrimaryPercent = document.getElementById('nav-primary-percent');
         this.navHiddenOverlay = {
             text: document.getElementById('nav-hidden-primary-text'),
             percent: document.getElementById('nav-hidden-primary-percent'),
@@ -106,6 +223,7 @@ export class NavigationHUD {
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
+            center: document.getElementById('nav-section-progress-center'),
         };
         this.navRelocateButtons = {
             back: document.getElementById('nav-relocate-back'),
@@ -115,16 +233,18 @@ export class NavigationHUD {
             back: document.getElementById('nav-relocate-label-back'),
             forward: document.getElementById('nav-relocate-label-forward'),
         };
-        this.completionStack = document.getElementById('completion-stack');
         this.progressWrapper = document.getElementById('progress-wrapper');
         this.progressSlider = document.getElementById('progress-slider');
-        
+        this.pageTrackingContainer = document.getElementById('page-tracking-container');
+        this.pageTrackingButtons = document.getElementById('page-tracking-buttons');
+
         this.hideNavigationDueToScroll = false;
         this.isRTL = false;
         this.navContext = null;
         this.totalPageCount = 0;
         this.pageTargets = [];
         this.pageTargetIndexByKey = new Map();
+        this.sectionIndexByHref = new Map();
         this.sectionPageCounts = new Map();
         this.lastSectionIndexSeen = null;
         this.currentLocationDescriptor = null;
@@ -134,10 +254,15 @@ export class NavigationHUD {
             back: [],
             forward: [],
         };
+        this._explicitRelocateHistoryMutationSource = null;
         this.scrubSession = null;
+        this.pendingReleasedScrubDescriptor = null;
         this.pendingRelocateJump = null;
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
+        this.lastTerminalPagesLeftSection = null;
+        this.lastTerminalPagesLeftPageNumber = null;
+        this.sectionProgressRequestToken = 0;
         this.latestPrimaryLabel = '';
         this.previousRelocateVisibility = {
             back: null,
@@ -147,10 +272,11 @@ export class NavigationHUD {
         this.fallbackTotalPageCount = null;
         this.lastTotalSource = null;
         this.lastTotalPagesSnapshot = null;
-        this.lastPageMetricsSnapshot = null;
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
+        this.lastResolvedSectionIndexLog = null;
+        this.lastRelocateButtonsStateLog = null;
         this._applyLabelVariant();
         if (this.pendingScrubCommit) {
             this._logPageScrub('pending-commit-reset', {
@@ -197,45 +323,36 @@ export class NavigationHUD {
         }
     }
 
+    requestExplicitRelocateHistoryMutation(source = 'unknown') {
+        this._explicitRelocateHistoryMutationSource = source;
+    }
+
+    #consumeExplicitRelocateHistoryMutation() {
+        const source = this._explicitRelocateHistoryMutationSource ?? null;
+        this._explicitRelocateHistoryMutationSource = null;
+        if (source) {
+            this._logJumpDiagnostic('relocate-history-explicit', {
+                source,
+            });
+        }
+        return source;
+    }
+
     linearSectionCount = null;
     linearSectionIndexes = new Set();
+    pageTargetSectionPageCounts = new Map();
+    pageTargetSectionOffsets = new Map();
 
     setIsRTL(isRTL) {
         this.isRTL = !!isRTL;
         this._applyRelocateButtonEdges();
-        this._updateSectionProgress();
+        this._updateSectionProgress({ source: 'rtl' });
+        this._updateAuxiliaryInsets();
     }
 
     setSectionPageCountsFromCache(counts) {
-        if (!(counts instanceof Map) || counts.size === 0) return;
-        const linearCount = Array.isArray(this.navContext?.sections)
-            ? this.navContext.sections.filter(s => s.linear !== 'no').length
-            : null;
-        if (typeof linearCount === 'number' && linearCount > 0 && counts.size < linearCount) {
-            // Don't overwrite until all linear sections are known.
-            logBug?.('pagecount:cachewarmer:skip-partial', {
-                received: counts.size,
-                linearCount,
-            });
-            return;
-        }
-        logBug?.('pagecount:cachewarmer:apply', {
-            received: counts.size,
-            linearCount,
-            total: Array.from(counts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0),
-        });
-        this.sectionPageCounts = new Map(counts);
-        const total = Array.from(counts.values()).reduce((acc, v) => acc + (Number.isFinite(v) && v > 0 ? v : 0), 0);
-        if (total > 0) {
-            this.fallbackTotalPageCount = total;
-            this.lastTotalSource = 'cachewarmer';
-        }
-        if (this.lastRelocateDetail) {
-            this._updateRendererSnapshotFromDetail(this.lastRelocateDetail);
-            this._updatePrimaryLine(this.lastRelocateDetail);
-        }
-        this._updateSectionProgress({ refreshSnapshot: false });
-        this._updateRelocateButtons();
+        // Cache-warmer page counts are intentionally ignored. The visible label is location-driven.
+        return;
     }
 
     setPageTargets(pageList) {
@@ -253,7 +370,9 @@ export class NavigationHUD {
         this.totalPageCount = this.pageTargets.length;
         if (this.totalPageCount > 0) {
             this.fallbackTotalPageCount = this.totalPageCount;
+            this.fallbackTotalPageCountSource = 'page-targets';
         }
+        this._rebuildPageTargetSectionMetrics();
         const pageKeyPreview = this.pageTargets.slice(0, 5).map((item, index) => ({
             idx: index,
             key: ensurePageKey(item, index),
@@ -271,30 +390,85 @@ export class NavigationHUD {
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
     }
-    
+
     setNavContext(context) {
         this.navContext = context ?? null;
         this.linearSectionIndexes = new Set();
+        this.sectionIndexByHref = new Map();
         if (Array.isArray(this.navContext?.sections)) {
             this.navContext.sections.forEach((section, idx) => {
                 if (section?.linear !== 'no') this.linearSectionIndexes.add(idx);
+                const normalizedHref = normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null);
+                if (normalizedHref) {
+                    this.sectionIndexByHref.set(normalizedHref, idx);
+                }
             });
         }
+        logEPUBNav('nav.sections.received', {
+            sectionCount: Array.isArray(this.navContext?.sections) ? this.navContext.sections.length : 0,
+            linearSectionCount: this.linearSectionIndexes.size,
+            sectionMapSize: this.sectionIndexByHref.size,
+            preview: Array.isArray(this.navContext?.sections)
+                ? this.navContext.sections.slice(0, 8).map((section, idx) => ({
+                    index: idx,
+                    href: section?.href ?? null,
+                    normalizedHref: normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null),
+                    linear: section?.linear ?? null,
+                }))
+                : [],
+        });
         this.linearSectionCount = this.linearSectionIndexes.size || null;
-        this._toggleCompletionStack();
-        this._updateSectionProgress();
+        this._rebuildPageTargetSectionMetrics();
+        if (this.lastRelocateDetail) {
+            this._updateRendererSnapshotFromDetail(this.lastRelocateDetail);
+            this._updatePrimaryLine(this.lastRelocateDetail);
+        }
+        // Keep completion button visibility controlled by navigation state rather than scroll visibility.
+        // This prevents finish/restart controls from disappearing when the nav is hidden during scroll.
+        const showingCompletion = !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
+        this._toggleCompletionStack(showingCompletion);
+        this._updateSectionProgress({ source: 'nav-context' });
         this._updateRelocateButtons();
     }
-    
+
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         const previous = this.hideNavigationDueToScroll;
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
+        logMarkReadNav('hideNavigation.navHUD.set', {
+            source,
+            previous,
+            requestedHide: !!shouldHide,
+            appliedHide: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            context,
+        });
+        logEPUBNav('nav.visibility.scroll-toggle', {
+            source,
+            previous,
+            shouldHide: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            context,
+        });
         logNavHide('hud:set-hide', {
             shouldHide: this.hideNavigationDueToScroll,
             previous,
             source,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            hiddenOverlayLabel: this.navHiddenOverlay?.text?.textContent || '',
+            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
+            hiddenOverlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
+            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
@@ -318,21 +492,45 @@ export class NavigationHUD {
         if (this.lastRelocateDetail) {
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
+        // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
         this._updateRelocateButtons();
+        this._updateAuxiliaryInsets();
+        globalThis.reader?.queueLayoutDiagnostics?.('nav-hide-due-to-scroll', {
+            source,
+            shouldHide: this.hideNavigationDueToScroll,
+        });
     }
 
     // External toggle for full nav hide (not the scroll HUD hide).
     setNavHiddenState(shouldHide) {
+        const previous = this.navHidden;
         this.navHidden = !!shouldHide;
         this._applyLabelVariant();
         const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
         if (descriptor) {
             this._updatePrimaryLine(descriptor);
         }
+        logEPUBNav('nav.visibility.hidden-toggle', {
+            previous,
+            shouldHide: this.navHidden,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+        });
+        globalThis.reader?.queueLayoutDiagnostics?.('nav-hidden-state', {
+            shouldHide: this.navHidden,
+        });
     }
 
     getCurrentDescriptor() {
         return this._cloneDescriptor(this.currentLocationDescriptor);
+    }
+
+    getCurrentLocationDescriptor() {
+        return this.getCurrentDescriptor();
     }
 
     beginProgressScrubSession(originDescriptor) {
@@ -387,6 +585,17 @@ export class NavigationHUD {
         this._logJumpDiagnostic('scrub-begin', {
             hasOrigin: !!originDescriptor,
             backDepth: this.relocateStacks.back.length,
+            forwardDepth: this.relocateStacks.forward.length,
+            originDescriptor: this._serializeDescriptorForJumpLog(originDescriptor),
+            baselineDescriptor: this._serializeDescriptorForJumpLog(baselineDescriptor),
+            currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+            pendingScrubCommit: this.pendingScrubCommit ? {
+                reason: this.pendingScrubCommit.reason ?? null,
+                origin: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.origin),
+                releaseFraction: typeof this.pendingScrubCommit.releaseFraction === 'number'
+                    ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6))
+                    : null,
+            } : null,
         });
         this._updateRelocateButtons();
     }
@@ -402,7 +611,7 @@ export class NavigationHUD {
         const releaseMoved = typeof releaseValue === 'number'
             && typeof session.originFraction === 'number'
             && Math.abs(releaseValue - session.originFraction) > FRACTION_EPSILON;
-        if (!cancel && session.originDescriptor && session.hasMoved && releaseMoved) {
+        if (!cancel && session.originDescriptor && releaseMoved) {
             this.pendingScrubCommit = {
                 origin: this._cloneDescriptor(session.originDescriptor),
                 reason: 'scrub-release',
@@ -414,6 +623,7 @@ export class NavigationHUD {
             this._logPageScrub('pending-commit', {
                 originFraction: session.originFraction ?? null,
                 releaseFraction: releaseValue,
+                hasMoved: session.hasMoved,
             });
         } else {
             this.pendingScrubCommit = null;
@@ -437,6 +647,9 @@ export class NavigationHUD {
         } else {
             deferredCommit = !!this.pendingScrubCommit;
         }
+        this.pendingReleasedScrubDescriptor = releaseDescriptor
+            ? this._cloneDescriptor(releaseDescriptor)
+            : null;
         this._logPageScrub('end', {
             cancel,
             committed,
@@ -457,11 +670,29 @@ export class NavigationHUD {
             finalFraction: comparisonDescriptor?.fraction ?? null,
             backDepth: this.relocateStacks.back.length,
             forwardDepth: this.relocateStacks.forward.length,
+            deferredCommit,
+            releaseFraction: typeof releaseValue === 'number' ? Number(releaseValue.toFixed(6)) : null,
+            originDescriptor: this._serializeDescriptorForJumpLog(session.originDescriptor),
+            comparisonDescriptor: this._serializeDescriptorForJumpLog(comparisonDescriptor),
+            releaseDescriptor: this._serializeDescriptorForJumpLog(releaseDescriptor),
+            currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+            pendingReleasedScrubDescriptor: this._serializeDescriptorForJumpLog(this.pendingReleasedScrubDescriptor),
+            pendingScrubCommit: this.pendingScrubCommit ? {
+                reason: this.pendingScrubCommit.reason ?? null,
+                origin: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.origin),
+                releaseFraction: typeof this.pendingScrubCommit.releaseFraction === 'number'
+                    ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6))
+                    : null,
+                releaseDescriptor: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.releaseDescriptor),
+            } : null,
         });
     }
-    
+
     async handleRelocate(detail) {
         if (!detail) return;
+        const previousSectionIndex = typeof this.lastRelocateDetail?.sectionIndex === 'number'
+            ? this.lastRelocateDetail.sectionIndex
+            : (typeof this.lastRelocateDetail?.index === 'number' ? this.lastRelocateDetail.index : null);
         const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locTotal != null && locTotal > 0) {
@@ -490,6 +721,19 @@ export class NavigationHUD {
         if (typeof detail.sectionIndex === 'number' && typeof detail.pageCount === 'number' && detail.pageCount > 0) {
             this.sectionPageCounts.set(detail.sectionIndex, detail.pageCount);
         }
+        logEPUBNav('nav.visibility.relocate', {
+            reason: detail?.reason ?? null,
+            previousSectionIndex,
+            nextSectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
+            sectionChanged: typeof previousSectionIndex === 'number' && typeof detail.sectionIndex === 'number'
+                ? previousSectionIndex !== detail.sectionIndex
+                : null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+        });
         logEBookPageNumLimited('nav:relocate:input', {
             sectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
             index: typeof detail.index === 'number' ? detail.index : null,
@@ -502,6 +746,7 @@ export class NavigationHUD {
         // Prefer the renderer's live snapshot, but prime it from detail when available
         this._updateRendererSnapshotFromDetail(detail);
         await this._refreshRendererSnapshot();
+        this._applyPageTurnNavigationVisibility(detail);
         this.lastRelocateDetail = detail;
         this._handleRelocateHistory(detail);
         this._logJumpBack('relocate-detail', {
@@ -513,16 +758,32 @@ export class NavigationHUD {
         this._logRelocateDetail(detail);
         this._updatePrimaryLine(detail);
         this._toggleCompletionStack();
-        await this._updateSectionProgress({ refreshSnapshot: false });
+        await this._updateSectionProgress({ refreshSnapshot: false, source: 'relocate' });
         this._updateRelocateButtons();
         this._pruneBackStackIfReturnedToOrigin(detail);
-        this._logPageNumberDiagnostic('relocate', {
+    }
+
+    _applyPageTurnNavigationVisibility(detail) {
+        const direction = typeof detail?.pageTurnDirection === 'string'
+            ? detail.pageTurnDirection.toLowerCase()
+            : null;
+        if (direction !== 'forward' && direction !== 'backward') return;
+
+        const shouldHide = direction === 'forward';
+        this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
+            direction,
             reason: detail?.reason ?? null,
-            liveScrollPhase: detail?.liveScrollPhase ?? null,
-            fraction: typeof detail?.fraction === 'number' ? detail.fraction : null,
-            label: this.latestPrimaryLabel ?? '',
-            ...(this.lastPrimaryLabelDiagnostics ?? {}),
+            sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+            pageNumber: this.rendererPageSnapshot?.current ?? null,
+            pageCount: this.rendererPageSnapshot?.total ?? null,
         });
+        try {
+            window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+                hideNavigationDueToScroll: shouldHide,
+                source: 'relocate.page-turn',
+                direction,
+            });
+        } catch (_error) {}
     }
 
     _updateRendererSnapshotFromDetail(detail) {
@@ -551,7 +812,7 @@ export class NavigationHUD {
             });
         }
     }
-    
+
     _updatePrimaryLine(detail) {
         const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
         const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
@@ -561,24 +822,53 @@ export class NavigationHUD {
         // Ensure our label variant reflects the current hidden state (body/nav classes or flags).
         this._syncLabelVariantFromDOM();
 
-        fullLabelTarget.textContent = '';
-        compactLabelTarget.textContent = '';
+        const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
+        const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
+        const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
+        const normalizedRaw = typeof rawLabel === 'string'
+            ? rawLabel.replace(/\s+/g, ' ').trim()
+            : '';
+        const condensed = normalizedRaw ? this._condensePrimaryLabel(normalizedRaw) : '';
+
+        // Full/compact/hidden all show percent-only progress.
+        fullLabelTarget.textContent = normalizedRaw || condensed;
+        compactLabelTarget.textContent = condensed || normalizedRaw;
         if (overlayLabelTarget) {
-            overlayLabelTarget.textContent = '';
+            overlayLabelTarget.textContent = normalizedRaw || condensed;
         }
-        this.latestPrimaryLabel = '';
+
+        if (fullLabelCandidate) {
+            this.latestPrimaryLabel = fullLabelCandidate;
+        }
 
         this._updateCompactPercent(detail);
 
+        // UI surface logging: what the user actually sees on the nav bar.
         logEBookPageNumLimited('ui:primary-label', {
-            label: '',
-            compactLabel: '',
-            source: 'percent-only',
-            current: null,
-            total: null,
+            label: fullLabelTarget.textContent || '',
+            compactLabel: compactLabelTarget.textContent || '',
+            hiddenOverlayLabel: overlayLabelTarget?.textContent || '',
+            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
+            hiddenOverlayLabelWidth: overlayLabelTarget?.offsetWidth ?? null,
+            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            source: this.lastPrimaryLabelDiagnostics?.source ?? null,
+            currentPercent: this.lastPrimaryLabelDiagnostics?.currentPercent ?? null,
             rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+        });
+        logEPUBNav('nav.primaryLabel', {
+            label: fullLabelTarget.textContent || '',
+            compactLabel: compactLabelTarget.textContent || '',
+            hiddenOverlayLabel: overlayLabelTarget?.textContent || '',
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            source: this.lastPrimaryLabelDiagnostics?.source ?? null,
+            currentPercent: this.lastPrimaryLabelDiagnostics?.currentPercent ?? null,
+            fraction: this.lastPrimaryLabelDiagnostics?.fraction ?? null,
+            pageTargetCount: this.totalPageCount || null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
         });
     }
 
@@ -589,63 +879,241 @@ export class NavigationHUD {
     }
 
     _syncLabelVariantFromDOM() {
-        const bodyHidden = typeof document !== 'undefined'
-            ? document.body?.classList?.contains?.('nav-hidden')
-            : false;
         const barHidden = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
-        const desiredHide = bodyHidden || barHidden || this.hideNavigationDueToScroll || this.navHidden;
+        const desiredHide = barHidden || this.hideNavigationDueToScroll || this.navHidden;
         if (this.navPrimaryText?.dataset) {
             const next = desiredHide ? 'compact' : 'full';
-            if (this.navPrimaryText.dataset.labelVariant !== next) {
+            const previousVariant = this.navPrimaryText.dataset.labelVariant ?? null;
+            if (previousVariant !== next) {
                 this.navPrimaryText.dataset.labelVariant = next;
+                logEPUBNav('nav.visibility.variant-sync', {
+                    previousVariant,
+                    nextVariant: next,
+                    barHidden,
+                    hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+                    navHidden: this.navHidden,
+                    navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                    navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+                    primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+                    compactLabel: this.navPrimaryTextCompact?.textContent || '',
+                });
             }
         }
     }
 
     _updateCompactPercent(detail) {
-        if (!this.navPrimaryPercent) return;
-        const fraction = this._fractionForPercent(detail);
-        const hasValue = typeof fraction === 'number' && isFinite(fraction);
-        const primary = this.navPrimaryPercent;
         const overlay = this.navHiddenOverlay?.percent;
-
-        if (hasValue) {
-            const clamped = Math.max(0, Math.min(1, fraction));
-            const text = this.formatPercent(clamped);
-            primary.textContent = text;
-            primary.hidden = false;
-            primary.setAttribute('aria-hidden', 'false');
-            if (overlay) {
-                overlay.textContent = text;
-                overlay.hidden = false;
-                overlay.setAttribute('aria-hidden', 'false');
-            }
-        } else {
-            primary.textContent = '';
-            primary.hidden = true;
-            primary.setAttribute('aria-hidden', 'true');
-            if (overlay) {
-                overlay.textContent = '';
-                overlay.hidden = true;
-                overlay.setAttribute('aria-hidden', 'true');
-            }
+        const fraction = this._fractionForPercent(detail);
+        const hasValue = typeof fraction === 'number' && Number.isFinite(fraction);
+        const percentText = hasValue ? this.formatPercent(Math.max(0, Math.min(1, fraction))) : '';
+        if (overlay) {
+            overlay.textContent = percentText;
+            overlay.hidden = !hasValue;
+            if (hasValue) overlay.removeAttribute('aria-hidden');
+            else overlay.setAttribute('aria-hidden', 'true');
         }
+        logNavHide('hud:compact-percent', {
+            isCompact: this.navPrimaryText?.dataset?.labelVariant === 'compact',
+            hasValue,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            locationLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
+            compactLabel: this.navPrimaryTextCompact?.textContent || '',
+            primaryPercent: '',
+            primaryPercentHidden: true,
+            overlayLabel: this.navHiddenOverlay?.text?.textContent || '',
+            overlayLabelHidden: this.navHiddenOverlay?.text?.hidden ?? null,
+            overlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
+            overlayPercent: overlay?.textContent || '',
+            overlayPercentHidden: overlay?.hidden ?? null,
+            overlayPercentWidth: overlay?.offsetWidth ?? null,
+            overlayPercentDisplay: overlay ? window.getComputedStyle(overlay).display : null,
+            overlayPercentVisibility: overlay ? window.getComputedStyle(overlay).visibility : null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+        });
     }
 
     _fractionForPercent(detail) {
-        if (detail && typeof detail.fraction === 'number') return detail.fraction;
-        if (typeof this.lastScrubberFraction === 'number') return this.lastScrubberFraction;
-        const descriptorFraction = typeof this.currentLocationDescriptor?.fraction === 'number'
-            ? this.currentLocationDescriptor.fraction
-            : null;
-        return descriptorFraction;
+        const candidates = [
+            { source: 'detail.fraction', value: detail?.fraction },
+            { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
+            { source: 'currentLocationDescriptor.fraction', value: this.currentLocationDescriptor?.fraction },
+            { source: 'reader.view.lastLocation.fraction', value: globalThis.reader?.view?.lastLocation?.fraction },
+            { source: '__manabiRequestedRestoreFraction', value: globalThis.__manabiRequestedRestoreFraction },
+            { source: 'lastScrubberFraction', value: this.lastScrubberFraction },
+        ];
+        for (const candidate of candidates) {
+            if (typeof candidate.value === 'number' && isFinite(candidate.value)) {
+                return Math.max(0, Math.min(1, candidate.value));
+            }
+        }
+        const descriptor = this._makeLocationDescriptor(detail)
+            ?? this._cloneDescriptor(this.currentLocationDescriptor)
+            ?? this._makeLocationDescriptor(this.lastRelocateDetail);
+        const derived = this._scrubberFractionFromMetrics({
+            current: typeof descriptor?.location?.current === 'number'
+                ? Math.max(1, Math.round(descriptor.location.current) + 1)
+                : null,
+            total: typeof descriptor?.location?.total === 'number'
+                ? Math.max(1, Math.round(descriptor.location.total))
+                : null,
+            fallbackFraction: null,
+        });
+        if (typeof derived === 'number' && isFinite(derived)) {
+            return Math.max(0, Math.min(1, derived));
+        }
+        return null;
+    }
+
+    refreshAuxiliaryLayout() {
+        this._updateAuxiliaryInsets();
     }
 
     _applyRelocateButtonEdges() {
-        const backEdge = this.isRTL ? 'right' : 'left';
-        const forwardEdge = this.isRTL ? 'left' : 'right';
+        const backEdge = 'left';
+        const forwardEdge = 'right';
         this._setButtonEdge(this.navRelocateButtons?.back, backEdge);
         this._setButtonEdge(this.navRelocateButtons?.forward, forwardEdge);
+        if (this.navRelocateButtons?.back) {
+            this.navRelocateButtons.back.dataset.navRtl = 'false';
+        }
+        if (this.navRelocateButtons?.forward) {
+            this.navRelocateButtons.forward.dataset.navRtl = 'false';
+        }
+        this._updateAuxiliaryInsets();
+    }
+
+    _updateAuxiliaryInsets() {
+        const styleTarget = document.body ?? document.documentElement;
+        if (!styleTarget?.style) return;
+        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
+        const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
+            ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
+            ?? null;
+        const pageReadRect = pageReadButton?.getBoundingClientRect?.() ?? null;
+        const reserveGap = 18;
+        const leftVisible = !!this.navRelocateButtons?.back
+            && !this.navRelocateButtons.back.hidden
+            && this.navRelocateButtons.back.offsetWidth > 0
+            && this.navRelocateButtons.back.dataset.navEdge === 'left';
+        const rightVisible = !!this.navRelocateButtons?.back
+            && !this.navRelocateButtons.back.hidden
+            && this.navRelocateButtons.back.offsetWidth > 0
+            && this.navRelocateButtons.back.dataset.navEdge === 'right';
+        const leftForwardVisible = !!this.navRelocateButtons?.forward
+            && !this.navRelocateButtons.forward.hidden
+            && this.navRelocateButtons.forward.offsetWidth > 0
+            && this.navRelocateButtons.forward.dataset.navEdge === 'left';
+        const rightForwardVisible = !!this.navRelocateButtons?.forward
+            && !this.navRelocateButtons.forward.hidden
+            && this.navRelocateButtons.forward.offsetWidth > 0
+            && this.navRelocateButtons.forward.dataset.navEdge === 'right';
+        const leftInset = Math.max(
+            leftVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
+            leftForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
+        );
+        const rightInset = Math.max(
+            rightVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
+            rightForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
+        );
+        const parseReservePx = (value) => {
+            const parsed = parseFloat(String(value ?? '').trim());
+            return Number.isFinite(parsed) ? parsed : 0;
+        };
+        const compactPercentReserve = Math.max(
+            0,
+            parseReservePx(window.getComputedStyle(styleTarget).getPropertyValue('--nav-compact-percent-min-width')),
+        );
+        const primaryPercentReserve = Math.max(
+            0,
+            this.navHiddenOverlay?.percent?.offsetWidth ?? 0,
+            this.navPrimaryText?.dataset?.labelVariant === 'compact'
+                ? this.navPrimaryTextCompact?.offsetWidth ?? 0
+                : this.navPrimaryTextFull?.offsetWidth ?? 0,
+        );
+        const percentReserve = Math.max(compactPercentReserve, primaryPercentReserve);
+        for (const button of [this.navRelocateButtons?.back, this.navRelocateButtons?.forward]) {
+            if (!button?.style) continue;
+            const buttonRect = button.getBoundingClientRect?.() ?? null;
+            if (pageReadRect && navRect && buttonRect && buttonRect.height > 0) {
+                const targetTopInNav = (pageReadRect.top - navRect.top) + ((pageReadRect.height - buttonRect.height) / 2);
+                button.style.top = `${Math.round(targetTopInNav)}px`;
+                button.style.bottom = 'auto';
+            } else {
+                button.style.top = '';
+                button.style.bottom = '';
+            }
+        }
+        styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
+        styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
+        logNavHide('hud:aux-layout', {
+            leftInset,
+            rightInset,
+            percentReserve: Math.ceil(percentReserve),
+            backButtonWidth: this.navRelocateButtons?.back?.offsetWidth ?? null,
+            forwardButtonWidth: this.navRelocateButtons?.forward?.offsetWidth ?? null,
+            backButtonHidden: this.navRelocateButtons?.back?.hidden ?? null,
+            forwardButtonHidden: this.navRelocateButtons?.forward?.hidden ?? null,
+            backButtonEdge: this.navRelocateButtons?.back?.dataset?.navEdge ?? null,
+            forwardButtonEdge: this.navRelocateButtons?.forward?.dataset?.navEdge ?? null,
+            pageTrackingContainerHidden: this.pageTrackingContainer?.hidden ?? null,
+            pageTrackingButtonsHidden: this.pageTrackingButtons?.hidden ?? null,
+            pageTrackingButtonCount: this.pageTrackingButtons?.childElementCount ?? 0,
+            pageTrackingContainerWidth: this.pageTrackingContainer?.offsetWidth ?? null,
+            pageTrackingButtonsWidth: this.pageTrackingButtons?.offsetWidth ?? null,
+            pageTrackingContainerDisplay: this.pageTrackingContainer ? window.getComputedStyle(this.pageTrackingContainer).display : null,
+            pageTrackingContainerVisibility: this.pageTrackingContainer ? window.getComputedStyle(this.pageTrackingContainer).visibility : null,
+            pageTrackingOwnedByMainDocument: this.pageTrackingContainer?.ownerDocument === document,
+            pageTrackingContainedByReaderStage: !!document.getElementById('reader-stage')?.contains(this.pageTrackingContainer),
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+        });
+        const backRect = this.navRelocateButtons?.back?.getBoundingClientRect?.() ?? null;
+        const forwardRect = this.navRelocateButtons?.forward?.getBoundingClientRect?.() ?? null;
+        this._logJumpPosition('relocate-buttons.layout', {
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            nav: navRect ? {
+                left: Math.round(navRect.left),
+                right: Math.round(navRect.right),
+                top: Math.round(navRect.top),
+                bottom: Math.round(navRect.bottom),
+                width: Math.round(navRect.width),
+                height: Math.round(navRect.height),
+            } : null,
+            pageRead: pageReadRect ? {
+                left: Math.round(pageReadRect.left),
+                right: Math.round(pageReadRect.right),
+                top: Math.round(pageReadRect.top),
+                bottom: Math.round(pageReadRect.bottom),
+                width: Math.round(pageReadRect.width),
+                height: Math.round(pageReadRect.height),
+            } : null,
+            back: this.navRelocateButtons?.back ? {
+                hidden: !!this.navRelocateButtons.back.hidden,
+                ariaHidden: this.navRelocateButtons.back.getAttribute('aria-hidden'),
+                edge: this.navRelocateButtons.back.dataset?.navEdge ?? null,
+                rtl: this.navRelocateButtons.back.dataset?.navRtl ?? null,
+                left: backRect ? Math.round(backRect.left) : null,
+                right: backRect ? Math.round(backRect.right) : null,
+                top: backRect ? Math.round(backRect.top) : null,
+                bottom: backRect ? Math.round(backRect.bottom) : null,
+                width: backRect ? Math.round(backRect.width) : null,
+                height: backRect ? Math.round(backRect.height) : null,
+            } : null,
+            forward: this.navRelocateButtons?.forward ? {
+                hidden: !!this.navRelocateButtons.forward.hidden,
+                ariaHidden: this.navRelocateButtons.forward.getAttribute('aria-hidden'),
+                edge: this.navRelocateButtons.forward.dataset?.navEdge ?? null,
+                rtl: this.navRelocateButtons.forward.dataset?.navRtl ?? null,
+                left: forwardRect ? Math.round(forwardRect.left) : null,
+                right: forwardRect ? Math.round(forwardRect.right) : null,
+                top: forwardRect ? Math.round(forwardRect.top) : null,
+                bottom: forwardRect ? Math.round(forwardRect.bottom) : null,
+                width: forwardRect ? Math.round(forwardRect.width) : null,
+                height: forwardRect ? Math.round(forwardRect.height) : null,
+            } : null,
+        });
     }
 
     _setButtonEdge(button, edge) {
@@ -679,18 +1147,30 @@ export class NavigationHUD {
     }
 
     formatPrimaryLabel(detail, { allowRendererFallback = false, condensedOnly = false } = {}) {
+        const derived = this._derivePrimaryLabel(detail);
+        if (derived) {
+            const label = condensedOnly ? this._condensePrimaryLabel(derived) : derived;
+            if (!condensedOnly) {
+                this.latestPrimaryLabel = label;
+            }
+            return label;
+        }
         return '';
     }
 
     getPrimaryDisplayLabel(detail) {
-        return '';
+        const label = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
+        return label ?? '';
     }
 
     getPageEstimate(detail) {
-        const metrics = this._computePageMetrics(detail);
-        if (!metrics) return null;
-        const current = typeof metrics.currentPageNumber === 'number' ? metrics.currentPageNumber : null;
-        const total = typeof metrics.totalPages === 'number' ? metrics.totalPages : null;
+        const descriptor = this._makeLocationDescriptor(detail);
+        const current = typeof descriptor?.location?.current === 'number'
+            ? Math.max(1, Math.round(descriptor.location.current) + 1)
+            : null;
+        const total = typeof descriptor?.location?.total === 'number'
+            ? Math.max(1, Math.round(descriptor.location.total))
+            : null;
         if (current == null && total == null) return null;
         return { current, total };
     }
@@ -703,11 +1183,15 @@ export class NavigationHUD {
 
     getScrubberFraction(detail = null) {
         if (detail) {
-            const metrics = this._computePageMetrics(detail);
+            const descriptor = this._makeLocationDescriptor(detail);
             const computed = this.lastScrubberFraction
                 ?? this._scrubberFractionFromMetrics({
-                    current: metrics?.currentPageNumber,
-                    total: metrics?.totalPages,
+                    current: typeof descriptor?.location?.current === 'number'
+                        ? Math.max(1, Math.round(descriptor.location.current) + 1)
+                        : null,
+                    total: typeof descriptor?.location?.total === 'number'
+                        ? Math.max(1, Math.round(descriptor.location.total))
+                        : null,
                     fallbackFraction: typeof detail.fraction === 'number' ? detail.fraction : null,
                 });
             if (computed != null) {
@@ -733,159 +1217,138 @@ export class NavigationHUD {
     _derivePrimaryLabel(detail) {
         if (!detail) {
             this.lastPrimaryLabelDiagnostics = {
-                source: 'percent-only',
+                source: 'no-detail',
                 label: '',
                 totalPageCount: this.totalPageCount,
             };
             return null;
         }
+
+        const {
+            index: sectionIndex,
+            source: sectionIndexSource,
+            resolvedHref: resolvedSectionHref,
+        } = this._resolveSectionIndex(detail);
+        const fraction = this._fractionForPercent(detail);
+        if (typeof fraction === 'number' && Number.isFinite(fraction)) {
+            const clampedFraction = Math.max(0, Math.min(1, fraction));
+            const currentPercent = safeRound(clampedFraction * 100, 1);
+            const label = this.formatPercent(clampedFraction);
+            const source = 'percent';
+            this.lastPrimaryLabelDiagnostics = {
+                source,
+                label,
+                sectionIndex,
+                totalPageCount: this.totalPageCount,
+                currentPercent,
+                fraction: safeRound(clampedFraction, 6),
+            };
+            this.latestPrimaryLabel = label;
+            return label;
+        }
+
+        // Do not show guessed or fallback labels in the progress slot.
         this.latestPrimaryLabel = '';
         this.lastPrimaryLabelDiagnostics = {
-            source: 'percent-only',
+            source: 'percent-pending',
             label: '',
             totalPageCount: this.totalPageCount,
+            sectionIndex,
+            sectionIndexSource,
+            resolvedSectionHref,
         };
         return null;
     }
 
     _condensePrimaryLabel(label) {
-        return '';
+        if (typeof label !== 'string') return '';
+        return label.replace(/\s+/g, ' ').trim();
     }
 
-    _computePageMetrics(detail) {
-        if (!detail) return null;
-        const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
-        const pageItem = detail.pageItem ?? null;
-        const pageItemLabel = typeof pageItem?.label === 'string' ? pageItem.label : null;
-        const pageItemKey = pageItem ? ensurePageKey(pageItem) : null;
-        const pageIndex = this._resolvePageIndex(pageItem);
-        const sectionIndex = typeof detail.sectionIndex === 'number'
-            ? detail.sectionIndex
-            : (typeof detail.index === 'number' ? detail.index : null);
-        const locationCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
-        const locationTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
-        const detailPageNumber = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
-        const detailPageCount = typeof detail.pageCount === 'number' ? detail.pageCount : null;
-        const totalPagesRaw = this._currentTotalPages(detail, detailPageCount);
-        const approxIndexFromFraction = this._pageIndexFromFraction(fraction, detailPageCount ?? totalPagesRaw);
-        const locationIndex = locationCurrent != null ? locationCurrent : null;
-        const rendererIndex = this._rendererSnapshotIndex();
-        const detailIndex = detailPageNumber != null ? detailPageNumber - 1 : null;
-        // Prefer relocate detail first, then explicit page target, then renderer, then fraction
-        const candidateIndex = [detailIndex, pageIndex, rendererIndex, approxIndexFromFraction, locationIndex]
-            .find(index => typeof index === 'number' && index >= 0);
-        const sectionPageNumber = candidateIndex != null ? candidateIndex + 1 : null;
-
-        // Track per-section counts and compute cross-section offset
-        if (sectionIndex != null && detailPageCount != null) {
-            this.sectionPageCounts.set(sectionIndex, detailPageCount);
-            logFix('pagecount:section:set', {
-                sectionIndex,
-                pageCount: detailPageCount,
-                totalTracked: this.sectionPageCounts.size,
+    _resolveSectionIndex(detail) {
+        const renderer = this.getRenderer?.() ?? null;
+        const rendererContent = getPrimaryRendererContent(renderer);
+        const candidates = [
+            { source: 'detail.sectionIndex', value: detail?.sectionIndex },
+            { source: 'detail.index', value: detail?.index },
+            { source: 'renderer.contents[0].index', value: rendererContent?.index },
+            { source: 'renderer.currentIndex', value: renderer?.currentIndex },
+            { source: 'last-relocate.sectionIndex', value: this.lastRelocateDetail?.sectionIndex },
+            { source: 'last-relocate.index', value: this.lastRelocateDetail?.index },
+            { source: 'last-section-seen', value: this.lastSectionIndexSeen },
+        ];
+        for (const candidate of candidates) {
+            if (typeof candidate.value === 'number' && candidate.value >= 0) {
+                this._logPageNumberDiagnostic('section-index.resolved', {
+                    resolution: 'numeric',
+                    source: candidate.source,
+                    resolvedHref: null,
+                    sectionIndex: candidate.value,
+                    sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                });
+                return { index: candidate.value, source: candidate.source, resolvedHref: null };
+            }
+        }
+        const hrefCandidates = [
+            { source: 'renderer.contents[0].doc.body.dataset.mnbSourceHref', value: getRendererContentHref(renderer) },
+            { source: 'detail.tocItem.href', value: detail?.tocItem?.href },
+            { source: 'renderer.tocItem.href', value: renderer?.tocItem?.href },
+            { source: 'last-location.tocItem.href', value: globalThis.reader?.view?.lastLocation?.tocItem?.href },
+        ];
+        const hrefCandidateSummary = hrefCandidates.map((candidate) => {
+            const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
+            return {
+                source: candidate.source,
+                href: candidate.value ?? null,
+                normalizedHref,
+                mappedIndex: normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null,
+            };
+        });
+        for (const candidate of hrefCandidates) {
+            const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
+            const indexFromHref = normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null;
+            if (typeof indexFromHref === 'number' && indexFromHref >= 0) {
+                this._logPageNumberDiagnostic('section-index.resolved', {
+                    resolution: 'href',
+                    source: candidate.source,
+                    resolvedHref: normalizedHref,
+                    sectionIndex: indexFromHref,
+                    sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                });
+                return { index: indexFromHref, source: candidate.source, resolvedHref: normalizedHref };
+            }
+        }
+        const hasSectionMetadata = (this.sectionIndexByHref?.size ?? 0) > 0
+            || (Array.isArray(this.navContext?.sections) && this.navContext.sections.length > 0);
+        if (!hasSectionMetadata) {
+            this._logPageNumberDiagnostic('section-index.pending-metadata', {
+                hrefCandidates: hrefCandidateSummary,
+                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
+                navSectionCount: Array.isArray(this.navContext?.sections) ? this.navContext.sections.length : 0,
             });
+            return { index: null, source: 'none', resolvedHref: null };
         }
-        const sectionOffset = sectionIndex != null ? this._sectionOffset(sectionIndex) : 0;
-        const sectionsTotal = this.sectionPageCounts.size > 0
-            ? Array.from(this.sectionPageCounts.values()).reduce((acc, value) => acc + (typeof value === 'number' && value > 0 ? value : 0), 0)
-            : null;
-
-        const adjustedCurrent = sectionPageNumber != null ? sectionPageNumber + sectionOffset : null;
-        const adjustedTotal = totalPagesRaw != null
-            ? totalPagesRaw
-            : (sectionOffset + (detailPageCount ?? 0) || null);
-        logFix('pagemetrics', {
-            sectionIndex,
-            sectionOffset,
-            sectionPageNumber,
-            sectionPageCount: detailPageCount,
-            detailPageNumber,
-            detailPageCount,
-            totalPagesRaw,
-            adjustedCurrent,
-            adjustedTotal,
-            candidateIndex,
-            fraction,
+        this._logPageNumberDiagnostic('section-index.unresolved', {
+            hrefCandidates: hrefCandidateSummary,
+            numericCandidates: candidates.map((candidate) => ({
+                source: candidate.source,
+                value: typeof candidate.value === 'number' ? candidate.value : null,
+            })),
+            sectionMapSize: this.sectionIndexByHref?.size ?? 0,
         });
-        const diag = {
-            fraction,
-            pageItemKey,
-            pageItemLabel,
-            pageIndexFromItem: pageIndex,
-            approxIndexFromFraction,
-            locationCurrent,
-            locationTotal,
-            candidateIndex,
-            sectionIndex,
-            sectionOffset,
-            sectionPageNumber,
-            sectionPageCount: detailPageCount,
-            detailPageNumber,
-            detailPageCount,
-            totalPageCount: this.totalPageCount,
-            fallbackTotalPageCount: this.fallbackTotalPageCount,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-            rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
-            effectiveTotalPages: adjustedTotal ?? null,
-            totalSource: this.lastTotalSource ?? null,
-            currentPageNumber: adjustedCurrent ?? null,
-            totalPages: adjustedTotal ?? null,
-        };
-        const scrubFraction = this._scrubberFractionFromMetrics({
-            current: adjustedCurrent,
-            total: adjustedTotal,
-            fallbackFraction: fraction,
-        });
-        if (scrubFraction != null) {
-            this.lastScrubberFraction = scrubFraction;
-        }
-        this._logPageMetrics({
-            fraction: fraction != null ? Number(fraction.toFixed(6)) : null,
-            pageItemKey,
-            pageItemLabel,
-            pageIndexFromItem: pageIndex,
-            approxIndexFromFraction,
-            locationIndex: locationCurrent,
-            rendererIndex,
-            candidateIndex,
-            sectionIndex,
-            sectionOffset,
-            currentPageNumber: adjustedCurrent,
-            totalPages: adjustedTotal,
-            totalPageCount: this.totalPageCount,
-            rendererTotal: this.rendererPageSnapshot?.total ?? null,
-            fallbackTotalPageCount: this.fallbackTotalPageCount,
-            sectionsTotal,
-            locationTotal,
-            detailPageNumber,
-            detailPageCount,
-            totalSource: this.lastTotalSource ?? null,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-        });
-        return {
-            currentPageNumber: adjustedCurrent,
-            totalPages: adjustedTotal,
-            pageItemLabel,
-            diag,
-        };
+        return { index: null, source: 'none', resolvedHref: null };
     }
-    
+
     _toggleCompletionStack(forceShow) {
         const shouldShow = typeof forceShow === 'boolean'
             ? forceShow
             : !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
-        if (this.completionStack) {
-            this.completionStack.hidden = !shouldShow;
-            this.completionStack.style.display = shouldShow ? '' : 'none';
-        }
         const fadeTargets = [
             this.navRelocateButtons?.back,
             this.navRelocateButtons?.forward,
-            this.navSectionLabels?.leading,
-            this.navSectionLabels?.trailing,
-            this.navPrimaryText,
-            this.navPrimaryPercent,
+            this.navSectionProgress?.leading,
+            this.navSectionProgress?.trailing,
+            this.navSectionProgress?.center,
         ].filter(Boolean);
         fadeTargets.forEach(el => {
             if (shouldShow) {
@@ -894,81 +1357,325 @@ export class NavigationHUD {
                 el.classList.remove('nav-fade-out');
             }
         });
-        if (this.navPrimaryText) {
-            this.navPrimaryText.hidden = shouldShow;
-            if (shouldShow) {
-                this.navPrimaryText.setAttribute('aria-hidden', 'true');
-            } else {
-                this.navPrimaryText.removeAttribute('aria-hidden');
-            }
-        }
-        if (this.navPrimaryPercent) {
-            if (shouldShow) {
-                this.navPrimaryPercent.hidden = true;
-                this.navPrimaryPercent.setAttribute('aria-hidden', 'true');
-            } else {
-                const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
-                this._updateCompactPercent(descriptor);
-            }
-        }
+        this.navPrimaryText?.removeAttribute?.('aria-hidden');
+        if (this.navPrimaryText) this.navPrimaryText.hidden = false;
+        const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
+        this._updateCompactPercent(descriptor);
+        requestAnimationFrame(() => this._updateAuxiliaryInsets());
     }
 
-    async _updateSectionProgress({ refreshSnapshot = true } = {}) {
+    async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
+        const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
+        const center = this.navSectionProgress?.center;
+        const labelBefore = {
+            text: center?.textContent ?? null,
+            hidden: center?.hidden ?? null,
+            display: center ? getComputedStyle(center).display : null,
+            opacity: center ? getComputedStyle(center).opacity : null,
+        };
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
+        if (center) {
+            center.hidden = true;
+            center.textContent = '';
+        }
+        logPagesLeft('label.begin', {
+            source,
+            requestToken,
+            refreshSnapshot,
+            before: labelBefore,
+            afterClearText: center?.textContent ?? null,
+            afterClearHidden: center?.hidden ?? null,
+            afterClearDisplay: center ? getComputedStyle(center).display : null,
+        });
         try {
-            const pagesLeft = await this._calculatePagesLeftInSection({ refreshSnapshot });
+            const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
+            const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
+            const pagesLeft = result?.pagesLeft ?? null;
+            if (requestToken !== this.sectionProgressRequestToken) {
+                logPagesLeft('label.skip.stale-update', {
+                    source,
+                    requestToken,
+                    latestRequestToken: this.sectionProgressRequestToken,
+                    sectionIndex: sectionResolution.index,
+                    pagesLeft,
+                    calculateSource: result?.source ?? null,
+                    existingText: center?.textContent ?? null,
+                    existingHidden: center?.hidden ?? null,
+                    existingDisplay: center ? getComputedStyle(center).display : null,
+                });
+                return;
+            }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
-            if (this.hideNavigationDueToScroll || showingCompletion) return;
-            const targetKey = this.isRTL ? 'leading' : 'trailing';
-            const labelEdge = targetKey === 'leading' ? 'left' : 'right';
-            const forwardEdge = this.isRTL ? 'left' : 'right';
-            const relocateDirection = labelEdge === forwardEdge ? 'forward' : 'back';
-            if (this._isRelocateButtonVisible(relocateDirection)) return;
-            if (!pagesLeft || pagesLeft <= 0) return;
-            const target = this.navSectionProgress?.[targetKey];
-            if (!target) return;
+            if (this.hideNavigationDueToScroll || showingCompletion) {
+                logPagesLeft('label.skip.hidden-or-completion', {
+                    source,
+                    requestToken,
+                    hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+                    showingCompletion,
+                    pagesLeft,
+                    centerText: center?.textContent ?? null,
+                    centerHidden: center?.hidden ?? null,
+                    centerDisplay: center ? getComputedStyle(center).display : null,
+                });
+                return;
+            }
+            if (sectionResolution.index == null) {
+                logPagesLeft('label.skip.no-section', {
+                    source,
+                    requestToken,
+                    pagesLeft,
+                });
+                return;
+            }
+            if (!pagesLeft || pagesLeft <= 0) {
+                this.lastTerminalPagesLeftSection = sectionResolution.index;
+                this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
+                if (center) {
+                    center.textContent = '';
+                    center.hidden = true;
+                }
+                logPagesLeft('label.hide.terminal', {
+                    source,
+                    requestToken,
+                    sectionIndex: sectionResolution.index,
+                    pagesLeft,
+                    calculateSource: result?.source ?? null,
+                    centerText: center?.textContent ?? null,
+                    centerHidden: center?.hidden ?? null,
+                    centerDisplay: center ? getComputedStyle(center).display : null,
+                    centerOpacity: center ? getComputedStyle(center).opacity : null,
+                });
+                return;
+            }
+            const isExplicitBackwardRelocate =
+                source === 'relocate'
+                && typeof this.lastRelocateDetail?.pageTurnDirection === 'string'
+                && this.lastRelocateDetail.pageTurnDirection.toLowerCase() === 'backward';
+            const movedBeforeTerminalPage =
+                this.lastTerminalPagesLeftSection === sectionResolution.index
+                && typeof this.lastTerminalPagesLeftPageNumber === 'number'
+                && typeof result?.currentPageNumber === 'number'
+                && result.currentPageNumber < this.lastTerminalPagesLeftPageNumber;
+            if (
+                this.lastTerminalPagesLeftSection === sectionResolution.index
+                && !isExplicitBackwardRelocate
+                && !movedBeforeTerminalPage
+            ) {
+                logPagesLeft('label.suppress-terminal-regression', {
+                    source,
+                    requestToken,
+                    sectionIndex: sectionResolution.index,
+                    pagesLeft,
+                    calculateSource: result?.source ?? null,
+                    currentPageNumber: result?.currentPageNumber ?? null,
+                    terminalPageNumber: this.lastTerminalPagesLeftPageNumber,
+                    pageTurnDirection: this.lastRelocateDetail?.pageTurnDirection ?? null,
+                    centerText: center?.textContent ?? null,
+                    centerHidden: center?.hidden ?? null,
+                    centerDisplay: center ? getComputedStyle(center).display : null,
+                });
+                return;
+            }
+            if (
+                isExplicitBackwardRelocate
+                || movedBeforeTerminalPage
+                || this.lastTerminalPagesLeftSection !== sectionResolution.index
+            ) {
+                logPagesLeft('label.clear-terminal-state', {
+                    source,
+                    requestToken,
+                    sectionIndex: sectionResolution.index,
+                    pagesLeft,
+                    currentPageNumber: result?.currentPageNumber ?? null,
+                    terminalPageNumber: this.lastTerminalPagesLeftPageNumber,
+                    reason: movedBeforeTerminalPage ? 'moved-before-terminal-page' : (isExplicitBackwardRelocate ? 'explicit-backward' : 'section-changed'),
+                });
+                this.lastTerminalPagesLeftSection = null;
+                this.lastTerminalPagesLeftPageNumber = null;
+            }
+            if (!center) return;
             const label = pagesLeft === 1
                 ? '1 page left in chapter'
                 : `${pagesLeft} pages left in chapter`;
-            target.textContent = label;
-            target.hidden = false;
-            logEBookPageNumLimited('ui:section-progress', {
-                label,
+            center.textContent = label;
+            center.hidden = false;
+            logPagesLeft('label.set', {
+                source,
+                requestToken,
+                sectionIndex: sectionResolution.index,
                 pagesLeft,
-                target: targetKey,
-                rendererCurrent: this.rendererPageSnapshot?.current ?? null,
-                rendererTotal: this.rendererPageSnapshot?.total ?? null,
-                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+                calculateSource: result?.source ?? null,
+                label,
+                centerText: center.textContent,
+                centerHidden: center.hidden,
+                centerDisplay: getComputedStyle(center).display,
+                centerOpacity: getComputedStyle(center).opacity,
             });
         } catch (error) {
             console.error('Failed to update section progress', error);
         }
     }
 
-    
-    async _calculatePagesLeftInSection({ refreshSnapshot = true } = {}) {
-        // Prefer relocate detail (already normalized to text pages) when available in paginated mode.
+
+    async _calculatePagesLeftInSection({ refreshSnapshot = true, requestToken = null, source = 'unknown' } = {}) {
         const detail = this.lastRelocateDetail;
-        if (detail?.scrolled === false) {
-            const current = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
-            const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
-            if (current != null && current > 0 && total != null && total > 0) {
-                return Math.max(0, total - current);
-            }
+        const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
+        if (sectionResolution.index == null) {
+            logPagesLeft('calculate.skip.no-section', {
+                source,
+                requestToken,
+                refreshSnapshot,
+                detailPageNumber: detail?.pageNumber ?? null,
+                detailPageCount: detail?.pageCount ?? null,
+                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+            });
+            return null;
         }
         if (refreshSnapshot) {
             await this._refreshRendererSnapshot();
         }
-        if (!this.rendererPageSnapshot || !this.rendererPageSnapshot.total || this.rendererPageSnapshot.total <= 0) return null;
-        return Math.max(0, this.rendererPageSnapshot.total - this.rendererPageSnapshot.current);
+        const localCurrentIndex = this._rendererSnapshotIndex();
+        if (!(typeof localCurrentIndex === 'number' && localCurrentIndex >= 0)) {
+            logPagesLeft('calculate.skip.no-snapshot-index', {
+                source,
+                requestToken,
+                refreshSnapshot,
+                sectionIndex: sectionResolution.index,
+                detailPageNumber: detail?.pageNumber ?? null,
+                detailPageCount: detail?.pageCount ?? null,
+                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+            });
+            return null;
+        }
+        const currentPageNumber = localCurrentIndex + 1;
+        const liveSectionTotal = typeof this.rendererPageSnapshot?.total === 'number'
+            ? this.rendererPageSnapshot.total
+            : null;
+        if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
+            const pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
+            logPagesLeft('calculate.result.snapshot', {
+                source,
+                requestToken,
+                sectionIndex: sectionResolution.index,
+                currentPageNumber,
+                totalPages: liveSectionTotal,
+                pagesLeft,
+                refreshSnapshot,
+                detailPageNumber: detail?.pageNumber ?? null,
+                detailPageCount: detail?.pageCount ?? null,
+                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+            });
+            return {
+                pagesLeft,
+                source: 'snapshot',
+                currentPageNumber,
+                totalPages: liveSectionTotal,
+                sectionIndex: sectionResolution.index,
+            };
+        }
+        // Fallback to relocate detail when renderer snapshot is not currently available.
+        if (detail?.scrolled === false) {
+            const current = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
+            const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
+            if (current != null && current > 0 && total != null && total > 0) {
+                const pagesLeft = Math.max(0, total - current);
+                logPagesLeft('calculate.result.detail', {
+                    source,
+                    requestToken,
+                    sectionIndex: sectionResolution.index,
+                    currentPageNumber: current,
+                    totalPages: total,
+                    pagesLeft,
+                    refreshSnapshot,
+                    detailPageNumber: detail?.pageNumber ?? null,
+                    detailPageCount: detail?.pageCount ?? null,
+                    snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                    snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                    snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+                });
+                return {
+                    pagesLeft,
+                    source: 'detail',
+                    currentPageNumber: current,
+                    totalPages: total,
+                    sectionIndex: sectionResolution.index,
+                };
+            }
+        }
+        const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
+        if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
+            logPagesLeft('calculate.skip.no-cache-total', {
+                source,
+                requestToken,
+                sectionIndex: sectionResolution.index,
+                currentPageNumber,
+                detailPageNumber: detail?.pageNumber ?? null,
+                detailPageCount: detail?.pageCount ?? null,
+                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+            });
+            return null;
+        }
+        const pagesLeft = Math.max(0, cachedSectionTotal - currentPageNumber);
+        logPagesLeft('calculate.result.cache', {
+            source,
+            requestToken,
+            sectionIndex: sectionResolution.index,
+            currentPageNumber,
+            totalPages: cachedSectionTotal,
+            pagesLeft,
+            detailPageNumber: detail?.pageNumber ?? null,
+            detailPageCount: detail?.pageCount ?? null,
+            snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+            snapshotTotal: this.rendererPageSnapshot?.total ?? null,
+            snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
+        });
+        return {
+            pagesLeft,
+            source: 'cache',
+            currentPageNumber,
+            totalPages: cachedSectionTotal,
+            sectionIndex: sectionResolution.index,
+        };
     }
-    
+
     _handleRelocateHistory(detail) {
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
+        const reason = (detail?.reason || '').toLowerCase();
+        const explicitMutationSource = this.#consumeExplicitRelocateHistoryMutation();
+        const explicitMutate = EXPLICIT_RELOCATE_HISTORY_SOURCES.has(explicitMutationSource);
+        const isImplicitProgressEvent = !reason || reason === 'page' || reason === 'navigation' || reason === 'live-scroll';
+        const shouldMutateRelocateHistory = !!(
+            (explicitMutate && !this.pendingScrubCommit)
+            || this.isProcessingRelocateJump
+            || this.pendingRelocateJump
+        );
+        if (!shouldMutateRelocateHistory && isImplicitProgressEvent) {
+            this._logJumpDiagnostic('relocate-history-suppressed', {
+                reason,
+                backDepth: this.relocateStacks.back.length,
+                forwardDepth: this.relocateStacks.forward.length,
+                descriptor: this._serializeDescriptorForJumpLog(descriptor),
+                previousDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+                descriptorChanged: false,
+                source: isImplicitProgressEvent ? 'non-explicit-progress' : 'non-explicit-explicit-fallback',
+            });
+            this.currentLocationDescriptor = descriptor;
+            this.pendingReleasedScrubDescriptor = null;
+            this._maybeCommitPendingScrub(detail, descriptor);
+            return;
+        }
         const lastOrigin = this.scrubSession?.originDescriptor;
         // If the relocate matches the scrub origin immediately after a jump, don't clobber history yet.
         if (this.scrubSession?.pendingCommit && lastOrigin && this._isSameDescriptor(lastOrigin, descriptor)) {
@@ -992,11 +1699,31 @@ export class NavigationHUD {
             }
             // fall through to normal handling to capture subsequent movement if needed
         }
-        const reason = (detail?.reason || '').toLowerCase();
+        const isRestoreInProgress = globalThis.__manabiRestoreInProgress === true;
+        if (isRestoreInProgress) {
+            if (this.relocateStacks.back.length || this.relocateStacks.forward.length) {
+                this.relocateStacks.back.length = 0;
+                this.relocateStacks.forward.length = 0;
+                this._logStackSnapshot('restore-clear', {
+                    reason,
+                });
+            }
+            this.currentLocationDescriptor = descriptor;
+            this.pendingReleasedScrubDescriptor = null;
+            this._logJumpDiagnostic('relocate-history-suppressed', {
+                reason,
+                restoreInProgress: true,
+                backDepth: this.relocateStacks.back.length,
+                forwardDepth: this.relocateStacks.forward.length,
+                descriptor: this._serializeDescriptorForJumpLog(descriptor),
+                currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
+            });
+            this._updateRelocateButtons();
+            return;
+        }
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
-        const isJumpReason = isLiveScrollReason || reason === 'navigation';
-        const isPageTurn = reason === 'page';
+        const isJumpReason = isLiveScrollReason || explicitMutate || this.isProcessingRelocateJump || this.pendingRelocateJump;
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this._isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;
@@ -1012,7 +1739,7 @@ export class NavigationHUD {
         if (isScrubbing) {
             this._trackScrubMovement({ descriptor, movedFromOrigin, detailFraction });
         }
-        if (isJumpReason && descriptorChanged && !isLiveScrollReason) {
+        if (shouldMutateRelocateHistory && isJumpReason && descriptorChanged && !isLiveScrollReason) {
             if (!isScrubbing && previousDescriptor) {
                 this._pushBackStack(previousDescriptor);
                 logFix('jumpback:push', {
@@ -1031,31 +1758,16 @@ export class NavigationHUD {
                     newFraction: descriptor?.fraction ?? null,
                 });
             }
-        } else if (isPageTurn && descriptorChanged && !isScrubbing && previousDescriptor) {
-            this._pushBackStack(previousDescriptor);
-            logFix('jumpback:push:pageturn', {
-                reason,
-                backDepth: this.relocateStacks.back.length,
-                descriptorFraction: descriptor?.fraction ?? null,
-                prevFraction: previousDescriptor?.fraction ?? null,
-                sectionIndex: detail?.sectionIndex ?? null,
-            });
-            logBug('EBOOKJUMP', {
-                event: 'push-pageturn',
-                reason,
-                backDepth: this.relocateStacks.back.length,
-                forwardDepth: this.relocateStacks.forward.length,
-                prevFraction: previousDescriptor?.fraction ?? null,
-                newFraction: descriptor?.fraction ?? null,
-                sectionIndex: detail?.sectionIndex ?? null,
-            });
-        } else if (!isScrubbing && descriptorChanged) {
+        } else if (shouldMutateRelocateHistory && !isScrubbing && descriptorChanged) {
             this.relocateStacks.forward.length = 0;
             this._logStackSnapshot('forward-clear');
         }
         this._logJumpDiagnostic('relocate-history', {
             reason,
             isJumpReason,
+            explicitMutation: explicitMutate,
+            explicitMutationSource,
+            historyMutationAllowed: shouldMutateRelocateHistory,
             descriptorChanged,
             backDepth: this.relocateStacks.back.length,
             forwardDepth: this.relocateStacks.forward.length,
@@ -1063,8 +1775,13 @@ export class NavigationHUD {
             movedFromOrigin,
             hiddenDueToScroll: this.hideNavigationDueToScroll,
             liveScrollPhase,
+            descriptor: this._serializeDescriptorForJumpLog(descriptor),
+            previousDescriptor: this._serializeDescriptorForJumpLog(previousDescriptor),
+            originDescriptor: this._serializeDescriptorForJumpLog(originDescriptor),
+            pendingReleasedScrubDescriptor: this._serializeDescriptorForJumpLog(this.pendingReleasedScrubDescriptor),
         });
         this.currentLocationDescriptor = descriptor;
+        this.pendingReleasedScrubDescriptor = null;
         this._maybeCommitPendingScrub(detail, descriptor);
     }
 
@@ -1100,6 +1817,15 @@ export class NavigationHUD {
         if (stripCFI) {
             entry.cfi = null;
         }
+        this._logJumpDiagnostic('descriptor-stack-push', {
+            fraction: typeof entry.fraction === 'number' ? Number(entry.fraction.toFixed(6)) : null,
+            cfi: entry.cfi ?? null,
+            sectionIndex: typeof entry.sectionIndex === 'number' ? entry.sectionIndex : null,
+            localSectionIndex: typeof entry.localSectionIndex === 'number' ? entry.localSectionIndex : null,
+            rendererTotal: typeof entry.rendererTotal === 'number' ? entry.rendererTotal : null,
+            pageItemKey: entry.pageItemKey ?? null,
+            stripCFI,
+        });
         const backStack = this.relocateStacks.back;
         backStack.push(entry);
         const index = backStack.length - 1;
@@ -1128,23 +1854,89 @@ export class NavigationHUD {
         this._logStackSnapshot('push');
         return { entry, index };
     }
-    
+
     _makeLocationDescriptor(detail) {
         if (!detail) return null;
-        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
+        const rawLocCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
+        const rendererCurrentIndex = (() => {
+            try {
+                const renderer = this.getRenderer?.();
+                if (typeof renderer?.currentIndex === 'number') return renderer.currentIndex;
+                return getPrimaryRendererContentIndex(renderer);
+            } catch (_error) {
+                return null;
+            }
+        })();
+        const sectionIndex = typeof detail?.sectionIndex === 'number'
+            ? Math.max(0, Math.round(detail.sectionIndex))
+            : (typeof detail?.index === 'number'
+                ? Math.max(0, Math.round(detail.index))
+                : (typeof rendererCurrentIndex === 'number'
+                    ? Math.max(0, Math.round(rendererCurrentIndex))
+                    : (typeof this.lastSectionIndexSeen === 'number'
+                        ? Math.max(0, Math.round(this.lastSectionIndexSeen))
+                        : null)));
+        const rendererSnapshotCurrent = typeof this.rendererPageSnapshot?.current === 'number'
+            ? Math.max(1, Math.round(this.rendererPageSnapshot.current))
+            : null;
+        const rendererSnapshotTotal = typeof this.rendererPageSnapshot?.total === 'number'
+            ? Math.max(1, Math.round(this.rendererPageSnapshot.total))
+            : null;
+        const localSectionIndex = rendererSnapshotCurrent != null ? rendererSnapshotCurrent - 1 : null;
+        const derivedLocCurrent = deriveLocationIndexFromFraction(fraction, locTotal);
+        let locCurrent = rawLocCurrent;
+        if (derivedLocCurrent != null) {
+            if (locCurrent == null) {
+                locCurrent = derivedLocCurrent;
+            } else {
+                const drift = Math.abs(locCurrent - derivedLocCurrent);
+                const staleAtStart = locCurrent === 0 && derivedLocCurrent > 0;
+                if (drift > 1 || staleAtStart) {
+                    logEBookPageNumLimited('nav:location.normalize', {
+                        reason: staleAtStart ? 'stale-zero-current' : 'fraction-drift',
+                        rawCurrent: rawLocCurrent,
+                        derivedCurrent: derivedLocCurrent,
+                        fraction: typeof fraction === 'number' ? Number(fraction.toFixed(6)) : null,
+                        total: locTotal,
+                        cfi: detail.cfi ?? null,
+                    });
+                    locCurrent = derivedLocCurrent;
+                }
+            }
+        }
         const location = (locCurrent != null || locTotal != null)
             ? { current: locCurrent, total: locTotal }
             : null;
         const locationTotalHint = locTotal != null ? locTotal : (this.lastKnownLocationTotal ?? null);
-        return {
+        const descriptor = {
             cfi: detail.cfi ?? null,
-            fraction: typeof detail.fraction === 'number' ? detail.fraction : null,
+            fraction,
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal: rendererSnapshotTotal,
             pageItemKey: detail.pageItem ? ensurePageKey(detail.pageItem) : null,
             pageLabel: typeof detail.pageItem?.label === 'string' ? detail.pageItem.label : null,
             location,
             locationTotalHint,
         };
+        this._logJumpDiagnostic('descriptor-derived', {
+            reason: detail?.reason ?? null,
+            rawSectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+            rawIndex: typeof detail?.index === 'number' ? detail.index : null,
+            rendererCurrentIndex,
+            lastSectionIndexSeen: typeof this.lastSectionIndexSeen === 'number' ? this.lastSectionIndexSeen : null,
+            fraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            sectionIndex: descriptor.sectionIndex,
+            localSectionIndex: descriptor.localSectionIndex,
+            rendererTotal: descriptor.rendererTotal,
+            locCurrent: descriptor.location?.current ?? null,
+            locTotal: descriptor.location?.total ?? null,
+            pageItemKey: descriptor.pageItemKey ?? null,
+            cfi: descriptor.cfi ?? null,
+        });
+        return descriptor;
     }
 
     _descriptorFromFraction(fraction) {
@@ -1155,12 +1947,15 @@ export class NavigationHUD {
         const location = hasTotal
             ? {
                 total: clampedTotal,
-                current: Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1)),
+                current: deriveLocationIndexFromFraction(fraction, clampedTotal),
             }
             : null;
         return {
             cfi: null,
             fraction,
+            sectionIndex: null,
+            localSectionIndex: null,
+            rendererTotal: hasTotal ? clampedTotal : null,
             pageItemKey: null,
             pageLabel: null,
             location,
@@ -1173,18 +1968,21 @@ export class NavigationHUD {
         return {
             cfi: descriptor.cfi ?? null,
             fraction: typeof descriptor.fraction === 'number' ? descriptor.fraction : null,
+            sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
+            localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
+            rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
             pageItemKey: descriptor.pageItemKey ?? null,
             pageLabel: descriptor.pageLabel ?? null,
             location: descriptor.location ? { ...descriptor.location } : null,
             locationTotalHint: typeof descriptor.locationTotalHint === 'number' ? descriptor.locationTotalHint : null,
         };
     }
-    
+
     _requestRendererPrimaryLine() {
         // No-op: we no longer backfill the primary label with renderer page numbers.
         return;
     }
-    
+
     _normalizeRendererPageInfo(rawPage, rawTotal, renderer) {
         if (rawPage == null && rawTotal == null) return null;
         const numericPage = Number(rawPage);
@@ -1241,8 +2039,12 @@ export class NavigationHUD {
             scrolled,
         };
     }
-    
+
     _formatRendererPageLabel(info) {
+        if (!info) return '';
+        if (info.total && info.total > 0) {
+            return `${info.current} of ${info.total}`;
+        }
         return '';
     }
 
@@ -1298,14 +2100,55 @@ export class NavigationHUD {
     }
 
     _logPageNumberDiagnostic(event, payload = {}) {
+        if (event === 'section-index.resolved') {
+            const signature = JSON.stringify({
+                source: payload?.source ?? null,
+                sectionIndex: payload?.sectionIndex ?? null,
+                resolvedHref: payload?.resolvedHref ?? null,
+            });
+            if (this.lastResolvedSectionIndexLog === signature) {
+                return;
+            }
+            this.lastResolvedSectionIndexLog = signature;
+        }
+        if (event === 'relocate-buttons.state') {
+            const signature = JSON.stringify({
+                backDepth: payload?.backDepth ?? null,
+                forwardDepth: payload?.forwardDepth ?? null,
+                showBack: payload?.showBack ?? null,
+                showForward: payload?.showForward ?? null,
+                disableBack: payload?.disableBack ?? null,
+                disableForward: payload?.disableForward ?? null,
+                scrubbing: payload?.scrubbing ?? null,
+                busy: payload?.busy ?? null,
+                backLabel: payload?.backLabel ?? '',
+                forwardLabel: payload?.forwardLabel ?? '',
+            });
+            if (this.lastRelocateButtonsStateLog === signature) {
+                return;
+            }
+            this.lastRelocateButtonsStateLog = signature;
+        }
         const base = {
             event,
             totalPageCount: this.totalPageCount,
             totalSource: this.lastTotalSource ?? null,
             ...payload,
         };
+        if (event === 'renderer-snapshot') {
+            const signature = JSON.stringify({
+                rendererCurrent: base?.rendererCurrent ?? null,
+                rendererTotal: base?.rendererTotal ?? null,
+                rawRendererCurrent: base?.rawRendererCurrent ?? null,
+                rawRendererTotal: base?.rawRendererTotal ?? null,
+            });
+            if (this.lastRendererSnapshotLog === signature) {
+                return;
+            }
+            this.lastRendererSnapshotLog = signature;
+        }
         const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
-        const line = `# EBOOKPAGE ${JSON.stringify(cleaned)}`;
+        const line = `# PAGENUM ${JSON.stringify(cleaned)}`;
         try {
             window.webkit?.messageHandlers?.print?.postMessage?.(line);
         } catch (_error) {
@@ -1320,17 +2163,29 @@ export class NavigationHUD {
 
     _logPageScrub(_event, _payload = {}) {}
 
+    _serializeDescriptorForJumpLog(descriptor) {
+        if (!descriptor) return null;
+        return {
+            fraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            cfi: descriptor.cfi ?? null,
+            sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
+            localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
+            rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
+            locationCurrent: typeof descriptor.location?.current === 'number' ? descriptor.location.current : null,
+            locationTotal: typeof descriptor.location?.total === 'number' ? descriptor.location.total : null,
+            locationTotalHint: typeof descriptor.locationTotalHint === 'number' ? descriptor.locationTotalHint : null,
+            pageItemKey: descriptor.pageItemKey ?? null,
+            pageLabel: descriptor.pageLabel ?? null,
+        };
+    }
+
     _logJumpDiagnostic(event, payload = {}) {
-        const pageNumber = typeof this.lastPrimaryLabelDiagnostics?.currentPageNumber === 'number'
-            ? this.lastPrimaryLabelDiagnostics.currentPageNumber
-            : null;
-        const pageTotal = typeof this.lastPrimaryLabelDiagnostics?.totalPages === 'number'
-            ? this.lastPrimaryLabelDiagnostics.totalPages
+        const currentPercent = typeof this.lastPrimaryLabelDiagnostics?.currentPercent === 'number'
+            ? this.lastPrimaryLabelDiagnostics.currentPercent
             : null;
         const context = {
             timestamp: Date.now(),
-            pageNumber,
-            pageTotal,
+            currentPercent,
             ...payload,
         };
         const cleanedEntries = Object.entries(context).filter(([, value]) => value !== undefined && value !== null);
@@ -1348,28 +2203,122 @@ export class NavigationHUD {
         }
     }
 
+    _logJumpPosition(event, payload = {}) {
+        const line = `# JUMP ${JSON.stringify({
+            timestamp: Date.now(),
+            event,
+            ...payload,
+        })}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional handler
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
+            // optional console
+        }
+    }
+
     _isSameDescriptor(a, b) {
         if (!a || !b) return false;
-        if (a.cfi && b.cfi) return a.cfi === b.cfi;
+        const aSectionIndex = typeof a.sectionIndex === 'number' ? a.sectionIndex : null;
+        const bSectionIndex = typeof b.sectionIndex === 'number' ? b.sectionIndex : null;
+        const aLocalSectionIndex = typeof a.localSectionIndex === 'number' ? a.localSectionIndex : null;
+        const bLocalSectionIndex = typeof b.localSectionIndex === 'number' ? b.localSectionIndex : null;
+        if (
+            aSectionIndex != null && bSectionIndex != null
+            && aLocalSectionIndex != null && bLocalSectionIndex != null
+        ) {
+            return aSectionIndex === bSectionIndex && aLocalSectionIndex === bLocalSectionIndex;
+        }
+        if (a.cfi && b.cfi && a.cfi === b.cfi) {
+            if (typeof a.fraction === 'number' && typeof b.fraction === 'number') {
+                return Math.abs(a.fraction - b.fraction) < FRACTION_EPSILON;
+            }
+            return true;
+        }
         if (typeof a.fraction === 'number' && typeof b.fraction === 'number') {
             return Math.abs(a.fraction - b.fraction) < FRACTION_EPSILON;
         }
         return false;
     }
-    
+
     _resolvePageIndex(pageItem) {
         if (!pageItem || !this.pageTargetIndexByKey) return null;
         const key = ensurePageKey(pageItem);
         if (!key) return null;
         return this.pageTargetIndexByKey.get(key) ?? null;
     }
-    
+
+    _rebuildPageTargetSectionMetrics() {
+        this.pageTargetSectionPageCounts = new Map();
+        this.pageTargetSectionOffsets = new Map();
+        const sections = Array.isArray(this.navContext?.sections) ? this.navContext.sections : [];
+        if (!sections.length || !Array.isArray(this.pageTargets) || !this.pageTargets.length) return;
+        const sectionIndexByHref = new Map();
+        sections.forEach((section, index) => {
+            if (section?.linear === 'no') return;
+            const normalizedHref = normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null);
+            if (normalizedHref) {
+                sectionIndexByHref.set(normalizedHref, index);
+            }
+        });
+        this.pageTargets.forEach((pageTarget) => {
+            const normalizedHref = normalizeSpineHrefForPageNum(pageTarget?.href ?? null);
+            const sectionIndex = normalizedHref != null ? sectionIndexByHref.get(normalizedHref) : null;
+            if (typeof sectionIndex === 'number') {
+                this.pageTargetSectionPageCounts.set(sectionIndex, (this.pageTargetSectionPageCounts.get(sectionIndex) ?? 0) + 1);
+            }
+        });
+        let runningOffset = 0;
+        sections.forEach((section, index) => {
+            if (section?.linear === 'no') return;
+            const count = this.pageTargetSectionPageCounts.get(index);
+            if (typeof count === 'number' && count > 0) {
+                this.pageTargetSectionOffsets.set(index, runningOffset);
+                runningOffset += count;
+            }
+        });
+    }
+
+    _pageTargetSectionOffset(sectionIndex) {
+        if (sectionIndex == null || sectionIndex < 0) return null;
+        return this.pageTargetSectionOffsets.get(sectionIndex) ?? null;
+    }
+
+    _cacheWarmerHighestSectionIndex() {
+        const highest = globalThis.__manabiCacheWarmerHighestSectionIndex;
+        return typeof highest === 'number' && highest >= 0 ? highest : null;
+    }
+
+    _cacheWarmerHasReachedCurrentSection(sectionIndex) {
+        if (sectionIndex == null) return false;
+        if (sectionIndex <= 0) return true;
+        const highest = this._cacheWarmerHighestSectionIndex();
+        return highest != null && highest >= sectionIndex - 1;
+    }
+
+    _cacheWarmerHasFinishedBook() {
+        return !!globalThis.__manabiCacheWarmerFinished;
+    }
+
     _pageIndexFromFraction(fraction, totalOverride) {
         const total = typeof totalOverride === 'number' && totalOverride > 0
             ? totalOverride
             : (this.totalPageCount > 0 ? this.totalPageCount : null);
         if (typeof fraction !== 'number' || !total) return null;
-        const approx = Math.floor(fraction * total);
+        const approx = Math.round(Math.max(0, Math.min(1, fraction)) * Math.max(total - 1, 0));
+        return Math.max(0, Math.min(total - 1, approx));
+    }
+
+    _globalPageIndexFromFraction(fraction, totalOverride) {
+        const total = typeof totalOverride === 'number' && totalOverride > 0
+            ? totalOverride
+            : null;
+        if (typeof fraction !== 'number' || !total) return null;
+        const approx = Math.round(Math.max(0, Math.min(1, fraction)) * Math.max(total - 1, 0));
         return Math.max(0, Math.min(total - 1, approx));
     }
 
@@ -1401,14 +2350,26 @@ export class NavigationHUD {
     }
 
     _sectionOffset(sectionIndex) {
-        if (sectionIndex == null || sectionIndex <= 0) return 0;
+        if (sectionIndex == null || sectionIndex < 0) return null;
+        if (sectionIndex === 0) return 0;
         let sum = 0;
         for (let i = 0; i < sectionIndex; i += 1) {
             const count = this.sectionPageCounts.get(i);
             if (typeof count === 'number' && count > 0) {
                 sum += count;
             } else {
-                break; // stop at first gap to avoid overstating
+                this._logPageNumberDiagnostic('section-offset.blocked', {
+                    requestedSectionIndex: sectionIndex,
+                    missingSectionIndex: i,
+                    knownCountsPreview: Array.from(this.sectionPageCounts.entries())
+                        .sort((a, b) => a[0] - b[0])
+                        .slice(0, 8)
+                        .map(([index, total]) => ({ index, count: total })),
+                    linearCount: this.linearSectionCount ?? null,
+                    cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
+                    cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
+                });
+                return null;
             }
         }
         return sum;
@@ -1423,7 +2384,20 @@ export class NavigationHUD {
         return filled === this.linearSectionCount;
     }
 
-    _currentTotalPages(detail, detailPageCount) {
+    _sectionCountsState() {
+        const linearIndexes = Array.from(this.linearSectionIndexes ?? []);
+        const filledLinearIndexes = linearIndexes.filter(idx => this.sectionPageCounts.has(idx));
+        const missingLinearIndexes = linearIndexes.filter(idx => !this.sectionPageCounts.has(idx));
+        return {
+            complete: this._hasCompleteSectionCounts(),
+            linearCount: this.linearSectionCount ?? 0,
+            filledLinear: filledLinearIndexes.length,
+            missingLinearSectionIndexesPreview: missingLinearIndexes.slice(0, 8),
+            sectionPageCountsSize: this.sectionPageCounts.size,
+        };
+    }
+
+    _currentTotalPages({ detail, detailPageCount, sectionIndex }) {
         const candidates = [];
         if (this.totalPageCount > 0) {
             candidates.push({ source: 'page-targets', total: this.totalPageCount });
@@ -1433,32 +2407,31 @@ export class NavigationHUD {
                 .reduce((acc, value) => acc + (typeof value === 'number' && value > 0 ? value : 0), 0);
             if (sectionSum > 0) {
                 candidates.push({ source: 'sections', total: sectionSum });
+                this._updateFallbackTotalPages(sectionSum, 'sections');
             }
-        }
-        if (typeof detailPageCount === 'number' && detailPageCount > 0) {
-            candidates.push({ source: 'detail', total: detailPageCount });
-        }
-        const rendererTotal = typeof this.rendererPageSnapshot?.total === 'number' ? this.rendererPageSnapshot.total : null;
-        const rendererScrolled = this.rendererPageSnapshot?.scrolled ?? null;
-        // Renderer totals are only trustworthy in paginated mode.
-        if (rendererTotal && rendererTotal > 0 && rendererScrolled === false) {
-            candidates.push({ source: 'renderer', total: rendererTotal });
         }
         const locationTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locationTotal && locationTotal > 0) {
-            candidates.push({ source: 'location', total: locationTotal });
+            candidates.push({ source: 'location-global', total: locationTotal });
         }
-        if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
-            candidates.push({ source: 'fallback', total: this.fallbackTotalPageCount });
+        if (
+            typeof this.fallbackTotalPageCount === 'number'
+            && this.fallbackTotalPageCount > 0
+            && ['page-targets', 'sections', 'cachewarmer'].includes(this.fallbackTotalPageCountSource)
+        ) {
+            candidates.push({
+                source: `fallback:${this.fallbackTotalPageCountSource}`,
+                total: this.fallbackTotalPageCount,
+            });
         }
         if (!candidates.length) {
             this.lastTotalSource = null;
             return null;
         }
-        const locationCandidate = candidates.find(candidate => candidate.source === 'location') ?? null;
-        const pageBasedPrecedence = ['page-targets', 'sections', 'renderer', 'detail', 'fallback'];
+        const locationCandidate = candidates.find(candidate => candidate.source === 'location-global') ?? null;
+        const pageBasedPrecedence = ['page-targets', 'sections', 'fallback:page-targets', 'fallback:sections', 'fallback:cachewarmer'];
         const bestPageBased = candidates
-            .filter(candidate => candidate.source !== 'location')
+            .filter(candidate => candidate.source !== 'location-global')
             .sort((a, b) => {
                 const pa = pageBasedPrecedence.indexOf(a.source);
                 const pb = pageBasedPrecedence.indexOf(b.source);
@@ -1466,44 +2439,27 @@ export class NavigationHUD {
                 return (b.total ?? 0) - (a.total ?? 0);
             })[0] ?? null;
 
-        let best = bestPageBased ?? locationCandidate;
-        const hasStructuredTotals = this.totalPageCount > 0 || this._hasCompleteSectionCounts();
-        const locationClearlyBeatsWeakPageTotals =
-            !!locationCandidate
-            && locationCandidate.total > 1
-            && (
-                !bestPageBased
-                || bestPageBased.total <= 1
-                || (
-                    !hasStructuredTotals
-                    && bestPageBased.source === 'fallback'
-                    && locationCandidate.total > bestPageBased.total
-                )
-            );
-        if (locationClearlyBeatsWeakPageTotals) {
-            best = locationCandidate;
-        }
+        const best = bestPageBased ?? locationCandidate;
         this.lastTotalSource = best?.source ?? null;
-        if (best?.total && best.source !== 'page-targets') {
-            this._updateFallbackTotalPages(best.total);
-        }
-        logBug('total-pages-choice', {
-            chosenSource: best?.source ?? null,
-            chosenTotal: best?.total ?? null,
-            candidates: candidates.map(({ source, total }) => ({ source, total })),
-            sectionsComplete: this._hasCompleteSectionCounts(),
-            linearSectionCount: this.linearSectionCount ?? null,
-        });
         const summary = candidates.map(({ source, total }) => ({ source, total }));
         const changed = !this.lastTotalPagesSnapshot
             || this.lastTotalPagesSnapshot.source !== (best?.source ?? null)
             || this.lastTotalPagesSnapshot.total !== (best?.total ?? null)
             || this.lastTotalPagesSnapshot.candidateCount !== summary.length;
         if (changed) {
+            const sectionCountsState = this._sectionCountsState();
             logEBookPageNumLimited('nav:total-pages-source', {
                 chosenSource: best?.source ?? null,
                 chosenTotal: best?.total ?? null,
                 candidates: summary,
+                sectionCountsComplete: sectionCountsState.complete,
+                sectionCountsFilledLinear: sectionCountsState.filledLinear,
+                linearSectionCount: sectionCountsState.linearCount,
+                missingLinearSectionIndexesPreview: sectionCountsState.missingLinearSectionIndexesPreview,
+                fallbackTotalPageCount: this.fallbackTotalPageCount ?? null,
+                fallbackTotalPageCountSource: this.fallbackTotalPageCountSource ?? null,
+                cacheWarmerFinished: this._cacheWarmerHasFinishedBook(),
+                cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
             });
             this.lastTotalPagesSnapshot = {
                 source: best?.source ?? null,
@@ -1514,37 +2470,12 @@ export class NavigationHUD {
         return best?.total ?? null;
     }
 
-    _logPageMetrics(payload) {
-        const epsilon = 0.00001;
-        const prev = this.lastPageMetricsSnapshot;
-        const hasChanged =
-            !prev ||
-            prev.currentPageNumber !== payload.currentPageNumber ||
-            prev.totalPages !== payload.totalPages ||
-            prev.candidateIndex !== payload.candidateIndex ||
-            prev.totalSource !== payload.totalSource ||
-            prev.sectionOffset !== payload.sectionOffset ||
-            prev.sectionIndex !== payload.sectionIndex ||
-            (typeof payload.fraction === 'number' && typeof prev?.fraction === 'number'
-                ? Math.abs(payload.fraction - prev.fraction) > epsilon
-                : payload.fraction !== prev?.fraction);
-        if (!hasChanged) return;
-        this.lastPageMetricsSnapshot = {
-            currentPageNumber: payload.currentPageNumber,
-            totalPages: payload.totalPages,
-            candidateIndex: payload.candidateIndex,
-            totalSource: payload.totalSource ?? null,
-            sectionOffset: payload.sectionOffset ?? null,
-            sectionIndex: payload.sectionIndex ?? null,
-            fraction: payload.fraction ?? null,
-        };
-        logEBookPageNumLimited('nav:page-metrics', payload);
-    }
-
-    _updateFallbackTotalPages(total) {
+    _updateFallbackTotalPages(total, source = 'unknown') {
         if (typeof total !== 'number' || total <= 0) return;
+        if (!['page-targets', 'sections', 'cachewarmer'].includes(source)) return;
         if (!this.fallbackTotalPageCount || total > this.fallbackTotalPageCount) {
             this.fallbackTotalPageCount = total;
+            this.fallbackTotalPageCountSource = source;
         }
     }
 
@@ -1555,25 +2486,20 @@ export class NavigationHUD {
 
     _labelForDescriptor(descriptor) {
         if (!descriptor) return '';
-        const derivedTotal = this.lastPrimaryLabelDiagnostics?.totalPages
-            ?? this.lastPageMetricsSnapshot?.totalPages
-            ?? this.fallbackTotalPageCount
-            ?? (this.totalPageCount > 0 ? this.totalPageCount : null);
-        if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
-            const clampedTotal = Math.max(1, derivedTotal);
-            const idx = Math.round(Math.max(0, Math.min(1, descriptor.fraction)) * (clampedTotal - 1));
-            return `${idx + 1}`;
+        const descriptorFraction = typeof descriptor.fraction === 'number'
+            ? Math.max(0, Math.min(1, descriptor.fraction))
+            : null;
+        if (descriptorFraction != null) {
+            return this.formatPercent(descriptorFraction);
         }
-        const currentPageNumber = this.lastPrimaryLabelDiagnostics?.currentPageNumber
-            ?? this.lastPageMetricsSnapshot?.currentPageNumber
-            ?? null;
-        if (typeof currentPageNumber === 'number' && currentPageNumber > 0) {
-            return `${currentPageNumber}`;
+        const currentPercent = this.lastPrimaryLabelDiagnostics?.currentPercent ?? null;
+        if (typeof currentPercent === 'number') {
+            return `${Number.isInteger(currentPercent) ? currentPercent : currentPercent.toFixed(1)}%`;
         }
-        // No page info; leave label empty.
+        // No progress info; leave label empty.
         return '';
     }
-    
+
     _isRelocateButtonVisible(direction) {
         if (!direction) return false;
         const button = this.navRelocateButtons?.[direction];
@@ -1621,7 +2547,35 @@ export class NavigationHUD {
         if (this.navRelocateLabels?.forward) {
             this.navRelocateLabels.forward.textContent = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
         }
-        this._updateSectionProgress();
+        this._logPageNumberDiagnostic('relocate-buttons.state', {
+            backDepth: backStack.length,
+            forwardDepth: forwardStack.length,
+            showBack,
+            showForward,
+            disableBack,
+            disableForward,
+            scrubbing,
+            busy,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            backLabel: this.navRelocateLabels?.back?.textContent || '',
+            forwardLabel: this.navRelocateLabels?.forward?.textContent || '',
+            backHidden: backBtn?.hidden ?? null,
+            forwardHidden: forwardBtn?.hidden ?? null,
+            backDisabled: backBtn?.disabled ?? null,
+            forwardDisabled: forwardBtn?.disabled ?? null,
+            backWidth: backBtn?.offsetWidth ?? null,
+            forwardWidth: forwardBtn?.offsetWidth ?? null,
+            backEdge: backBtn?.dataset?.navEdge ?? null,
+            forwardEdge: forwardBtn?.dataset?.navEdge ?? null,
+            backOpacity: backBtn ? window.getComputedStyle(backBtn).opacity : null,
+            forwardOpacity: forwardBtn ? window.getComputedStyle(forwardBtn).opacity : null,
+            backDisplay: backBtn ? window.getComputedStyle(backBtn).display : null,
+            forwardDisplay: forwardBtn ? window.getComputedStyle(forwardBtn).display : null,
+            backVisibility: backBtn ? window.getComputedStyle(backBtn).visibility : null,
+            forwardVisibility: forwardBtn ? window.getComputedStyle(forwardBtn).visibility : null,
+        });
+        this._updateSectionProgress({ source: 'relocate-buttons' });
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;
             this._logJumpDiagnostic('relocate-visibility', {
@@ -1640,8 +2594,9 @@ export class NavigationHUD {
                 hiddenDueToScroll: this.hideNavigationDueToScroll,
             });
         }
+        this._updateAuxiliaryInsets();
     }
-    
+
     _serializeStack(stack) {
         if (!Array.isArray(stack) || !stack.length) {
             return [];
@@ -1746,7 +2701,7 @@ export class NavigationHUD {
         }
         return !!result?.entry;
     }
-    
+
     _finalizePendingRelocateJump(descriptor) {
         const pending = this.pendingRelocateJump;
         if (!pending) {
@@ -1801,7 +2756,7 @@ export class NavigationHUD {
         });
         this._updateRelocateButtons();
     }
-    
+
     async _handleRelocateJump(direction) {
         this._logJumpButton('tap', {
             direction,
@@ -1838,9 +2793,11 @@ export class NavigationHUD {
             return;
         }
 
-        const preJumpDescriptor = this.lastRelocateDetail
-            ? this._makeLocationDescriptor(this.lastRelocateDetail)
-            : this._cloneDescriptor(this.currentLocationDescriptor);
+        this.requestExplicitRelocateHistoryMutation?.('relocate-button');
+
+        const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
+            ?? this._cloneDescriptor(this.currentLocationDescriptor)
+            ?? (this.lastRelocateDetail ? this._makeLocationDescriptor(this.lastRelocateDetail) : null);
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];
 

@@ -40,7 +40,7 @@ public extension WebViewNavigator {
                         url: navigationURL,
                         persist: false,
                         countsAsHistoryVisit: false,
-                        diagnosticFunction: "WebViewNavigator.load.prefetchPrevious"
+                        source: "WebViewNavigator.load.prefetchPrevious"
                     )
                 }
                 if navigationURL.isHTTP || navigationURL.isFileURL || navigationURL.isSnippetURL || navigationURL.isReaderURLLoaderURL {

@@ -102,6 +102,40 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     ]
     
     public init() { }
+
+    public func canonicalReaderBackingURL(for contentURL: URL) -> URL? {
+        guard var components = URLComponents(url: contentURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.query = nil
+        components.fragment = nil
+        guard let strippedURL = components.url else {
+            return nil
+        }
+        if strippedURL.isReaderFileURL {
+            return strippedURL
+        }
+        let absoluteString = strippedURL.absoluteString
+        if absoluteString.hasPrefix("ebook://ebook/load/") {
+            return URL(string: absoluteString.replacingOccurrences(of: "ebook://ebook/load/", with: "reader-file://file/load/"))
+        }
+        if absoluteString.hasPrefix("mokuro://mokuro/load/") {
+            return URL(string: absoluteString.replacingOccurrences(of: "mokuro://mokuro/load/", with: "reader-file://file/load/"))
+        }
+        return nil
+    }
+
+    public func resolveReadableLocalURL(forReaderBackingURL readerBackingURL: URL) async throws -> URL {
+        guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: canonicalURL)
+        let localURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
+        if try await drive.fileExists(at: relativePath) {
+            return localURL
+        }
+        throw ReaderFileManagerError.invalidFileURL
+    }
     
     @MainActor
     public func initialize(ubiquityContainerIdentifier: String) async throws {

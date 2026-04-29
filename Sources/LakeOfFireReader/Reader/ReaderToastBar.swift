@@ -1,14 +1,12 @@
 import SwiftUI
 import LakeKit
-import LakeOfFireCore
-import LakeOfFireAdblock
 
-public enum ReaderToastBarStyle: Sendable {
+public enum ReaderToastBarStyle {
     case bordered
     case borderless
 }
 
-public enum ReaderToastLayoutMode: Sendable {
+public enum ReaderToastLayoutMode {
     case standard
     case inline
 }
@@ -26,6 +24,7 @@ public extension EnvironmentValues {
         get { self[ReaderToastBarStyleKey.self] }
         set { self[ReaderToastBarStyleKey.self] = newValue }
     }
+
     var readerToastLayoutMode: ReaderToastLayoutMode {
         get { self[ReaderToastLayoutModeKey.self] }
         set { self[ReaderToastLayoutModeKey.self] = newValue }
@@ -46,7 +45,7 @@ public struct ReaderToastBar<Content: View>: View {
     private let onDismiss: (() -> Void)?
     private let content: Content
     private let trailingAccessory: AnyView?
-    
+
     @Environment(\.readerToastBarStyle) private var toastStyle
     @Environment(\.readerToastLayoutMode) private var layoutMode
     @Environment(\.controlSize) private var controlSize
@@ -63,7 +62,7 @@ public struct ReaderToastBar<Content: View>: View {
             content: content
         )
     }
-    
+
     public init<Accessory: View>(
         isPresented: Binding<Bool>,
         onDismiss: (() -> Void)? = nil,
@@ -79,7 +78,7 @@ public struct ReaderToastBar<Content: View>: View {
             self.trailingAccessory = nil
         }
     }
-    
+
     public var body: some View {
         if isPresented {
             if layoutMode == .inline {
@@ -96,13 +95,14 @@ private extension ReaderToastBar {
     var standardBody: some View {
         let horizontalPadding: CGFloat = toastStyle == .bordered ? 4 : 0
         let verticalPadding: CGFloat = toastStyle == .bordered ? 4 : 0
+
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
                 content
                     .padding(.leading, ReaderToastBarMetrics.horizontalContentPadding)
                     .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
-                
+
                 if let trailingAccessory, shouldShowTrailingAccessory {
                     Spacer(minLength: 0)
                     trailingAccessory
@@ -137,17 +137,23 @@ private extension ReaderToastBar {
     var backgroundView: some View {
         switch toastStyle {
         case .bordered:
-            Capsule()
-                .fill(.regularMaterial)
-                .shadow(radius: 2)
+            if #available(iOS 26, macOS 26, *) {
+                Capsule()
+                    .fill(.regularMaterial)
+                    .shadow(radius: 2)
+            } else {
+                Capsule()
+                    .fill(.regularMaterial)
+                    .shadow(radius: 2)
+            }
         case .borderless:
             Color.clear
         }
     }
-    
+
     @ViewBuilder
     var dismissButton: some View {
-        DismissButton(.xMark, fill: true) {
+        DismissButton(.xMark, fill: true, glassEffect: useGlassBackground) {
             withAnimation {
                 isPresented = false
                 onDismiss?()
@@ -161,7 +167,14 @@ private extension ReaderToastBar {
             }
         }
     }
-    
+
+    private var useGlassBackground: Bool {
+        if #available(iOS 26, macOS 26, *) {
+            return true
+        }
+        return false
+    }
+
     private var shouldShowTrailingAccessory: Bool {
         !(controlSize == .small || controlSize == .mini)
     }

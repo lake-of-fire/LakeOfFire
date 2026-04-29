@@ -50,6 +50,7 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
     @Persisted public var isFromClipboard = false
+    @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var isPhysicalMedia = false
     
     // Caches
@@ -65,6 +66,7 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     @Persisted public var isRSSAvailable = false
     @Persisted public var voiceFrameUrl: URL?
     @Persisted public var voiceAudioURL: URL?
+    @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
     @Persisted public var audioSubtitlesURL: URL?
     @Persisted public var audioSubtitlesRoleRawValue: String?
     @Persisted public var primaryMediaIdentity: String?
@@ -198,9 +200,11 @@ public extension Bookmark {
         content: Data? = nil,
         publicationDate: Date? = nil,
         isFromClipboard: Bool,
+        isTitlePrefixOfContent: Bool = false,
         rssContainsFullContent: Bool,
         isReaderModeByDefault: Bool,
         isReaderModeAvailable: Bool,
+        isReaderModeOfferHidden: Bool = false,
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -232,8 +236,10 @@ public extension Bookmark {
                 }
                 bookmark.publicationDate = publicationDate
                 bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
                 bookmark.isReaderModeByDefault = isReaderModeByDefault
                 bookmark.isReaderModeAvailable = isReaderModeAvailable
+                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.rssContainsFullContent = rssContainsFullContent
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
@@ -270,7 +276,9 @@ public extension Bookmark {
             bookmark.sourceIconURL = sourceIconURL
             bookmark.publicationDate = publicationDate
             bookmark.isFromClipboard = isFromClipboard
+            bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
             bookmark.isReaderModeByDefault = isReaderModeByDefault
+            bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
             //            await realm.asyncRefresh()

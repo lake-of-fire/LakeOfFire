@@ -189,6 +189,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
+    @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var isPhysicalMedia = false
     
     //    @Persisted public var isFromClipboard = false
@@ -235,6 +236,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     }
     @Persisted public var voiceFrameUrl: URL?
     @Persisted public var voiceAudioURL: URL?
+    @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
     @Persisted public var audioSubtitlesURL: URL?
     @Persisted public var audioSubtitlesRoleRawValue: String?
     @Persisted public var primaryMediaIdentity: String?

@@ -1,10 +1,6 @@
 import SwiftUI
-import LakeOfFireCore
-import LakeOfFireAdblock
 
-// TODO: Instead of layering this across eg Reader and ManabiReader, have it once and use environment to set its activation (or similar)
 public struct ReaderLoadingProgressOverlayViewModifier: ViewModifier {
-    // For some reason it doesn't always redraw if simply let isLoading: Bool
     let isLoading: Bool
     let statusMessage: String?
     let context: String
@@ -51,6 +47,7 @@ private struct ReaderLoadingOverlay: View {
     }
 
     private let minimumVisibleNanoseconds: UInt64 = 250_000_000
+    private let heartbeatLoggingEnabled = ProcessInfo.processInfo.environment["MANABI_READER_OVERLAY_HEARTBEAT"] == "1"
 
     @State private var displayedMessage: String?
     @State private var isShowingStatus = false
@@ -64,6 +61,7 @@ private struct ReaderLoadingOverlay: View {
     @State private var hideVisibilityTask: Task<Void, Never>?
     @State private var latestIsLoading = false
     @State private var latestStatusMessage: String?
+    @State private var statusDisplayGeneration = 0
 
     var body: some View {
         ZStack {
@@ -96,34 +94,15 @@ private struct ReaderLoadingOverlay: View {
         .onChange(of: isLoading) { newValue in
             latestIsLoading = newValue
             latestStatusMessage = statusMessage
-            let emission = OverlayEmission(
+            lastLoggedEmission = OverlayEmission(
                 isLoading: newValue,
                 statusMessage: newValue ? statusMessage : nil
             )
-            if lastLoggedEmission != emission {
-                lastLoggedEmission = emission
-                debugPrint(
-                    "# READER overlay.loading",
-                    "context=\(context)",
-                    "isLoading=\(newValue)",
-                    "currentMessage=\((newValue ? statusMessage : nil) ?? "nil")"
-                )
-                debugPrint(
-                    "# FLASH overlay.loading",
-                    "context=\(context)",
-                    "isLoading=\(newValue)",
-                    "status=\((newValue ? statusMessage : nil) ?? "nil")"
-                    )
-                if shouldSnippetLog {
-                    debugPrint(
-                        "# SNIPPETLOAD overlay.loading",
-                        "context=\(context)",
-                        "isLoading=\(newValue)",
-                        "status=\((newValue ? statusMessage : nil) ?? "nil")"
-                    )
-                }
+            if newValue {
+                startHeartbeat()
+            } else {
+                stopHeartbeat()
             }
-            if newValue { startHeartbeat() } else { stopHeartbeat() }
             syncVisibility()
             syncStatusDisplay()
         }
@@ -133,32 +112,10 @@ private struct ReaderLoadingOverlay: View {
         }
         .onChange(of: isVisible) { _ in
             syncStatusDisplay()
-            if shouldSnippetLog {
-                debugPrint(
-                    "# SNIPPETLOAD overlay.visibility",
-                    "context=\(context)",
-                    "isVisible=\(isVisible)",
-                    "latestIsLoading=\(latestIsLoading)"
-                )
-            }
         }
         .onAppear {
             latestIsLoading = isLoading
             latestStatusMessage = statusMessage
-            debugPrint(
-                "# FLASH overlay.appear",
-                "context=\(context)",
-                "isLoading=\(isLoading)",
-                "status=\(statusMessage ?? "nil")"
-            )
-            if shouldSnippetLog {
-                debugPrint(
-                    "# SNIPPETLOAD overlay.appear",
-                    "context=\(context)",
-                    "isLoading=\(isLoading)",
-                    "status=\(statusMessage ?? "nil")"
-                )
-            }
             syncVisibility()
             syncStatusDisplay()
         }
@@ -177,10 +134,6 @@ private struct ReaderLoadingOverlay: View {
         colorScheme == .dark ? .black : .white
     }
 
-    private var shouldSnippetLog: Bool {
-        context.contains("LookupsSnippet") || context.contains("ManabiReader")
-    }
-
     @MainActor
     private func syncVisibility() {
         cancelVisibilityWork()
@@ -193,6 +146,7 @@ private struct ReaderLoadingOverlay: View {
                 }
                 return
             }
+
             showVisibilityTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: showDelayNanoseconds)
                 if Task.isCancelled { return }
@@ -216,6 +170,7 @@ private struct ReaderLoadingOverlay: View {
         let remainingNanoseconds = minimumVisibleNanoseconds > elapsedNanoseconds
             ? (minimumVisibleNanoseconds - elapsedNanoseconds)
             : 0
+
         hideVisibilityTask = Task { @MainActor in
             if remainingNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: remainingNanoseconds)
@@ -237,18 +192,18 @@ private struct ReaderLoadingOverlay: View {
 
     @MainActor
     private func syncStatusDisplay() {
+        statusDisplayGeneration &+= 1
+        let generation = statusDisplayGeneration
         cancelShowWork()
 
-        // If loading just turned off, immediately clear any lingering status text
-        // to prevent heartbeats from logging stale “Loading reader mode…” messages.
-        if !isLoading {
+        if !latestIsLoading {
             cancelHideWork()
             if displayedMessage != nil || isShowingStatus {
                 debugPrint(
-                    "# READER overlay.complete",
+                    "# READERLOAD stage=overlay.complete",
                     "context=\(context)",
                     "messageCleared",
-                    "isLoading=\(isLoading)"
+                    "isLoading=\(latestIsLoading)"
                 )
             }
             displayedMessage = nil
@@ -257,13 +212,11 @@ private struct ReaderLoadingOverlay: View {
             return
         }
 
-        // Avoid flashing the status message during short loading pulses by only
-        // showing status while the overlay is actually visible (debounced).
         guard isVisible else {
             return
         }
 
-        let trimmedMessage = statusMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = latestStatusMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasMessage = !(trimmedMessage?.isEmpty ?? true)
 
         if hasMessage, let message = trimmedMessage {
@@ -275,22 +228,18 @@ private struct ReaderLoadingOverlay: View {
                 return
             }
 
-            debugPrint(
-                "# READER overlay.status",
-                "context=\(context)",
-                "action=show",
-                "message=\(message)",
-                "isLoading=\(isLoading)"
-            )
-            debugPrint(
-                "# FLASH overlay.status",
-                "context=\(context)",
-                "action=show",
-                "message=\(message)",
-                "isLoading=\(isLoading)"
-            )
             let workItem = DispatchWorkItem {
-                guard latestIsLoading, isVisible else { return }
+                guard generation == statusDisplayGeneration,
+                      latestIsLoading,
+                      isVisible,
+                      displayedMessage == message else { return }
+                debugPrint(
+                    "# READERLOAD stage=overlay.status",
+                    "context=\(context)",
+                    "action=show",
+                    "message=\(message)",
+                    "isLoading=\(latestIsLoading)"
+                )
                 isShowingStatus = true
             }
             showWorkItem = workItem
@@ -313,16 +262,10 @@ private struct ReaderLoadingOverlay: View {
             isShowingStatus = false
             displayedMessage = nil
             debugPrint(
-                "# READER overlay.complete",
+                "# READERLOAD stage=overlay.complete",
                 "context=\(context)",
                 "messageCleared",
-                "isLoading=\(isLoading)"
-            )
-            debugPrint(
-                "# FLASH overlay.complete",
-                "context=\(context)",
-                "messageCleared",
-                "isLoading=\(isLoading)"
+                "isLoading=\(latestIsLoading)"
             )
         }
         hideWorkItem = workItem
@@ -349,29 +292,22 @@ private struct ReaderLoadingOverlay: View {
 
     @MainActor
     private func startHeartbeat() {
+        guard heartbeatLoggingEnabled else { return }
         heartbeatTask?.cancel()
         heartbeatTask = Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if Task.isCancelled { break }
-                // When loading is false, reflect that in the log by suppressing any stale status text.
                 let activeMessage: String
-                if isLoading || isShowingStatus {
-                    activeMessage = displayedMessage ?? statusMessage ?? "<none>"
+                if latestIsLoading || isShowingStatus {
+                    activeMessage = displayedMessage ?? latestStatusMessage ?? "<none>"
                 } else {
                     activeMessage = "<none>"
                 }
                 debugPrint(
-                    "# READER overlay.heartbeat",
+                    "# READERLOAD stage=overlay.heartbeat",
                     "context=\(context)",
-                    "isLoading=\(isLoading)",
-                    "isShowingStatus=\(isShowingStatus)",
-                    "message=\(activeMessage)"
-                )
-                debugPrint(
-                    "# FLASH overlay.heartbeat",
-                    "context=\(context)",
-                    "isLoading=\(isLoading)",
+                    "isLoading=\(latestIsLoading)",
                     "isShowingStatus=\(isShowingStatus)",
                     "message=\(activeMessage)"
                 )

@@ -3,10 +3,7 @@ import SwiftUtilities
 import SwiftUIDownloads
 import LakeImage
 import Pow
-import LakeOfFireCore
-import LakeOfFireAdblock
 import LakeOfFireContent
-import LakeOfFireContentUI
 
 fileprivate struct BookGridCellContent: View {
     let imageURL: URL?
@@ -14,7 +11,7 @@ fileprivate struct BookGridCellContent: View {
     let author: String?
     let publicationDate: Date?
     var onSelected: ((Bool) -> Void)? = nil
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
@@ -27,7 +24,7 @@ fileprivate struct BookGridCellContent: View {
                 .buttonStyle(BookButtonStyle())
                 .padding(.bottom, 8)
             }
-            
+
             Button {
                 buttonPress()
             } label: {
@@ -45,7 +42,7 @@ fileprivate struct BookGridCellContent: View {
         .lineLimit(1)
         .truncationMode(.tail)
     }
-    
+
     private func buttonPress() {
         Task { @MainActor in
             onSelected?(true)
@@ -60,9 +57,9 @@ fileprivate struct DownloadableBookGridCell: View {
     let publicationDate: Date?
     var onSelected: ((Bool) -> Void)? = nil
     @ObservedObject var downloadable: Downloadable
-    
+
     @State private var wasDownloaded = false
-    
+
     @ObservedObject private var downloadController = DownloadController.shared
 
     var body: some View {
@@ -98,7 +95,7 @@ fileprivate struct DownloadableBookGridCell: View {
             }
         }
     }
-    
+
     private func buttonPress() {
         Task { @MainActor in
             let wasAlreadyDownloaded = await downloadable.existsLocally()
@@ -108,7 +105,7 @@ fileprivate struct DownloadableBookGridCell: View {
             onSelected?(wasAlreadyDownloaded)
         }
     }
-    
+
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
@@ -137,10 +134,10 @@ struct BookGridCell: View {
     let publicationDate: Date?
     let downloadURL: URL?
     var onSelected: ((Bool) -> Void)? = nil
-    
+
     @State private var downloadable: Downloadable?
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    
+
     init(imageURL: URL?, title: String, author: String?, publicationDate: Date?, downloadURL: URL?, onSelected: ((Bool) -> Void)? = nil) {
         self.imageURL = imageURL
         self.title = title
@@ -149,7 +146,7 @@ struct BookGridCell: View {
         self.downloadURL = downloadURL
         self.onSelected = onSelected
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let downloadable = downloadable {
@@ -162,7 +159,7 @@ struct BookGridCell: View {
             await refreshDownloadable()
         }
     }
-    
+
     private func refreshDownloadable() async {
         if let downloadURL = downloadURL {
             if downloadable?.url != downloadURL || downloadable?.name != title {

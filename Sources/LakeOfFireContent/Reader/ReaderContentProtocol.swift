@@ -5,7 +5,6 @@ import SwiftUtilities
 import RealmSwiftGaps
 import BigSyncKit
 import LakeOfFireCore
-import LakeOfFireAdblock
 
 public let clipboardIndicatorPrefixPattern = #"^(?:📎\s*)+"#
 
@@ -13,7 +12,7 @@ public extension String {
     func removingClipboardIndicatorPrefix() -> String {
         replacingOccurrences(of: clipboardIndicatorPrefixPattern, with: "", options: [.regularExpression])
     }
-    
+
     func removingClipboardIndicatorIfNeeded(_ shouldRemove: Bool) -> String {
         guard shouldRemove else { return self }
         return removingClipboardIndicatorPrefix()
@@ -22,13 +21,13 @@ public extension String {
 
 @globalActor
 public actor ReaderContentReadingProgressLoader {
-    public static let shared = ReaderContentReadingProgressLoader()
-    
+    public static var shared = ReaderContentReadingProgressLoader()
+
     public init() { }
-    
+
     /// Float is progress, Bool is whether article is "finished".
-    nonisolated(unsafe) public static var readingProgressLoader: (@Sendable (URL) async throws -> (Float, Bool)?)?
-    nonisolated(unsafe) public static var readingProgressMetadataLoader: (@Sendable (URL) async throws -> ReaderContentProgressMetadata?)?
+    public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
+    public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
 }
 
 @globalActor
@@ -37,34 +36,15 @@ public actor ReaderContentSyncStatusLoader {
 
     public init() { }
 
-    nonisolated(unsafe) public static var syncStatusLoader: (@Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?)?
+    public static var syncStatusLoader: (@Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?)?
 }
 
-@globalActor
-public actor ReaderContentBackgroundAnalysisLoader {
-    public static let shared = ReaderContentBackgroundAnalysisLoader()
-
-    public init() { }
-
-    nonisolated(unsafe) public static var inlineHTMLAnalysisEnqueuer: (@Sendable (URL, URL?, String?, String) async -> Void)?
-}
-
-public struct ReaderContentProgressMetadata: Sendable {
-    public let totalWordCount: Int?
-    public let remainingTime: TimeInterval?
-    
-    public init(totalWordCount: Int?, remainingTime: TimeInterval?) {
-        self.totalWordCount = totalWordCount
-        self.remainingTime = remainingTime
-    }
-}
-
-public struct ReaderContentSyncStatusPresentation: Sendable {
+public struct ReaderContentSyncStatusPresentation: Sendable, Hashable {
     public let title: String
     public let imageName: String
     public let imageIsSystemSymbol: Bool
 
-    public init(title: String, imageName: String, imageIsSystemSymbol: Bool = true) {
+    public init(title: String, imageName: String, imageIsSystemSymbol: Bool) {
         self.title = title
         self.imageName = imageName
         self.imageIsSystemSymbol = imageIsSystemSymbol
@@ -73,22 +53,39 @@ public struct ReaderContentSyncStatusPresentation: Sendable {
 
 public enum ReaderContentSyncStatusPresentationBuilder {
     public static func menuPresentation(
-        for itemURL: URL,
+        for url: URL,
         externalPresentation: ReaderContentSyncStatusPresentation?
     ) -> ReaderContentSyncStatusPresentation {
-        if itemURL.absoluteString.contains("reader-file://file/load/icloud/") {
-            return ReaderContentSyncStatusPresentation(title: "Sync Status: iCloud", imageName: "icloud")
-        }
-
         if let externalPresentation {
-            return ReaderContentSyncStatusPresentation(
-                title: "Sync Status: \(externalPresentation.title)",
-                imageName: externalPresentation.imageName,
-                imageIsSystemSymbol: externalPresentation.imageIsSystemSymbol
-            )
+            return externalPresentation
         }
+        return defaultPresentation(for: url)
+    }
 
-        return ReaderContentSyncStatusPresentation(title: "Sync Status: Local Only", imageName: "internaldrive")
+    public static func defaultPresentation(for url: URL) -> ReaderContentSyncStatusPresentation {
+        switch url.scheme?.lowercased() {
+        case "ebook":
+            return ReaderContentSyncStatusPresentation(title: "Ebook", imageName: "book", imageIsSystemSymbol: true)
+        case "reader-file":
+            return ReaderContentSyncStatusPresentation(title: "File", imageName: "doc", imageIsSystemSymbol: true)
+        default:
+            return ReaderContentSyncStatusPresentation(title: "Reader", imageName: "doc.text", imageIsSystemSymbol: true)
+        }
+    }
+}
+
+public enum ReaderPrimaryMediaKind: String, Sendable, Codable {
+    case audio
+    case video
+}
+
+public struct ReaderContentProgressMetadata: Sendable {
+    public let totalWordCount: Int?
+    public let remainingTime: TimeInterval?
+
+    public init(totalWordCount: Int?, remainingTime: TimeInterval?) {
+        self.totalWordCount = totalWordCount
+        self.remainingTime = remainingTime
     }
 }
 
@@ -97,43 +94,30 @@ public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
     case media
 }
 
-public enum ReaderPrimaryMediaKind: String, CaseIterable, Sendable {
-    case audio
-    case video
+private enum ReaderContentFormatters {
+    static let snippetChromeDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "M/d/yy"
+        return formatter
+    }()
 }
 
-public enum ReaderSubtitleOwningPane: String, CaseIterable, Sendable {
-    case primary
-    case transcript
-}
-
-public struct SelectedSubtitleSource: Hashable, Sendable {
-    public let identity: String
-    public let url: URL
-    public let role: AudioSubtitlesRole
-    public let owningPane: ReaderSubtitleOwningPane
-
-    public init(
-        identity: String,
-        url: URL,
-        role: AudioSubtitlesRole,
-        owningPane: ReaderSubtitleOwningPane
-    ) {
-        self.identity = identity
-        self.url = url
-        self.role = role
-        self.owningPane = owningPane
+public extension Date {
+    var readerSnippetChromeDateString: String {
+        ReaderContentFormatters.snippetChromeDate.string(from: self)
     }
 }
 
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
     var realm: Realm? { get }
-    
+
     var compoundKey: String { get set }
     var keyPrefix: String? { get }
-    
+
     var url: URL { get set }
     var title: String { get set }
+    var isTitlePrefixOfContent: Bool { get set }
     var author: String { get set }
     var imageUrl: URL? { get set }
     var sourceIconURL: URL? { get set }
@@ -141,19 +125,21 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
     var isPhysicalMedia: Bool { get set }
-    
+
+    var isReaderModeOfferHidden: Bool { get set }
+
     // Caches.
     var isReaderModeAvailable: Bool { get set }
-    var isReaderModeOfferHidden: Bool { get set }
-    
+
     // TODO: Don't populate these if they already exist in user library... or cull
     var rssURLs: List<URL> { get }
     var rssTitles: List<String> { get }
     var isRSSAvailable: Bool { get set }
-    
+
     // Feed entry metadata.
     var voiceFrameUrl: URL? { get set }
     var voiceAudioURL: URL? { get set }
+    var voiceAudioURLs: RealmSwift.List<URL> { get set }
     var audioSubtitlesURL: URL? { get set }
     var audioSubtitlesRoleRawValue: String? { get set }
     var primaryMediaIdentity: String? { get set }
@@ -164,7 +150,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var offlineMediaID: String? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
-    
+
     // Feed options.
     /// Whether the content be viewed directly instead of loading the URL.
     var isReaderModeByDefault: Bool { get set }
@@ -174,80 +160,72 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var meaningfulContentMinLength: Int { get set }
     var injectEntryImageIntoHeader: Bool { get set }
     var displayPublicationDate: Bool { get set }
-    
+
     var createdAt: Date { get }
     var modifiedAt: Date { get set }
     var isDeleted: Bool { get set }
-    
+
     var displayAbsolutePublicationDate: Bool { get }
     var locationBarTitle: String? { get }
 
     func imageURLToDisplay() async throws -> URL?
-    @MainActor
-    func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String?
-    var hasHTML: Bool { get }
-    var bookmarkInlineHTML: String? { get }
-    var bookmarkInlineContent: Data? { get }
-    var historyInlineContent: Data? { get }
     @RealmBackgroundActor
     func configureBookmark(_ bookmark: Bookmark)
 }
 
 public extension ReaderContentProtocol {
+    var primaryMediaKind: ReaderPrimaryMediaKind? {
+        get {
+            primaryMediaKindRawValue.flatMap { ReaderPrimaryMediaKind(rawValue: $0) }
+        }
+        set {
+            primaryMediaKindRawValue = newValue?.rawValue
+        }
+    }
+}
+
+public extension ReaderContentProtocol {
+    var defaultSnippetChromeTitle: String {
+        "Snippet — \(createdAt.readerSnippetChromeDateString)"
+    }
+
+    var resolvedVoiceAudioURLs: [URL] {
+        var urls = Array(voiceAudioURLs)
+        if let voiceAudioURL, !urls.contains(voiceAudioURL) {
+            urls.insert(voiceAudioURL, at: 0)
+        }
+        return urls
+    }
+
     var audioSubtitlesRole: AudioSubtitlesRole? {
         get { audioSubtitlesRoleRawValue.flatMap(AudioSubtitlesRole.init(rawValue:)) }
         set { audioSubtitlesRoleRawValue = newValue?.rawValue }
     }
 
-    var primaryMediaKind: ReaderPrimaryMediaKind? {
-        get { primaryMediaKindRawValue.flatMap(ReaderPrimaryMediaKind.init(rawValue:)) }
-        set { primaryMediaKindRawValue = newValue?.rawValue }
-    }
-
-    var hasPrimaryMedia: Bool {
-        primaryMediaIdentity?.isEmpty == false
-            || primaryMediaSourceURL != nil
-            || offlineMediaID?.isEmpty == false
-    }
-
-    var primaryMediaPlaybackKind: ReaderPrimaryMediaKind? {
-        primaryMediaKind
-    }
-
     var hasContentAudio: Bool {
-        voiceAudioURL != nil || (audioSubtitlesURL != nil && audioSubtitlesRole != .media)
-    }
-
-    var contentSubtitleURL: URL? {
-        audioSubtitlesRole == .media ? nil : audioSubtitlesURL
-    }
-
-    var mediaSubtitleURL: URL? {
-        audioSubtitlesRole == .media ? audioSubtitlesURL : nil
-    }
-
-    var contentSubtitleSource: SelectedSubtitleSource? {
-        guard let url = contentSubtitleURL else { return nil }
-        return SelectedSubtitleSource(
-            identity: "url:\(url.absoluteString)",
-            url: url,
-            role: .content,
-            owningPane: .primary
-        )
-    }
-
-    var mediaSubtitleSource: SelectedSubtitleSource? {
-        guard let url = mediaSubtitleURL else { return nil }
-        return SelectedSubtitleSource(
-            identity: "url:\(url.absoluteString)",
-            url: url,
-            role: .media,
-            owningPane: .transcript
-        )
+        voiceAudioURL != nil || !voiceAudioURLs.isEmpty || (audioSubtitlesURL != nil && audioSubtitlesRole != .media)
     }
 
     var hasAudio: Bool {
         hasContentAudio
+    }
+
+    var hasPrimaryMedia: Bool {
+        isPhysicalMedia
+            || primaryMediaIdentity != nil
+            || primaryMediaSourceURL != nil
+            || primaryMediaKindRawValue != nil
+            || primaryMediaDuration != nil
+            || primaryMediaLastPlaybackTime != nil
+            || offlineMediaID != nil
+    }
+
+    var canBookmark: Bool {
+        !url.isNativeReaderView && url.absoluteString != "about:blank"
+    }
+
+    var contentSubtitleURL: URL? {
+        audioSubtitlesRole == .media ? nil : audioSubtitlesURL
     }
 
     @discardableResult
@@ -257,48 +235,59 @@ public extension ReaderContentProtocol {
         defaultAudioSubtitlesRole: AudioSubtitlesRole? = nil
     ) -> T {
         destination.voiceFrameUrl = voiceFrameUrl
+        let resolvedVoiceAudioURLs = resolvedVoiceAudioURLs
+        let resolvedVoiceAudioURL = resolvedVoiceAudioURLs.first
+        if preservingExistingVoiceAudioURL {
+            destination.voiceAudioURL = resolvedVoiceAudioURL ?? destination.voiceAudioURL
+        } else {
+            destination.voiceAudioURL = resolvedVoiceAudioURL
+        }
+        destination.voiceAudioURLs.removeAll()
+        destination.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLs)
         destination.audioSubtitlesURL = audioSubtitlesURL
         destination.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? defaultAudioSubtitlesRole?.rawValue
-        if preservingExistingVoiceAudioURL {
-            destination.voiceAudioURL = voiceAudioURL ?? destination.voiceAudioURL
-        } else {
-            destination.voiceAudioURL = voiceAudioURL
-        }
-        destination.primaryMediaIdentity = primaryMediaIdentity
-        destination.primaryMediaSourceURL = primaryMediaSourceURL
-        destination.primaryMediaKindRawValue = primaryMediaKindRawValue
-        destination.primaryMediaDuration = primaryMediaDuration
-        destination.primaryMediaLastPlaybackTime = primaryMediaLastPlaybackTime
-        destination.offlineMediaID = offlineMediaID
         destination.redditTranslationsUrl = redditTranslationsUrl
         destination.redditTranslationsTitle = redditTranslationsTitle
         return destination
     }
-    
+
     var keyPrefix: String? {
         return nil
     }
-    
-    @MainActor
-    var canBookmark: Bool {
-        guard !url.isNativeReaderView else {
-            return false
+
+    var defaultLocationBarTitle: String? {
+        let url = url
+        if url.absoluteString == "about:blank" {
+            return nil
         }
-        return url.absoluteString != "about:blank"
+        if url.isReaderFileURL {
+            return url.lastPathComponent
+        }
+        if let googleQuery = url.googleSearchQuery {
+            return googleQuery
+        }
+        if let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return url.normalizedHost() ?? url.absoluteString
+        }
+        return url.normalizedHost() ?? url.absoluteString
     }
-    
+
+    var locationBarTitle: String? {
+        defaultLocationBarTitle
+    }
+
     @MainActor
-    func asyncWrite(_ block: @escaping @Sendable ((Realm, any ReaderContentProtocol) -> Void)) async throws {
+    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
         let config = realm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
-        nonisolated(unsafe) let writeBlock = block
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
-                writeBlock(realm, content)
+                block(realm, content)
             }
         }()
         await realm?.asyncRefresh()
@@ -312,6 +301,20 @@ public protocol DeletableReaderContent: ReaderContentProtocol {
     var deletionConfirmationMessage: String { get }
     var deletionConfirmationActionTitle: String { get }
     func delete() async throws
+}
+
+public extension DeletableReaderContent {
+    var deletionConfirmationTitle: String {
+        "Are you sure?"
+    }
+
+    var deletionConfirmationMessage: String {
+        "Do you really want to delete \(title.truncate(20))? Deletion cannot be undone."
+    }
+
+    var deletionConfirmationActionTitle: String {
+        "Delete"
+    }
 }
 
 public extension URL {
@@ -351,16 +354,9 @@ extension String {
     }
 }
 
-fileprivate let humanReadableAbsoluteDateFormatter: DateFormatter = {
+fileprivate let longDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
-    formatter.locale = .autoupdatingCurrent
-    let locale = formatter.locale
-    let template = DateFormatter.dateFormat(
-        fromTemplate: "MMM d yyyy",
-        options: 0,
-        locale: locale
-    ) ?? "MMM d yyyy"
-    formatter.dateFormat = template
+    formatter.dateStyle = .medium
     formatter.timeStyle = .none
     return formatter
 }()
@@ -370,16 +366,9 @@ public extension ReaderContentProtocol {
         guard let publicationDate else { return nil}
 
         if displayAbsolutePublicationDate {
-            return ReaderDateFormatter.absoluteString(
-                from: publicationDate,
-                dateFormatter: humanReadableAbsoluteDateFormatter
-            )
+            return longDateFormatter.string(from: publicationDate)
         } else {
-            return ReaderDateFormatter.relativeOrAbsoluteString(
-                from: publicationDate,
-                fallbackFormatter: humanReadableAbsoluteDateFormatter,
-                style: .short
-            )
+            return ReaderDateFormatter.relativeString(from: publicationDate)
         }
     }
 
@@ -390,96 +379,37 @@ public extension ReaderContentProtocol {
         guard let content else { return nil }
         let nsContent: NSData = content as NSData
         guard let data = try? nsContent.decompressed(using: .lzfse) as Data? else {
-            debugPrint("# READER htmlToDisplay.decompressFailed", "bytes=\(content.count)")
             return nil
         }
         return String(decoding: data, as: UTF8.self)
     }
-    
+
     // TODO: Refactor to put on background thread
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
         // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
-        if rssContainsFullContent || isFromClipboard || url.isSnippetURL {
-            let html = self.html
+        if rssContainsFullContent || isFromClipboard {
             try Task.checkCancellation()
-            let bytes = html?.utf8.count ?? 0
-            let source = url.isSnippetURL ? "snippet-html" : (rssContainsFullContent ? "stored-html" : "clipboard")
-            debugPrint(
-                "# READER htmlToDisplay.source",
-                "url=\(url.absoluteString)",
-                "source=\(source)",
-                "bytes=\(bytes)"
-            )
-            if url.isSnippetURL {
-                debugPrint(
-                    "# SNIPPETLOAD htmlToDisplay.snippet",
-                    "url=\(url.absoluteString)",
-                    "bytes=\(bytes)",
-                    "hasHTML=\(html != nil)"
-                )
-            }
-            if url.isSnippetURL {
-                let preview = html.flatMap { snippetPreview($0, maxLength: 240) } ?? "<nil>"
-                debugPrint(
-                    "# READER snippetContent.rawHTML",
-                    "url=\(url.absoluteString)",
-                    "bytes=\(bytes)",
-                    "preview=\(preview)"
-                )
-            }
             return html
         } else if url.isReaderFileURL {
-            guard let data = try? await readerFileManager.read(fileURL: url) else {
-                debugPrint(
-                    "# READER htmlToDisplay.source",
-                    "url=\(url.absoluteString)",
-                    "source=reader-file",
-                    "bytes=<nil>",
-                    "error=readFailed"
-                )
-                return nil
-            }
+            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
             try Task.checkCancellation()
             let text = String(decoding: data, as: UTF8.self)
-            let contentFilePrimaryKey = try? await ReaderFileManager.contentFilePrimaryKey(for: url)
-            let mimeType: String?
-            if let contentFilePrimaryKey {
-                mimeType = try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey)
+            if let contentFilePrimaryKey = try? await ReaderFileManager.contentFilePrimaryKey(for: url),
+               let mimeType = try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey) {
+                return ReaderContentLoader.normalizeIngestedText(
+                    text,
+                    mimeType: mimeType,
+                    pathExtension: url.pathExtension,
+                    source: .file
+                ).html
             } else {
-                mimeType = nil
+                return ReaderContentLoader.normalizeIngestedText(text, pathExtension: url.pathExtension, source: .file).html
             }
-            let html = ReaderContentLoader.normalizeIngestedText(
-                text,
-                mimeType: mimeType,
-                pathExtension: url.pathExtension,
-                source: .file
-            ).html
-            debugPrint(
-                "# READER htmlToDisplay.source",
-                "url=\(url.absoluteString)",
-                "source=reader-file",
-                "bytes=\(data.count)"
-            )
-            return html
         }
-        if url.isSnippetURL {
-            debugPrint(
-                "# SNIPPETLOAD htmlToDisplay.snippet.miss",
-                "url=\(url.absoluteString)",
-                "rssFull=\(rssContainsFullContent)",
-                "clipboard=\(isFromClipboard)"
-            )
-        }
-        debugPrint(
-            "# READER htmlToDisplay.source",
-            "url=\(url.absoluteString)",
-            "source=unknown",
-            "bytes=<nil>"
-        )
         return nil
     }
-    
+
     /// Deprecated, use `content` or `html`.
     var htmlContent: String? {
         get {
@@ -487,32 +417,17 @@ public extension ReaderContentProtocol {
         }
         set { }
     }
-    
+
     public var html: String? {
         get {
             Self.contentToHTML(legacyHTMLContent: htmlContent, content: content)
         }
         set {
-            guard let newValue else {
-                htmlContent = nil
-                content = nil
-                return
-            }
-
-            if let data = newValue.readerContentData {
-                htmlContent = nil
-                content = data
-            } else {
-                debugPrint(
-                    "# READER html.setter.compressionFailed",
-                    "url=\(url.absoluteString)",
-                    "bytes=\(newValue.utf8.count)"
-                )
-                htmlContent = newValue
-            }
+            htmlContent = nil
+            content = newValue?.readerContentData
         }
     }
-    
+
     var hasHTML: Bool {
         if rssContainsFullContent || isFromClipboard || url.isSnippetURL {
             if htmlContent != nil {
@@ -525,51 +440,27 @@ public extension ReaderContentProtocol {
         return false
     }
 
-    var bookmarkInlineHTML: String? {
-        html
-    }
-
-    var bookmarkInlineContent: Data? {
-        content
-    }
-
-    var historyInlineContent: Data? {
-        content
-    }
-    
     var needsClipboardIndicator: Bool {
         isFromClipboard || url.isSnippetURL
     }
-    
+
     var titleForDisplay: String {
         get {
-            var displayTitle = title.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
-            displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
-            if displayTitle.isEmpty {
-                displayTitle = "Untitled"
-            }
-            if needsClipboardIndicator {
-                return "📎 " + displayTitle
-            }
-            return displayTitle
+            ReaderContentLoader.resolvedDisplayTitle(
+                title,
+                needsClipboardIndicator: needsClipboardIndicator,
+                addClipboardIndicator: needsClipboardIndicator
+            )
         }
     }
-    
-    static func makePrimaryKey(url: URL? = nil, existingKey: String? = nil) -> String? {
-        return makeReaderContentCompoundKey(url: url, existingKey: existingKey)
+
+    static func makePrimaryKey(url: URL? = nil, html: String? = nil) -> String? {
+        return makeReaderContentCompoundKey(url: url, html: html)
     }
 
     func updateCompoundKey() {
-        compoundKey = makeReaderContentCompoundKey(url: url, existingKey: compoundKey) ?? compoundKey
+        compoundKey = makeReaderContentCompoundKey(url: url, html: html) ?? compoundKey
     }
-}
-
-private func snippetPreview(_ html: String, maxLength: Int = 240) -> String {
-    let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "<empty>" }
-    guard trimmed.count > maxLength else { return trimmed }
-    let idx = trimmed.index(trimmed.startIndex, offsetBy: maxLength)
-    return String(trimmed[..<idx]) + "…"
 }
 
 public extension ReaderContentProtocol {
@@ -582,7 +473,7 @@ public extension ReaderContentProtocol {
             rawEntryThumbnailContentMode = newValue.rawValue
         }
     }*/
-    
+
 //    var isReaderModeByDefault: Bool {
 //        if isFromClipboard {
 //            return true
@@ -604,21 +495,30 @@ public extension ReaderContentProtocol {
         try await addBookmark(realmConfiguration: realmConfiguration)
         return true
     }
-    
+
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
         let compoundKey = compoundKey
         let url = url
         let title = title
-        let html = bookmarkInlineHTML
-        let content = bookmarkInlineContent
+        let html = html
+        let content = content
         let publicationDate = publicationDate
         let imageURL = imageUrl
         let sourceIconURL = sourceIconURL
         let isFromClipboard = isFromClipboard
+        let isTitlePrefixOfContent = isTitlePrefixOfContent
         let isReaderModeByDefault = isReaderModeByDefault
         let rssContainsFullContent = rssContainsFullContent
         let isReaderModeAvailable = isReaderModeAvailable
+        let isReaderModeOfferHidden = isReaderModeOfferHidden
+        let voiceFrameURL = voiceFrameUrl
+        let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
+        let resolvedVoiceAudioURL = resolvedVoiceAudioURLList.first
+        let resolvedAudioSubtitlesURL = audioSubtitlesURL
+        let resolvedAudioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
+        let resolvedRedditTranslationsURL = redditTranslationsUrl
+        let resolvedRedditTranslationsTitle = redditTranslationsTitle
         try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(
@@ -630,32 +530,41 @@ public extension ReaderContentProtocol {
                 content: content,
                 publicationDate: publicationDate,
                 isFromClipboard: isFromClipboard,
+                isTitlePrefixOfContent: isTitlePrefixOfContent,
                 rssContainsFullContent: rssContainsFullContent,
                 isReaderModeByDefault: isReaderModeByDefault,
                 isReaderModeAvailable: isReaderModeAvailable,
+                isReaderModeOfferHidden: isReaderModeOfferHidden,
                 realmConfiguration: realmConfiguration
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
+            if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmark.compoundKey) {
                 try await realm.asyncWrite {
-                    content.configureBookmark(bookmark)
+                    if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
+                        content.configureBookmark(managedBookmark)
+                    } else {
+                        managedBookmark.voiceFrameUrl = voiceFrameURL
+                        managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
+                        managedBookmark.voiceAudioURLs.removeAll()
+                        managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                        managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
+                        managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                        managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
+                        managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                    }
+                    managedBookmark.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
-            
-            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-            if let historyRecord = HistoryRecord.get(forURL: url, realm: historyRealm), historyRecord.isDemoted != false {
+
+            if let historyRecord = try await HistoryRecord.get(forURL: url, realm: realm), historyRecord.isDemoted != false {
                 try await historyRecord.realm?.asyncWrite {
                     historyRecord.isDemoted = false
                     historyRecord.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }()
-
-        if let html, !html.isEmpty {
-            await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
-        }
     }
-    
+
     /// Returns whether a matching bookmark was found and deleted.
     @MainActor
     func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
@@ -663,7 +572,7 @@ public extension ReaderContentProtocol {
         let html = html
         return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url)), !bookmark.isDeleted else {
+            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
                 return false
             }
 //            await realm.asyncRefresh()
@@ -671,28 +580,37 @@ public extension ReaderContentProtocol {
                 bookmark.isDeleted = true
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
-            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
             return true
         }()
     }
-    
+
     func bookmarkExists(realmConfiguration: Realm.Configuration) -> Bool {
         let realm = try! Realm(configuration: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url)
+        let pk = Bookmark.makePrimaryKey(url: url, html: html)
         return !(realm.object(ofType: Bookmark.self, forPrimaryKey: pk)?.isDeleted ?? true)
     }
-    
+
     func fetchBookmarks(realmConfiguration: Realm.Configuration) -> [Bookmark] {
         let realm = try! Realm(configuration: realmConfiguration)
         return Array(realm.objects(Bookmark.self).where({ $0.isDeleted == false }).sorted(by: \.createdAt)).reversed()
     }
-    
+
     @RealmBackgroundActor
     func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
+        let resolvedPageURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
+        let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        debugPrint(
+            "# READERLOAD",
+            "stage=history.add.begin",
+            "contentURL=\(url.absoluteString)",
+            "contentIsLoaderURL=\(url.isReaderURLLoaderURL)",
+            "pageURL=\(pageURL.absoluteString)",
+            "pageIsLoaderURL=\(pageURL.isReaderURLLoaderURL)",
+            "resolvedContentURL=\(resolvedContentURL.absoluteString)",
+            "resolvedPageURL=\(resolvedPageURL.absoluteString)"
+        )
         var imageURL: URL?
         let ref = ThreadSafeReference(to: self)
-        let historyInlineContent = historyInlineContent
-        let historyInlineHTML = Self.contentToHTML(content: historyInlineContent)
         if let config = realm?.configuration {
             imageURL = try await { @MainActor in
                 let realm = try await Realm(configuration: config, actor: MainActor.shared)
@@ -701,52 +619,68 @@ public extension ReaderContentProtocol {
             }()
         }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(isFromClipboard || pageURL.isSnippetURL)
-        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL)) {
+        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
 //            await realm.asyncRefresh()
+            debugPrint(
+                "# READERLOAD",
+                "stage=history.add.reuse",
+                "recordURL=\(record.url.absoluteString)",
+                "recordIsLoaderURL=\(record.url.isReaderURLLoaderURL)",
+                "pageURL=\(pageURL.absoluteString)"
+            )
             try await realm.asyncWrite {
-                record.title = sanitizedTitle
+                record.title = title
+                record.isTitlePrefixOfContent = isTitlePrefixOfContent
                 record.imageUrl = imageURL
                 record.sourceIconURL = sourceIconURL
                 record.isFromClipboard = isFromClipboard
                 record.rssContainsFullContent = rssContainsFullContent
                 if rssContainsFullContent {
-                    record.content = historyInlineContent
+                    record.content = content
                 }
-                record.isReaderModeByDefault = isReaderModeByDefault
-                record.isReaderModeAvailable = isReaderModeAvailable
-                copyReaderMediaState(to: record)
+                record.voiceFrameUrl = voiceFrameUrl
+                let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
+                record.voiceAudioURL = resolvedVoiceAudioURLList.first
+                record.voiceAudioURLs.removeAll()
+                record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                record.audioSubtitlesURL = audioSubtitlesURL
+                record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
                 record.displayPublicationDate = displayPublicationDate
                 record.lastVisitedAt = Date()
                 record.isDeleted = false
-                if self is Bookmark, let bookmark = self as? Bookmark {
+                if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
                     record.configureBookmark(bookmark)
                 }
                 record.refreshChangeMetadata(explicitlyModified: true)
-            }
-            if let historyInlineHTML, !historyInlineHTML.isEmpty {
-                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(
-                    pageURL,
-                    imageURL,
-                    sanitizedTitle,
-                    historyInlineHTML
-                )
             }
             return record
         } else {
             let record = HistoryRecord()
             record.url = pageURL
-            record.title = sanitizedTitle
+            debugPrint(
+                "# READERLOAD",
+                "stage=history.add.create",
+                "recordURL=\(record.url.absoluteString)",
+                "recordIsLoaderURL=\(record.url.isReaderURLLoaderURL)",
+                "pageURL=\(pageURL.absoluteString)"
+            )
+            record.title = title
+            record.isTitlePrefixOfContent = isTitlePrefixOfContent
             record.imageUrl = imageURL
             record.sourceIconURL = sourceIconURL
             record.rssContainsFullContent = rssContainsFullContent
             if rssContainsFullContent {
-                record.content = historyInlineContent
+                record.content = content
             }
-            copyReaderMediaState(to: record)
+            record.voiceFrameUrl = voiceFrameUrl
+            let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
+            record.voiceAudioURL = resolvedVoiceAudioURLList.first
+            record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+            record.audioSubtitlesURL = audioSubtitlesURL
+            record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
@@ -754,7 +688,7 @@ public extension ReaderContentProtocol {
             record.isReaderModeAvailable = isReaderModeAvailable
             record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
             record.lastVisitedAt = Date()
-            if self is FeedEntry || self is Bookmark, let bookmark = self as? Bookmark {
+            if objectSchema.objectClass == FeedEntry.self || objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
                 record.configureBookmark(bookmark)
             }
             record.updateCompoundKey()
@@ -765,37 +699,21 @@ public extension ReaderContentProtocol {
 
             try await record.refreshDemotedStatus()
 
-            if let historyInlineHTML, !historyInlineHTML.isEmpty {
-                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(
-                    pageURL,
-                    imageURL,
-                    sanitizedTitle,
-                    historyInlineHTML
-                )
-            }
             return record
         }
     }
 }
 
-public func makeReaderContentCompoundKey(url: URL?, existingKey: String? = nil) -> String? {
-    if let url = url {
-        if let snippetKey = url.snippetKey {
-            return snippetKey
-        }
-
-        if url.scheme?.lowercased() == "about" {
-            return existingKey.nonEmpty ?? UUID().uuidString
-        }
-
-        return String(format: "%02X", stableHash(url.absoluteString))
+public func makeReaderContentCompoundKey(url: URL?, html: String?) -> String? {
+    guard url != nil || html != nil else {
+//        fatalError("Needs either url or htmlContent.")
+        return nil
     }
-
-    return existingKey.nonEmpty ?? UUID().uuidString
-}
-private extension Optional where Wrapped == String {
-    var nonEmpty: String? {
-        guard let value = self, !value.isEmpty else { return nil }
-        return value
+    var key = ""
+    if let url = url, !(url.absoluteString.hasPrefix("about:") || url.absoluteString.hasPrefix("internal://local")) || html == nil {
+        key.append(String(format: "%02X", stableHash(url.absoluteString)))
+    } else if let html = html {
+        key.append((String(format: "%02X", stableHash(html))))
     }
+    return key
 }

@@ -30,33 +30,33 @@ const getViewport = (doc, viewport) => {
 }
 
 export class FixedLayout extends HTMLElement {
-    _root = this.attachShadow({ mode: 'closed' })
-    _wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-    _resizeObserver = new ResizeObserver(() => this._render())
+    #root = this.attachShadow({ mode: 'closed' })
+    #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+    #resizeObserver = new ResizeObserver(() => this.#render())
 //    #mutationObserver = new MutationObserver(async () => {
 //        console.log("befre...")
-//        await this._wait(100)
+//        await this.#wait(100)
 //        requestAnimationFrame(() => {
 //        console.log("in...")
 //            this.render()
 //        })
-////        await this._wait(100)
-////        this._render()
+////        await this.#wait(100)
+////        this.#render()
 //    })
-    _spreads
-    _index = -1
+    #spreads
+    #index = -1
     defaultViewport
     spread
-    _portrait = false
-    _left
-    _right
-    _center
-    _side
+    #portrait = false
+    #left
+    #right
+    #center
+    #side
     constructor() {
         super()
 
         const sheet = new CSSStyleSheet()
-        this._root.adoptedStyleSheets = [sheet]
+        this.#root.adoptedStyleSheets = [sheet]
         sheet.replaceSync(`:host {
             width: 100%;
             height: 100%;
@@ -65,10 +65,10 @@ export class FixedLayout extends HTMLElement {
             align-items: center;
         }`)
 
-        this._resizeObserver.observe(this)
-//        this._mutationObserver.observe(this._root, { childList: true, subtree: true, attributes: true })
+        this.#resizeObserver.observe(this)
+//        this.#mutationObserver.observe(this.#root, { childList: true, subtree: true, attributes: true })
     }
-    async _createFrame({ index, src }) {
+    async #createFrame({ index, src }) {
         const element = document.createElement('div')
         const iframe = document.createElement('iframe')
         element.append(iframe)
@@ -82,7 +82,7 @@ export class FixedLayout extends HTMLElement {
         iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts')
         iframe.setAttribute('scrolling', 'no')
         iframe.setAttribute('part', 'filter')
-        this._root.append(element)
+        this.#root.append(element)
         if (!src) return { blank: true, element, iframe }
         return new Promise(resolve => {
             const onload = () => {
@@ -100,15 +100,15 @@ export class FixedLayout extends HTMLElement {
             iframe.src = src
         })
     }
-    _render(side = this._side) {
+    #render(side = this.#side) {
         if (!side) return
-        const left = this._left ?? {}
-        const right = this._center ?? this._right
+        const left = this.#left ?? {}
+        const right = this.#center ?? this.#right
         const target = side === 'left' ? left : right
         const { width, height } = this.getBoundingClientRect()
         const portrait = this.spread !== 'both' && this.spread !== 'portrait'
             && height > width
-        this._portrait = portrait
+        this.#portrait = portrait
         const blankWidth = left.width ?? right.width
         const blankHeight = left.height ?? right.height
 
@@ -141,46 +141,46 @@ export class FixedLayout extends HTMLElement {
                 element.style.display = 'none'
             }
         }
-        if (this._center) {
-            transform(this._center)
+        if (this.#center) {
+            transform(this.#center)
         } else {
             transform(left)
             transform(right)
         }
     }
-    async _showSpread({ left, right, center, side }) {
-        this._root.replaceChildren()
-        this._left = null
-        this._right = null
-        this._center = null
+    async #showSpread({ left, right, center, side }) {
+        this.#root.replaceChildren()
+        this.#left = null
+        this.#right = null
+        this.#center = null
         if (center) {
-            this._center = await this._createFrame(center)
-            this._side = 'center'
-            this._render()
+            this.#center = await this.#createFrame(center)
+            this.#side = 'center'
+            this.#render()
         } else {
-            this._left = await this._createFrame(left)
-            this._right = await this._createFrame(right)
-            this._side = side
-            this._render()
+            this.#left = await this.#createFrame(left)
+            this.#right = await this.#createFrame(right)
+            this.#side = side
+            this.#render()
         }
     }
-    _goLeft() {
-        if (this._center) return
-        if (this._left?.blank) return true
-        if (this._portrait && this._left?.element?.style?.display === 'none') {
-            this._right.element.style.display = 'none'
-            this._left.element.style.display = 'block'
-            this._side = 'left'
+    #goLeft() {
+        if (this.#center) return
+        if (this.#left?.blank) return true
+        if (this.#portrait && this.#left?.element?.style?.display === 'none') {
+            this.#right.element.style.display = 'none'
+            this.#left.element.style.display = 'block'
+            this.#side = 'left'
             return true
         }
     }
-    _goRight() {
-        if (this._center) return
-        if (this._right?.blank) return true
-        if (this._portrait && this._right?.element?.style?.display === 'none') {
-            this._left.element.style.display = 'none'
-            this._right.element.style.display = 'block'
-            this._side = 'right'
+    #goRight() {
+        if (this.#center) return
+        if (this.#right?.blank) return true
+        if (this.#portrait && this.#right?.element?.style?.display === 'none') {
+            this.#left.element.style.display = 'none'
+            this.#right.element.style.display = 'block'
+            this.#side = 'right'
             return true
         }
     }
@@ -195,8 +195,8 @@ export class FixedLayout extends HTMLElement {
         this.rtl = rtl
 
         if (rendition?.spread === 'none')
-            this._spreads = book.sections.map(section => ({ center: section }))
-        else this._spreads = book.sections.reduce((arr, section) => {
+            this.#spreads = book.sections.map(section => ({ center: section }))
+        else this.#spreads = book.sections.reduce((arr, section) => {
             const last = arr[arr.length - 1]
             const { linear, pageSpread } = section
             if (linear === 'no') return arr
@@ -228,17 +228,17 @@ export class FixedLayout extends HTMLElement {
         }, [{}])
     }
     get index() {
-        const spread = this._spreads[this._index]
+        const spread = this.#spreads[this.#index]
         const section = spread?.center ?? (this.side === 'left'
             ? spread.left ?? spread.right : spread.right ?? spread.left)
         return this.book.sections.indexOf(section)
     }
-    _reportLocation(reason) {
+    #reportLocation(reason) {
         this.dispatchEvent(new CustomEvent('relocate', { detail:
             { reason, range: null, index: this.index, fraction: 0, size: 1 } }))
     }
     getSpreadOf(section) {
-        const spreads = this._spreads
+        const spreads = this.#spreads
         for (let index = 0; index < spreads.length; index++) {
             const { left, right, center } = spreads[index]
             if (left === section) return { index, side: 'left' }
@@ -247,17 +247,17 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async goToSpread(index, side, reason) {
-        if (index < 0 || index > this._spreads.length - 1) return
-        if (index === this._index) {
-            this._render(side)
+        if (index < 0 || index > this.#spreads.length - 1) return
+        if (index === this.#index) {
+            this.#render(side)
             return
         }
-        this._index = index
-        const spread = this._spreads[index]
+        this.#index = index
+        const spread = this.#spreads[index]
         if (spread.center) {
             const index = this.book.sections.indexOf(spread.center)
             const src = await spread.center?.load?.()
-            await this._showSpread({ center: { index, src } })
+            await this.#showSpread({ center: { index, src } })
         } else {
             const indexL = this.book.sections.indexOf(spread.left)
             const indexR = this.book.sections.indexOf(spread.right)
@@ -265,9 +265,9 @@ export class FixedLayout extends HTMLElement {
             const srcR = await spread.right?.load?.()
             const left = { index: indexL, src: srcL }
             const right = { index: indexR, src: srcR }
-            await this._showSpread({ left, right, side })
+            await this.#showSpread({ left, right, side })
         }
-        this._reportLocation(reason)
+        this.#reportLocation(reason)
     }
     async select(target) {
         await this.goTo(target)
@@ -282,24 +282,24 @@ export class FixedLayout extends HTMLElement {
         await this.goToSpread(index, side)
     }
     async next() {
-        const s = this.rtl ? this._goLeft() : this._goRight()
-        if (s) this._reportLocation('page')
-        else return this.goToSpread(this._index + 1, this.rtl ? 'right' : 'left', 'page')
+        const s = this.rtl ? this.#goLeft() : this.#goRight()
+        if (s) this.#reportLocation('page')
+        else return this.goToSpread(this.#index + 1, this.rtl ? 'right' : 'left', 'page')
     }
     async prev() {
-        const s = this.rtl ? this._goRight() : this._goLeft()
-        if (s) this._reportLocation('page')
-        else return this.goToSpread(this._index - 1, this.rtl ? 'left' : 'right', 'page')
+        const s = this.rtl ? this.#goRight() : this.#goLeft()
+        if (s) this.#reportLocation('page')
+        else return this.goToSpread(this.#index - 1, this.rtl ? 'left' : 'right', 'page')
     }
     getContents() {
-        return Array.from(this._root.querySelectorAll('iframe'), frame => ({
+        return Array.from(this.#root.querySelectorAll('iframe'), frame => ({
             doc: frame.contentDocument,
             // TODO: index, overlayer
         }))
     }
     destroy() {
-        this._resizeObserver.unobserve(this)
-//        this._mutationObserver.unobserve(this._root)
+        this.#resizeObserver.unobserve(this)
+//        this.#mutationObserver.unobserve(this.#root)
     }
 }
 

@@ -1,7 +1,5 @@
 import SwiftUI
 import SwiftUIWebView
-import LakeOfFireCore
-import LakeOfFireAdblock
 import LakeOfFireContent
 
 struct ReaderWebViewStateKey: EnvironmentKey {
@@ -26,10 +24,6 @@ struct RefreshSettingsInReaderKey: EnvironmentKey {
 
 struct IsReaderModeLoadPendingKey: EnvironmentKey {
     static let defaultValue: @MainActor (any ReaderContentProtocol) -> Bool = { _ in false }
-}
-
-struct ReaderUpdateReadingProgressHandlerKey: EnvironmentKey {
-    static let defaultValue: (@Sendable (FractionalCompletionMessage) async -> Void)? = nil
 }
 
 public extension EnvironmentValues {
@@ -57,15 +51,11 @@ public extension EnvironmentValues {
         get { self[IsReaderModeLoadPendingKey.self] }
         set { self[IsReaderModeLoadPendingKey.self] = newValue }
     }
-    var readerUpdateReadingProgressHandler: (@Sendable (FractionalCompletionMessage) async -> Void)? {
-        get { self[ReaderUpdateReadingProgressHandlerKey.self] }
-        set { self[ReaderUpdateReadingProgressHandlerKey.self] = newValue }
-    }
 }
 
 fileprivate struct ReaderViewModelModifier: ViewModifier {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-    
+
     func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
@@ -79,7 +69,7 @@ fileprivate struct ReaderViewModelModifier: ViewModifier {
 
 fileprivate struct ReaderModeLoadPendingModifier: ViewModifier {
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    
+
     func body(content: Content) -> some View {
         content
             .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
@@ -88,9 +78,9 @@ fileprivate struct ReaderModeLoadPendingModifier: ViewModifier {
 
 fileprivate struct ReaderFileManagerModifier: ViewModifier {
     let ubiquityContainerIdentifier: String
-    
+
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    
+
     func body(content: Content) -> some View {
         content
             .task(id: ubiquityContainerIdentifier) { @MainActor in
@@ -104,7 +94,7 @@ fileprivate struct ReaderNavigatorModifier: ViewModifier {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    
+
     func body(content: Content) -> some View {
         content
             .task { @MainActor in
@@ -117,7 +107,7 @@ fileprivate struct ReaderNavigatorModifier: ViewModifier {
 fileprivate struct ReaderFontSizeModifier: ViewModifier {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    
+
     func body(content: Content) -> some View {
         content
             .task { @MainActor in

@@ -57,7 +57,6 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: "../../../../lake-of-fire/swiftui-page-flip"),
         .package(path: "../swiftui-webview"),
         .package(path: "../swift-brave"),
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
@@ -136,7 +135,6 @@ let package = Package(
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
-                .product(name: "SwiftUIPageTurn", package: "swiftui-page-flip"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
@@ -177,7 +175,6 @@ let package = Package(
             dependencies: [
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
-                .product(name: "WebMedia", package: "swift-brave"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ]
         ),
@@ -215,7 +212,6 @@ let package = Package(
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
-                .product(name: "WebMedia", package: "swift-brave"),
                 .product(name: "ExpandableText", package: "swiftui-expandable-text"),
                 .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "LRUCache", package: "LRUCache"),
@@ -277,7 +273,6 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
-                .product(name: "WebMedia", package: "swift-brave"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 "LakeOfFireContent",

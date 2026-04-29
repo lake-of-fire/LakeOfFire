@@ -4,38 +4,41 @@ import SwiftSoup
 import RealmSwift
 import Combine
 import RealmSwiftGaps
-import SwiftUtilities
 import WebKit
-import LakeOfFireCore
-import LakeOfFireAdblock
 import LakeOfFireContent
+import LakeOfFireFiles
 
 let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
-private let readerPageTurnRestoreProgressSuppressionWindow = 2
 
-public enum ReaderPageTurnRequestedLocationSource: String, Codable, Equatable, Sendable {
-    case defaultRestore
-    case savedRestore
+private func logReaderLoad(_ message: String) {
+    debugPrint("# READERLOAD \(message)")
 }
 
-public struct ReaderPageTurnRequestedLocationState: Codable, Equatable, Sendable {
-    public let source: ReaderPageTurnRequestedLocationSource
-    public let kind: String
-    public let value: String
-    public let surroundingContext: String?
-    public let isRequestedPageChange: Bool
-    public let fractionalCompletion: Float?
-    public let sectionIndex: Int?
-    public let mainDocumentURL: URL?
+private func logTitleTrace(_ message: String) {
+    debugPrint("# TITLE \(message)")
+}
+
+public struct ReaderRequestedLocationState: Equatable, Sendable {
+    public enum Source: String, Sendable {
+        case defaultRestore
+        case savedRestore
+    }
+
+    public var source: Source
+    public var kind: String
+    public var value: String
+    public var surroundingContext: String?
+    public var isRequestedPageChange: Bool
+    public var fractionalCompletion: Float?
+    public var mainDocumentURL: URL?
 
     public init(
-        source: ReaderPageTurnRequestedLocationSource,
+        source: Source,
         kind: String,
         value: String,
         surroundingContext: String? = nil,
-        isRequestedPageChange: Bool = false,
+        isRequestedPageChange: Bool,
         fractionalCompletion: Float? = nil,
-        sectionIndex: Int? = nil,
         mainDocumentURL: URL? = nil
     ) {
         self.source = source
@@ -44,30 +47,26 @@ public struct ReaderPageTurnRequestedLocationState: Codable, Equatable, Sendable
         self.surroundingContext = surroundingContext
         self.isRequestedPageChange = isRequestedPageChange
         self.fractionalCompletion = fractionalCompletion
-        self.sectionIndex = sectionIndex
         self.mainDocumentURL = mainDocumentURL
     }
 }
 
-public struct ReaderPageTurnReadingProgressState: Codable, Equatable, Sendable {
-    public let cfi: String?
-    public let fractionalCompletion: Float?
-    public let highWaterMarkFractionalCompletion: Float?
-    public let reason: String
-    public let sectionIndex: Int?
-    public let mainDocumentURL: URL?
+public struct ReaderReadingProgressState: Equatable, Sendable {
+    public var cfi: String?
+    public var fractionalCompletion: Float?
+    public var reason: String
+    public var sectionIndex: Int?
+    public var mainDocumentURL: URL?
 
     public init(
         cfi: String?,
         fractionalCompletion: Float?,
-        highWaterMarkFractionalCompletion: Float? = nil,
         reason: String,
-        sectionIndex: Int? = nil,
-        mainDocumentURL: URL? = nil
+        sectionIndex: Int?,
+        mainDocumentURL: URL?
     ) {
         self.cfi = cfi
         self.fractionalCompletion = fractionalCompletion
-        self.highWaterMarkFractionalCompletion = highWaterMarkFractionalCompletion
         self.reason = reason
         self.sectionIndex = sectionIndex
         self.mainDocumentURL = mainDocumentURL
@@ -76,111 +75,78 @@ public struct ReaderPageTurnReadingProgressState: Codable, Equatable, Sendable {
 
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
+    private static var inFlightContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
+
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
-    @Published public private(set) var pageTurnBootstrapSerial = 0
     @Published public private(set) var ebookViewerLoadedProbeSummary: String?
-    @Published public private(set) var pageTurnRequestedLocationState: ReaderPageTurnRequestedLocationState?
-    @Published public private(set) var pageTurnReadingProgressState: ReaderPageTurnReadingProgressState?
-    @Published public private(set) var pageTurnReadingProgressSuppressionReason: String?
-    private var pageTurnReadingProgressHighWaterMark: Float?
-    private var pendingPageTurnReadingProgressSuppressionCount = 0
-    private var pageTurnProbeRefreshHandler: ((WKFrameInfo?) async -> Void)?
-    
+    @Published public private(set) var ebookChromeInsetsResyncID: UInt64 = 0
+    @Published public private(set) var requestedLocationState: ReaderRequestedLocationState?
+    @Published public private(set) var readingProgressState: ReaderReadingProgressState?
+
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
-    private var baseSystemScripts: [WebViewUserScript]
-    
+    private let baseSystemScripts: [WebViewUserScript]
+
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("readerFontSize") private var readerFontSize: Double?
-    
+
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
-    
+
     public var allScripts: [WebViewUserScript] {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
 
     @MainActor
-    private func logScriptDiagnostics(
-        context: String,
-        systemScripts: [WebViewUserScript],
-        userScripts: [WebViewUserScript]
-    ) {
-        let total = systemScripts.count + userScripts.count
-        let hasReadabilityInSystem = systemScripts.contains(where: { scriptContainsReadability($0) })
-        let hasReadabilityInUser = userScripts.contains(where: { scriptContainsReadability($0) })
-        let hasReadability = hasReadabilityInSystem || hasReadabilityInUser
-        debugPrint(
-            "# READERMODE scripts",
-            "context=\(context)",
-            "systemCount=\(systemScripts.count)",
-            "userCount=\(userScripts.count)",
-            "total=\(total)",
-            "hasReadability=\(hasReadability)",
-            "readabilitySystem=\(hasReadabilityInSystem)",
-            "readabilityUser=\(hasReadabilityInUser)"
-        )
+    public func setEbookViewerLoadedProbeSummary(_ summary: String?) {
+        ebookViewerLoadedProbeSummary = summary
     }
 
-    private func scriptContainsReadability(_ script: WebViewUserScript) -> Bool {
-        let source = script.source
-        return source.contains("readabilityParsed") || source.contains("manabi_readability")
+    @MainActor
+    public func triggerEbookChromeInsetsResync() {
+        ebookChromeInsetsResyncID &+= 1
     }
-    
+
+    @MainActor
+    public func setRequestedLocationState(_ state: ReaderRequestedLocationState?) {
+        requestedLocationState = state
+    }
+
+    @MainActor
+    public func setReadingProgressState(_ state: ReaderReadingProgressState?) {
+        readingProgressState = state
+    }
+
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         self.baseSystemScripts = systemScripts
-        self.webViewSystemScripts = systemScripts
-        self.webViewUserScripts = []
         super.init()
+        ReaderContent.contentResolver = { pageURL, countsAsHistoryVisit, source in
+            try await ReaderViewModel.getContent(
+                forURL: pageURL,
+                countsAsHistoryVisit: countsAsHistoryVisit,
+                source: source
+            )
+        }
 
-        logScriptDiagnostics(
-            context: "initial",
-            systemScripts: systemScripts,
-            userScripts: []
-        )
-        
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
-            
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: readerViewModelQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { @RealmBackgroundActor [weak self] in
-                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-                        let baseScripts = await { @MainActor [weak self] in
-                            self?.baseSystemScripts ?? []
-                        }()
-                        let userScriptDescriptors = libraryConfiguration.getActiveWebViewUserScriptDescriptors() ?? []
-                        let librarySystemScripts = await MainActor.run { LibraryConfiguration.sharedSystemScripts }
-                        let webViewUserScripts = await MainActor.run {
-                            userScriptDescriptors.map { $0.makeUserScript() }
-                        }
-                        let webViewSystemScripts = baseScripts + librarySystemScripts
-                        try await { @MainActor [weak self] in
-                            guard let self else { return }
-                            self.logScriptDiagnostics(
-                                context: "libraryConfig",
-                                systemScripts: webViewSystemScripts,
-                                userScripts: webViewUserScripts ?? []
-                            )
-                            if self.webViewSystemScripts != webViewSystemScripts {
-                                self.webViewSystemScripts = webViewSystemScripts
-                            }
-                            if self.webViewUserScripts != webViewUserScripts {
-                                self.webViewUserScripts = webViewUserScripts
-                            }
-                        }()
+                    Task { @MainActor [weak self] in
+                        try await self?.updateScripts()
                     }
                 })
                 .store(in: &cancellables)
-            
+
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
@@ -196,108 +162,19 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
 
-    @MainActor
-    public func markPageTurnBootstrapReady() {
-        pageTurnBootstrapSerial &+= 1
-    }
-
-    @MainActor
-    public func setPageTurnProbeRefreshHandler(_ handler: ((WKFrameInfo?) async -> Void)?) {
-        pageTurnProbeRefreshHandler = handler
-    }
-
-    @MainActor
-    public func requestImmediatePageTurnProbeRefresh(in frameInfo: WKFrameInfo? = nil) async {
-        if let pageTurnProbeRefreshHandler {
-            await pageTurnProbeRefreshHandler(frameInfo)
-        } else {
-            markPageTurnBootstrapReady()
-        }
-    }
-
-    @MainActor
-    public func schedulePageTurnBootstrapRefresh(delaysNanoseconds: [UInt64]) {
-        for delay in delaysNanoseconds {
-            Task { @MainActor [weak self] in
-                if delay > 0 {
-                    try? await Task.sleep(nanoseconds: delay)
-                }
-                self?.markPageTurnBootstrapReady()
-            }
-        }
-    }
-
-    @MainActor
-    public func setEbookViewerLoadedProbeSummary(_ summary: String?) {
-        ebookViewerLoadedProbeSummary = summary
-    }
-
-    @MainActor
-    public func setPageTurnRequestedLocationState(_ state: ReaderPageTurnRequestedLocationState?) {
-        pageTurnRequestedLocationState = state
-        if let state, state.source == .defaultRestore || state.source == .savedRestore {
-            pendingPageTurnReadingProgressSuppressionCount = max(
-                readerPageTurnRestoreProgressSuppressionWindow,
-                pendingPageTurnReadingProgressSuppressionCount
-            )
-            pageTurnReadingProgressSuppressionReason = "requestedLocation:\(state.source.rawValue)"
-        } else if state == nil {
-            pendingPageTurnReadingProgressSuppressionCount = 0
-            pageTurnReadingProgressSuppressionReason = nil
-        }
-    }
-
-    @MainActor
-    public func setPageTurnReadingProgressState(_ state: ReaderPageTurnReadingProgressState?) {
-        guard let state else {
-            pageTurnReadingProgressHighWaterMark = nil
-            pageTurnReadingProgressState = nil
-            pageTurnReadingProgressSuppressionReason = nil
-            return
-        }
-
-        if pendingPageTurnReadingProgressSuppressionCount > 0 {
-            pendingPageTurnReadingProgressSuppressionCount -= 1
-            pageTurnReadingProgressSuppressionReason = "progress:\(state.reason)"
-            if pageTurnRequestedLocationState?.source == .defaultRestore
-                || pageTurnRequestedLocationState?.source == .savedRestore {
-                pageTurnRequestedLocationState = nil
-            }
-            return
-        }
-        pageTurnReadingProgressSuppressionReason = nil
-
-        let nextHighWater = [
-            pageTurnReadingProgressHighWaterMark,
-            state.highWaterMarkFractionalCompletion,
-            state.fractionalCompletion,
-        ]
-        .compactMap { $0 }
-        .max()
-
-        pageTurnReadingProgressHighWaterMark = nextHighWater
-        pageTurnReadingProgressState = ReaderPageTurnReadingProgressState(
-            cfi: state.cfi,
-            fractionalCompletion: state.fractionalCompletion,
-            highWaterMarkFractionalCompletion: nextHighWater,
-            reason: state.reason,
-            sectionIndex: state.sectionIndex,
-            mainDocumentURL: state.mainDocumentURL
-        )
-    }
-    
     @RealmBackgroundActor
     private func updateScripts() async throws {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let descriptors = libraryConfiguration.getActiveWebViewUserScriptDescriptors() ?? []
+        let ref = ThreadSafeReference(to: libraryConfiguration)
         try await { @MainActor [weak self] in
-            let scripts = descriptors.map { $0.makeUserScript() }
+            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            guard let libraryConfiguration = realm.resolve(ref) else { return }
+            let webViewSystemScripts = baseSystemScripts + libraryConfiguration.systemScripts
+            guard let scripts = libraryConfiguration.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
-            self.logScriptDiagnostics(
-                context: "userScripts",
-                systemScripts: self.webViewSystemScripts ?? [],
-                userScripts: scripts
-            )
+            if self.webViewSystemScripts != webViewSystemScripts {
+                self.webViewSystemScripts = webViewSystemScripts
+            }
             if self.webViewUserScripts != scripts {
                 self.webViewUserScripts = scripts
             }
@@ -305,36 +182,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    public func updateBaseSystemScripts(_ scripts: [WebViewUserScript]) {
-        guard scripts != baseSystemScripts else { return }
-        baseSystemScripts = scripts
-
-        Task { @RealmBackgroundActor [weak self] in
-            guard let self else { return }
-            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-            let librarySystemScripts = await MainActor.run { LibraryConfiguration.sharedSystemScripts }
-            let webViewSystemScripts = scripts + librarySystemScripts
-            try await { @MainActor [weak self] in
-                guard let self else { return }
-                self.logScriptDiagnostics(
-                    context: "baseSystem",
-                    systemScripts: webViewSystemScripts,
-                    userScripts: self.webViewUserScripts ?? []
-                )
-                if self.webViewSystemScripts != webViewSystemScripts {
-                    self.webViewSystemScripts = webViewSystemScripts
-                }
-            }()
-        }
-    }
-    
-    @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
-        debugPrint(
-            "# FLASH ReaderViewModel.onNavigationCommitted",
-            "page=\(flashURLDescription(newState.pageURL))",
-            "content=\(flashURLDescription(content.url))"
-        )
         if let historyRecord = content as? HistoryRecord {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
             Task { @RealmBackgroundActor in
@@ -347,62 +195,63 @@ public class ReaderViewModel: NSObject, ObservableObject {
             }
         }
     }
-    
+
     public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        debugPrint(
-            "# FLASH ReaderViewModel.onNavigationFinished",
-            "page=\(flashURLDescription(newState.pageURL))",
-            "content=\(flashURLDescription(content.url))"
-        )
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
             refreshSettingsInWebView(content: content, newState: newState)
 
             completion?(newState)
-            debugPrint("# FLASH ReaderViewModel.onNavigationFinished completed", "page=\(flashURLDescription(newState.pageURL))")
         }
     }
-    
+
     // TODO: Move to Loader probably
     @MainActor
-    public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        return try await ReaderContentLoader.getContent(forURL: pageURL, countsAsHistoryVisit: countsAsHistoryVisit)
+    public static func getContent(
+        forURL pageURL: URL,
+        countsAsHistoryVisit: Bool = false,
+        source: String = "ReaderViewModel.getContent"
+    ) async throws -> (any ReaderContentProtocol)? {
+        try await ReaderContentLoader.getContent(
+            forURL: pageURL,
+            countsAsHistoryVisit: countsAsHistoryVisit,
+            source: source
+        )
     }
-    
+
     @MainActor
     private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
         let state = newState ?? self.state
+        logTitleTrace(
+            "stage=readerViewModel.refreshTitleInWebView pageURL=\(state.pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) contentTitle=\(content.title.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent) isLoading=\(state.isLoading) isProvisionallyNavigating=\(state.isProvisionallyNavigating)"
+        )
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
-                debugPrint(
-                    "# READERMODETITLE webView.documentTitle.sync",
-                    "pageURL=\(state.pageURL.absoluteString)",
-                    "title=\(content.title)"
+                try await scriptCaller.evaluateJavaScript(
+                    """
+                    (function() {
+                        if (document.body?.classList.contains('readability-mode')) {
+                            const title = arguments.title
+                            if (typeof title === 'string' && document.title !== title) {
+                                document.title = title
+                            }
+                        }
+                    })()
+                    """,
+                    arguments: ["title": content.title]
                 )
-                debugPrint(
-                    "# READERHEADER swift.syncDocumentTitle.start",
-                    "pageURL=\(state.pageURL.absoluteString)",
-                    "titleBytes=\(content.title.count)"
-                )
-                try await scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
             }
         }
     }
-    
+
     @MainActor
     public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
-        if ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(state.mainFrameHTTPStatusCode) {
-            let statusCode = state.mainFrameHTTPStatusCode
-            debugPrint(
-                "# 404 reader.metadata.skip",
-                "url=\(state.pageURL.absoluteString)",
-                "status=\(statusCode.map(String.init) ?? "nil")",
-                "incomingTitle=\(title ?? "<nil>")",
-                "preservedStoredMetadata=true"
-            )
-            return
-        }
+        let sanitizedIncomingTitle = title?
+            .replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: "")
+        logTitleTrace(
+            "stage=readerViewModel.pageMetadataUpdated.received pageURL=\(state.pageURL.absoluteString) incomingTitle=\(title.debugTitleFragment) sanitizedTitle=\(sanitizedIncomingTitle.debugTitleFragment) author=\(author.debugTitleFragment) isNativeReaderView=\(state.pageURL.isNativeReaderView)"
+        )
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle: String
         if state.pageURL.isEBookURL {
@@ -410,17 +259,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
         } else {
             newTitle = fixAnnoyingTitlesWithPipes(title: title, url: state.pageURL)
         }
-        debugPrint(
-            "# READERMODETITLE metadata.received",
-            "pageURL=\(state.pageURL.absoluteString)",
-            "raw=\(title)",
-            "normalized=\(newTitle)"
-        )
-        debugPrint(
-            "# READERHEADER swift.pageMetadataUpdated.received",
-            "pageURL=\(state.pageURL.absoluteString)",
-            "rawTitleBytes=\(title.count)",
-            "normalizedTitleBytes=\(newTitle.count)"
+        logTitleTrace(
+            "stage=readerViewModel.pageMetadataUpdated.normalized pageURL=\(state.pageURL.absoluteString) newTitle=\(newTitle.debugTitleFragment)"
         )
         let contentRefs = try await { @RealmBackgroundActor in
             let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
@@ -430,55 +270,60 @@ public class ReaderViewModel: NSObject, ObservableObject {
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
             let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
             let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
-            debugPrint(
-                "# READERMODETITLE metadata.apply",
-                "contentURL=\(content.url.absoluteString)",
-                "final=\(finalTitle)",
-                "author=\(author ?? "")"
+            let existingTitle = content.title
+                .replacingOccurrences(of: String("\u{fffc}"), with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            logTitleTrace(
+                "stage=readerViewModel.pageMetadataUpdated.inspect contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) existingTitle=\(existingTitle.debugTitleFragment) finalTitle=\(finalTitle.debugTitleFragment) existingAuthor=\(content.author.debugTitleFragment) newAuthor=\((author ?? "").debugTitleFragment)"
             )
-            debugPrint(
-                "# READERHEADER swift.pageMetadataUpdated.apply",
-                "contentURL=\(content.url.absoluteString)",
-                "finalTitleBytes=\(finalTitle.count)",
-                "authorBytes=\((author ?? "").count)"
-            )
-            if !finalTitle.isEmpty,
-               content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != finalTitle
-                || content.author != author ?? "" {
+            if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
                     content.title = finalTitle
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
+                logTitleTrace(
+                    "stage=readerViewModel.pageMetadataUpdated.persisted contentURL=\(content.url.absoluteString) key=\(content.compoundKey) persistedTitle=\(finalTitle.debugTitleFragment) persistedAuthor=\((author ?? "").debugTitleFragment)"
+                )
                 try await refreshTitleInWebView(content: content)
             } else if state.pageURL.isEBookURL {
                 try await refreshTitleInWebView(content: content)
             }
         }
     }
-    
+
     @MainActor
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let resolvedFontSize = readerFontSize ?? 16
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
             try await self.scriptCaller.evaluateJavaScript("""
-                const px = '\(resolvedFontSize)px';
-                if (document.body.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
-                    document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
+                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
+                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
                 }
-                if (document.body.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
-                    document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
+                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
                 }
-                try { document.documentElement?.style?.setProperty('font-size', px); } catch (_error) {}
-                try { document.body?.style?.setProperty('font-size', px); } catch (_error) {}
-                try { document.body?.style?.setProperty('--manabi-reader-max-width-override', '\(maxWidthOverride)'); } catch (_error) {}
-                try { document.body?.setAttribute?.('data-manabi-diagnostic-font-size', px); } catch (_error) {}
-                globalThis.manabiDiagnosticFontSize = px;
+                document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
                 """, duplicateInMultiTargetFrames: true)
-            debugPrint("# PAGETURN refreshSettingsInWebView.applied", "fontSize=\(resolvedFontSize)")
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }
+    }
+}
+
+private extension String {
+    var debugTitleFragment: String {
+        let normalized = replacingOccurrences(of: "\n", with: "\\n")
+        if normalized.isEmpty {
+            return "\"\""
+        }
+        return "\"\(normalized.truncate(120, trailing: "…"))\""
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var debugTitleFragment: String {
+        guard let value = self else { return "<nil>" }
+        return value.debugTitleFragment
     }
 }

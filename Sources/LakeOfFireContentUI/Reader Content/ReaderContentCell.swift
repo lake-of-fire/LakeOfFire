@@ -595,7 +595,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     @ViewBuilder
     private var audioBadge: some View {
-        if item.primaryMediaPlaybackKind == .video {
+        if item.primaryMediaKindRawValue?.lowercased() == "video" {
             Image(systemName: "video")
                 .imageScale(.small)
                 .foregroundStyle(.secondary)

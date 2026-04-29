@@ -1,9 +1,6 @@
 import Foundation
 import RealmSwift
 import RealmSwiftGaps
-import BigSyncKit
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 public extension ReaderContentProtocol {
     @MainActor
@@ -19,12 +16,12 @@ public extension ReaderContentProtocol {
         }
     }
 
-    func isHome() -> Bool {
-        return url.absoluteString == "about:blank"
+    func isHome(categorySelection: String?) -> Bool {
+        return url.absoluteString == "about:blank" && (categorySelection ?? "home") == "home"
     }
 
     @MainActor
-    func writeAllRelatedAsync(_ block: @escaping @Sendable (Realm, any ReaderContentProtocol) -> Void) async throws {
+    func writeAllRelatedAsync(_ block: @escaping (Realm, any ReaderContentProtocol) -> Void) async throws {
         let targetURL = url
 
         try await { @RealmBackgroundActor in

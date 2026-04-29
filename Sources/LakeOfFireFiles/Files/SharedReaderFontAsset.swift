@@ -1,13 +1,18 @@
 import Foundation
 
-private func sharedReaderFontLog(_ stage: String, _ details: [String: String]) {
-    var segments: [String] = ["# READERLOAD stage=\(stage)"]
-    for key in details.keys.sorted() {
-        if let value = details[key] {
-            segments.append("\(key)=\(value)")
-        }
+private func sharedReaderFontLog(
+    _ stage: String,
+    _ metadata: [String: String] = [:]
+) {
+    let payload = metadata
+        .sorted { $0.key < $1.key }
+        .map { "\($0.key)=\($0.value)" }
+        .joined(separator: " ")
+    if payload.isEmpty {
+        print("# EPUB", "sharedReaderFont.\(stage)")
+    } else {
+        print("# EPUB", "sharedReaderFont.\(stage)", payload)
     }
-    debugPrint(segments.joined(separator: " "))
 }
 
 public struct SharedReaderFontAsset: Equatable, Sendable {
@@ -54,12 +59,12 @@ public enum SharedReaderFontInjectionMode: String, Equatable, Sendable {
     case blob
 }
 
-public enum SharedReaderFontScheme: String, Sendable {
+internal enum SharedReaderFontScheme: String, Sendable {
     case ebook
     case internalLocal = "internal"
     case readerFile = "reader-file"
 
-    public init?(pageURL: URL) {
+    init?(pageURL: URL) {
         guard let scheme = pageURL.scheme?.lowercased() else { return nil }
         switch scheme {
         case "ebook":
@@ -74,7 +79,7 @@ public enum SharedReaderFontScheme: String, Sendable {
         }
     }
 
-    public var host: String {
+    var host: String {
         switch self {
         case .ebook:
             return "ebook"
@@ -85,7 +90,7 @@ public enum SharedReaderFontScheme: String, Sendable {
         }
     }
 
-    public var stylesheetPath: String {
+    var stylesheetPath: String {
         switch self {
         case .ebook:
             return "/load/manabi-fonts.css"
@@ -94,7 +99,7 @@ public enum SharedReaderFontScheme: String, Sendable {
         }
     }
 
-    public var fontPathPrefix: String {
+    var fontPathPrefix: String {
         switch self {
         case .ebook:
             return "/load/manabi-fonts/"
@@ -104,21 +109,33 @@ public enum SharedReaderFontScheme: String, Sendable {
     }
 }
 
-public enum SharedReaderFontRoute: Equatable, Sendable {
+private func sharedReaderFontBaseURL(for pageURL: URL) -> URL? {
+    if let scheme = pageURL.scheme?.lowercased(), scheme != "blob" {
+        return pageURL
+    }
+    let absoluteString = pageURL.absoluteString
+    guard absoluteString.hasPrefix("blob:") else { return pageURL }
+    let underlyingURLString = String(absoluteString.dropFirst("blob:".count))
+    return URL(string: underlyingURLString)
+}
+
+internal enum SharedReaderFontRoute: Equatable, Sendable {
     case stylesheet(familyName: String)
     case font
 }
 
 public func sharedReaderFontUsesLocalScheme(for pageURL: URL) -> Bool {
-    SharedReaderFontScheme(pageURL: pageURL) != nil
+    guard let baseURL = sharedReaderFontBaseURL(for: pageURL) else { return false }
+    return SharedReaderFontScheme(pageURL: baseURL) != nil
 }
 
 public func sharedReaderFontInjectionMode(for pageURL: URL) -> SharedReaderFontInjectionMode {
     sharedReaderFontUsesLocalScheme(for: pageURL) ? .localScheme : .blob
 }
 
-public func sharedReaderFontStylesheetURL(for pageURL: URL, familyName: String) -> URL? {
-    guard let scheme = SharedReaderFontScheme(pageURL: pageURL) else { return nil }
+internal func sharedReaderFontStylesheetURL(for pageURL: URL, familyName: String) -> URL? {
+    guard let baseURL = sharedReaderFontBaseURL(for: pageURL),
+          let scheme = SharedReaderFontScheme(pageURL: baseURL) else { return nil }
     var components = URLComponents()
     components.scheme = scheme.rawValue
     components.host = scheme.host
@@ -135,7 +152,8 @@ private func sharedReaderFontFontURL(
     for pageURL: URL,
     asset: SharedReaderFontAsset
 ) -> URL? {
-    guard let scheme = SharedReaderFontScheme(pageURL: pageURL) else { return nil }
+    guard let baseURL = sharedReaderFontBaseURL(for: pageURL),
+          let scheme = SharedReaderFontScheme(pageURL: baseURL) else { return nil }
     var components = URLComponents()
     components.scheme = scheme.rawValue
     components.host = scheme.host
@@ -143,7 +161,7 @@ private func sharedReaderFontFontURL(
     return components.url
 }
 
-public func sharedReaderFontRoute(
+internal func sharedReaderFontRoute(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontRoute? {
@@ -190,8 +208,29 @@ public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontServedResponse? {
-    let startedAt = Date()
     guard let route = sharedReaderFontRoute(for: requestURL, asset: asset) else { return nil }
+    let routeDescription: String
+    let requestedFamilyName: String
+    switch route {
+    case .stylesheet(let familyName):
+        routeDescription = "stylesheet"
+        requestedFamilyName = familyName
+    case .font:
+        routeDescription = "font"
+        requestedFamilyName = ""
+    }
+
+    let baseMetadata: [String: String] = [
+        "requestURL": requestURL.absoluteString,
+        "scheme": requestURL.scheme ?? "nil",
+        "route": routeDescription,
+        "family": requestedFamilyName.isEmpty ? "nil" : requestedFamilyName,
+        "assetPresent": asset == nil ? "0" : "1",
+        "assetFilename": asset?.publicFilename ?? "nil",
+        "assetFormat": asset?.format ?? "nil",
+        "assetMimeType": asset?.mimeType ?? "nil",
+        "supportedFamilies": asset?.supportedFamilyNames.joined(separator: "|") ?? "nil",
+    ]
     guard let asset else {
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
@@ -199,26 +238,44 @@ public func sharedReaderFontResponse(
             contentType: "text/plain",
             textEncodingName: "utf-8"
         )
+        sharedReaderFontLog(
+            "response",
+            baseMetadata.merging(
+                [
+                    "status": "404",
+                    "reason": "missingAsset",
+                    "byteCount": "0",
+                ],
+                uniquingKeysWith: { _, new in new }
+            )
+        )
         return SharedReaderFontServedResponse(response: response, data: Data())
     }
 
     switch route {
     case .stylesheet(let familyName):
-        sharedReaderFontLog(
-            "sharedReaderFont.stylesheetRequest",
-            [
-                "family": familyName,
-                "mode": sharedReaderFontInjectionMode(for: requestURL).rawValue,
-                "url": requestURL.absoluteString
-            ]
-        )
-        guard asset.supportsFamily(familyName),
-              let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset) else {
+        let supportsFamily = asset.supportsFamily(familyName)
+        let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset)
+        guard supportsFamily,
+              let fontURL else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
                 statusCode: 404,
                 contentType: "text/plain",
                 textEncodingName: "utf-8"
+            )
+            sharedReaderFontLog(
+                "response",
+                baseMetadata.merging(
+                    [
+                        "status": "404",
+                        "reason": supportsFamily ? "missingFontURL" : "unsupportedFamily",
+                        "supportsFamily": supportsFamily ? "1" : "0",
+                        "fontURL": fontURL?.absoluteString ?? "nil",
+                        "byteCount": "0",
+                    ],
+                    uniquingKeysWith: { _, new in new }
+                )
             )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
@@ -229,7 +286,19 @@ public func sharedReaderFontResponse(
           font-weight: 500;
           font-style: normal;
           src: url("\(fontURL.absoluteString)") format("\(asset.format)");
-          font-display: block;
+          font-display: swap;
+        }
+        :root {
+          --mnb-content-font: '\(familyName)';
+          --mnb-content-vertical-font: '\(familyName)';
+        }
+        html,
+        body,
+        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(mnb-sen rt) {
+          font-family: '\(familyName)' !important;
+        }
+        mnb-sen rt {
+          font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
         }
         """
         let data = Data(css.utf8)
@@ -239,10 +308,24 @@ public func sharedReaderFontResponse(
             contentType: "text/css",
             textEncodingName: "utf-8"
         )
+        sharedReaderFontLog(
+            "response",
+            baseMetadata.merging(
+                [
+                    "status": "200",
+                    "reason": "ok",
+                    "supportsFamily": "1",
+                    "fontURL": fontURL.absoluteString,
+                    "byteCount": String(data.count),
+                    "containsAtFontFace": css.contains("@font-face") ? "1" : "0",
+                    "containsFontFamilyApplyRule": css.contains("font-family: '\\(familyName)' !important") ? "1" : "0",
+                ],
+                uniquingKeysWith: { _, new in new }
+            )
+        )
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
-        let readStartedAt = Date()
         guard let data = try? Data(contentsOf: asset.localFileURL) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
@@ -250,24 +333,37 @@ public func sharedReaderFontResponse(
                 contentType: "text/plain",
                 textEncodingName: "utf-8"
             )
+            sharedReaderFontLog(
+                "response",
+                baseMetadata.merging(
+                    [
+                        "status": "404",
+                        "reason": "fontFileReadFailed",
+                        "assetLocalPath": asset.localFileURL.path,
+                        "byteCount": "0",
+                    ],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
-        sharedReaderFontLog(
-            "sharedReaderFont.fontRead",
-            [
-                "bytes": String(data.count),
-                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(readStartedAt)),
-                "file": asset.localFileURL.lastPathComponent,
-                "mode": sharedReaderFontInjectionMode(for: requestURL).rawValue,
-                "totalElapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                "url": requestURL.absoluteString
-            ]
-        )
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
             statusCode: 200,
             contentType: asset.mimeType,
             extraHeaders: ["Access-Control-Allow-Origin": "*"]
+        )
+        sharedReaderFontLog(
+            "response",
+            baseMetadata.merging(
+                [
+                    "status": "200",
+                    "reason": "ok",
+                    "assetLocalPath": asset.localFileURL.path,
+                    "byteCount": String(data.count),
+                ],
+                uniquingKeysWith: { _, new in new }
+            )
         )
         return SharedReaderFontServedResponse(response: response, data: data)
     }

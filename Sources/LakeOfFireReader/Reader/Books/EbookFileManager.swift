@@ -6,9 +6,8 @@ import UniformTypeIdentifiers
 import SwiftCloudDrive
 import Logging
 import LakeKit
-import LakeOfFireCore
-import LakeOfFireAdblock
 import LakeOfFireContent
+import LakeOfFireCore
 
 public extension RootRelativePath {
     static let ebooks = Self(path: "Books")
@@ -16,35 +15,35 @@ public extension RootRelativePath {
 
 public struct EbookFileManager {
     private static let subpathCharacterSet = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&="))
-    
+
     public static func configure() {
         for mimeType in [UTType.epub, .epubZip, .directory] {
             if !ReaderFileManager.shared.readerContentMimeTypes.contains(mimeType) {
                 ReaderFileManager.shared.readerContentMimeTypes.append(mimeType)
             }
         }
-        
+
         ReaderFileManager.fileDestinationProcessors.append({ importedFileURL in
             if importedFileURL.isEBookURL {
                 return .ebooks
             }
             return nil
         })
-        
+
         ReaderFileManager.readerFileURLProcessors.append({ importedFileURL, encodedPathToCloudDriveFile in
             if importedFileURL.isEBookURL {
                 return URL(string: "ebook://ebook/load/" + encodedPathToCloudDriveFile)
             }
             return nil
         })
-        
+
         ReaderFileManager.fileProcessors.append({ @RealmBackgroundActor contentFiles in
             var toUpdateWithImage = [(ContentFile, URL)]()
             var toUpdateWithTitle = [(ContentFile, String)]()
             var toUpdateWithAuthor = [(ContentFile, String?)]()
             var toUpdateWithPublicationDate = [(ContentFile, Date)]()
             var toUpdateAsPhysicalMedia = [ContentFile]()
-            
+
             for contentFile in contentFiles {
                 // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
                 let pathExtension = contentFile.url.lakePathExtension.lowercased()
@@ -54,10 +53,13 @@ public struct EbookFileManager {
                 else {
                     continue
                 }
-                
+
+                guard let localURL = try? await ReaderFileManager.shared.resolveReadableLocalURL(forReaderBackingURL: contentFile.url) else {
+                    continue
+                }
+
                 // Attempt to parse the EPUB for metadata + cover:
                 do {
-                    let localURL = try contentFile.systemFileURL
                     if let metadata = try EPubParser.parseMetadataAndCover(from: localURL) {
                         if contentFile.title != metadata.title {
                             toUpdateWithTitle.append((contentFile, metadata.title))
@@ -77,16 +79,16 @@ public struct EbookFileManager {
                            let coverImageURL = URL(string: coverURLPrefix + encodedPath), contentFile.imageUrl != coverImageURL {
                             toUpdateWithImage.append((contentFile, coverImageURL))
                         }
-                        
+
                         if !contentFile.isPhysicalMedia {
                             toUpdateAsPhysicalMedia.append(contentFile)
                         }
                     }
                 } catch {
-                    Logger.shared.logger.error("EbookFileManager error: \(error)")
+                    continue
                 }
             }
-            
+
             if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateWithAuthor.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
 //                await realm.asyncRefresh()

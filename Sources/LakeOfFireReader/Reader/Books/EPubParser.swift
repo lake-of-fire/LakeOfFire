@@ -1,7 +1,5 @@
 import Foundation
 import ZIPFoundation
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 struct EPubParser {
     /// Parses the EPUB file at the given URL (either a ZIP archive with an epub extension or an unpacked EPUB directory)
@@ -11,7 +9,7 @@ struct EPubParser {
         let opfData: Data?
         let fileManager = FileManager.default
         var opfRelativePath: String?
-        
+
         if fileManager.isDirectory(epubURL) {
             // Unpacked EPUB directory.
             let containerURL = epubURL.appendingPathComponent("META-INF/container.xml")
@@ -33,21 +31,21 @@ struct EPubParser {
             try archive.extract(opfEntry) { opfDataLocal.append($0) }
             opfData = opfDataLocal
         }
-        
+
         guard let data = opfData, let opfRelPath = opfRelativePath else { return nil }
         guard var (title, coverHref, author, pubDate) = parseOPF(data) else { return nil }
-        
+
         // Adjust the coverHref to be relative to the EPUB root.
         let opfDir = (opfRelPath as NSString).deletingLastPathComponent
         if !opfDir.isEmpty {
             coverHref = (opfDir as NSString).appendingPathComponent(coverHref)
         }
-        
+
         return (title: title, author: author, coverHref: coverHref, publicationDate: pubDate)
     }
-    
+
     // MARK: - Internal Parsing Helpers
-    
+
     /// Parses the container.xml data to retrieve the “full-path” attribute of the first <rootfile>.
     private static func parseContainer(_ data: Data) -> String? {
         final class ContainerParser: NSObject, XMLParserDelegate {
@@ -64,21 +62,21 @@ struct EPubParser {
                     parser.abortParsing()  // Stop parsing after finding the path.
                 }
             }
-            
+
             func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
                 guard !aborted else { return }
                 let error = parseError as NSError
                 print("Container parse error: \(error.localizedDescription) (code: \(error.code), domain: \(error.domain)) at line \(parser.lineNumber), column \(parser.columnNumber)")
             }
         }
-        
+
         let parser = XMLParser(data: data)
         let delegate = ContainerParser()
         parser.delegate = delegate
         parser.parse()
         return delegate.foundPath
     }
-    
+
     /// Parses the OPF XML data to extract the book title, cover image href, author, and publication date.
     /// For EPUB v2, it looks for a meta element with name="cover" and then finds the corresponding <item> in the manifest.
     /// For EPUB v3, it looks for an <item> with a properties attribute containing "cover-image".
@@ -92,16 +90,16 @@ struct EPubParser {
             var foundDate: Date?
             var currentDateElement: String?
             var accumulatingDate: String = ""
-            
+
             // State for title and author accumulation.
             var currentTitleElement: String?
             var currentCreatorElement: String?
             var accumulatingTitle: String = ""
             var accumulatingCreator: String = ""
-            
+
             var inMetadata = false
             var inManifest = false
-            
+
             func parser(
                 _ parser: XMLParser,
                 didStartElement elementName: String,
@@ -118,7 +116,7 @@ struct EPubParser {
                 } else if elementName == "manifest" {
                     inManifest = true
                 }
-                
+
                 if inMetadata {
                     if elementName == "dc:title" {
                         currentTitleElement = "dc:title"
@@ -140,7 +138,7 @@ struct EPubParser {
                         }
                     }
                 }
-                
+
                 if inManifest && elementName == "item" {
                     // EPUB v3: look for an item with properties containing "cover-image".
                     if epubVersion.hasPrefix("3"),
@@ -159,7 +157,7 @@ struct EPubParser {
                     }
                 }
             }
-            
+
             func parser(_ parser: XMLParser, foundCharacters string: String) {
                 if currentTitleElement == "dc:title" {
                     accumulatingTitle += string
@@ -171,7 +169,7 @@ struct EPubParser {
                     accumulatingDate += string
                 }
             }
-            
+
             func parser(_ parser: XMLParser, didEndElement elementName: String,
                         namespaceURI: String?, qualifiedName qName: String?) {
                 if elementName == "metadata" {
@@ -195,17 +193,17 @@ struct EPubParser {
                     currentDateElement = nil
                 }
             }
-            
+
             func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
                 print("OPF parse error: \(parseError)")
             }
         }
-        
+
         let parser = XMLParser(data: data)
         let delegate = OPFParserDelegate()
         parser.delegate = delegate
         parser.parse()
-        
+
         if let title = delegate.foundTitle, let cover = delegate.coverHref {
             return (title: title, coverHref: cover, author: delegate.foundAuthor, publicationDate: delegate.foundDate)
         }

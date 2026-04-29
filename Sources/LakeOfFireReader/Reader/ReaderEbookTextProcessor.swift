@@ -2,25 +2,7 @@ import Foundation
 import SwiftSoup
 import LRUCache
 import LakeKit
-import LakeOfFireCore
-import LakeOfFireAdblock
-import LakeOfFireContent
-
-private let defaultRubyFontCSSStack = "'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui'"
-
-private func ensureRubyFontCustomProperty(in doc: SwiftSoup.Document) {
-    do {
-        if let head = doc.head() {
-            let styleID = "manabi-ruby-font-vars"
-            if try head.getElementById(styleID) == nil {
-                let css = ":root{--manabi-ruby-font:\(defaultRubyFontCSSStack);}"
-                try head.append("<style type=\"text/css\" id=\"\(styleID)\">\(css)</style>")
-            }
-        }
-    } catch {
-        print("Failed to append ruby font style: \(error)")
-    }
-}
+import JapaneseLanguageTools
 
 // Precomputed punctuation set for splitting
 private let splitPunctuation = ParsingStrings([
@@ -29,6 +11,17 @@ private let splitPunctuation = ParsingStrings([
     "｛","｝","〈","〉","《","》","“","”","‘","’","·","・","／",
     "＼","—","〜","～","〃","々","〆","ゝ","ゞ"
 ])
+
+private func isASCIILetterOrNumber(_ character: Character) -> Bool {
+    character.unicodeScalars.allSatisfy {
+        $0.isASCII && CharacterSet.alphanumerics.contains($0)
+    }
+}
+
+private func isJapaneseWordCharacter(_ character: Character) -> Bool {
+    let text = String(character)
+    return text.isKana || text.isKanji || text == "々" || text == "〻"
+}
 
 internal extension URL {
     /// Backport of iOS 16+ `appending(queryItems:)` for iOS 15
@@ -44,43 +37,42 @@ internal extension URL {
 }
 
 internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Document {
-    // Apply visibility sentinels
+    // Apply visibility sentinels. In the ebook pipeline this must run after
+    // reader tags are injected, so sentinels never split text before MeCab sees it.
     guard let body = doc.body() else { return doc }
+    try? body.getElementsByTag("reader-sentinel").remove()
     let interval = 16
     var charCount = 0
     var nextThreshold = interval
     var idx = 0
-    
+
     func findSplitOffset(_ text: String, desiredOffset: Int, maxDistance: Int) -> Int {
-        let utf8view = text.utf8
-        let len = utf8view.count
+        let characters = Array(text)
+        let len = characters.count
         guard desiredOffset > 0 && desiredOffset < len else {
             return desiredOffset
         }
-        // Access a byte in the UTF-8 view by index
-        func byte(at offset: Int) -> UInt8 {
-            return utf8view[utf8view.index(utf8view.startIndex, offsetBy: offset)]
-        }
-        var bestOffset = desiredOffset
+        var bestOffset: Int?
         var bestScore = Int.min
         for dist in 0...maxDistance {
             for offset in [desiredOffset - dist, desiredOffset + dist] {
                 if offset <= 0 || offset >= len { continue }
-                let curr = byte(at: offset)
-                let prev = byte(at: offset - 1)
+                let curr = characters[offset]
+                let prev = characters[offset - 1]
+                if isJapaneseWordCharacter(curr) && isJapaneseWordCharacter(prev) {
+                    continue
+                }
                 var score = 0
                 // Prefer splitting at ASCII whitespace
-                if curr == 0x20 || curr == 0x09 || curr == 0x0A || curr == 0x0C || curr == 0x0D ||
-                    prev == 0x20 || prev == 0x09 || prev == 0x0A || prev == 0x0C || prev == 0x0D {
+                if curr.isWhitespace || prev.isWhitespace {
                     score += 3
                 }
                 // Treat punctuation via precomputed splitPunctuation set
-                if splitPunctuation.contains(curr) || splitPunctuation.contains(prev) {
+                if splitPunctuation.contains(Array(String(curr).utf8)) || splitPunctuation.contains(Array(String(prev).utf8)) {
                     score += 3
                 }
                 // Avoid splitting in the middle of ASCII alphanumeric words
-                if ((curr >= 0x30 && curr <= 0x39) || (curr >= 0x41 && curr <= 0x5A) || (curr >= 0x61 && curr <= 0x7A)) &&
-                    ((prev >= 0x30 && prev <= 0x39) || (prev >= 0x41 && prev <= 0x5A) || (prev >= 0x61 && prev <= 0x7A)) {
+                if isASCIILetterOrNumber(curr) && isASCIILetterOrNumber(prev) {
                     score -= 4
                 }
                 // Avoid splitting at very start or end
@@ -97,45 +89,124 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
             }
             if bestScore >= 3 { break }
         }
-        return bestOffset
+        return bestOffset ?? 0
     }
-    
+
     do {
-        var textNodes = body.textNodes()
+        func closestAncestor(from node: Node, where predicate: (Element) -> Bool) -> Element? {
+            var current = node.parent()
+            while let ancestor = current {
+                if let element = ancestor as? Element, predicate(element) {
+                    return element
+                }
+                current = ancestor.parent()
+            }
+            return nil
+        }
+
+        func hasAncestorTag(_ tagNames: Set<String>, from node: Node) -> Bool {
+            closestAncestor(from: node) { tagNames.contains($0.tagNameNormal()) } != nil
+        }
+
+        func sentinelAnchor(for node: Node) -> Element? {
+            closestAncestor(from: node) { $0.tagNameNormal() == "mnb-seg" }
+        }
+
+        func sentinelAnchorKey(for anchor: Element) -> String {
+            if let id = try? anchor.attr("id"), !id.isEmpty {
+                return "id:\(id)"
+            }
+            if let selector = try? anchor.cssSelector(), !selector.isEmpty {
+                return "selector:\(selector)"
+            }
+            return "html:\((try? anchor.outerHtml()) ?? "")"
+        }
+
+        let ignoredTextAncestorTags: Set<String> = ["reader-sentinel", "script", "style", "rt", "rp"]
+        func bodyTextNodesInDocumentOrder() -> [TextNode] {
+            ((try? body.getAllElements().flatMap { $0.textNodes() }) ?? [])
+                .filter { !hasAncestorTag(ignoredTextAncestorTags, from: $0) }
+        }
+
+        var textNodes = bodyTextNodesInDocumentOrder()
+        let initialTextNodeCount = textNodes.count
+        let initialTextCharacterCount = textNodes.reduce(0) { $0 + $1.text().count }
+        var splitAttemptCount = 0
+        var splitRejectedCount = 0
+        var splitFailedCount = 0
+        print(
+            "# VISIBLERANGE",
+            "sentinelPreprocess.start",
+            "textNodeCount=\(initialTextNodeCount)",
+            "textCharacterCount=\(initialTextCharacterCount)",
+            "interval=\(interval)"
+        )
         var nodeIdx = 0
+        var anchoredSentinelKeys = Set<String>()
         while nodeIdx < textNodes.count {
             var node = textNodes[nodeIdx]
             var offsetInNode = 0
-            
-            let nodeTextPreview = String(node.text().prefix(30))
+            if let anchor = sentinelAnchor(for: node) {
+                let nodeTextLength = node.text().count
+                let anchorKey = sentinelAnchorKey(for: anchor)
+                while charCount + nodeTextLength >= nextThreshold {
+                    if !anchoredSentinelKeys.contains(anchorKey) {
+                        let sentinel = Element(Tag("reader-sentinel"), "")
+                        try sentinel.attr("id", "reader-sentinel-\(idx)")
+                        idx += 1
+                        _ = try? anchor.after(sentinel)
+                        anchoredSentinelKeys.insert(anchorKey)
+                    } else {
+                        splitRejectedCount += 1
+                    }
+                    nextThreshold += interval
+                }
+                charCount += nodeTextLength
+                nodeIdx += 1
+                continue
+            }
+
             // Attempt to insert as many sentinels as needed inside this node
             while charCount + (node.text().count - offsetInNode) >= nextThreshold {
                 let nodeText = node.text()
-                let desiredOffset = nextThreshold - charCount - offsetInNode
+                let desiredOffset = nextThreshold - charCount
                 let splitOffset = findSplitOffset(
                     nodeText,
                     desiredOffset: desiredOffset,
                     maxDistance: interval * 2
                 )
-                let splitIndex = offsetInNode + splitOffset
+                let splitIndex = splitOffset
+                splitAttemptCount += 1
                 // Sanity check
-                if splitIndex <= 0 || splitIndex >= nodeText.count { break }
-                
+                if splitIndex <= 0 {
+                    splitRejectedCount += 1
+                    nextThreshold += interval
+                    continue
+                }
+                if splitIndex >= nodeText.count {
+                    let sentinel = Element(Tag("reader-sentinel"), "")
+                    try sentinel.attr("id", "reader-sentinel-\(idx)")
+                    idx += 1
+                    _ = try? node.after(sentinel)
+                    charCount = nextThreshold
+                    nextThreshold += interval
+                    offsetInNode = nodeText.count
+                    break
+                }
+
                 // Split the text node
                 let newTextNode = try? node.splitText(splitIndex)
-                
+
                 // Insert sentinel between the two halves
                 let sentinel = Element(Tag("reader-sentinel"), "")
                 try sentinel.attr("id", "reader-sentinel-\(idx)")
                 idx += 1
                 _ = try? node.after(sentinel)
-                
+
                 if let newTextNode = newTextNode {
                     _ = try? sentinel.after(newTextNode)
-                    // Debug new node
-                    let newPreview = String(newTextNode.text().prefix(30))
                     // Re-fetch text nodes to include the split part
-                    textNodes = body.textNodes()
+                    textNodes = bodyTextNodesInDocumentOrder()
                     // Advance counters for next threshold
                     charCount = nextThreshold
                     nextThreshold += interval
@@ -144,20 +215,32 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
                     offsetInNode = 0
                     continue  // re‑enter inner while with updated node
                 } else {
+                    splitFailedCount += 1
                     break
                 }
             }
-            
+
             // No more splits needed in this node; account for its remaining characters
             charCount += node.text().count - offsetInNode
             nodeIdx += 1
         }
-        
+
         if idx == 0 {
             let sentinel = Element(Tag("reader-sentinel"), "")
             try sentinel.attr("id", "reader-sentinel-0")
             _ = try? body.prependChild(sentinel)
         }
+        print(
+            "# VISIBLERANGE",
+            "sentinelPreprocess.end",
+            "initialTextNodeCount=\(initialTextNodeCount)",
+            "initialTextCharacterCount=\(initialTextCharacterCount)",
+            "sentinelCount=\(idx == 0 ? 1 : idx)",
+            "usedFallbackSentinel=\(idx == 0)",
+            "splitAttemptCount=\(splitAttemptCount)",
+            "splitRejectedCount=\(splitRejectedCount)",
+            "splitFailedCount=\(splitFailedCount)"
+        )
         return doc
     } catch {
         print(error)
@@ -169,70 +252,44 @@ public enum EbookHTMLProcessingContext {
     @TaskLocal public static var isEbookHTML: Bool = false
 }
 
-private let ebookHTMLDebugMarker = "芥川賞"
-private let ebookHTMLTargetSectionFragments = [
-    "item/xhtml/title.xhtml",
-    "item/xhtml/0001.xhtml",
-]
-
-private func shouldLogEbookHTMLPayload(_ html: String, sectionLocation: String? = nil) -> Bool {
-    if html.contains(ebookHTMLDebugMarker) {
-        return true
-    }
-    if let sectionLocation {
-        return ebookHTMLTargetSectionFragments.contains(where: { sectionLocation.contains($0) })
-    }
-    return false
-}
-
-private func logEbookHTML(
-    stage: String,
-    contentURL: URL,
-    sectionLocation: String,
-    isCacheWarmer: Bool,
-    html: String
-) {
-    let segmentCount = html.components(separatedBy: "<mnb-seg").count - 1
-    let hasTrackingFlag = html.contains("data-manabi-tracking-enabled")
-    print("# EBOOKHTML stage=\(stage) cacheWarmer=\(isCacheWarmer) contentURL=\(contentURL.absoluteString) sectionLocation=\(sectionLocation) length=\(html.utf8.count) segmentCount=\(max(segmentCount, 0)) hasTrackingFlag=\(hasTrackingFlag)")
-}
-
-@ReaderViewModelActor
 internal func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
     isCacheWarmer: Bool,
-    processReadabilityContent: EbookReadabilityContentProcessor?,
-    processHTML: EbookHTMLProcessor?
+    processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+    processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
+    processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
+    let totalStartedAt = Date()
+    var readabilityProcessElapsedMs = 0
+    var fallbackParseElapsedMs = 0
+    var readerModeProcessElapsedMs = 0
+    var preprocessEbookElapsedMs = 0
+    var serializeElapsedMs = 0
+    var processHTMLBytesElapsedMs = 0
+    var processHTMLElapsedMs = 0
+    var responseDecodeElapsedMs = 0
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
-    var shouldLogPipeline = shouldLogEbookHTMLPayload(content, sectionLocation: sectionLocation)
-    if shouldLogPipeline {
-        logEbookHTML(
-            stage: "swift.rawInput",
-            contentURL: contentURL,
-            sectionLocation: sectionLocation,
-            isCacheWarmer: isCacheWarmer,
-            html: content
-        )
-    }
-    
+
     do {
         var doc: SwiftSoup.Document?
 
         if let processReadabilityContent {
+            let readabilityProcessStartedAt = Date()
             doc = try await processReadabilityContent(
                 content,
                 contentURL,
                 sectionLocationURL,
                 isCacheWarmer,
-                preprocessEbookContent(doc:)
+                { $0 }
             )
+            readabilityProcessElapsedMs = Int(Date().timeIntervalSince(readabilityProcessStartedAt) * 1000)
         }
 
         if doc == nil {
+            let fallbackParseStartedAt = Date()
             // TODO: Consolidate our parsing boilerplate
             let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
             let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
@@ -242,25 +299,15 @@ internal func ebookTextProcessor(
             if isXML {
                 doc?.outputSettings().escapeMode(.xhtml)
             }
+            fallbackParseElapsedMs = Int(Date().timeIntervalSince(fallbackParseStartedAt) * 1000)
         }
 
-        guard let doc else {
+        guard var doc else {
             print("Error: Unexpectedly failed to receive doc")
             return content
         }
 
-        if let htmlSnapshot = try? doc.outerHtml(),
-           shouldLogPipeline || shouldLogEbookHTMLPayload(htmlSnapshot, sectionLocation: sectionLocation) {
-            shouldLogPipeline = true
-            logEbookHTML(
-                stage: "swift.afterProcessReadabilityContent",
-                contentURL: contentURL,
-                sectionLocation: sectionLocation,
-                isCacheWarmer: isCacheWarmer,
-                html: htmlSnapshot
-            )
-        }
-
+        let readerModeProcessStartedAt = Date()
         try processForReaderMode(
             doc: doc,
             url: sectionLocationURL, //nil,
@@ -272,45 +319,93 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
+        readerModeProcessElapsedMs = Int(Date().timeIntervalSince(readerModeProcessStartedAt) * 1000)
+        let preprocessEbookStartedAt = Date()
+        doc = preprocessEbookContent(doc: doc)
+        preprocessEbookElapsedMs = Int(Date().timeIntervalSince(preprocessEbookStartedAt) * 1000)
 
-        ensureRubyFontCustomProperty(in: doc)
+        let serializeStartedAt = Date()
+        var htmlBytes = try doc.outerHtmlUTF8()
+        serializeElapsedMs = Int(Date().timeIntervalSince(serializeStartedAt) * 1000)
+        print(
+            "# EPUB",
+            "ebookTextProcessor.output",
+            "contentURL=\(contentURL.absoluteString)",
+            "sectionLocation=\(sectionLocation)",
+            "isCacheWarmer=\(isCacheWarmer)",
+            "segmentCount=\(bytePatternCount(Array("<mnb-seg".utf8), in: htmlBytes))",
+            "sentenceCount=\(bytePatternCount(Array("<mnb-sen".utf8), in: htmlBytes))"
+        )
 
-        var html = try doc.outerHtml()
-        if shouldLogPipeline || shouldLogEbookHTMLPayload(html, sectionLocation: sectionLocation) {
-            shouldLogPipeline = true
-            logEbookHTML(
-                stage: "swift.afterProcessForReaderMode",
-                contentURL: contentURL,
-                sectionLocation: sectionLocation,
-                isCacheWarmer: isCacheWarmer,
-                html: html
-            )
-        }
-
-        if let processHTML {
-            html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
-                await processHTML(
-                    html,
+        if let processHTMLBytes {
+            let processHTMLBytesStartedAt = Date()
+            htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                await processHTMLBytes(
+                    htmlBytes,
                     isCacheWarmer
                 )
             }
-        }
-        if shouldLogPipeline || shouldLogEbookHTMLPayload(html, sectionLocation: sectionLocation) {
-            logEbookHTML(
-                stage: "swift.afterProcessHTML",
-                contentURL: contentURL,
-                sectionLocation: sectionLocation,
-                isCacheWarmer: isCacheWarmer,
-                html: html
-            )
+            processHTMLBytesElapsedMs = Int(Date().timeIntervalSince(processHTMLBytesStartedAt) * 1000)
         }
 
-        return html
-    } catch {
-        if error is CancellationError {
-            throw error
+        if let processHTML {
+            let processHTMLStartedAt = Date()
+            let html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                await processHTML(
+                    String(decoding: htmlBytes, as: UTF8.self),
+                    isCacheWarmer
+                )
+            }
+            htmlBytes = Array(html.utf8)
+            processHTMLElapsedMs = Int(Date().timeIntervalSince(processHTMLStartedAt) * 1000)
         }
+
+        let responseDecodeStartedAt = Date()
+        let response = String(decoding: htmlBytes, as: UTF8.self)
+        responseDecodeElapsedMs = Int(Date().timeIntervalSince(responseDecodeStartedAt) * 1000)
+        debugPrint(
+            "# REPLACETEXT",
+            "native.ebookTextProcessor.responseSummary",
+            [
+                "contentURL": String(contentURL.absoluteString.prefix(80)),
+                "sectionLocation": sectionLocation,
+                "isCacheWarmer": isCacheWarmer,
+                "inputBytes": content.utf8.count,
+                "responseBytes": htmlBytes.count,
+                "readabilityProcessMs": readabilityProcessElapsedMs,
+                "fallbackParseMs": fallbackParseElapsedMs,
+                "readerModeProcessMs": readerModeProcessElapsedMs,
+                "preprocessEbookMs": preprocessEbookElapsedMs,
+                "serializeMs": serializeElapsedMs,
+                "processHTMLBytesMs": processHTMLBytesElapsedMs,
+                "processHTMLMs": processHTMLElapsedMs,
+                "responseDecodeMs": responseDecodeElapsedMs,
+                "elapsedMs": Int(Date().timeIntervalSince(totalStartedAt) * 1000)
+            ] as [String: Any]
+        )
+        return response
+    } catch {
         debugPrint("Error processing readability content for ebook", error)
     }
     return content
+}
+
+private func bytePatternCount(_ needle: [UInt8], in haystack: [UInt8]) -> Int {
+    guard !needle.isEmpty, haystack.count >= needle.count else { return 0 }
+    var count = 0
+    var index = 0
+    while index <= haystack.count - needle.count {
+        var matched = true
+        for offset in needle.indices where haystack[index + offset] != needle[offset] {
+            matched = false
+            break
+        }
+        if matched {
+            count += 1
+            index += needle.count
+        } else {
+            index += 1
+        }
+    }
+    return count
 }

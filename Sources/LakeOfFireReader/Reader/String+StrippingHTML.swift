@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import LakeOfFireCore
-import LakeOfFireAdblock
 
 public extension String {
     // TODO: move somewhere appropriate
@@ -18,7 +16,7 @@ public extension String {
                         try rubyTag.getElementsByTag(tagName).remove()
                     }
                     let surface = try rubyTag.text(trimAndNormaliseWhitespace: false)
-                    
+
                     try rubyTag.before(surface)
                     try rubyTag.remove()
                 }

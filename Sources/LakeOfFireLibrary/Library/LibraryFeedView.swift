@@ -588,13 +588,13 @@ struct LibraryFeedFormSections: View {
     }
     
     private func refreshFeed() {
-        Task {
+        Swift.Task {
             try await viewModel.feed.fetch()
         }
     }
     
     private func refreshFromOpenGraph() {
-        Task { @MainActor in
+        Swift.Task { @MainActor in
             guard viewModel.feed.isUserEditable(), !viewModel.feed.rssUrl.isNativeReaderView else { return }
             
             let rssURL = viewModel.feed.rssUrl
@@ -648,7 +648,7 @@ struct LibraryFeedFormSections: View {
     private func refreshIcon() {
         guard viewModel.feed.iconUrl.isNativeReaderView, !viewModel.feed.rssUrl.isNativeReaderView else { return }
         let url = viewModel.feed.rssUrl.domainURL
-        Task.detached {
+        Swift.Task.detached {
             do {
                 let favicon = try await FaviconFinder(
                     url: url,
@@ -663,7 +663,7 @@ struct LibraryFeedFormSections: View {
                 )
                     .fetchFaviconURLs()
                     .largest()
-                await Task { @MainActor in
+                await Swift.Task { @MainActor in
                     guard !favicon.source.isNativeReaderView else { return }
                     viewModel.feedIconURL = favicon.source.absoluteString
                 }.value

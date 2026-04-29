@@ -6,8 +6,6 @@ import Combine
 import RealmSwiftGaps
 import WebKit
 import AVFoundation
-import LakeOfFireCore
-import LakeOfFireAdblock
 import LakeOfFireContent
 
 public enum ReaderPlaybackSource: String, Sendable {
@@ -81,7 +79,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     public func hasPlayableMediaForCurrentSource(
-        contentVoiceAudioURL: URL?,
+        contentVoiceAudioURLs: [URL],
         hasLoadedRecordedMedia: Bool,
         currentRecordedMediaURL: URL?
     ) -> Bool {
@@ -90,7 +88,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             return hasLoadedRecordedMedia
                 || currentRecordedMediaURL != nil
                 || hasRecordedAudio
-                || contentVoiceAudioURL != nil
+                || !contentVoiceAudioURLs.isEmpty
         case .aiTextToSpeech:
             return hasPreparedAITTS
         }
@@ -103,7 +101,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             currentContentKey = incomingContentKey
             resetPlaybackStateForIncomingContent()
         }
-        let voiceAudioURLs = content.voiceAudioURL.map { [$0] } ?? []
+        let voiceAudioURLs = content.resolvedVoiceAudioURLs
 #if DEBUG
         debugPrint(
             "# AUDIO ReaderMediaPlayerViewModel.onNavigationCommitted url=\(newState.pageURL.absoluteString) voiceCount=\(voiceAudioURLs.count) host=\(newState.pageURL.host ?? "nil") isReaderMode=\(newState.pageURL.isNativeReaderView)"
@@ -125,6 +123,12 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 }
 #endif
                 isMediaPlayerPresented = true
+            } else if playbackSource == .recordedAudio, isMediaPlayerPresented {
+#if DEBUG
+                debugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=noRecordedAudio")
+#endif
+                cancelAutoplayRequest(reason: "navigation.noRecordedAudio")
+                isMediaPlayerPresented = false
             }
         } else if newState.pageURL.isNativeReaderView {
             Task { @MainActor [weak self] in
@@ -159,6 +163,18 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
+    public func cancelAutoplayRequest(reason: String) {
+        guard let token = autoplayRequestToken else { return }
+        autoplayRequestToken = nil
+        debugPrint(
+            "# READALOUD autoplay.cancel",
+            "source=\(playbackSource.rawValue)",
+            "token=\(token.uuidString)",
+            "reason=\(reason)"
+        )
+    }
+
+    @MainActor
     @discardableResult
     public func consumeAutoplayRequestIfMatches(_ token: UUID) -> Bool {
         let didMatch = autoplayRequestToken == token
@@ -181,11 +197,28 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             "autoplay=\(autoplay)",
             "hasRecordedAudio=\(hasRecordedAudio)"
         )
-        playbackSource = .recordedAudio
-        isMediaPlayerPresented = true
+        transitionToRecordedAudioPresentation(reason: "presentRecordedAudio")
         if autoplay {
             requestAutoplay()
         }
+    }
+
+    @MainActor
+    public func transitionToRecordedAudioPresentation(reason: String) {
+        if autoplayRequestToken != nil {
+            cancelAutoplayRequest(reason: "recordedTransition.\(reason)")
+        }
+        if playbackSource != .recordedAudio {
+            stopAITTSIfNeeded()
+        }
+        playbackSource = .recordedAudio
+        isMediaPlayerPresented = true
+        debugPrint(
+            "# READALOUD present.recorded.transition",
+            "reason=\(reason)",
+            "hasRecordedAudio=\(hasRecordedAudio)",
+            "hasPreparedAITTS=\(hasPreparedAITTS)"
+        )
     }
 
     @MainActor

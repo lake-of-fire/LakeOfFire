@@ -1,7 +1,5 @@
 import Foundation
 import RealmSwift
-import LakeOfFireCore
-import LakeOfFireAdblock
 import LakeOfFireContent
 
 public extension Feed {
@@ -85,13 +83,58 @@ public extension Feed {
     }
 
     var hasEntriesNewerThanLastViewedAt: Bool {
-        guard showsUnseenBadge else { return false }
         let entries = getEntries() ?? []
-        let effectiveLastViewedAt = effectiveFeedSeenDate
-        guard let effectiveLastViewedAt else {
-            return false
+        guard showsUnseenBadge else {
+            let result = false
+            debugPrint(
+                "# FEEDNEW stage=feed.unread.evaluate",
+                "feedID=\(id.uuidString)",
+                "title=\(title)",
+                "entryCount=\(entries.count)",
+                "lastViewedAt=\(lastViewedAt?.description ?? "nil")",
+                "lastSeenFeedEntriesAt=\(lastSeenFeedEntriesAt?.description ?? "nil")",
+                "latestEntryCreatedAt=\(latestEntryCreatedAt?.description ?? "nil")",
+                "latestHistoryLastVisitedAt=nil",
+                "effectiveLastViewedAt=nil",
+                "showsUnseenBadge=\(showsUnseenBadge)",
+                "result=\(result) reason=badgeHidden"
+            )
+            return result
         }
-        return entries.contains(where: { $0.createdAt > effectiveLastViewedAt })
+        let latestHistoryLastVisitedAt = latestHistoryRecordLastVisitedAtForFeedEntries
+        guard let effectiveLastViewedAt = effectiveFeedSeenDate else {
+            let result = false
+            debugPrint(
+                "# FEEDNEW stage=feed.unread.evaluate",
+                "feedID=\(id.uuidString)",
+                "title=\(title)",
+                "entryCount=\(entries.count)",
+                "lastViewedAt=\(lastViewedAt?.description ?? "nil")",
+                "lastSeenFeedEntriesAt=\(lastSeenFeedEntriesAt?.description ?? "nil")",
+                "latestEntryCreatedAt=\(latestEntryCreatedAt?.description ?? "nil")",
+                "latestHistoryLastVisitedAt=\(latestHistoryLastVisitedAt?.description ?? "nil")",
+                "effectiveLastViewedAt=nil",
+                "showsUnseenBadge=\(showsUnseenBadge)",
+                "result=\(result) reason=noViewedOrHistoryDate"
+            )
+            return result
+        }
+        let latestEntryCreatedAt = entries.map(\.createdAt).max()
+        let result = entries.contains(where: { $0.createdAt > effectiveLastViewedAt })
+        debugPrint(
+            "# FEEDNEW stage=feed.unread.evaluate",
+            "feedID=\(id.uuidString)",
+            "title=\(title)",
+            "entryCount=\(entries.count)",
+            "lastViewedAt=\(lastViewedAt?.description ?? "nil")",
+            "lastSeenFeedEntriesAt=\(lastSeenFeedEntriesAt?.description ?? "nil")",
+            "latestEntryCreatedAt=\(latestEntryCreatedAt?.description ?? "nil")",
+            "latestHistoryLastVisitedAt=\(latestHistoryLastVisitedAt?.description ?? "nil")",
+            "effectiveLastViewedAt=\(effectiveLastViewedAt)",
+            "showsUnseenBadge=\(showsUnseenBadge)",
+            "result=\(result)"
+        )
+        return result
     }
 
     var shouldRefreshOnCategoryAppear: Bool {

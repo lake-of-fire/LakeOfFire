@@ -4,6 +4,7 @@ internal enum ReaderHTTPErrorRecoveryPolicy {
     internal struct ReaderModeFlags: Equatable {
         var isReaderModeByDefault: Bool
         var isReaderModeAvailable: Bool
+        var isReaderModeOfferHidden: Bool
     }
 
     internal struct ReaderModeFlagUpdate: Equatable {
@@ -39,6 +40,10 @@ internal enum ReaderHTTPErrorRecoveryPolicy {
         if hasCapturedReadabilityContent || hasStoredFullContent {
             if !flags.isReaderModeAvailable {
                 flags.isReaderModeAvailable = true
+                didChange = true
+            }
+            if !flags.isReaderModeOfferHidden {
+                flags.isReaderModeOfferHidden = true
                 didChange = true
             }
         }
