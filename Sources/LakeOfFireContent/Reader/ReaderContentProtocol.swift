@@ -150,6 +150,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var offlineMediaID: String? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
+    var autoOpenMediaPlayer: Bool { get set }
 
     // Feed options.
     /// Whether the content be viewed directly instead of loading the URL.
@@ -248,6 +249,7 @@ public extension ReaderContentProtocol {
         destination.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? defaultAudioSubtitlesRole?.rawValue
         destination.redditTranslationsUrl = redditTranslationsUrl
         destination.redditTranslationsTitle = redditTranslationsTitle
+        destination.autoOpenMediaPlayer = autoOpenMediaPlayer
         return destination
     }
 
@@ -519,6 +521,7 @@ public extension ReaderContentProtocol {
         let resolvedAudioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
+        let autoOpenMediaPlayer = autoOpenMediaPlayer
         try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(
@@ -535,6 +538,7 @@ public extension ReaderContentProtocol {
                 isReaderModeByDefault: isReaderModeByDefault,
                 isReaderModeAvailable: isReaderModeAvailable,
                 isReaderModeOfferHidden: isReaderModeOfferHidden,
+                autoOpenMediaPlayer: autoOpenMediaPlayer,
                 realmConfiguration: realmConfiguration
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -551,6 +555,7 @@ public extension ReaderContentProtocol {
                         managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
                         managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
                         managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                        managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                     }
                     managedBookmark.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -645,6 +650,7 @@ public extension ReaderContentProtocol {
                 record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
                 record.audioSubtitlesURL = audioSubtitlesURL
                 record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                record.autoOpenMediaPlayer = autoOpenMediaPlayer
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
@@ -681,6 +687,7 @@ public extension ReaderContentProtocol {
             record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
             record.audioSubtitlesURL = audioSubtitlesURL
             record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+            record.autoOpenMediaPlayer = autoOpenMediaPlayer
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard

@@ -56,7 +56,7 @@ fileprivate func shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: Int? = nil, d
     return elapsedMs >= ebookReplaceTextSlowSummaryThresholdMs
 }
 
-fileprivate struct EBookProcessTextRequestKey: Hashable {
+struct EBookProcessTextRequestKey: Hashable {
     let contentURLString: String
     let location: String
     let isCacheWarmer: Bool
@@ -70,7 +70,7 @@ fileprivate struct EBookProcessTextRequestKey: Hashable {
     }
 }
 
-fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
+enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
     case failed(String)
 
     var errorDescription: String? {
@@ -81,7 +81,7 @@ fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable
     }
 }
 
-fileprivate actor EBookProcessTextRequestDeduper {
+actor EBookProcessTextRequestDeduper {
     private enum ProcessTextOutcome: Sendable {
         case success(String)
         case cancelled

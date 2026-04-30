@@ -4,7 +4,7 @@
     function wireViewOriginal() {
         let nodes = document.body.getElementsByClassName('reader-view-original');
         for (let node of nodes) {
-            if (node.tagName.toUpperCase() !== 'A' || wiredNodes.has(node)) {
+            if (!['A', 'BUTTON'].includes(node.tagName.toUpperCase()) || wiredNodes.has(node)) {
                 continue;
             }
             wiredNodes.set(node, true); // Mark the node as wired

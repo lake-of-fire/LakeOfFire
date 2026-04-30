@@ -191,6 +191,81 @@ private func isInternalReaderURL(_ url: URL) -> Bool {
     url.scheme == "internal" && url.host == "local"
 }
 
+private enum ReaderWritingDirectionSetting: String {
+    case horizontal
+    case vertical
+
+    var isVertical: Bool {
+        self == .vertical
+    }
+}
+
+private func currentReaderWritingDirectionSetting() -> ReaderWritingDirectionSetting {
+    guard let rawValue = UserDefaults.standard.string(forKey: "webpageWritingDirectionSetting")?.lowercased(),
+          let setting = ReaderWritingDirectionSetting(rawValue: rawValue) else {
+        return .horizontal
+    }
+    return setting
+}
+
+private func readerWritingDirectionBodyClassNames(
+    from existingClassNames: [String]
+) -> String {
+    var classNames = existingClassNames.filter { !$0.isEmpty }
+    if !classNames.contains("readability-mode") {
+        classNames.insert("readability-mode", at: 0)
+    }
+    let directionSetting = currentReaderWritingDirectionSetting()
+    classNames.removeAll { $0 == "reader-vertical-writing" }
+    if directionSetting.isVertical {
+        classNames.append("reader-vertical-writing")
+    }
+    return classNames.joined(separator: " ")
+}
+
+private func readerWritingDirectionBodyAttributeValue() -> String {
+    currentReaderWritingDirectionSetting().rawValue
+}
+
+private func readerWritingDirectionBootstrapStyleHTML() -> String {
+    guard currentReaderWritingDirectionSetting().isVertical else {
+        return ""
+    }
+    return "<style id=\"manabi-writing-direction-bootstrap\">body { writing-mode: vertical-rl; }</style>"
+}
+
+private func upsertReaderWritingDirectionBootstrapStyle(in doc: SwiftSoup.Document) throws {
+    guard currentReaderWritingDirectionSetting().isVertical else {
+        try doc.getElementById("manabi-writing-direction-bootstrap")?.remove()
+        return
+    }
+
+    let styleCSS = "body { writing-mode: vertical-rl; }"
+    if let existingStyle = try doc.getElementById("manabi-writing-direction-bootstrap") {
+        try existingStyle.text(styleCSS)
+        return
+    }
+
+    let styleElement = try doc.createElement("style")
+    try styleElement.attr("id", "manabi-writing-direction-bootstrap")
+    try styleElement.text(styleCSS)
+
+    if let head = doc.head() {
+        try head.appendChild(styleElement)
+        return
+    }
+
+    if let html = try doc.getElementsByTag("html").first() {
+        try html.prepend("<head></head>")
+        if let head = doc.head() {
+            try head.appendChild(styleElement)
+            return
+        }
+    }
+
+    try doc.appendChild(styleElement)
+}
+
 internal func buildCanonicalReadabilityHTML(
     title: String,
     byline: String,
@@ -202,17 +277,20 @@ internal func buildCanonicalReadabilityHTML(
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
     let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
-    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<a class=\"reader-view-original\">View Original</a>"
+    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<button type=\"button\" class=\"reader-view-original\">View Original</button>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
         : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
     let publicationDateText = publishedTime.map(escapeReadabilityText)
-    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }, viewOriginal]
+    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }]
         .compactMap { $0 }
     let metaLine = metaItems.isEmpty
         ? ""
         : """
         <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\"></span>"))</div>
+        """
+    let actionLine = """
+        <div id="reader-header-actions">\(viewOriginal ?? "")</div>
         """
     let availabilityAttributes = "data-mnb-reader-mode-available=\"true\" data-mnb-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-mnb-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
@@ -253,9 +331,10 @@ internal func buildCanonicalReadabilityHTML(
         font-size: var(--mnb-system-font-size-footnote, 13px);
     }
     """
-    let bodyClass = hideReaderTitle
-        ? "readability-mode \(suppressionBodyClass)"
-        : "readability-mode"
+    let bodyClass = readerWritingDirectionBodyClassNames(
+        from: hideReaderTitle ? ["readability-mode", suppressionBodyClass] : ["readability-mode"]
+    )
+    let writingDirectionBootstrapStyle = readerWritingDirectionBootstrapStyleHTML()
     return """
     <!DOCTYPE html>
     <html>
@@ -265,15 +344,17 @@ internal func buildCanonicalReadabilityHTML(
             <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)
             \(systemUICSS)
             \(titleSuppressionCSS)</style>
+            \(writingDirectionBootstrapStyle)
             <title>\(resolvedTitle)</title>
         </head>
-        <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
+        <body class="\(bodyClass)" data-manabi-writing-direction="\(readerWritingDirectionBodyAttributeValue())" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(resolvedTitle)</h1>
                 <div id="reader-byline-container">
                     \(bylineLine)
                     \(metaLine)
                 </div>
+                \(actionLine)
             </div>
             <div id="reader-content">
                 \(content)
@@ -585,8 +666,14 @@ internal func hasReaderContentNodeMarkup(in html: String) -> Bool {
     html.range(of: #"<[^>]+id=['"]reader-content['"]"#, options: .regularExpression) != nil
 }
 
+internal func hasReaderHeaderNodeMarkup(in html: String) -> Bool {
+    html.range(of: #"<[^>]+id=['"]reader-header['"]"#, options: .regularExpression) != nil
+}
+
 internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
-    hasReadabilityModeBodyClassMarkup(in: html) && hasReaderContentNodeMarkup(in: html)
+    hasReadabilityModeBodyClassMarkup(in: html)
+        && hasReaderHeaderNodeMarkup(in: html)
+        && hasReaderContentNodeMarkup(in: html)
 }
 
 internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
@@ -1119,7 +1206,16 @@ public class ReaderModeViewModel: ObservableObject {
     public var hasPreparedReadabilityContent: Bool { readabilityContent?.isEmpty == false }
 
     public func isReadabilityRenderInFlight(for url: URL) -> Bool {
-        pendingReaderModeURL == url
+        hasActiveRender(for: url.canonicalReaderContentURLForHotfix())
+    }
+
+    public func isMetadataRefreshInFlightForTesting(for url: URL) -> Bool {
+        let canonicalURL = url.canonicalReaderContentURLForHotfix()
+        return metadataRefreshTaskByURL[canonicalRenderKey(canonicalURL)] != nil
+    }
+
+    public func metadataRefreshTaskCountForTesting() -> Int {
+        metadataRefreshTaskByURL.count
     }
 
     public func awaitReaderFontReadinessForCompletionIfNeeded(
@@ -1376,7 +1472,9 @@ public class ReaderModeViewModel: ObservableObject {
         let matchesExpected = expectedSyntheticReaderLoaderURL.map {
             urlsMatchWithoutHashForHotfix($0, canonicalURL)
         } ?? false
-        let syntheticCompletionInFlight = isReaderModeLoading && !canonicalURL.isReaderURLLoaderURL
+        let syntheticCompletionInFlight = isReaderModeLoading
+            && pendingReaderModeURL == nil
+            && !canonicalURL.isReaderURLLoaderURL
         guard matchesPending || matchesLastRendered || matchesExpected || syntheticCompletionInFlight else {
             return
         }
@@ -1506,6 +1604,7 @@ public class ReaderModeViewModel: ObservableObject {
             updatePendingReaderModeURL(nil, reason: "complete.emptyReadability.snippet")
             expectedSyntheticReaderLoaderURL = nil
             lastFallbackLoaderURL = canonicalURL
+            lastRenderedURL = canonicalURL
             readerModeLoading(false)
             readerModeLoadCompletionHandler?(canonicalURL)
             return true
@@ -1518,6 +1617,7 @@ public class ReaderModeViewModel: ObservableObject {
 
         updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
         lastFallbackLoaderURL = canonicalURL
+        lastRenderedURL = canonicalURL
         readerModeLoading(false)
         readerModeLoadCompletionHandler?(canonicalURL)
         return true
@@ -2317,7 +2417,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @discardableResult
     @MainActor
-    private func startRenderTaskIfNeeded(
+    func startRenderTaskIfNeeded(
         for url: URL,
         reason: String,
         operation: @escaping @ReaderViewModelActor (_ generation: UUID) async -> Void
@@ -2398,21 +2498,6 @@ public class ReaderModeViewModel: ObservableObject {
                 )
             }
         }
-        if let readabilityContent, !readabilityContent.isEmpty {
-            debugPrint(
-                "# READERLOAD stage=readerMode.route.resolve",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "route=\(ReaderModeRoute.capturedReadability.rawValue)",
-                "reason=cachedReadabilityContent",
-                "readabilityHasCanonicalMarkup=\(hasCanonicalReadabilityMarkup(in: readabilityContent))",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
-            return ReaderModeRouteDecision(
-                route: .capturedReadability,
-                prefetchedContent: nil,
-                prefetchedLocalHTML: nil
-            )
-        }
         if let content = try? await readerContent.getContent(),
            let html = try? await locallyRetrievableReaderHTML(
                 for: content,
@@ -2430,6 +2515,21 @@ public class ReaderModeViewModel: ObservableObject {
                 route: .localHTML,
                 prefetchedContent: content,
                 prefetchedLocalHTML: html
+            )
+        }
+        if let readabilityContent, !readabilityContent.isEmpty {
+            debugPrint(
+                "# READERLOAD stage=readerMode.route.resolve",
+                "pageURL=\(readerContent.pageURL.absoluteString)",
+                "route=\(ReaderModeRoute.capturedReadability.rawValue)",
+                "reason=cachedReadabilityContent",
+                "readabilityHasCanonicalMarkup=\(hasCanonicalReadabilityMarkup(in: readabilityContent))",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
+            )
+            return ReaderModeRouteDecision(
+                route: .capturedReadability,
+                prefetchedContent: nil,
+                prefetchedLocalHTML: nil
             )
         }
         debugPrint(
@@ -3226,6 +3326,22 @@ public class ReaderModeViewModel: ObservableObject {
 
     @discardableResult
     @MainActor
+    func schedulePostRenderMetadataRefreshTaskIfNeeded(
+        contentURL: URL,
+        injectEntryImageIntoHeader: Bool,
+        cachedImageURL: URL?,
+        imageLookup: @escaping @MainActor () async throws -> URL?
+    ) -> Bool {
+        schedulePostRenderMetadataRefreshTaskIfNeededImpl(
+            contentURL: contentURL,
+            injectEntryImageIntoHeader: injectEntryImageIntoHeader,
+            cachedImageURL: cachedImageURL,
+            imageLookup: imageLookup
+        )
+    }
+
+    @discardableResult
+    @MainActor
     private func schedulePostRenderMetadataRefreshTaskIfNeededImpl(
         contentURL: URL,
         injectEntryImageIntoHeader: Bool,
@@ -3721,7 +3837,7 @@ fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: rea
 fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
 fileprivate let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
 
-fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
+func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
     // Convert the UTF8 bytes to a String.
     guard let html = String(bytes: htmlBytes, encoding: .utf8) else {
         return htmlBytes
@@ -3730,7 +3846,8 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFont
     let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
     let nsHTML = html as NSString
     var updatedHtml: String
-    let newFontSizeStr = "font-size: " + String(newFontSize) + "px"
+    let newFontSizeString = newFontSize.rounded() == newFontSize ? String(Int(newFontSize)) : String(newFontSize)
+    let newFontSizeStr = "font-size: " + newFontSizeString + "px"
     // If a font-size exists in the style, replace it.
     if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
         let replacement = readerFontSizeStyleRegex.replacementString(
@@ -3823,6 +3940,22 @@ nonisolated public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-mnb-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-mnb-dark-theme", darkModeTheme.rawValue)
+            _ = try? bodyTag.attr("data-manabi-writing-direction", readerWritingDirectionBodyAttributeValue())
+
+            var bodyClassNames = ((try? bodyTag.className()) ?? "")
+                .split(separator: " ")
+                .map(String.init)
+                .filter { !$0.isEmpty }
+            if !bodyClassNames.contains("readability-mode") {
+                bodyClassNames.insert("readability-mode", at: 0)
+            }
+            bodyClassNames.removeAll { $0 == "reader-vertical-writing" }
+            if currentReaderWritingDirectionSetting().isVertical {
+                bodyClassNames.append("reader-vertical-writing")
+            }
+            _ = try? bodyTag.attr("class", bodyClassNames.joined(separator: " "))
+
+            try? upsertReaderWritingDirectionBootstrapStyle(in: doc)
             debugPrint(
                 "# READERLOAD stage=readerMode.processForReaderMode.bodyAttributes",
                 "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(bodyAttributesStartedAt)))s"

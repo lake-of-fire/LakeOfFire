@@ -77,6 +77,7 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     @Persisted public var offlineMediaID: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
+    @Persisted public var autoOpenMediaPlayer = false
     
     // Feed options.
     @Persisted public var isReaderModeByDefault = false
@@ -205,6 +206,7 @@ public extension Bookmark {
         isReaderModeByDefault: Bool,
         isReaderModeAvailable: Bool,
         isReaderModeOfferHidden: Bool = false,
+        autoOpenMediaPlayer: Bool = false,
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -241,6 +243,7 @@ public extension Bookmark {
                 bookmark.isReaderModeAvailable = isReaderModeAvailable
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.rssContainsFullContent = rssContainsFullContent
+                bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -281,6 +284,7 @@ public extension Bookmark {
             bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
+            bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
             //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)

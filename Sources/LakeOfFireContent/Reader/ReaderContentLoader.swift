@@ -156,6 +156,10 @@ public struct ReaderContentLoader {
     }
 
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
+        if let snippetKey = pageURL.snippetKey,
+           let canonicalSnippetURL = snippetURL(key: snippetKey) {
+            return canonicalSnippetURL
+        }
         if pageURL.isReaderURLLoaderURL,
            let components = URLComponents(url: pageURL, resolvingAgainstBaseURL: false),
            let readerURLItem = components.queryItems?.first(where: { $0.name == "reader-url" }),
@@ -522,6 +526,29 @@ public struct ReaderContentLoader {
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
+            } else if persist,
+                      let match = match,
+                      url.isSnippetURL,
+                      (!match.isReaderModeByDefault || !match.rssContainsFullContent),
+                      let realm = match.realm {
+//                await realm.asyncRefresh()
+                try await realm.asyncWrite {
+                    match.isReaderModeByDefault = true
+                    match.rssContainsFullContent = true
+                    match.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+            if persist,
+               let match = match,
+               url.isSnippetURL,
+               let html = match.html,
+               let repairedHTML = repairedCanonicalSnippetHTMLIfNeeded(html),
+               repairedHTML != html,
+               let realm = match.realm {
+                try await realm.asyncWrite {
+                    match.html = repairedHTML
+                    match.refreshChangeMetadata(explicitlyModified: true)
+                }
             }
             guard let match else { return nil }
 
@@ -564,8 +591,8 @@ public struct ReaderContentLoader {
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
 
             let normalizedHTML = normalizeSnippetSourceHTML(html)
-            let data = normalizedHTML.readerContentData
-            let generatedTitle = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
+            let data = html.readerContentData
+            let generatedTitle = generatedSnippetTitle(fromSourceHTML: html) ?? ""
             logSnippetEvent(
                 "loadHTML.begin",
                 "normalizedBytes=\(normalizedHTML.utf8.count)",
@@ -1365,6 +1392,39 @@ This snippet loads when the pasteboard is empty in a debug build.
 
         try? body.html(#"<div class="\#(snippetWrapperClass)">\#(bodyHTML)</div>"#)
         return (try? doc.outerHtml()) ?? html
+    }
+
+    private static func repairedCanonicalSnippetHTMLIfNeeded(_ html: String) -> String? {
+        guard let doc = try? SwiftSoup.parse(html),
+              let body = doc.body(),
+              let readerContents = try? doc.select("#reader-content").array(),
+              readerContents.count > 1,
+              let innermostReaderContent = readerContents.last,
+              let contentHTML = try? innermostReaderContent.html() else {
+            return nil
+        }
+
+        let headerHTML = (try? doc.select("#reader-header").first()?.outerHtml())
+            ?? (try? doc.getElementById("reader-title")?.text()).map {
+                #"<div id="reader-header"><h1 id="reader-title">\#(escapeSnippetHTML($0))</h1></div>"#
+            }
+            ?? ""
+
+        try? body.html(
+            """
+            \(headerHTML)
+            <div id="reader-content">\(contentHTML)</div>
+            """
+        )
+        return (try? doc.outerHtml()) ?? html
+    }
+
+    private static func escapeSnippetHTML(_ string: String) -> String {
+        string
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     private static func appendSnippetHTML(_ appendedHTML: String, toExistingHTML existingHTML: String?) throws -> String {

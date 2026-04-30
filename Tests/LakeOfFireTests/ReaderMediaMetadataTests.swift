@@ -117,7 +117,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
 
         XCTAssertTrue(
             viewModel.hasPlayableMediaForCurrentSource(
-                contentVoiceAudioURL: URL(string: "https://example.com/audio-only.m4a")!,
+                contentVoiceAudioURLs: [URL(string: "https://example.com/audio-only.m4a")!],
                 hasLoadedRecordedMedia: false,
                 currentRecordedMediaURL: nil
             )
