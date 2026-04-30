@@ -318,6 +318,7 @@ fileprivate struct ReaderWebViewInternal: View {
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
                 backgroundColor: .systemBackground,
+                usesSampledPageTopColorForUnderPageBackground: true,
                 userScripts: userScripts),
             navigator: navigator,
             state: $state,
