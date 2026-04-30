@@ -232,6 +232,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var audioSubtitlesRoleRawValue: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
+    @Persisted public var autoOpenMediaPlayer = false
     
     // Feed options.
     public var isReaderModeByDefault: Bool {

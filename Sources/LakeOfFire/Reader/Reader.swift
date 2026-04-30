@@ -22,7 +22,7 @@ private struct ReaderStatusBarFadeMask: ViewModifier {
                     if clampedTopFadeHeight > 0 {
                         VStack(spacing: 0) {
                             Color.white.opacity(edgeOpacity)
-                                .frame(height: clampedTopFadeHeight / 2)
+                                .frame(height: clampedTopFadeHeight * 0.6)
                             LinearGradient(
                                 stops: [
                                     .init(color: .white.opacity(1), location: 0),
@@ -31,7 +31,7 @@ private struct ReaderStatusBarFadeMask: ViewModifier {
                                 startPoint: .bottom,
                                 endPoint: .top
                             )
-                            .frame(height: clampedTopFadeHeight / 2)
+                            .frame(height: clampedTopFadeHeight * 0.4)
                         }
                         .frame(height: clampedTopFadeHeight)
                     }
@@ -186,6 +186,23 @@ func applyInitialReaderPresentationSettings(
         hasAsyncCaller: hasAsyncCaller,
         evaluateJavaScript: evaluateJavaScript
     )
+    if hasAsyncCaller {
+        do {
+            try await evaluateJavaScript(
+                """
+                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme.rawValue)') {
+                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme.rawValue)');
+                }
+                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme.rawValue)') {
+                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme.rawValue)');
+                }
+                """,
+                true
+            )
+        } catch {
+            print("Initial reader theme update failed: \(error)")
+        }
+    }
     if let readerFontSize {
         await applyReaderFontSize(
             readerFontSize,
@@ -326,15 +343,32 @@ func syncEbookViewerChromeInsets(
 }
 
 fileprivate struct ThemeModifier: ViewModifier {
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
+    @EnvironmentObject var readerViewModel: ReaderViewModel
+
+    private var resolvedReaderFontSize: Double {
+        readerFontSize ?? Double(defaultFontSize)
+    }
+
+    private var initialReaderPresentationSettingsTaskID: String {
+        [
+            readerViewModel.state.pageURL.absoluteString,
+            String(readerViewModel.state.hasReaderRenderReady),
+            String(scriptCaller.hasAsyncCaller),
+            String(resolvedReaderFontSize),
+            lightModeTheme.rawValue,
+            darkModeTheme.rawValue,
+        ].joined(separator: "|")
+    }
 
     private func applyFontSize(_ size: Double, reason: String) async {
         await applyReaderFontSize(
             size,
-            readerFontSize: readerFontSize,
+            readerFontSize: size,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
             reason: reason,
@@ -353,7 +387,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                 Task { @MainActor in
                     try await applyReaderLightTheme(
                         newValue,
-                        readerFontSize: readerFontSize,
+                        readerFontSize: resolvedReaderFontSize,
                         darkModeTheme: darkModeTheme,
                         hasAsyncCaller: scriptCaller.hasAsyncCaller
                     ) { js, duplicateInMultiTargetFrames in
@@ -368,7 +402,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                 Task { @MainActor in
                     try await applyReaderDarkTheme(
                         newValue,
-                        readerFontSize: readerFontSize,
+                        readerFontSize: resolvedReaderFontSize,
                         lightModeTheme: lightModeTheme,
                         hasAsyncCaller: scriptCaller.hasAsyncCaller
                     ) { js, duplicateInMultiTargetFrames in
@@ -379,9 +413,9 @@ fileprivate struct ThemeModifier: ViewModifier {
                     }
                 }
             }
-            .task { @MainActor in
+            .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
                 await applyInitialReaderPresentationSettings(
-                    readerFontSize: readerFontSize,
+                    readerFontSize: resolvedReaderFontSize,
                     lightModeTheme: lightModeTheme,
                     darkModeTheme: darkModeTheme,
                     hasAsyncCaller: scriptCaller.hasAsyncCaller
@@ -393,7 +427,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                 }
             }
             .onChange(of: readerFontSize) { newValue in
-                guard let newValue else { return }
+                let newValue = newValue ?? resolvedReaderFontSize
                 Task { @MainActor in
                     await applyAdaptiveReaderWidth(
                         readerFontSize: newValue,
@@ -464,16 +498,160 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
 }
 
 fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
+    @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
+    @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject var readerViewModel: ReaderViewModel
+    @EnvironmentObject var scriptCaller: WebViewScriptCaller
     
     func body(content: Content) -> some View {
         content
+            .task(id: readerHeaderMediaSyncID) {
+                await syncReaderHeaderMediaButton(reason: "task")
+            }
             .onChange(of: readerMediaPlayerViewModel.audioURLs) { audioURLs in
                 Task { @MainActor in
                     guard readerMediaPlayerViewModel.playbackSource == .recordedAudio else { return }
-                    readerMediaPlayerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
+                    if audioURLs.isEmpty {
+                        readerMediaPlayerViewModel.isMediaPlayerPresented = false
+                    }
+                    await syncReaderHeaderMediaButton(reason: "audioURLs")
                 }
             }
+            .onChange(of: readerMediaPlayerViewModel.isPlaying) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "isPlaying")
+                }
+            }
+            .onChange(of: readerMediaPlayerViewModel.playbackSource) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "playbackSource")
+                }
+            }
+            .onChange(of: readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil") { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "readerModeRendered")
+                }
+            }
+            .onChange(of: readerViewModel.state.pageURL.absoluteString) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "webViewPageURL")
+                }
+            }
+            .onChange(of: readerViewModel.state.hasReaderRenderReady) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "renderReady")
+                }
+            }
+    }
+
+    private var readerHeaderMediaSyncID: String {
+        [
+            readerContent.pageURL.absoluteString,
+            readerContent.content?.compoundKey ?? "nil",
+            String(readerContent.content?.hasAudio ?? false),
+            String(readerMediaPlayerViewModel.hasRecordedAudio),
+            String(readerMediaPlayerViewModel.hasPreparedAITTS),
+            String(readerMediaPlayerViewModel.isPlaying),
+            readerMediaPlayerViewModel.playbackSource.rawValue,
+            readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil",
+            readerViewModel.state.pageURL.absoluteString,
+            String(readerViewModel.state.hasReaderRenderReady),
+        ].joined(separator: "|")
+    }
+
+    @MainActor
+    private func syncReaderHeaderMediaButton(reason: String) async {
+        guard scriptCaller.hasAsyncCaller else {
+            debugPrint(
+                "# MEDIA readerHeader.sync.skip",
+                "reason=\(reason)",
+                "info=noAsyncCaller",
+                "pageURL=\(readerContent.pageURL.absoluteString)",
+                "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
+            )
+            return
+        }
+        let mediaAvailable = (readerContent.content?.hasAudio ?? false)
+            || readerMediaPlayerViewModel.hasRecordedAudio
+            || readerMediaPlayerViewModel.hasPreparedAITTS
+        let isPlaying = readerMediaPlayerViewModel.isPlaying
+        let webViewPageURL = readerViewModel.state.pageURL
+        let contentURL = readerContent.content?.url ?? readerContent.pageURL
+        let contentCanonicalURL = contentURL.canonicalReaderContentURLForHotfix()
+        let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?.canonicalReaderContentURLForHotfix()
+        let isReaderModeContent = (readerContent.content?.isReaderModeByDefault ?? false)
+            || readerModeViewModel.isReaderMode
+            || readerModeViewModel.pendingReaderModeURL != nil
+            || renderedCanonicalURL == contentCanonicalURL
+        if isReaderModeContent {
+            guard !webViewPageURL.isReaderURLLoaderURL else {
+                debugPrint(
+                    "# MEDIA readerHeader.sync.skip",
+                    "reason=\(reason)",
+                    "info=readerLoaderDocument",
+                    "pageURL=\(readerContent.pageURL.absoluteString)",
+                    "webViewURL=\(webViewPageURL.absoluteString)",
+                    "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
+                    "lastRendered=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")"
+                )
+                return
+            }
+            guard renderedCanonicalURL == contentCanonicalURL || readerViewModel.state.hasReaderRenderReady else {
+                debugPrint(
+                    "# MEDIA readerHeader.sync.skip",
+                    "reason=\(reason)",
+                    "info=readerDOMNotSettled",
+                    "pageURL=\(readerContent.pageURL.absoluteString)",
+                    "webViewURL=\(webViewPageURL.absoluteString)",
+                    "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
+                    "lastRendered=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")",
+                    "hasReaderRenderReady=\(readerViewModel.state.hasReaderRenderReady)"
+                )
+                return
+            }
+        }
+        debugPrint(
+            "# MEDIA readerHeader.sync.begin",
+            "reason=\(reason)",
+            "pageURL=\(readerContent.pageURL.absoluteString)",
+            "webViewURL=\(webViewPageURL.absoluteString)",
+            "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
+            "contentKey=\(readerContent.content?.compoundKey ?? "nil")",
+            "lastRendered=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")",
+            "hasReaderRenderReady=\(readerViewModel.state.hasReaderRenderReady)",
+            "contentHasAudio=\(readerContent.content?.hasAudio ?? false)",
+            "recordedAudioCount=\(readerMediaPlayerViewModel.audioURLs.count)",
+            "hasRecordedAudio=\(readerMediaPlayerViewModel.hasRecordedAudio)",
+            "hasPreparedAITTS=\(readerMediaPlayerViewModel.hasPreparedAITTS)",
+            "mediaAvailable=\(mediaAvailable)",
+            "isPlaying=\(isPlaying)",
+            "playbackSource=\(readerMediaPlayerViewModel.playbackSource.rawValue)"
+        )
+        do {
+            try await scriptCaller.evaluateJavaScript(
+                """
+                window.manabiSyncReaderHeaderMediaButton?.({
+                    mediaAvailable: \(mediaAvailable ? "true" : "false"),
+                    isPlaying: \(isPlaying ? "true" : "false"),
+                    reason: '\(reason)'
+                });
+                """,
+                duplicateInMultiTargetFrames: true
+            )
+            debugPrint(
+                "# MEDIA readerHeader.sync.finish",
+                "reason=\(reason)",
+                "mediaAvailable=\(mediaAvailable)",
+                "isPlaying=\(isPlaying)"
+            )
+        } catch {
+            debugPrint(
+                "# MEDIA readerHeader.sync.error",
+                "reason=\(reason)",
+                "error=\(error.localizedDescription)"
+            )
+        }
     }
 }
 
@@ -706,7 +884,7 @@ public struct Reader: View {
         )
 #if os(iOS)
         .readerStatusBarFade(
-            top: max(0, (obscuredInsets?.top ?? 0) + 8 + 2)
+            top: max(0, (obscuredInsets?.top ?? 0))//    + 8 + 2)
         )
         .ignoresSafeArea(.all, edges: .all)
         .modifier {

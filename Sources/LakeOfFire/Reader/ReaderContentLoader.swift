@@ -587,6 +587,17 @@ public struct ReaderContentLoader {
         logReaderLoad(
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
+        debugPrint(
+            "# READERMODE",
+            "stage=contentLoader.loadContent.begin",
+            "contentURL=\(contentURL.absoluteString)",
+            "contentType=\(String(describing: type(of: content)))",
+            "readerDefault=\(content.isReaderModeByDefault)",
+            "readerAvailable=\(content.isReaderModeAvailable)",
+            "offerHidden=\(content.isReaderModeOfferHidden)",
+            "rssContainsFullContent=\(content.rssContainsFullContent)",
+            "hasHTML=\(content.hasHTML)"
+        )
         let htmlProbeStartedAt = Date()
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
@@ -616,6 +627,15 @@ public struct ReaderContentLoader {
                 logReaderLoad(
                     "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
+                debugPrint(
+                    "# READERMODE",
+                    "stage=contentLoader.loadContent.finish",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "targetURL=\(loaderURL.absoluteString)",
+                    "reason=contentReaderDefault",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
+                )
                 return loaderURL
             }
 
@@ -629,10 +649,30 @@ public struct ReaderContentLoader {
                 logReaderLoad(
                     "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
+                debugPrint(
+                    "# READERMODE",
+                    "stage=contentLoader.loadContent.finish",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "targetURL=\(matchingURL.absoluteString)",
+                    "reason=matchingContentReaderDefault",
+                    "matchingContentURL=\(matchingContent.url.absoluteString)",
+                    "readerDefault=\(matchingContent.isReaderModeByDefault)"
+                )
                 return matchingURL
             }
             logReaderLoad(
                 "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+            )
+            debugPrint(
+                "# READERMODE",
+                "stage=contentLoader.loadContent.finish",
+                "contentURL=\(contentURL.absoluteString)",
+                "targetURL=\(content.url.absoluteString)",
+                "reason=httpDirect",
+                "readerDefault=\(content.isReaderModeByDefault)",
+                "readerAvailable=\(content.isReaderModeAvailable)",
+                "rssContainsFullContent=\(content.rssContainsFullContent)",
+                "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
             )
             return content.url
         }

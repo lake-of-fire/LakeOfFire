@@ -607,6 +607,20 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             return
         }
 
+        if !hasLoadedBefore,
+           filteredContents.isEmpty,
+           !contents.isEmpty,
+           contentFilter == nil,
+           postSortTransform == nil {
+            applyFilteredContents(
+                contents.map { $0.realm == nil ? $0 : $0.freeze() },
+                ids: contentIDs
+            )
+            logFeedFlash(
+                "readerContentList.load.seedInitialContents type=\(String(describing: C.self)) outputCount=\(contentIDs.count) outputIDs=\(contentIDs.joined(separator: ",")) sortOrder=\(String(describing: sortOrder))"
+            )
+        }
+
         let realmConfig = contents.first?.realm?.configuration
         realmConfiguration = realmConfig
         loadContentsTask?.cancel()
@@ -1398,7 +1412,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             appearance: ReaderContentListAppearance(
                 alwaysShowThumbnails: alwaysShowThumbnails,
                 showSeparators: false,
-                useCardBackground: false
+                useCardBackground: useCardBackground,
+                clearRowBackground: clearRowBackground,
+                useDefaultRowInsets: useDefaultRowInsets,
+                showsNewBadges: showsNewBadges
             ),
             isFirst: index == section.items.startIndex,
             isLast: index == lastIndex,
@@ -1437,7 +1454,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     appearance: ReaderContentListAppearance(
                         alwaysShowThumbnails: alwaysShowThumbnails,
                         showSeparators: false,
-                        useCardBackground: false
+                        useCardBackground: useCardBackground,
+                        clearRowBackground: clearRowBackground,
+                        useDefaultRowInsets: useDefaultRowInsets,
+                        showsNewBadges: showsNewBadges
                     ),
                     isFirst: index == section.items.startIndex,
                     isLast: index == lastIndex,
@@ -1464,7 +1484,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
         supplementarySections()
 
-        if customGrouping == nil {
+        if customGrouping == nil, !showEmptyState, separateRowsIntoSections {
+            separateRowSections
+        } else if customGrouping == nil {
             sectionWithSpacing(
                 Section {
                     if showEmptyState {
@@ -1476,8 +1498,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                 .listRowBackground(Color.clear)
                                 .stackListStyle(.grouped)
                         }
-                    } else if separateRowsIntoSections {
-                        separateRowSections
                     } else {
                         listItems
                             .readerContentListRowStyle(

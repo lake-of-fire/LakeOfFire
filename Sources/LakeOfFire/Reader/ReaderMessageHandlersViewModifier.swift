@@ -661,6 +661,18 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
+                debugPrint(
+                    "# READERMODE",
+                    "stage=readerMessageHandlers.readabilityUnavailable.content",
+                    "windowURL=\(url.absoluteString)",
+                    "contentURL=\(content.url.absoluteString)",
+                    "contentType=\(String(describing: type(of: content)))",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "readerAvailable=\(content.isReaderModeAvailable)",
+                    "offerHidden=\(content.isReaderModeOfferHidden)",
+                    "rssContainsFullContent=\(content.rssContainsFullContent)",
+                    "isMainFrame=\(message.frameInfo.isMainFrame)"
+                )
                 if content.rssContainsFullContent && !content.isReaderModeByDefault {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -737,6 +749,20 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let content = try? await contentForWindowURL(url, source: "readabilityParsed") else {
                     return
                 }
+                debugPrint(
+                    "# READERMODE",
+                    "stage=readerMessageHandlers.readabilityParsed.content",
+                    "windowURL=\(url.absoluteString)",
+                    "contentURL=\(content.url.absoluteString)",
+                    "contentType=\(String(describing: type(of: content)))",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "readerAvailable=\(content.isReaderModeAvailable)",
+                    "offerHidden=\(content.isReaderModeOfferHidden)",
+                    "rssContainsFullContent=\(content.rssContainsFullContent)",
+                    "forceReaderModeWhenAvailable=\(forceReaderModeWhenAvailable)",
+                    "outputHTMLBytes=\(result.outputHTML.utf8.count)",
+                    "isMainFrame=\(message.frameInfo.isMainFrame)"
+                )
                 if ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
                     isMainFrame: message.frameInfo.isMainFrame,
                     statusCode: readerViewModel.state.mainFrameHTTPStatusCode
@@ -789,6 +815,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 
                 guard !url.isNativeReaderView else { return }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
+                debugPrint(
+                    "# READERMODE",
+                    "stage=readerMessageHandlers.readabilityParsed.decision",
+                    "windowURL=\(url.absoluteString)",
+                    "contentURL=\(content.url.absoluteString)",
+                    "shouldPreserveFullContentOriginal=\(shouldPreserveFullContentOriginal)",
+                    "willShowReaderView=\(!shouldPreserveFullContentOriginal && (content.isReaderModeByDefault || forceReaderModeWhenAvailable))",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "rssContainsFullContent=\(content.rssContainsFullContent)",
+                    "forceReaderModeWhenAvailable=\(forceReaderModeWhenAvailable)"
+                )
                 if shouldPreserveFullContentOriginal {
                     readerModeViewModel.readabilityContent = nil
                     readerModeViewModel.readabilityContainerSelector = nil

@@ -190,18 +190,34 @@ internal func buildCanonicalReadabilityHTML(
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
     let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
-    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<a class=\"reader-view-original\">View Original</a>"
+    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<button type=\"button\" class=\"reader-view-original\">View Original</button>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
         : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
     let publicationDateText = publishedTime.map(escapeReadabilityText)
-    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }, viewOriginal]
+    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }]
         .compactMap { $0 }
     let metaLine = metaItems.isEmpty
         ? ""
         : """
         <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\"></span>"))</div>
         """
+    let actionLine = """
+        <div id="reader-header-actions">\(viewOriginal ?? "")</div>
+        """
+    debugPrint(
+        "# BYLINE canonical",
+        "contentURL=\(contentURL.absoluteString)",
+        "rawByline=\(byline.isEmpty ? "nil" : byline)",
+        "resolvedByline=\(resolvedByline.isEmpty ? "nil" : resolvedByline)",
+        "rawBylineBytes=\(byline.utf8.count)",
+        "resolvedBylineBytes=\(resolvedByline.utf8.count)",
+        "publishedTime=\(publishedTime ?? "nil")",
+        "publicationDateText=\(publicationDateText ?? "nil")",
+        "hasBylineLine=\(!bylineLine.isEmpty)",
+        "hasMetaLine=\(!metaLine.isEmpty)",
+        "hasViewOriginal=\(viewOriginal != nil)"
+    )
     let availabilityAttributes = "data-mnb-reader-mode-available=\"true\" data-mnb-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-mnb-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
     let bodyStyle = ManabiSystemUIFontCSS.cssDeclarations(from: ManabiSystemUIFontCSS.fallbackSizeMap())
@@ -209,36 +225,6 @@ internal func buildCanonicalReadabilityHTML(
     let titleSuppressionCSS = """
     body.\(suppressionBodyClass) #reader-title {
         display: none !important;
-    }
-    """
-    let systemUICSS = """
-    body.readability-mode #reader-byline-container {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: var(--mnb-system-font-size-footnote, 13px);
-        line-height: 20px;
-    }
-    body.readability-mode #reader-byline-line,
-    body.readability-mode #reader-byline,
-    body.readability-mode #reader-byline-container .reader-view-original,
-    body.readability-mode #reader-byline-container .byline-label {
-        font-size: inherit;
-        line-height: inherit;
-    }
-    body.readability-mode #reader-meta-line {
-        font-size: inherit;
-        line-height: inherit;
-    }
-    body.readability-mode #mnb-tracking-footer button,
-    body.readability-mode .mnb-start-over-book-button,
-    body.readability-mode .mnb-start-over-button {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: var(--mnb-system-font-size-footnote, 13px);
-        font-weight: 500;
-        height: 36px !important;
-    }
-    body.readability-mode .mnb-finished-reading-button-subtitle {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: var(--mnb-system-font-size-footnote, 13px);
     }
     """
     let bodyClass = hideReaderTitle
@@ -251,7 +237,6 @@ internal func buildCanonicalReadabilityHTML(
             <meta charset="utf-8">
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
             <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)
-            \(systemUICSS)
             \(titleSuppressionCSS)</style>
             <title>\(resolvedTitle)</title>
         </head>
@@ -262,6 +247,7 @@ internal func buildCanonicalReadabilityHTML(
                     \(bylineLine)
                     \(metaLine)
                 </div>
+                \(actionLine)
             </div>
             <div id="reader-content">
                 \(content)
@@ -3271,10 +3257,21 @@ public class ReaderModeViewModel: ObservableObject {
             return .failed
         }
 
+        let resolvedPublishedTime = trimmedNonEmptyReadabilityText(result.publishedTime)
+            ?? trimmedNonEmptyReadabilityText(snippetPublishedTime)
+        debugPrint(
+            "# BYLINE readabilityResult",
+            "contentURL=\(url.absoluteString)",
+            "resultByline=\((result.byline ?? "").isEmpty ? "nil" : result.byline ?? "nil")",
+            "resultBylineBytes=\((result.byline ?? "").utf8.count)",
+            "resultPublishedTime=\(result.publishedTime ?? "nil")",
+            "fallbackPublishedTime=\(snippetPublishedTime ?? "nil")",
+            "resolvedPublishedTime=\(resolvedPublishedTime ?? "nil")"
+        )
         let outputHTML = buildCanonicalReadabilityHTML(
             title: stripTemplateTagsForReadability(result.title ?? ""),
             byline: stripTemplateTagsForReadability(result.byline ?? ""),
-            publishedTime: result.publishedTime,
+            publishedTime: resolvedPublishedTime,
             content: rawContent,
             contentURL: url
         )

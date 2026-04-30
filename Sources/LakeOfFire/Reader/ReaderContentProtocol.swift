@@ -94,6 +94,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var audioSubtitlesRoleRawValue: String? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
+    var autoOpenMediaPlayer: Bool { get set }
     
     // Feed options.
     /// Whether the content be viewed directly instead of loading the URL.
@@ -167,6 +168,7 @@ public extension ReaderContentProtocol {
         destination.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? defaultAudioSubtitlesRole?.rawValue
         destination.redditTranslationsUrl = redditTranslationsUrl
         destination.redditTranslationsTitle = redditTranslationsTitle
+        destination.autoOpenMediaPlayer = autoOpenMediaPlayer
         return destination
     }
 
@@ -437,6 +439,7 @@ public extension ReaderContentProtocol {
         let resolvedAudioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
+        let autoOpenMediaPlayer = autoOpenMediaPlayer
         try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(
@@ -453,6 +456,7 @@ public extension ReaderContentProtocol {
                 isReaderModeByDefault: isReaderModeByDefault,
                 isReaderModeAvailable: isReaderModeAvailable,
                 isReaderModeOfferHidden: isReaderModeOfferHidden,
+                autoOpenMediaPlayer: autoOpenMediaPlayer,
                 realmConfiguration: realmConfiguration
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -469,6 +473,7 @@ public extension ReaderContentProtocol {
                         managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
                         managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
                         managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                        managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                     }
                     managedBookmark.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -527,6 +532,16 @@ public extension ReaderContentProtocol {
             "resolvedContentURL=\(resolvedContentURL.absoluteString)",
             "resolvedPageURL=\(resolvedPageURL.absoluteString)"
         )
+        debugPrint(
+            "# READERMODE",
+            "stage=history.add.begin",
+            "sourceType=\(String(describing: type(of: self)))",
+            "contentURL=\(url.absoluteString)",
+            "pageURL=\(pageURL.absoluteString)",
+            "sourceReaderDefault=\(isReaderModeByDefault)",
+            "sourceReaderAvailable=\(isReaderModeAvailable)",
+            "rssContainsFullContent=\(rssContainsFullContent)"
+        )
         var imageURL: URL?
         let ref = ThreadSafeReference(to: self)
         if let config = realm?.configuration {
@@ -546,6 +561,9 @@ public extension ReaderContentProtocol {
                 "recordIsLoaderURL=\(record.url.isReaderURLLoaderURL)",
                 "pageURL=\(pageURL.absoluteString)"
             )
+            let oldReaderDefault = record.isReaderModeByDefault
+            let oldReaderAvailable = record.isReaderModeAvailable
+            let oldReaderOfferHidden = record.isReaderModeOfferHidden
             try await realm.asyncWrite {
                 record.title = title
                 record.isTitlePrefixOfContent = isTitlePrefixOfContent
@@ -563,9 +581,12 @@ public extension ReaderContentProtocol {
                 record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
                 record.audioSubtitlesURL = audioSubtitlesURL
                 record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                record.autoOpenMediaPlayer = autoOpenMediaPlayer
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
-//                record.isReaderModeByDefault = isReaderModeByDefault
+                record.isReaderModeByDefault = isReaderModeByDefault
+                record.isReaderModeAvailable = isReaderModeAvailable
+                record.isReaderModeOfferHidden = isReaderModeOfferHidden
                 record.displayPublicationDate = displayPublicationDate
                 record.lastVisitedAt = Date()
                 record.isDeleted = false
@@ -574,6 +595,20 @@ public extension ReaderContentProtocol {
                 }
                 record.refreshChangeMetadata(explicitlyModified: true)
             }
+            debugPrint(
+                "# READERMODE",
+                "stage=history.add.reuse.persist",
+                "sourceType=\(String(describing: type(of: self)))",
+                "recordURL=\(record.url.absoluteString)",
+                "pageURL=\(pageURL.absoluteString)",
+                "oldReaderDefault=\(oldReaderDefault)",
+                "newReaderDefault=\(record.isReaderModeByDefault)",
+                "oldReaderAvailable=\(oldReaderAvailable)",
+                "newReaderAvailable=\(record.isReaderModeAvailable)",
+                "oldOfferHidden=\(oldReaderOfferHidden)",
+                "newOfferHidden=\(record.isReaderModeOfferHidden)",
+                "rssContainsFullContent=\(record.rssContainsFullContent)"
+            )
             return record
         } else {
             let record = HistoryRecord()
@@ -599,6 +634,7 @@ public extension ReaderContentProtocol {
             record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
             record.audioSubtitlesURL = audioSubtitlesURL
             record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+            record.autoOpenMediaPlayer = autoOpenMediaPlayer
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
@@ -614,6 +650,17 @@ public extension ReaderContentProtocol {
             try await realm.asyncWrite {
                 realm.add(record, update: .modified)
             }
+            debugPrint(
+                "# READERMODE",
+                "stage=history.add.create.persist",
+                "sourceType=\(String(describing: type(of: self)))",
+                "recordURL=\(record.url.absoluteString)",
+                "pageURL=\(pageURL.absoluteString)",
+                "readerDefault=\(record.isReaderModeByDefault)",
+                "readerAvailable=\(record.isReaderModeAvailable)",
+                "offerHidden=\(record.isReaderModeOfferHidden)",
+                "rssContainsFullContent=\(record.rssContainsFullContent)"
+            )
             
             try await record.refreshDemotedStatus()
 
