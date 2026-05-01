@@ -549,11 +549,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return metadataRowVerticalOffset * 2 - 1
     }
 
-    private var progressMetadataVerticalOffset: CGFloat {
-        guard readerContentCellStyle == .card else { return 0 }
-        return -6
-    }
-
     private var bottomBlockVerticalOffset: CGFloat {
         clearBorderedVerticalInset
     }
@@ -634,13 +629,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .allowsTightening(true)
                 }
             }
-            .offset(y: progressMetadataVerticalOffset)
         }
     }
 
     @ViewBuilder
     private var metadataRow: some View {
-        HStack(alignment: .bottom, spacing: 6) {
+        HStack(alignment: .center, spacing: 6) {
             progressMetadata
 
             Spacer(minLength: 0)
@@ -648,11 +642,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
                 .labelStyle(.iconOnly)
                 .imageScale(.small)
-                .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
+                .frame(width: buttonSize, height: buttonSize, alignment: .center)
 
             controlsRow
-                .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
+                .frame(width: buttonSize, height: buttonSize, alignment: .center)
         }
+        .frame(height: buttonSize, alignment: .center)
         .offset(y: bottomAccessoryVerticalOffset)
         .foregroundStyle(.secondary)
         .buttonStyle(.clearBordered)

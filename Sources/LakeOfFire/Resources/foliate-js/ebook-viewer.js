@@ -156,6 +156,17 @@ const MARKREAD_ALLOWED_EVENTS = new Set([
     'completion.restart.resetToFirstSection',
     'completion.unknown',
     'completion.idle',
+    'relocate.timing',
+    'pageState.sync.timing.start',
+    'pageState.sync.timing.defer',
+    'pageState.sync.timing.end',
+    'pageTracking.retry.queue',
+    'pageTracking.retry.fire',
+    'pageTracking.render.beforeDOM',
+    'pageTracking.render.afterDOM',
+    'pageTracking.render.raf',
+    'pageTracking.render.timing',
+    'pageReadMarker.update',
 ]);
 const MARKREAD_DEDUP_EVENTS = new Set([
     'pageState.result',
@@ -3731,8 +3742,39 @@ class Reader {
             ? explicitDoc
             : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
         const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
+        const readerStage = document.getElementById('reader-stage');
+        if (isRead && isVertical && readerStage instanceof HTMLElement) {
+            const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
+                .find((element) => element?.isConnected && element.offsetParent !== null) || this.view || null;
+            const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
+            const paginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            const stageRect = readerStage.getBoundingClientRect();
+            const containerRect = paginatorContainer?.getBoundingClientRect?.() || null;
+            if (containerRect && containerRect.width > 0 && stageRect.width > 0) {
+                readerStage.style.setProperty('--mnb-ebook-read-marker-top-left', `${Math.max(0, containerRect.left - stageRect.left)}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-top-width', `${containerRect.width}px`);
+            } else {
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
+            }
+        } else if (readerStage instanceof HTMLElement) {
+            readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
+            readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
+        }
         document.body?.setAttribute?.('data-page-read-marker-read', isRead ? 'true' : 'false');
         document.body?.setAttribute?.('data-page-read-marker-axis', isVertical ? 'block' : 'inline');
+        this.#logMarkRead('pageReadMarker.update', {
+            reason,
+            isRead,
+            axis: isVertical ? 'block' : 'inline',
+            hasExplicitState: !!explicitState,
+            stateCount: this.pageTrackingStates.length,
+            bodyReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
+            bodyAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
+            topMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-left') || null,
+            topMarkerWidth: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-width') || null,
+            timestamp: Math.round(performance.now()),
+        });
     }
     #summarizeMarkReadIDs(segmentIdentifiers = [], sentenceIdentifiers = []) {
         const safeSegments = Array.isArray(segmentIdentifiers) ? segmentIdentifiers : [];
@@ -3763,8 +3805,21 @@ class Reader {
         if (this.pageTrackingRetryHandle) {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
         }
+        this.#logMarkRead('pageTracking.retry.queue', {
+            reason,
+            retryCount,
+            hasExplicitDoc: isDocumentLike(explicitDoc),
+            timestamp: Math.round(performance.now()),
+        });
         this.pageTrackingRetryHandle = requestAnimationFrame(() => {
+            const retryStartedAt = performance.now();
             this.pageTrackingRetryHandle = null;
+            this.#logMarkRead('pageTracking.retry.fire', {
+                reason,
+                retryCount,
+                hasExplicitDoc: isDocumentLike(explicitDoc),
+                timestamp: Math.round(retryStartedAt),
+            });
             this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1).catch((error) => console.error(error));
         });
     }
@@ -4183,6 +4238,20 @@ class Reader {
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
         const shouldShowPageTracking = !!completionAction || hasStates;
+        const renderStartedAt = performance.now();
+        const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
+        const buttonBefore = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
+        this.#logMarkRead('pageTracking.render.beforeDOM', {
+            reason,
+            shouldShowPageTracking,
+            stateCount: pageTrackingStates.length,
+            visibleScreenIsRead: visibleState?.isRead ?? null,
+            existingButtonReadAttr: buttonBefore?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
+            existingButtonReadState: buttonBefore?.getAttribute?.('data-read-state') ?? null,
+            containerHiddenBefore: container.hidden,
+            buttonHostHiddenBefore: buttonHost.hidden,
+            timestamp: Math.round(renderStartedAt),
+        });
         container.hidden = !shouldShowPageTracking;
         buttonHost.hidden = !shouldShowPageTracking;
         if (this.lastPageTrackingVisibility !== null && this.lastPageTrackingVisibility && !shouldShowPageTracking) {
@@ -4214,6 +4283,13 @@ class Reader {
             buttonHost.innerHTML = '';
             this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
+            this.#logMarkRead('pageTracking.render.timing', {
+                reason,
+                stateCount: pageTrackingStates.length,
+                hasCompletionAction: !!completionAction,
+                shouldShowPageTracking,
+                elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
+            });
             return;
         }
         if (completionAction) {
@@ -4238,6 +4314,14 @@ class Reader {
                 completionAction: completionAction.type,
                 stateCount: 0,
             });
+            this.#logMarkRead('pageTracking.render.timing', {
+                reason,
+                stateCount: 0,
+                hasCompletionAction: true,
+                completionActionType: completionAction.type,
+                shouldShowPageTracking,
+                elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
+            });
             return;
         }
         buttonHost.innerHTML = pageTrackingStates.map((state) => {
@@ -4261,9 +4345,50 @@ class Reader {
             `;
         }).join('');
         this.#updatePageReadMarker(reason);
+        const buttonAfter = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
+        this.#logMarkRead('pageTracking.render.afterDOM', {
+            reason,
+            stateCount: pageTrackingStates.length,
+            visibleScreenIsRead: visibleState?.isRead ?? null,
+            buttonReadAttr: buttonAfter?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
+            buttonReadState: buttonAfter?.getAttribute?.('data-read-state') ?? null,
+            buttonDisabled: buttonAfter instanceof HTMLButtonElement ? buttonAfter.disabled : null,
+            markerReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
+            markerAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
+            elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
+        });
+        requestAnimationFrame(() => {
+            const buttonFrame = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
+            const buttonStyle = buttonFrame instanceof Element ? getComputedStyle(buttonFrame) : null;
+            const markerSide = document.querySelector('.page-read-marker-side');
+            const markerTop = document.getElementById('page-read-marker-top');
+            const sideStyle = markerSide instanceof Element ? getComputedStyle(markerSide) : null;
+            const topStyle = markerTop instanceof Element ? getComputedStyle(markerTop) : null;
+            this.#logMarkRead('pageTracking.render.raf', {
+                reason,
+                buttonReadAttr: buttonFrame?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
+                buttonReadState: buttonFrame?.getAttribute?.('data-read-state') ?? null,
+                buttonBackgroundColor: buttonStyle?.backgroundColor ?? null,
+                buttonTransitionDuration: buttonStyle?.transitionDuration ?? null,
+                markerReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
+                markerAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
+                sideMarkerVisibility: sideStyle?.visibility ?? null,
+                sideMarkerOpacity: sideStyle?.opacity ?? null,
+                topMarkerVisibility: topStyle?.visibility ?? null,
+                topMarkerOpacity: topStyle?.opacity ?? null,
+                elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
+            });
+        });
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
+        });
+        this.#logMarkRead('pageTracking.render.timing', {
+            reason,
+            stateCount: pageTrackingStates.length,
+            completedStateCount: pageTrackingStates.filter((state) => state.isRead).length,
+            shouldShowPageTracking,
+            elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
         });
     }
     async #advanceAfterMarkRead() {
@@ -4376,11 +4501,25 @@ class Reader {
         this.#mainDocumentSwipeState = null;
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
+        const syncStartedAt = performance.now();
+        this.#logMarkRead('pageState.sync.timing.start', {
+            reason,
+            retryCount,
+            hasExplicitDoc: isDocumentLike(explicitDoc),
+            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition ?? null,
+            timestamp: Math.round(syncStartedAt),
+        });
         const isRestorePending =
             reason === 'document-load'
             && globalThis.reader
             && globalThis.reader.hasLoadedLastPosition !== true;
         if (isRestorePending) {
+            this.#logMarkRead('pageState.sync.timing.defer', {
+                reason,
+                retryCount,
+                deferReason: 'restore-pending',
+                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
+            });
             const diagnosticsKey = `restore-pending:${reason}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
@@ -4401,6 +4540,13 @@ class Reader {
         if (!isDocumentLike(doc)) {
             this.pageTrackingStates = [];
             this.#renderPageTrackingButtons(reason);
+            this.#logMarkRead('pageState.sync.timing.defer', {
+                reason,
+                retryCount,
+                deferReason: 'no-document',
+                contentsCount: contents.length,
+                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
+            });
             const diagnosticsKey = `no-document:${reason}:${contents.length}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
@@ -4432,7 +4578,6 @@ class Reader {
             visibleRangeStartContainer: visibleRange?.startContainer?.nodeName || null,
             visibleRangeEndContainer: visibleRange?.endContainer?.nodeName || null,
         });
-        const syncStartedAt = performance.now();
         const {
             states,
             diagnostics,
@@ -4477,6 +4622,12 @@ class Reader {
                 || diagnostics.viewportHeight <= 0
             );
         if (shouldRetryEmptyDocument) {
+            this.#logMarkRead('pageState.sync.timing.defer', {
+                reason,
+                retryCount,
+                deferReason: 'zero-viewport-empty-document',
+                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
+            });
             const diagnosticsKey = `empty-document:${reason}:${diagnostics.documentURL || 'nil'}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
@@ -4497,8 +4648,20 @@ class Reader {
             return;
         }
         this.pageTrackingStates = states;
+        const beforeRenderAt = performance.now();
         this.#renderPageTrackingButtons(reason);
         this.#updatePageReadMarker(reason, visibleScreenState, doc);
+        this.#logMarkRead('pageState.sync.timing.end', {
+            reason,
+            retryCount,
+            stateCount: diagnostics.stateCount,
+            completedStateCount: diagnostics.completedStateCount,
+            visibleSegmentCount: diagnostics.visibleSegmentCount,
+            totalSegmentCount: diagnostics.totalSegmentCount,
+            buildElapsedMs: safeRound(beforeRenderAt - syncStartedAt, 2),
+            renderCallElapsedMs: safeRound(performance.now() - beforeRenderAt, 2),
+            totalElapsedMs: safeRound(performance.now() - syncStartedAt, 2),
+        });
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -6133,6 +6296,16 @@ class Reader {
             totalLocation: detail?.location?.total ?? null,
             orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
             orientationType: screen.orientation?.type ?? null,
+        });
+        this.#logMarkRead('relocate.timing', {
+            reason: detail?.reason || null,
+            hasRange: !!detail?.range,
+            currentPercent,
+            currentLocation: detail?.location?.current ?? null,
+            totalLocation: detail?.location?.total ?? null,
+            pageTrackingStateCount: this.pageTrackingStates.length,
+            completedPageTrackingStateCount: this.pageTrackingStates.filter((state) => state.isRead).length,
+            timestamp: Math.round(performance.now()),
         });
         this.#queueLayoutDiagnostics('relocate', {
             reason: detail?.reason || null,

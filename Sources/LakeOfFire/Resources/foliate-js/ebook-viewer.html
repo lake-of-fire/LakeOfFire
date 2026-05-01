@@ -269,7 +269,8 @@
                 #page-read-marker-top {
                     display: block;
                     grid-row: 1;
-                    width: 100%;
+                    width: var(--mnb-ebook-read-marker-top-width, 100%);
+                    margin-inline-start: var(--mnb-ebook-read-marker-top-left, 0px);
                     height: var(--mnb-tracking-section-border-size);
                     align-self: start;
                     border-radius: var(--mnb-tracking-section-border-size);
@@ -1253,6 +1254,10 @@
                 }
                 body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"]:not([data-book-dir="rtl"]) #btn-scroll-left .page-read-marker-side,
                 body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"][data-book-dir="rtl"] #btn-scroll-right .page-read-marker-side {
+                    opacity: 1;
+                    visibility: visible;
+                }
+                #btn-scroll-left .page-read-marker-side {
                     opacity: 1;
                     visibility: visible;
                 }
