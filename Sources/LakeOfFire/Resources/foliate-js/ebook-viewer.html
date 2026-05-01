@@ -23,7 +23,7 @@
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
                     --nav-page-read-clearance: 50px;
                     --nav-relocate-reserve: 150px;
-                    --mnb-tracking-section-border-size: 2px;
+                    --mnb-tracking-section-border-size: 3px;
                     --mnb-ebook-read-marker-padding: 1px;
                 }
                 @media screen and (min-width: 960px) {
@@ -281,6 +281,30 @@
                     contain: strict;
                 }
                 body[data-page-read-marker-read="true"][data-page-read-marker-axis="block"] #page-read-marker-top {
+                    opacity: 1;
+                    visibility: visible;
+                }
+                #page-read-marker-side {
+                    position: absolute;
+                    left: var(--mnb-ebook-read-marker-side-left, 0px);
+                    top: var(--mnb-ebook-read-marker-side-top, 0px);
+                    width: var(--mnb-tracking-section-border-size);
+                    height: var(--mnb-ebook-read-marker-side-height, 100%);
+                    border-radius: var(--mnb-tracking-section-border-size);
+                    background: var(--theme-tracking-read-color);
+                    opacity: 0;
+                    visibility: hidden;
+                    pointer-events: none;
+                    contain: strict;
+                    z-index: 2;
+                    opacity: 1;
+                    visibility: visible;
+                }
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"] #page-read-marker-side {
+                    opacity: 1;
+                    visibility: visible;
+                }
+                #page-read-marker-side {
                     opacity: 1;
                     visibility: visible;
                 }
@@ -737,7 +761,6 @@
                     -webkit-user-select: none;
                     user-select: none;
                     transition:
-                        background-color 500ms ease-in-out,
                         border-color 240ms ease,
                         color 240ms ease,
                         opacity 240ms ease-in-out,
@@ -779,7 +802,7 @@
                     justify-content: center;
                     border-radius: 50%;
                     contain: content;
-                    transition: background-color 500ms ease-in-out, opacity 200ms ease-in-out;
+                    transition: opacity 200ms ease-in-out;
                     flex: 0 0 auto;
                 }
                 .page-read-button .mnb-tracking-status-checkmark {
@@ -802,7 +825,7 @@
                     top: calc(var(--word-tracking-checkmark-height) - 1px);
                     position: absolute;
                     transform: scaleX(-1) rotate(135deg);
-                    transition: border-color 500ms ease-in-out;
+                    transition: none;
                 }
                 .page-read-button .mnb-tracking-button-label {
                     display: inline-block;
@@ -877,13 +900,17 @@
                     box-shadow:
                         0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-read-color) 24%, transparent),
                         0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
-                    width: calc(var(--page-read-button-height) * 0.85);
-                    height: calc(var(--page-read-button-height) * 0.85);
-                    min-width: calc(var(--page-read-button-height) * 0.85);
-                    min-height: calc(var(--page-read-button-height) * 0.85);
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
+                    transform-origin: center;
+                }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
+                    transform: scale(0.68);
                 }
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
                     background-color: transparent;
@@ -1232,34 +1259,6 @@
                     z-index: 5;
                     -webkit-user-select: none;
                     border-radius: 6px;
-                    display: grid;
-                    grid-template-columns: calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding)) minmax(0, 1fr);
-                    align-items: center;
-                    justify-items: center;
-                    gap: 0;
-                }
-                #btn-scroll-right {
-                    grid-template-columns: minmax(0, 1fr) calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding));
-                }
-                .page-read-marker-side {
-                    display: block;
-                    width: var(--mnb-tracking-section-border-size);
-                    height: 100%;
-                    border-radius: var(--mnb-tracking-section-border-size);
-                    background: var(--theme-tracking-read-color);
-                    opacity: 0;
-                    visibility: hidden;
-                    pointer-events: none;
-                    contain: strict;
-                }
-                body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"]:not([data-book-dir="rtl"]) #btn-scroll-left .page-read-marker-side,
-                body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"][data-book-dir="rtl"] #btn-scroll-right .page-read-marker-side {
-                    opacity: 1;
-                    visibility: visible;
-                }
-                #btn-scroll-left .page-read-marker-side {
-                    opacity: 1;
-                    visibility: visible;
                 }
                 .side-nav.show-next .icon {
                     visibility: visible;
@@ -1494,6 +1493,7 @@
         </div>
         <div id="reader-stage" aria-hidden="false">
             <div id="page-read-marker-top" aria-hidden="true"></div>
+            <div id="page-read-marker-side" aria-hidden="true"></div>
         </div>
         <div id="nav-bar" class="toolbar">
                 <div id="nav-content">
@@ -1542,7 +1542,6 @@
             <span id="nav-hidden-primary-percent" class="nav-hidden-label nav-hidden-percent"></span>
         </div>
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
-            <span class="page-read-marker-side" aria-hidden="true"></span>
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M16 7 L8 27 L16 48" />
             </svg>
@@ -1551,7 +1550,6 @@
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 7 L16 27 L8 48" />
             </svg>
-            <span class="page-read-marker-side" aria-hidden="true"></span>
         </button>
         <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
     </body>

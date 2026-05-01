@@ -66,11 +66,13 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var sourceTitle: String?
     @Published var totalWordCount: Int?
     @Published var remainingTime: TimeInterval?
+    @Published var hasLoadedDisplayState = false
 
     init() { }
 
     @MainActor
     func load(item: C, includeSource: Bool) async throws {
+        hasLoadedDisplayState = false
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let imageURL = try await item.imageURLToDisplay()
@@ -126,6 +128,9 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
                 self.totalWordCount = metadataResult?.totalWordCount
                 self.remainingTime = metadataResult?.remainingTime
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    self.hasLoadedDisplayState = true
+                }
             }()
         }()
     }
@@ -456,6 +461,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if let formatted = viewModel.humanReadablePublicationDate, !formatted.isEmpty {
             return formatted
         }
+        if item.displayPublicationDate || item.isPhysicalMedia {
+            if let fallback = item.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+                return fallback
+            }
+        }
         if appearance.isEbookStyle {
             if let fallback = item.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
                 return fallback
@@ -546,7 +556,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var bottomAccessoryVerticalOffset: CGFloat {
         guard readerContentCellStyle == .card else { return 0 }
-        return metadataRowVerticalOffset * 2 - 1
+        return metadataRowVerticalOffset + 1
     }
 
     private var bottomBlockVerticalOffset: CGFloat {
@@ -583,6 +593,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             if showsNewBadge {
                 ReaderNewBadge()
                     .controlSize(.small)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
 
             if showsAudioBadge {
@@ -599,6 +610,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
         .foregroundStyle(.secondary)
         .frame(height: scaledSmallNewBadgeHeight)
+        .animation(.easeInOut(duration: 0.2), value: showsNewBadge)
     }
 
     @ViewBuilder
@@ -629,13 +641,19 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .allowsTightening(true)
                 }
             }
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }
 
     @ViewBuilder
     private var metadataRow: some View {
         HStack(alignment: .center, spacing: 6) {
-            progressMetadata
+            if isProgressVisible {
+                progressMetadata
+            } else {
+                publicationDateRow
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
 
             Spacer(minLength: 0)
 
@@ -652,6 +670,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         .foregroundStyle(.secondary)
         .buttonStyle(.clearBordered)
         .controlSize(.small)
+        .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
         .onPreferenceChange(ClearBorderedButtonHeightKey.self) { height in
             guard height >= buttonSize else {
                 return
@@ -663,7 +682,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var progressRow: some View {
-        publicationDateRow
+        if isProgressVisible {
+            publicationDateRow
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        }
     }
 
     @ViewBuilder
@@ -682,7 +704,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsNewBadge: Bool {
-        appearance.showsNewBadge && (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
+        viewModel.hasLoadedDisplayState &&
+        appearance.showsNewBadge &&
+        (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
 
     @ViewBuilder

@@ -700,6 +700,7 @@ export class Paginator extends HTMLElement {
 
     #cachedSizes = null
     #cachedStart = null
+    #lastRenderContainerSize = null
     #visibleRangeCache = null
     #visibleRangeInFlight = null
     #visibleRangeCacheVersion = 0
@@ -1204,6 +1205,7 @@ export class Paginator extends HTMLElement {
             width,
             height
         } = await this.sizes()
+        this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
         this.#top.classList.toggle('mnb-vertical-paginated', vertical && flow !== 'scrolled')
@@ -1366,6 +1368,37 @@ export class Paginator extends HTMLElement {
         }))
         //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
     }
+    async renderIfContainerSizeChanged(reason = 'unspecified') {
+        if (!this.#view || this.#isCacheWarmer) {
+            return { rendered: false, reason: 'unavailable' }
+        }
+        const currentSize = {
+            width: Math.round(this.#container?.clientWidth || 0),
+            height: Math.round(this.#container?.clientHeight || 0),
+        }
+        const previousSize = this.#lastRenderContainerSize
+        const changed =
+            !!previousSize &&
+            currentSize.width > 0 &&
+            currentSize.height > 0 &&
+            (currentSize.width !== previousSize.width || currentSize.height !== previousSize.height)
+        postPaginatorPageNumLog('paginator.render-if-size-changed', {
+            reason,
+            changed,
+            previousSize,
+            currentSize,
+        })
+        if (!changed) {
+            return { rendered: false, reason: 'unchanged', previousSize, currentSize }
+        }
+        this.#cachedSizes = null
+        this.#cachedStart = null
+        this.#view.cachedViewSize = null
+        this.#view.cachedSizes = null
+        this.#invalidateVisibleRangeCache()
+        await this.render()
+        return { rendered: true, previousSize, currentSize }
+    }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
     }
@@ -1521,8 +1554,27 @@ export class Paginator extends HTMLElement {
         const target = touch.target;
         const inHost = this.#container.contains(target);
         const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
+        console.log('# HIDENAV js.paginator.touchStart', JSON.stringify({
+            hasTouch: !!touch,
+            clientX: touch?.clientX ?? null,
+            clientY: touch?.clientY ?? null,
+            screenX: touch?.screenX ?? null,
+            screenY: touch?.screenY ?? null,
+            inHost,
+            inIframe,
+            scrolled: this.scrolled,
+            targetTag: target?.tagName ?? null,
+            targetId: target?.id ?? null,
+            targetClass: target?.className ? String(target.className) : null,
+            ownerIsViewDocument: target?.ownerDocument === this.#view?.document,
+            containerHeight: this.#container?.clientHeight ?? null,
+            distanceFromContainerBottom: typeof touch?.clientY === 'number' && typeof this.#container?.clientHeight === 'number'
+                ? this.#container.clientHeight - touch.clientY
+                : null,
+        }));
         if (!inHost && !inIframe) {
             this.#touchState = null;
+            console.log('# HIDENAV js.paginator.touchStart.skip', JSON.stringify({ reason: 'outside-host-and-iframe' }));
             return;
         }
         this.#touchState = {
@@ -1589,6 +1641,18 @@ export class Paginator extends HTMLElement {
         }
     }
     #onTouchEnd(e) {
+        const touch = e.changedTouches?.[0] ?? null;
+        console.log('# HIDENAV js.paginator.touchEnd', JSON.stringify({
+            hadTouchState: !!this.#touchState,
+            triggered: this.#touchState?.triggered ?? null,
+            clientX: touch?.clientX ?? null,
+            clientY: touch?.clientY ?? null,
+            containerHeight: this.#container?.clientHeight ?? null,
+            distanceFromContainerBottom: typeof touch?.clientY === 'number' && typeof this.#container?.clientHeight === 'number'
+                ? this.#container.clientHeight - touch.clientY
+                : null,
+            skipOpacity: !!this.#skipTouchEndOpacity,
+        }));
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
         if (this.#skipTouchEndOpacity) {

@@ -145,6 +145,7 @@ public struct FeedView: View {
                 ) {
                     EmptyView()
                 }
+                .id("feed-horizontal-\(feed.id.uuidString)")
                 .animation(.easeInOut(duration: 0.25), value: entryIDs)
             } else {
                 ReaderContentList(
@@ -163,6 +164,7 @@ public struct FeedView: View {
                         systemImageName: "newspaper.fill"
                     )
                 }
+                .id("feed-vertical-\(feed.id.uuidString)")
                 .animation(.easeInOut(duration: 0.25), value: entryIDs)
 #if os(iOS)
                 .listStyle(.insetGrouped)

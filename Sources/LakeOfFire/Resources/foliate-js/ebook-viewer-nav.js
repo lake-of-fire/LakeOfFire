@@ -428,6 +428,19 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
+        console.log('# HIDENAV js.navHUD.set', JSON.stringify({
+            source,
+            previous,
+            requestedHide: !!shouldHide,
+            appliedHide: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            context,
+            innerHeight: window.innerHeight,
+            visualViewportHeight: window.visualViewport?.height ?? null,
+            visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
+        }));
         logMarkReadNav('hideNavigation.navHUD.set', {
             source,
             previous,

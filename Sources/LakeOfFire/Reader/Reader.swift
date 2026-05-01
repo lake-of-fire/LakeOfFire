@@ -798,7 +798,6 @@ public struct Reader: View {
     var additionalTopSafeAreaInset: CGFloat? = nil
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
-    var onAdditionalSafeAreaBarTap: (() -> Void)?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -825,7 +824,6 @@ public struct Reader: View {
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
-        onAdditionalSafeAreaBarTap: (() -> Void)? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -842,7 +840,6 @@ public struct Reader: View {
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
-        self.onAdditionalSafeAreaBarTap = onAdditionalSafeAreaBarTap
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -905,20 +902,6 @@ public struct Reader: View {
             backgroundColor: statusBarFadeBackgroundColor
         )
         .ignoresSafeArea(.all, edges: .all)
-        .modifier {
-            if #available(iOS 26, *) {
-                $0
-                    .safeAreaBar(edge: .bottom, spacing: 0) {
-                        if let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
-                            Color.white.opacity(0.0000000001)
-                                .frame(height: additionalBottomSafeAreaInset)
-                                .onTapGesture {
-                                    onAdditionalSafeAreaBarTap?()
-                                }
-                        }
-                    }
-            } else { $0 }
-        }
 #endif
         .background {
             GeometryReader { geometry in
