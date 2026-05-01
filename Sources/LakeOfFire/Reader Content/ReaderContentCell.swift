@@ -546,12 +546,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var bottomAccessoryVerticalOffset: CGFloat {
         guard readerContentCellStyle == .card else { return 0 }
-        return metadataRowVerticalOffset * 2
+        return metadataRowVerticalOffset * 2 - 1
     }
 
     private var progressMetadataVerticalOffset: CGFloat {
         guard readerContentCellStyle == .card else { return 0 }
-        return -metadataRowVerticalOffset
+        return -6
     }
 
     private var bottomBlockVerticalOffset: CGFloat {
