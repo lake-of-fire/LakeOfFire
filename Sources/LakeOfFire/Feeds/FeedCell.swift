@@ -28,29 +28,6 @@ private struct FeedCellNewBadge: View {
     }
 }
 
-private struct FeedCellLayoutLog: View {
-    let label: String
-    let details: String
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onAppear {
-                    log(frame: proxy.frame(in: .global))
-                }
-                .onChange(of: proxy.frame(in: .global)) { frame in
-                    log(frame: frame)
-                }
-        }
-    }
-
-    private func log(frame: CGRect) {
-        debugPrint(
-            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
-        )
-    }
-}
-
 public struct FeedCell: View {
     @ObservedRealmObject var feed: Feed
     var includesDescription = true
@@ -131,12 +108,6 @@ public struct FeedCell: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            FeedCellLayoutLog(
-                label: "feed-category-cell",
-                details: "title=\(feed.title) includesDescription=\(includesDescription) showsDescription=\(showsDescription) showsStatusRow=\(showsStatusRow) iconHeight=\(scaledIconHeight)"
-            )
-        )
         .tag(feed.id.uuidString)
     }
     

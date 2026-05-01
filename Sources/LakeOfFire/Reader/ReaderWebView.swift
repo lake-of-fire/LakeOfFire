@@ -284,6 +284,28 @@ fileprivate struct ReaderWebViewInternal: View {
     )
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+
+    private var readerThemeBackgroundColor: Color {
+        switch colorScheme {
+        case .dark:
+            switch darkModeTheme {
+            case .black:
+                return .black
+            case .gray:
+                return Color(red: Double(0x31) / 255, green: Double(0x32) / 255, blue: Double(0x34) / 255)
+            }
+        default:
+            switch lightModeTheme {
+            case .white:
+                return .white
+            case .beige:
+                return Color(red: Double(0xf7) / 255, green: Double(0xf0) / 255, blue: Double(0xd8) / 255)
+            }
+        }
+    }
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
@@ -317,8 +339,9 @@ fileprivate struct ReaderWebViewInternal: View {
         WebView(
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
-                backgroundColor: .systemBackground,
+                backgroundColor: readerThemeBackgroundColor,
                 usesSampledPageTopColorForUnderPageBackground: true,
+                usesConfiguredBackgroundForReaderDocuments: true,
                 userScripts: userScripts),
             navigator: navigator,
             state: $state,

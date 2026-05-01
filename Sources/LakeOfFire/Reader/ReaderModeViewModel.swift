@@ -104,6 +104,9 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
 
 private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
 private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
+private let readerContentPublicationDateFallbackFormatter: DateFormatter = {
+    ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
+}()
 private let readabilityClassesToPreserve: [String] = [
     "caption",
     "emoji",
@@ -177,6 +180,68 @@ private func normalizeReadabilityBylineText(_ rawByline: String) -> String {
 
 private func isInternalReaderURL(_ url: URL) -> Bool {
     url.scheme == "internal" && url.host == "local"
+}
+
+internal func readerContentPublicationDateFallback(for content: any ReaderContentProtocol) -> String? {
+    guard content.displayPublicationDate || content.isPhysicalMedia else { return nil }
+    let trimmed = content.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private struct ReaderContentPublicationDateSnapshot: Sendable {
+    let publicationDate: Date
+    let displayAbsolutePublicationDate: Bool
+    let contentType: String
+}
+
+private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPublicationDateSnapshot) -> String {
+    if snapshot.displayAbsolutePublicationDate {
+        return ReaderDateFormatter.absoluteString(from: snapshot.publicationDate, dateFormatter: readerContentPublicationDateFallbackFormatter)
+    }
+    return ReaderDateFormatter.relativeString(from: snapshot.publicationDate)
+        ?? ReaderDateFormatter.absoluteString(from: snapshot.publicationDate, dateFormatter: readerContentPublicationDateFallbackFormatter)
+}
+
+internal func readerContentPublicationDateFallback(
+    for url: URL,
+    currentContent _: (any ReaderContentProtocol)?
+) async -> String? {
+    let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+    let snapshot = try? await { @RealmBackgroundActor () -> ReaderContentPublicationDateSnapshot? in
+        let matches = try await ReaderContentLoader.loadAll(url: resolvedURL)
+        let candidates = matches.compactMap { content -> ReaderContentPublicationDateSnapshot? in
+            guard content.displayPublicationDate || content.isPhysicalMedia,
+                  let publicationDate = content.publicationDate else {
+                return nil
+            }
+            return ReaderContentPublicationDateSnapshot(
+                publicationDate: publicationDate,
+                displayAbsolutePublicationDate: content.displayAbsolutePublicationDate,
+                contentType: String(describing: type(of: content))
+            )
+        }
+        return candidates.first { $0.contentType != String(describing: HistoryRecord.self) } ?? candidates.first
+    }()
+
+    guard let snapshot else {
+        debugPrint(
+            "# BYLINE publicationDateFallback",
+            "url=\(url.absoluteString)",
+            "source=matches",
+            "result=nil"
+        )
+        return nil
+    }
+
+    let fallback = formattedReaderContentPublicationDate(snapshot)
+    debugPrint(
+        "# BYLINE publicationDateFallback",
+        "url=\(url.absoluteString)",
+        "source=matches",
+        "contentType=\(snapshot.contentType)",
+        "publishedTime=\(fallback)"
+    )
+    return fallback
 }
 
 internal func buildCanonicalReadabilityHTML(
@@ -885,6 +950,8 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     let extractedByline = (try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false))
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let extractedPublicationDate = (try? document.getElementById("reader-publication-date")?.text(trimAndNormaliseWhitespace: false))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     let extractedContent = (try? document.getElementById("reader-content")?.html())
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     guard let extractedContent, !extractedContent.isEmpty else {
@@ -897,6 +964,8 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         ?? ""
     let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
     let sanitizedByline = sanitizeReadabilityFragment(extractedByline ?? "")
+    let resolvedPublishedTime = trimmedNonEmptyReadabilityText(publishedTime)
+        ?? trimmedNonEmptyReadabilityText(extractedPublicationDate)
     let sanitizedContent = sanitizeReadabilityFragment(extractedContent)
     let shouldHideReaderTitle = hideReaderTitleOverride
         ?? ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
@@ -908,7 +977,19 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         "url=\(contentURL.absoluteString)",
         "title=\(resolvedTitle)",
         "hideReaderTitle=\(shouldHideReaderTitle)",
+        "publishedTime=\(publishedTime ?? "nil")",
+        "extractedPublicationDate=\(extractedPublicationDate ?? "nil")",
+        "resolvedPublishedTime=\(resolvedPublishedTime ?? "nil")",
         "contentBytes=\(extractedContent.utf8.count)"
+    )
+    debugPrint(
+        "# BYLINE rebuildSnippetCanonical",
+        "contentURL=\(contentURL.absoluteString)",
+        "extractedByline=\((extractedByline ?? "").isEmpty ? "nil" : extractedByline ?? "nil")",
+        "extractedBylineBytes=\((extractedByline ?? "").utf8.count)",
+        "publishedTimeArg=\(publishedTime ?? "nil")",
+        "extractedPublicationDate=\(extractedPublicationDate ?? "nil")",
+        "resolvedPublishedTime=\(resolvedPublishedTime ?? "nil")"
     )
     debugPrint(
         "# SNIPPETS",
@@ -931,7 +1012,7 @@ private func rebuildCanonicalSnippetReadabilityHTML(
     return buildCanonicalReadabilityHTML(
         title: sanitizedTitle,
         byline: sanitizedByline,
-        publishedTime: publishedTime,
+        publishedTime: resolvedPublishedTime,
         content: sanitizedContent,
         contentURL: contentURL.canonicalReaderContentURLForHotfix(),
         hideReaderTitle: shouldHideReaderTitle
@@ -2496,11 +2577,15 @@ public class ReaderModeViewModel: ObservableObject {
             if hasCanonicalReadabilityMarkup(in: html) {
                 resolvedReadabilityHTML = html
             } else {
+                let publicationDateFallback = await readerContentPublicationDateFallback(
+                    for: content.url,
+                    currentContent: content
+                )
                 let readabilityProcessingStart = CFAbsoluteTimeGetCurrent()
                 let swiftReadability = await processReadabilityHTMLInSwift(
                     html: html,
                     url: content.url,
-                    snippetPublishedTime: content.humanReadablePublicationDate,
+                    snippetPublishedTime: publicationDateFallback,
                     meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
                 )
                 readabilityResolveElapsed = CFAbsoluteTimeGetCurrent() - readabilityProcessingStart
@@ -3387,12 +3472,16 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     let usedSnippetCanonical: Bool
                     let usedCanonicalMarkup: Bool
+                    let publicationDateFallback = await readerContentPublicationDateFallback(
+                        for: committedURL,
+                        currentContent: content
+                    )
                     if committedURL.isSnippetURL,
                        let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                         html: html,
                         contentURL: committedURL,
                         fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                        publishedTime: content.humanReadablePublicationDate,
+                        publishedTime: publicationDateFallback,
                         preferredTitle: content.title,
                         hideReaderTitleOverride: content.isTitlePrefixOfContent
                        ) {

@@ -3688,6 +3688,7 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#updatePageReadMarker('window-resize');
             this.#queueLayoutDiagnostics('window-resize');
         });
         window.visualViewport?.addEventListener?.('resize', () => {
@@ -3701,6 +3702,7 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#updatePageReadMarker('visual-viewport-resize');
             this.#queueLayoutDiagnostics('visual-viewport-resize');
         });
         screen.orientation?.addEventListener?.('change', () => {
@@ -3712,6 +3714,7 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#updatePageReadMarker('screen-orientation-change');
             this.#queueLayoutDiagnostics('screen-orientation-change');
         });
     }
@@ -3720,6 +3723,60 @@ class Reader {
     }
     #logMarkRead(event, details = {}) {
         postMarkReadLog(event, details);
+    }
+    #visiblePageFrameRect() {
+        const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
+            .find((element) => element?.isConnected && element.offsetParent !== null) || this.view || null;
+        const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
+        const visibleFrame = Array.from(livePaginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []).find((frame) => {
+            const rect = frame?.getBoundingClientRect?.();
+            return rect && rect.width > 0 && rect.height > 0;
+        }) ?? null;
+        const rect = visibleFrame?.getBoundingClientRect?.() || document.getElementById('reader-stage')?.getBoundingClientRect?.() || null;
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+            return null;
+        }
+        return rect;
+    }
+    #updatePageReadMarker(reason = 'unspecified', explicitState = null, explicitDoc = null) {
+        const marker = document.getElementById('page-read-marker');
+        if (!(marker instanceof HTMLElement)) {
+            return;
+        }
+        const state = explicitState || (this.pageTrackingStates || []).find((candidate) => candidate.id === 'visible-screen') || null;
+        const isRead = !!state?.isRead && !this.completionAction;
+        marker.dataset.read = isRead ? 'true' : 'false';
+        if (!isRead) {
+            marker.style.removeProperty('--mnb-ebook-read-marker-left');
+            marker.style.removeProperty('--mnb-ebook-read-marker-top');
+            marker.style.removeProperty('--mnb-ebook-read-marker-width');
+            marker.style.removeProperty('--mnb-ebook-read-marker-height');
+            return;
+        }
+        const doc = isDocumentLike(explicitDoc)
+            ? explicitDoc
+            : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
+        const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
+        const rect = this.#visiblePageFrameRect();
+        if (!rect) {
+            marker.dataset.read = 'false';
+            return;
+        }
+        const rootStyle = getComputedStyle(document.documentElement);
+        const thickness = parseFloat(rootStyle.getPropertyValue('--mnb-tracking-section-border-size')) || 2;
+        const gap = parseFloat(rootStyle.getPropertyValue('--mnb-ebook-read-marker-gap')) || 8;
+        marker.dataset.axis = isVertical ? 'block' : 'inline';
+        if (isVertical) {
+            marker.style.setProperty('--mnb-ebook-read-marker-left', `${Math.max(0, rect.left)}px`);
+            marker.style.setProperty('--mnb-ebook-read-marker-top', `${Math.max(0, rect.top - gap - thickness)}px`);
+            marker.style.setProperty('--mnb-ebook-read-marker-width', `${rect.width}px`);
+            marker.style.setProperty('--mnb-ebook-read-marker-height', `${thickness}px`);
+        } else {
+            marker.style.setProperty('--mnb-ebook-read-marker-left', `${Math.max(0, rect.left - gap - thickness)}px`);
+            marker.style.setProperty('--mnb-ebook-read-marker-top', `${Math.max(0, rect.top)}px`);
+            marker.style.setProperty('--mnb-ebook-read-marker-width', `${thickness}px`);
+            marker.style.setProperty('--mnb-ebook-read-marker-height', `${rect.height}px`);
+        }
     }
     #summarizeMarkReadIDs(segmentIdentifiers = [], sentenceIdentifiers = []) {
         const safeSegments = Array.isArray(segmentIdentifiers) ? segmentIdentifiers : [];
@@ -4199,6 +4256,7 @@ class Reader {
         });
         if (!shouldShowPageTracking) {
             buttonHost.innerHTML = '';
+            this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
             return;
         }
@@ -4218,6 +4276,7 @@ class Reader {
                     <span class="sr-only">${completionAction.label}</span>
                 </button>
             `;
+            this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
             this.#queueLayoutDiagnostics('page-tracking-render', {
                 completionAction: completionAction.type,
@@ -4245,6 +4304,7 @@ class Reader {
                 </button>
             `;
         }).join('');
+        this.#updatePageReadMarker(reason);
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
@@ -4482,6 +4542,7 @@ class Reader {
         }
         this.pageTrackingStates = states;
         this.#renderPageTrackingButtons(reason);
+        this.#updatePageReadMarker(reason, visibleScreenState, doc);
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -5656,6 +5717,7 @@ class Reader {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
             });
+            this.#updatePageReadMarker('did-display.raf');
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
@@ -6131,6 +6193,7 @@ class Reader {
             currentLocation: detail?.location?.current ?? null,
             totalLocation: detail?.location?.total ?? null,
         });
+        this.#updatePageReadMarker('relocate');
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');

@@ -331,14 +331,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var buttonSize: CGFloat { Self.buttonSize }
 
-    private var layoutLogPrefix: String {
-        item is HistoryRecord ? "# HISTORY" : "# FEEDCELL"
-    }
-
-    private var layoutLogDetails: String {
-        "title=\(String(displayTitle.prefix(80))) style=\(String(describing: readerContentCellStyle)) hasThumbnail=\(hasVisibleThumbnail) contentColumnHeight=\(contentColumnHeight.map(String.init(describing:)) ?? "nil") maxCellHeight=\(appearance.maxCellHeight) buttonSize=\(buttonSize)"
-    }
-
     private var thumbnailEdgeLength: CGFloat {
         max(1, appearance.thumbnailDimension ?? appearance.maxCellHeight)
     }
@@ -552,6 +544,20 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return 4
     }
 
+    private var bottomAccessoryVerticalOffset: CGFloat {
+        guard readerContentCellStyle == .card else { return 0 }
+        return metadataRowVerticalOffset * 2
+    }
+
+    private var progressMetadataVerticalOffset: CGFloat {
+        guard readerContentCellStyle == .card else { return 0 }
+        return -metadataRowVerticalOffset
+    }
+
+    private var bottomBlockVerticalOffset: CGFloat {
+        clearBorderedVerticalInset
+    }
+
     private var showsAudioBadge: Bool {
         item.hasAudio
     }
@@ -601,16 +607,41 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     @ViewBuilder
+    private var publicationDateRow: some View {
+        if let publicationDate = publicationDateText {
+            Text(publicationDate)
+                .lineLimit(1)
+                .allowsTightening(true)
+                .minimumScaleFactor(0.9)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .layoutPriority(2)
+        }
+    }
+
+    @ViewBuilder
+    private var progressMetadata: some View {
+        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+            HStack(spacing: 8) {
+                ProgressView(value: min(1, readingProgressFloat))
+                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                    .frame(width: 24)
+
+                if let remainingDurationText {
+                    Text(remainingDurationText)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .allowsTightening(true)
+                }
+            }
+            .offset(y: progressMetadataVerticalOffset)
+        }
+    }
+
+    @ViewBuilder
     private var metadataRow: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            if let publicationDate = publicationDateText {
-                Text(publicationDate)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.9)
-                    .font(.footnote)
-                    .layoutPriority(2)
-            }
+            progressMetadata
 
             Spacer(minLength: 0)
 
@@ -618,53 +649,26 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 .labelStyle(.iconOnly)
                 .imageScale(.small)
                 .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
-                .offset(y: metadataRowVerticalOffset)
-                .offset(y: clearBorderedVerticalInset)
 
             controlsRow
                 .frame(width: buttonSize, height: buttonSize, alignment: .bottom)
-                .offset(y: metadataRowVerticalOffset)
-                .offset(y: clearBorderedVerticalInset)
         }
+        .offset(y: bottomAccessoryVerticalOffset)
         .foregroundStyle(.secondary)
         .buttonStyle(.clearBordered)
         .controlSize(.small)
         .onPreferenceChange(ClearBorderedButtonHeightKey.self) { height in
             guard height >= buttonSize else {
-                if readerContentCellStyle == .card {
-                }
                 return
             }
             guard abs(height - clearBorderedLabelHeight) > 0.5 else { return }
             clearBorderedLabelHeight = height
-            guard readerContentCellStyle == .card else { return }
         }
     }
 
     @ViewBuilder
     private var progressRow: some View {
-        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-            HStack(spacing: 8) {
-                ProgressView(value: min(1, readingProgressFloat))
-                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
-                    .frame(width: 48)
-
-                if let remainingDurationText {
-                    Text(remainingDurationText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .allowsTightening(true)
-                }
-            }
-            .background(
-                ReaderContentLayoutLog(
-                    label: "reader-content-progress-row",
-                    details: layoutLogDetails,
-                    prefix: layoutLogPrefix
-                )
-            )
-        }
+        publicationDateRow
     }
 
     @ViewBuilder
@@ -812,13 +816,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 )
             }
         }
-        .background(
-            ReaderContentLayoutLog(
-                label: "reader-content-thumbnail",
-                details: layoutLogDetails,
-                prefix: layoutLogPrefix
-            )
-        )
     }
 
     var body: some View {
@@ -846,23 +843,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             progressRow
                             metadataRow
                         }
+                        .offset(y: bottomBlockVerticalOffset)
                         .layoutPriority(3)
-                        .background(
-                            ReaderContentLayoutLog(
-                                label: "reader-content-bottom-block",
-                                details: layoutLogDetails,
-                                prefix: layoutLogPrefix
-                            )
-                        )
                     }
                     .frame(maxWidth: .infinity, minHeight: contentColumnHeight, maxHeight: contentColumnHeight, alignment: .top)
-                    .background(
-                        ReaderContentLayoutLog(
-                            label: "reader-content-column",
-                            details: layoutLogDetails,
-                            prefix: layoutLogPrefix
-                        )
-                    )
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -878,33 +862,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             progressRow
                             metadataRow
                         }
+                        .offset(y: bottomBlockVerticalOffset)
                         .layoutPriority(3)
-                        .background(
-                            ReaderContentLayoutLog(
-                                label: "reader-content-bottom-block",
-                                details: layoutLogDetails,
-                                prefix: layoutLogPrefix
-                            )
-                        )
                     }
                     .frame(height: contentColumnHeight, alignment: .top)
-                    .background(
-                        ReaderContentLayoutLog(
-                            label: "reader-content-column",
-                            details: layoutLogDetails,
-                            prefix: layoutLogPrefix
-                        )
-                    )
                 }
             }
         }
-        .background(
-            ReaderContentLayoutLog(
-                label: "reader-content-cell",
-                details: layoutLogDetails,
-                prefix: layoutLogPrefix
-            )
-        )
         .frame(
             minWidth: appearance.maxCellHeight,
             minHeight: readerContentCellStyle == .card ? effectiveCardCellHeight : nil,
@@ -917,8 +881,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         .onAppear {
             Task { @MainActor in
                 try? await viewModel.load(item: item, includeSource: appearance.includeSource)
-            }
-            if readerContentCellStyle == .card {
             }
         }
         .onChange(of: item.imageUrl) { newImageURL in

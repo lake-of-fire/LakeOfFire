@@ -814,6 +814,29 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 guard !url.isNativeReaderView else { return }
+                let hasParsedPublicationDate = result.outputHTML.contains("id=\"reader-publication-date\"")
+                let publicationDateFallback = hasParsedPublicationDate
+                    ? nil
+                    : await readerContentPublicationDateFallback(for: content.url, currentContent: content)
+                let resolvedOutputHTML = publicationDateFallback.map {
+                    buildCanonicalReadabilityHTML(
+                        title: result.title,
+                        byline: result.byline,
+                        publishedTime: $0,
+                        content: result.content,
+                        contentURL: content.url
+                    )
+                } ?? result.outputHTML
+                if publicationDateFallback != nil {
+                    debugPrint(
+                        "# BYLINE readabilityParsed.fallbackPublicationDate",
+                        "windowURL=\(url.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "publishedTime=\(publicationDateFallback ?? "nil")",
+                        "displayPublicationDate=\(content.displayPublicationDate)",
+                        "isPhysicalMedia=\(content.isPhysicalMedia)"
+                    )
+                }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
                 debugPrint(
                     "# READERMODE",
@@ -831,7 +854,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     readerModeViewModel.readabilityContainerSelector = nil
                     readerModeViewModel.readabilityContainerFrameInfo = nil
                 } else {
-                    readerModeViewModel.readabilityContent = result.outputHTML
+                    readerModeViewModel.readabilityContent = resolvedOutputHTML
                     readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                     readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 }
@@ -840,7 +863,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         readerContent: readerContent,
                         scriptCaller: scriptCaller
                     )
-                } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
+                } else if resolvedOutputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.mnbReaderModeAvailableConfidently = 'true';

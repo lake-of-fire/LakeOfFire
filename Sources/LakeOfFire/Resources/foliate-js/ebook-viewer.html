@@ -23,6 +23,8 @@
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
                     --nav-page-read-clearance: 50px;
                     --nav-relocate-reserve: 150px;
+                    --mnb-tracking-section-border-size: 2px;
+                    --mnb-ebook-read-marker-gap: 8px;
                 }
                 @media screen and (min-width: 960px) {
                     body {
@@ -651,6 +653,24 @@
                     min-width: 0;
                     z-index: 7;
                     pointer-events: auto;
+                }
+                #page-read-marker {
+                    position: fixed;
+                    left: var(--mnb-ebook-read-marker-left, -9999px);
+                    top: var(--mnb-ebook-read-marker-top, -9999px);
+                    width: var(--mnb-ebook-read-marker-width, 0px);
+                    height: var(--mnb-ebook-read-marker-height, 0px);
+                    border-radius: var(--mnb-tracking-section-border-size);
+                    background: var(--theme-tracking-read-color);
+                    contain: strict;
+                    pointer-events: none;
+                    opacity: 0;
+                    visibility: hidden;
+                    z-index: 4;
+                }
+                #page-read-marker[data-read="true"] {
+                    opacity: 1;
+                    visibility: visible;
                 }
                 #page-tracking-buttons {
                     display: flex;
@@ -1478,6 +1498,7 @@
                 </button>
             </div>
         </div>
+        <div id="page-read-marker" data-read="false" data-axis="inline" aria-hidden="true"></div>
         <div id="page-tracking-container" hidden aria-live="polite">
             <div id="page-tracking-buttons" hidden></div>
         </div>
