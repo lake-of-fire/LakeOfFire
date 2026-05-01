@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 60
+    public static let schemaVersion: UInt64 = 61
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -73,6 +73,13 @@ public enum DefaultRealmConfiguration {
             migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
         }
         if oldSchemaVersion < 60 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
+            migration.enumerateObjects(ofType: Bookmark.className()) { _, _ in }
+            migration.enumerateObjects(ofType: HistoryRecord.className()) { _, _ in }
+            migration.enumerateObjects(ofType: ContentFile.className()) { _, _ in }
+            migration.enumerateObjects(ofType: ContentPackageFile.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 61 {
             migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
             migration.enumerateObjects(ofType: Bookmark.className()) { _, _ in }
             migration.enumerateObjects(ofType: HistoryRecord.className()) { _, _ in }

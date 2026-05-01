@@ -1136,6 +1136,7 @@ fileprivate struct FeedEntryPayload {
     let content: Data?
     let voiceFrameUrl: URL?
     let voiceAudioURL: URL?
+    let voiceAudioURLs: [URL]
     let audioSubtitlesURL: URL?
     let audioSubtitlesRoleRawValue: String?
     let primaryMediaIdentity: String?
@@ -1146,6 +1147,7 @@ fileprivate struct FeedEntryPayload {
     let offlineMediaID: String?
     let redditTranslationsUrl: URL?
     let redditTranslationsTitle: String?
+    let autoOpenMediaPlayer: Bool
     let createdAt: Date
 
     init(entry: FeedEntry, existing: FeedEntry?) {
@@ -1160,6 +1162,7 @@ fileprivate struct FeedEntryPayload {
         content = entry.content
         voiceFrameUrl = entry.voiceFrameUrl
         voiceAudioURL = entry.voiceAudioURL
+        voiceAudioURLs = entry.resolvedVoiceAudioURLs
         audioSubtitlesURL = entry.audioSubtitlesURL
         audioSubtitlesRoleRawValue = entry.audioSubtitlesRoleRawValue
             ?? (entry.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
@@ -1171,6 +1174,7 @@ fileprivate struct FeedEntryPayload {
         offlineMediaID = entry.offlineMediaID
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
+        autoOpenMediaPlayer = entry.autoOpenMediaPlayer
         createdAt = existing?.createdAt ?? entry.createdAt
     }
 }
@@ -1235,6 +1239,12 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
         content.voiceAudioURL = payload.voiceAudioURL
         didChange = true
     }
+    let existingVoiceAudioURLs = Array(content.voiceAudioURLs)
+    if existingVoiceAudioURLs != payload.voiceAudioURLs {
+        content.voiceAudioURLs.removeAll()
+        content.voiceAudioURLs.append(objectsIn: payload.voiceAudioURLs)
+        didChange = true
+    }
     if content.primaryMediaIdentity != payload.primaryMediaIdentity {
         content.primaryMediaIdentity = payload.primaryMediaIdentity
         didChange = true
@@ -1265,6 +1275,10 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
     }
     if content.redditTranslationsTitle != payload.redditTranslationsTitle {
         content.redditTranslationsTitle = payload.redditTranslationsTitle
+        didChange = true
+    }
+    if content.autoOpenMediaPlayer != payload.autoOpenMediaPlayer {
+        content.autoOpenMediaPlayer = payload.autoOpenMediaPlayer
         didChange = true
     }
     return didChange
