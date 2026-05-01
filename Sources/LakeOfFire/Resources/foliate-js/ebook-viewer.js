@@ -3724,59 +3724,15 @@ class Reader {
     #logMarkRead(event, details = {}) {
         postMarkReadLog(event, details);
     }
-    #visiblePageFrameRect() {
-        const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
-            .find((element) => element?.isConnected && element.offsetParent !== null) || this.view || null;
-        const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
-        const visibleFrame = Array.from(livePaginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []).find((frame) => {
-            const rect = frame?.getBoundingClientRect?.();
-            return rect && rect.width > 0 && rect.height > 0;
-        }) ?? null;
-        const rect = visibleFrame?.getBoundingClientRect?.() || document.getElementById('reader-stage')?.getBoundingClientRect?.() || null;
-        if (!rect || rect.width <= 0 || rect.height <= 0) {
-            return null;
-        }
-        return rect;
-    }
     #updatePageReadMarker(reason = 'unspecified', explicitState = null, explicitDoc = null) {
-        const marker = document.getElementById('page-read-marker');
-        if (!(marker instanceof HTMLElement)) {
-            return;
-        }
         const state = explicitState || (this.pageTrackingStates || []).find((candidate) => candidate.id === 'visible-screen') || null;
         const isRead = !!state?.isRead && !this.completionAction;
-        marker.dataset.read = isRead ? 'true' : 'false';
-        if (!isRead) {
-            marker.style.removeProperty('--mnb-ebook-read-marker-left');
-            marker.style.removeProperty('--mnb-ebook-read-marker-top');
-            marker.style.removeProperty('--mnb-ebook-read-marker-width');
-            marker.style.removeProperty('--mnb-ebook-read-marker-height');
-            return;
-        }
         const doc = isDocumentLike(explicitDoc)
             ? explicitDoc
             : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
         const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
-        const rect = this.#visiblePageFrameRect();
-        if (!rect) {
-            marker.dataset.read = 'false';
-            return;
-        }
-        const rootStyle = getComputedStyle(document.documentElement);
-        const thickness = parseFloat(rootStyle.getPropertyValue('--mnb-tracking-section-border-size')) || 2;
-        const gap = parseFloat(rootStyle.getPropertyValue('--mnb-ebook-read-marker-gap')) || 8;
-        marker.dataset.axis = isVertical ? 'block' : 'inline';
-        if (isVertical) {
-            marker.style.setProperty('--mnb-ebook-read-marker-left', `${Math.max(0, rect.left)}px`);
-            marker.style.setProperty('--mnb-ebook-read-marker-top', `${Math.max(0, rect.top - gap - thickness)}px`);
-            marker.style.setProperty('--mnb-ebook-read-marker-width', `${rect.width}px`);
-            marker.style.setProperty('--mnb-ebook-read-marker-height', `${thickness}px`);
-        } else {
-            marker.style.setProperty('--mnb-ebook-read-marker-left', `${Math.max(0, rect.left - gap - thickness)}px`);
-            marker.style.setProperty('--mnb-ebook-read-marker-top', `${Math.max(0, rect.top)}px`);
-            marker.style.setProperty('--mnb-ebook-read-marker-width', `${thickness}px`);
-            marker.style.setProperty('--mnb-ebook-read-marker-height', `${rect.height}px`);
-        }
+        document.body?.setAttribute?.('data-page-read-marker-read', isRead ? 'true' : 'false');
+        document.body?.setAttribute?.('data-page-read-marker-axis', isVertical ? 'block' : 'inline');
     }
     #summarizeMarkReadIDs(segmentIdentifiers = [], sentenceIdentifiers = []) {
         const safeSegments = Array.isArray(segmentIdentifiers) ? segmentIdentifiers : [];
@@ -4367,7 +4323,7 @@ class Reader {
             this.#mainDocumentSwipeState = null;
             return;
         }
-        if (target.closest?.('#reader-stage, #side-bar, input, textarea, select, [contenteditable="true"]')) {
+        if (target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]')) {
             this.#mainDocumentSwipeState = null;
             return;
         }
@@ -5301,6 +5257,7 @@ class Reader {
         const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
             if (event.target && event.target.ownerDocument !== document) return
+            if (event.target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]')) return
                 
                 window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                     touchedEntryWithElementId: null,

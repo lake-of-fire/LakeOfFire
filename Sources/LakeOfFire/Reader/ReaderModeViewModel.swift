@@ -204,8 +204,21 @@ private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPubl
 
 internal func readerContentPublicationDateFallback(
     for url: URL,
-    currentContent _: (any ReaderContentProtocol)?
+    currentContent: (any ReaderContentProtocol)?
 ) async -> String? {
+    if let currentContent,
+       let currentFallback = readerContentPublicationDateFallback(for: currentContent) {
+        debugPrint(
+            "# BYLINE publicationDateFallback",
+            "url=\(url.absoluteString)",
+            "source=current",
+            "contentURL=\(currentContent.url.absoluteString)",
+            "contentType=\(String(describing: type(of: currentContent)))",
+            "publishedTime=\(currentFallback)"
+        )
+        return currentFallback
+    }
+
     let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
     let snapshot = try? await { @RealmBackgroundActor () -> ReaderContentPublicationDateSnapshot? in
         let matches = try await ReaderContentLoader.loadAll(url: resolvedURL)
@@ -2443,9 +2456,31 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 do {
+                    let content = try await readerContent.getContent()
+                    let resolvedReadabilityContent: String
+                    if !cachedReadabilityContent.contains("id=\"reader-publication-date\""),
+                       let publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL, currentContent: content),
+                       let canonicalHTML = rebuildCanonicalSnippetReadabilityHTML(
+                        html: cachedReadabilityContent,
+                        contentURL: content?.url ?? contentURL,
+                        fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? content?.title,
+                        publishedTime: publicationDateFallback,
+                        preferredTitle: content?.title,
+                        hideReaderTitleOverride: content?.isTitlePrefixOfContent
+                       ) {
+                        debugPrint(
+                            "# BYLINE capturedReadability.publicationDateFallback",
+                            "contentURL=\((content?.url ?? contentURL).absoluteString)",
+                            "publishedTime=\(publicationDateFallback)",
+                            "result=rebuildCanonical"
+                        )
+                        resolvedReadabilityContent = canonicalHTML
+                    } else {
+                        resolvedReadabilityContent = cachedReadabilityContent
+                    }
                     try await self.showReadabilityContent(
                         readerContent: readerContent,
-                        readabilityContent: cachedReadabilityContent,
+                        readabilityContent: resolvedReadabilityContent,
                         renderToSelector: cachedContainerSelector,
                         in: cachedContainerFrameInfo,
                         scriptCaller: scriptCaller,

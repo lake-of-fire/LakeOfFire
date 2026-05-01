@@ -24,7 +24,7 @@
                     --nav-page-read-clearance: 50px;
                     --nav-relocate-reserve: 150px;
                     --mnb-tracking-section-border-size: 2px;
-                    --mnb-ebook-read-marker-gap: 8px;
+                    --mnb-ebook-read-marker-padding: 1px;
                 }
                 @media screen and (min-width: 960px) {
                     body {
@@ -260,6 +260,28 @@
                     left: 0;
                     overflow: hidden;
                     z-index: 1;
+                    display: grid;
+                    grid-template-rows: 0 minmax(0, 1fr);
+                }
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="block"] #reader-stage {
+                    grid-template-rows: calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding)) minmax(0, 1fr);
+                }
+                #page-read-marker-top {
+                    display: block;
+                    grid-row: 1;
+                    width: 100%;
+                    height: var(--mnb-tracking-section-border-size);
+                    align-self: start;
+                    border-radius: var(--mnb-tracking-section-border-size);
+                    background: var(--theme-tracking-read-color);
+                    opacity: 0;
+                    visibility: hidden;
+                    pointer-events: none;
+                    contain: strict;
+                }
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="block"] #page-read-marker-top {
+                    opacity: 1;
+                    visibility: visible;
                 }
                 .nav-relocate-button,
                 .nav-section-progress,
@@ -653,24 +675,6 @@
                     min-width: 0;
                     z-index: 7;
                     pointer-events: auto;
-                }
-                #page-read-marker {
-                    position: fixed;
-                    left: var(--mnb-ebook-read-marker-left, -9999px);
-                    top: var(--mnb-ebook-read-marker-top, -9999px);
-                    width: var(--mnb-ebook-read-marker-width, 0px);
-                    height: var(--mnb-ebook-read-marker-height, 0px);
-                    border-radius: var(--mnb-tracking-section-border-size);
-                    background: var(--theme-tracking-read-color);
-                    contain: strict;
-                    pointer-events: none;
-                    opacity: 0;
-                    visibility: hidden;
-                    z-index: 4;
-                }
-                #page-read-marker[data-read="true"] {
-                    opacity: 1;
-                    visibility: visible;
                 }
                 #page-tracking-buttons {
                     display: flex;
@@ -1227,6 +1231,30 @@
                     z-index: 5;
                     -webkit-user-select: none;
                     border-radius: 6px;
+                    display: grid;
+                    grid-template-columns: calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding)) minmax(0, 1fr);
+                    align-items: center;
+                    justify-items: center;
+                    gap: 0;
+                }
+                #btn-scroll-right {
+                    grid-template-columns: minmax(0, 1fr) calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding));
+                }
+                .page-read-marker-side {
+                    display: block;
+                    width: var(--mnb-tracking-section-border-size);
+                    height: 100%;
+                    border-radius: var(--mnb-tracking-section-border-size);
+                    background: var(--theme-tracking-read-color);
+                    opacity: 0;
+                    visibility: hidden;
+                    pointer-events: none;
+                    contain: strict;
+                }
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"]:not([data-book-dir="rtl"]) #btn-scroll-left .page-read-marker-side,
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"][data-book-dir="rtl"] #btn-scroll-right .page-read-marker-side {
+                    opacity: 1;
+                    visibility: visible;
                 }
                 .side-nav.show-next .icon {
                     visibility: visible;
@@ -1381,8 +1409,9 @@
                     transform: none;
                 }
                 #reader-stage > foliate-view {
-                    position: absolute;
-                    inset: 0;
+                    position: relative;
+                    inset: auto;
+                    grid-row: 2;
                     display: block;
                     width: 100%;
                     height: 100%;
@@ -1458,7 +1487,9 @@
             </div>
             <div id="toc-view"></div>
         </div>
-        <div id="reader-stage" aria-hidden="false"></div>
+        <div id="reader-stage" aria-hidden="false">
+            <div id="page-read-marker-top" aria-hidden="true"></div>
+        </div>
         <div id="nav-bar" class="toolbar">
                 <div id="nav-content">
                     <div id="nav-top-row">
@@ -1498,7 +1529,6 @@
                 </button>
             </div>
         </div>
-        <div id="page-read-marker" data-read="false" data-axis="inline" aria-hidden="true"></div>
         <div id="page-tracking-container" hidden aria-live="polite">
             <div id="page-tracking-buttons" hidden></div>
         </div>
@@ -1507,6 +1537,7 @@
             <span id="nav-hidden-primary-percent" class="nav-hidden-label nav-hidden-percent"></span>
         </div>
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
+            <span class="page-read-marker-side" aria-hidden="true"></span>
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M16 7 L8 27 L16 48" />
             </svg>
@@ -1515,6 +1546,7 @@
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 7 L16 27 L8 48" />
             </svg>
+            <span class="page-read-marker-side" aria-hidden="true"></span>
         </button>
         <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
     </body>
