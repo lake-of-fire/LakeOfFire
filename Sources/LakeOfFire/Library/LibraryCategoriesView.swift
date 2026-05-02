@@ -83,7 +83,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
         }
         return "Archive"
     }
-    
+
     func showDeleteButton(category: FeedCategory) -> Bool {
         return category.isUserEditable && !category.isDeleted
     }
@@ -403,6 +403,7 @@ struct LibraryCategoriesView: View {
                         .foregroundStyle(.primary)
                 }
             }
+            .headerProminence(.increased)
             .listStyle(.sidebar)
 #if os(iOS)
             .toolbar {

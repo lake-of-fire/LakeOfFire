@@ -320,5 +320,16 @@ private func shouldPreferPipePrefixTitle(url: URL) -> Bool {
 
 public func wireViewOriginalLinks(doc: Document, url: URL) throws {
     let originalLinks = try doc.getElementsByClass("reader-view-original")
-    try originalLinks.attr("href", url.absoluteString)
+    for originalLink in originalLinks {
+        if originalLink.tagName().lowercased() == "button" {
+            let baseURI = originalLink.ownerDocument()?.getBaseUri() ?? ""
+            let anchor = try Element(Tag.valueOf("a"), baseURI)
+            try anchor.attr("class", "reader-view-original")
+            try anchor.attr("href", url.absoluteString)
+            try anchor.text(originalLink.text(trimAndNormaliseWhitespace: false))
+            try originalLink.replaceWith(anchor)
+        } else {
+            try originalLink.attr("href", url.absoluteString)
+        }
+    }
 }
