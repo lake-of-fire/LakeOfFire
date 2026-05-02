@@ -7,9 +7,10 @@ public extension URL {
         guard let host = self.host, host.starts(with: "www.google.") || host.starts(with: "google.") else {
             return nil
         }
-        // Parse components and find "q" parameter
+        // Parse the encoded query so literal plus signs from %2B survive while
+        // form-style plus separators still become spaces.
         guard let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-              let queryItems = components.queryItems,
+              let queryItems = components.percentEncodedQueryItems,
               let rawValue = queryItems.first(where: { $0.name == "q" })?.value else {
             return nil
         }

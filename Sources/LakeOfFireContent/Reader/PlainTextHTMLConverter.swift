@@ -121,6 +121,10 @@ extension ReaderContentLoader {
         if normalizedMimeType == markdownMimeType || normalizedTypeIdentifier == markdownUTTypeIdentifier {
             return .markdown
         }
+        if markdownExtensions.contains(normalizedExtension ?? ""),
+           (normalizedMimeType == plainTextMimeType || normalizedTypeIdentifier == UTType.plainText.identifier.lowercased()) {
+            return .markdown
+        }
         if normalizedMimeType == plainTextMimeType || normalizedTypeIdentifier == UTType.plainText.identifier.lowercased() {
             return .plainText
         }
