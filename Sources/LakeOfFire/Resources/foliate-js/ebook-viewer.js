@@ -4054,7 +4054,7 @@ class Reader {
             readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
             readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
         }
-        if (isRead && !isVertical && readerStage instanceof HTMLElement) {
+        if (readerStage instanceof HTMLElement) {
             const stageRect = readerStage.getBoundingClientRect();
             const viewRect = liveFoliateView?.getBoundingClientRect?.() || null;
             const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
@@ -4062,14 +4062,26 @@ class Reader {
             const containerRect = paginatorContainer?.getBoundingClientRect?.() || null;
             const rootStyle = getComputedStyle(document.documentElement);
             const thickness = parseFloat(rootStyle.getPropertyValue('--mnb-tracking-section-border-size')) || 2;
+            const sideNavWidth = parseFloat(rootStyle.getPropertyValue('--side-nav-width')) || 32;
+            const containerStyle = containerRect ? getComputedStyle(paginatorContainer) : null;
+            const containerTopMargin = parseFloat(containerStyle?.getPropertyValue('--_top-margin')) || 0;
+            const containerBottomMargin = parseFloat(containerStyle?.getPropertyValue('--_bottom-margin')) || 0;
             const markerAnchorRect = containerRect && containerRect.width > 0 && containerRect.height > 0
                 ? containerRect
                 : viewRect;
             if (markerAnchorRect && markerAnchorRect.width > 0 && markerAnchorRect.height > 0 && stageRect.width > 0) {
                 const markerLeft = markerAnchorRect.left - stageRect.left - thickness;
+                const markerTopInset = markerAnchorRect === containerRect ? containerTopMargin : 0;
+                const markerBottomInset = markerAnchorRect === containerRect ? containerBottomMargin : 0;
+                const markerHeight = Math.max(0, markerAnchorRect.height - markerTopInset - markerBottomInset);
                 readerStage.style.setProperty('--mnb-ebook-read-marker-side-left', `${markerLeft}px`);
-                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', `${Math.max(0, markerAnchorRect.top - stageRect.top)}px`);
-                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${markerAnchorRect.height}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', `${Math.max(0, markerAnchorRect.top - stageRect.top + markerTopInset)}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${markerHeight}px`);
+            } else if (stageRect.width > 0) {
+                const markerLeft = Math.max(0, sideNavWidth - thickness);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-left', `${markerLeft}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', '0px');
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${stageRect.height}px`);
             } else {
                 readerStage.style.removeProperty('--mnb-ebook-read-marker-side-left');
                 readerStage.style.removeProperty('--mnb-ebook-read-marker-side-top');
@@ -4206,24 +4218,45 @@ class Reader {
         if (!renderer || typeof renderer.renderIfContainerSizeChanged !== 'function') {
             return;
         }
-        this.initialPaginatorSettleHandle = requestAnimationFrame(() => {
+        this.initialPaginatorSettleHandle = requestAnimationFrame(async () => {
             this.initialPaginatorSettleHandle = null;
-            this.hasSettledInitialPaginatorLayout = true;
             try {
                 applyStoredChromeInsets(`initial-paginator-settle.${reason}`);
-                renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`)
-                    .then((result) => {
-                        if (result?.rendered) {
-                            this.#queueLayoutDiagnostics('initial-paginator-settle.rendered', {
-                                reason,
-                                flow: renderer.getAttribute?.('flow') ?? null,
-                                previousSize: result.previousSize ?? null,
-                                currentSize: result.currentSize ?? null,
-                            });
-                            this.#updatePageReadMarker('initial-paginator-settle.rendered');
-                        }
-                    })
-                    .catch((error) => console.error(error));
+                const result = await renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`);
+                const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
+                    previousSize: result?.previousSize ?? null,
+                    currentSize: result?.currentSize ?? null,
+                    rendered: result?.rendered ?? false,
+                    resultReason: result?.reason ?? null,
+                });
+                const hasGap = [
+                    snapshot.toolbarGapPx,
+                    snapshot.stageGapPx,
+                ].some((value) => typeof value === 'number' && Math.abs(value) > 2);
+                const isReady = !snapshot.bodyLoading
+                    && typeof snapshot.currentPercent === 'number'
+                    && snapshot.livePaginatorBox != null;
+                if (!isReady) {
+                    return;
+                }
+                if (hasGap && typeof renderer.render === 'function') {
+                    await renderer.render();
+                    this.#updatePageReadMarker('initial-paginator-settle.forced-render');
+                    this.hasSettledInitialPaginatorLayout = true;
+                    this.#queueLayoutDiagnostics('initial-paginator-settle.forced-render', {
+                        reason,
+                        previousSize: result?.previousSize ?? null,
+                        currentSize: result?.currentSize ?? null,
+                        renderedBeforeForce: result?.rendered ?? false,
+                        toolbarGapPx: snapshot.toolbarGapPx,
+                        stageGapPx: snapshot.stageGapPx,
+                    });
+                    return;
+                }
+                if (result?.rendered) {
+                    this.#updatePageReadMarker('initial-paginator-settle.rendered');
+                }
+                this.hasSettledInitialPaginatorLayout = true;
             } catch (error) {
                 console.error(error);
                 this.hasSettledInitialPaginatorLayout = false;
@@ -4684,6 +4717,7 @@ class Reader {
             `;
             this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
+            this.#scheduleInitialPaginatorSettle('page-tracking-render.completion-action');
             this.#queueLayoutDiagnostics('page-tracking-render', {
                 completionAction: completionAction.type,
                 stateCount: 0,
@@ -4754,6 +4788,7 @@ class Reader {
             });
         });
         this.navHUD?.refreshAuxiliaryLayout?.();
+        this.#scheduleInitialPaginatorSettle('page-tracking-render');
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
         });

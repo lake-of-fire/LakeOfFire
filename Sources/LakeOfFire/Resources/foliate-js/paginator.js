@@ -1382,12 +1382,6 @@ export class Paginator extends HTMLElement {
             currentSize.width > 0 &&
             currentSize.height > 0 &&
             (currentSize.width !== previousSize.width || currentSize.height !== previousSize.height)
-        postPaginatorPageNumLog('paginator.render-if-size-changed', {
-            reason,
-            changed,
-            previousSize,
-            currentSize,
-        })
         if (!changed) {
             return { rendered: false, reason: 'unchanged', previousSize, currentSize }
         }

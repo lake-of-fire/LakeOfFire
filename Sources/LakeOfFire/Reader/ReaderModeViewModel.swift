@@ -182,12 +182,6 @@ private func isInternalReaderURL(_ url: URL) -> Bool {
     url.scheme == "internal" && url.host == "local"
 }
 
-internal func readerContentPublicationDateFallback(for content: any ReaderContentProtocol) -> String? {
-    guard content.displayPublicationDate || content.isPhysicalMedia else { return nil }
-    let trimmed = content.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? nil : trimmed
-}
-
 private struct ReaderContentPublicationDateSnapshot: Sendable {
     let publicationDate: Date
     let displayAbsolutePublicationDate: Bool
@@ -202,23 +196,7 @@ private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPubl
         ?? ReaderDateFormatter.absoluteString(from: snapshot.publicationDate, dateFormatter: readerContentPublicationDateFallbackFormatter)
 }
 
-internal func readerContentPublicationDateFallback(
-    for url: URL,
-    currentContent: (any ReaderContentProtocol)?
-) async -> String? {
-    if let currentContent,
-       let currentFallback = readerContentPublicationDateFallback(for: currentContent) {
-        debugPrint(
-            "# BYLINE publicationDateFallback",
-            "url=\(url.absoluteString)",
-            "source=current",
-            "contentURL=\(currentContent.url.absoluteString)",
-            "contentType=\(String(describing: type(of: currentContent)))",
-            "publishedTime=\(currentFallback)"
-        )
-        return currentFallback
-    }
-
+internal func readerContentPublicationDateFallback(for url: URL) async -> String? {
     let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
     let snapshot = try? await { @RealmBackgroundActor () -> ReaderContentPublicationDateSnapshot? in
         let matches = try await ReaderContentLoader.loadAll(url: resolvedURL)
@@ -268,20 +246,23 @@ internal func buildCanonicalReadabilityHTML(
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
     let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
-    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<button type=\"button\" class=\"reader-view-original\">View Original</button>"
+    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<a class=\"reader-view-original\" href=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\">View Original</a>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
         : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
     let publicationDateText = publishedTime.map(escapeReadabilityText)
-    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }]
+    let metaItems = [
+        publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" },
+        viewOriginal,
+    ]
         .compactMap { $0 }
     let metaLine = metaItems.isEmpty
         ? ""
         : """
-        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\"></span>"))</div>
+        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\">·</span>"))</div>
         """
     let actionLine = """
-        <div id="reader-header-actions">\(viewOriginal ?? "")</div>
+        <div id="reader-header-actions"></div>
         """
     debugPrint(
         "# BYLINE canonical",
@@ -2459,7 +2440,7 @@ public class ReaderModeViewModel: ObservableObject {
                     let content = try await readerContent.getContent()
                     let resolvedReadabilityContent: String
                     if !cachedReadabilityContent.contains("id=\"reader-publication-date\""),
-                       let publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL, currentContent: content),
+                       let publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL),
                        let canonicalHTML = rebuildCanonicalSnippetReadabilityHTML(
                         html: cachedReadabilityContent,
                         contentURL: content?.url ?? contentURL,
@@ -2612,10 +2593,7 @@ public class ReaderModeViewModel: ObservableObject {
             if hasCanonicalReadabilityMarkup(in: html) {
                 resolvedReadabilityHTML = html
             } else {
-                let publicationDateFallback = await readerContentPublicationDateFallback(
-                    for: content.url,
-                    currentContent: content
-                )
+                let publicationDateFallback = await readerContentPublicationDateFallback(for: content.url)
                 let readabilityProcessingStart = CFAbsoluteTimeGetCurrent()
                 let swiftReadability = await processReadabilityHTMLInSwift(
                     html: html,
@@ -3507,10 +3485,7 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     let usedSnippetCanonical: Bool
                     let usedCanonicalMarkup: Bool
-                    let publicationDateFallback = await readerContentPublicationDateFallback(
-                        for: committedURL,
-                        currentContent: content
-                    )
+                    let publicationDateFallback = await readerContentPublicationDateFallback(for: committedURL)
                     if committedURL.isSnippetURL,
                        let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                         html: html,

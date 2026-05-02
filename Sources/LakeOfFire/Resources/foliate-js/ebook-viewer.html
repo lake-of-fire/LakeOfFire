@@ -277,12 +277,14 @@
                     background: var(--theme-tracking-read-color);
                     opacity: 0;
                     visibility: hidden;
+                    transition: opacity 240ms ease, visibility 0s linear 240ms;
                     pointer-events: none;
                     contain: strict;
                 }
                 body[data-page-read-marker-read="true"][data-page-read-marker-axis="block"] #page-read-marker-top {
                     opacity: 1;
                     visibility: visible;
+                    transition-delay: 0s;
                 }
                 #page-read-marker-side {
                     position: absolute;
@@ -294,19 +296,15 @@
                     background: var(--theme-tracking-read-color);
                     opacity: 0;
                     visibility: hidden;
+                    transition: opacity 240ms ease, visibility 0s linear 240ms;
                     pointer-events: none;
                     contain: strict;
                     z-index: 2;
-                    opacity: 1;
-                    visibility: visible;
                 }
                 body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"] #page-read-marker-side {
                     opacity: 1;
                     visibility: visible;
-                }
-                #page-read-marker-side {
-                    opacity: 1;
-                    visibility: visible;
+                    transition-delay: 0s;
                 }
                 .nav-relocate-button,
                 .nav-section-progress,

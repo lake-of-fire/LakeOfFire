@@ -563,6 +563,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         clearBorderedVerticalInset
     }
 
+    private var bottomBlockSpacing: CGFloat {
+        isProgressVisible ? -4 : 0
+    }
+
     private var showsAudioBadge: Bool {
         item.hasAudio
     }
@@ -858,7 +862,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
                         Spacer(minLength: 4)
 
-                        VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: bottomBlockSpacing) {
                             progressRow
                             metadataRow
                         }
@@ -877,7 +881,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
                         Spacer(minLength: 4)
 
-                        VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: bottomBlockSpacing) {
                             progressRow
                             metadataRow
                         }

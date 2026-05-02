@@ -827,7 +827,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let hasParsedPublicationDate = result.outputHTML.contains("id=\"reader-publication-date\"")
                 let publicationDateFallback = hasParsedPublicationDate
                     ? nil
-                    : await readerContentPublicationDateFallback(for: content.url, currentContent: content)
+                    : await readerContentPublicationDateFallback(for: content.url)
                 let resolvedOutputHTML = publicationDateFallback.map {
                     buildCanonicalReadabilityHTML(
                         title: result.title,
@@ -842,9 +842,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "# BYLINE readabilityParsed.fallbackPublicationDate",
                         "windowURL=\(url.absoluteString)",
                         "contentURL=\(content.url.absoluteString)",
-                        "publishedTime=\(publicationDateFallback ?? "nil")",
-                        "displayPublicationDate=\(content.displayPublicationDate)",
-                        "isPhysicalMedia=\(content.isPhysicalMedia)"
+                        "publishedTime=\(publicationDateFallback ?? "nil")"
                     )
                 }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
