@@ -116,6 +116,22 @@ const MARKREAD_ALLOWED_EVENTS = new Set([
     'completion.restart.resetToFirstSection',
     'completion.unknown',
     'completion.idle',
+    'relocate.timing',
+    'pageState.sync.timing.start',
+    'pageState.sync.timing.defer',
+    'pageState.sync.timing.end',
+    'pageTracking.retry.queue',
+    'pageTracking.retry.fire',
+    'pageTracking.render.beforeDOM',
+    'pageTracking.render.afterDOM',
+    'pageTracking.render.raf',
+    'pageTracking.render.timing',
+    'pageReadMarker.update',
+    'pageTracking.clearStaleReadChrome',
+    'visibleRange.collect.start',
+    'visibleRange.collect.end',
+    'visibleRange.collect.fallback',
+    'visibleRange.collect.collapsedSkipped',
 ]);
 const MARKREAD_DEDUP_EVENTS = new Set([
     'pageState.result',
@@ -2975,6 +2991,8 @@ class Reader {
     lastLayoutDiagnosticsKey = null;
     lastLayoutSnapshot = null;
     lastCFIPersistenceObservation = null;
+    initialPaginatorSettleHandle = null;
+    hasSettledInitialPaginatorLayout = false;
     unstableCFIs = new Set();
     style = {
         spacing: 1.4,
@@ -3419,9 +3437,28 @@ class Reader {
             this.closeSideBar()
         })
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
-        document.getElementById('page-tracking-buttons')?.addEventListener('click', (event) => {
+        const revealNavigationFromPageTracking = (event, source) => {
+            if (!this.navHUD?.hideNavigationDueToScroll) {
+                return false;
+            }
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            setNativeHideNavigationState(false, source);
+            return true;
+        };
+        const pageTrackingButtons = document.getElementById('page-tracking-buttons');
+        pageTrackingButtons?.addEventListener('touchstart', (event) => {
+            revealNavigationFromPageTracking(event, 'page-tracking-buttons.touchstart.reveal');
+        }, { capture: true, passive: false });
+        pageTrackingButtons?.addEventListener('pointerdown', (event) => {
+            revealNavigationFromPageTracking(event, 'page-tracking-buttons.pointerdown.reveal');
+        }, { capture: true });
+        pageTrackingButtons?.addEventListener('click', (event) => {
             const button = event.target?.closest?.('button[data-page-tracking-id], button[data-completion-action]');
             if (!button) {
+                return;
+            }
+            if (revealNavigationFromPageTracking(event, 'page-tracking-buttons.click.reveal')) {
                 return;
             }
             const completionAction = button.dataset?.completionAction;
@@ -3444,6 +3481,7 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#updatePageReadMarker('window-resize');
             this.#queueLayoutDiagnostics('window-resize');
         });
         window.visualViewport?.addEventListener?.('resize', () => {
@@ -3457,6 +3495,7 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#updatePageReadMarker('visual-viewport-resize');
             this.#queueLayoutDiagnostics('visual-viewport-resize');
         });
         screen.orientation?.addEventListener?.('change', () => {
@@ -3468,6 +3507,7 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#updatePageReadMarker('screen-orientation-change');
             this.#queueLayoutDiagnostics('screen-orientation-change');
         });
     }
@@ -3476,6 +3516,101 @@ class Reader {
     }
     #logMarkRead(event, details = {}) {
         postMarkReadLog(event, details);
+    }
+    #updatePageReadMarker(reason = 'unspecified', explicitState = null, explicitDoc = null) {
+        const state = explicitState || (this.pageTrackingStates || []).find((candidate) => candidate.id === 'visible-screen') || null;
+        const isRead = !!state?.isRead && !this.completionAction;
+        const doc = isDocumentLike(explicitDoc)
+            ? explicitDoc
+            : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
+        const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
+        const readerStage = document.getElementById('reader-stage');
+        const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
+            .find((element) => element?.isConnected && element.offsetParent !== null) || this.view || null;
+        if (isRead && isVertical && readerStage instanceof HTMLElement) {
+            const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
+            const paginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            const stageRect = readerStage.getBoundingClientRect();
+            const containerRect = paginatorContainer?.getBoundingClientRect?.() || null;
+            if (containerRect && containerRect.width > 0 && stageRect.width > 0) {
+                readerStage.style.setProperty('--mnb-ebook-read-marker-top-left', `${Math.max(0, containerRect.left - stageRect.left)}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-top-width', `${containerRect.width}px`);
+            } else {
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
+            }
+        } else if (readerStage instanceof HTMLElement) {
+            readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
+            readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
+        }
+        if (readerStage instanceof HTMLElement) {
+            const stageRect = readerStage.getBoundingClientRect();
+            const viewRect = liveFoliateView?.getBoundingClientRect?.() || null;
+            const livePaginator = liveFoliateView?.shadowRoot?.querySelector?.('foliate-paginator') || null;
+            const paginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            const containerRect = paginatorContainer?.getBoundingClientRect?.() || null;
+            const rootStyle = getComputedStyle(document.documentElement);
+            const thickness = parseFloat(rootStyle.getPropertyValue('--mnb-tracking-section-border-size')) || 2;
+            const sideNavWidth = parseFloat(rootStyle.getPropertyValue('--side-nav-width')) || 32;
+            const containerStyle = containerRect ? getComputedStyle(paginatorContainer) : null;
+            const containerTopMargin = parseFloat(containerStyle?.getPropertyValue('--_top-margin')) || 0;
+            const containerBottomMargin = parseFloat(containerStyle?.getPropertyValue('--_bottom-margin')) || 0;
+            const markerAnchorRect = containerRect && containerRect.width > 0 && containerRect.height > 0
+                ? containerRect
+                : viewRect;
+            if (markerAnchorRect && markerAnchorRect.width > 0 && markerAnchorRect.height > 0 && stageRect.width > 0) {
+                const markerLeft = markerAnchorRect.left - stageRect.left - thickness;
+                const markerTopInset = markerAnchorRect === containerRect ? containerTopMargin : 0;
+                const markerBottomInset = markerAnchorRect === containerRect ? containerBottomMargin : 0;
+                const markerHeight = Math.max(0, markerAnchorRect.height - markerTopInset - markerBottomInset);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-left', `${markerLeft}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', `${Math.max(0, markerAnchorRect.top - stageRect.top + markerTopInset)}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${markerHeight}px`);
+            } else if (stageRect.width > 0) {
+                const markerLeft = Math.max(0, sideNavWidth - thickness);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-left', `${markerLeft}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', '0px');
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${stageRect.height}px`);
+            } else {
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-side-left');
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-side-top');
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-side-height');
+            }
+        }
+        document.body?.setAttribute?.('data-page-read-marker-read', isRead ? 'true' : 'false');
+        document.body?.setAttribute?.('data-page-read-marker-axis', isVertical ? 'block' : 'inline');
+        this.#logMarkRead('pageReadMarker.update', {
+            reason,
+            isRead,
+            axis: isVertical ? 'block' : 'inline',
+            hasExplicitState: !!explicitState,
+            stateCount: this.pageTrackingStates.length,
+            bodyReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
+            bodyAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
+            topMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-left') || null,
+            topMarkerWidth: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-width') || null,
+            sideMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-left') || null,
+            sideMarkerTop: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-top') || null,
+            sideMarkerHeight: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-height') || null,
+            timestamp: Math.round(performance.now()),
+        });
+    }
+    #clearVisiblePageReadChrome(reason = 'unspecified') {
+        document.body?.setAttribute?.('data-page-read-marker-read', 'false');
+        document.querySelectorAll('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]').forEach((button) => {
+            button.dataset.mnbTrackingSectionRead = 'false';
+            button.dataset.readState = 'ready';
+            button.disabled = false;
+            button.setAttribute('aria-label', 'Mark Read');
+            button.querySelectorAll('.mnb-tracking-button-label, .sr-only').forEach((label) => {
+                label.textContent = 'Mark Read';
+            });
+        });
+        this.#logMarkRead('pageTracking.clearStaleReadChrome', {
+            reason,
+            markerReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
+            timestamp: Math.round(performance.now()),
+        });
     }
     #summarizeMarkReadIDs(segmentIdentifiers = [], sentenceIdentifiers = []) {
         const safeSegments = Array.isArray(segmentIdentifiers) ? segmentIdentifiers : [];
@@ -3542,6 +3677,35 @@ class Reader {
                 orientationType: screen.orientation?.type ?? null,
             });
             this.#logLayoutDiagnostics(reason, extra);
+        });
+    }
+    #scheduleInitialPaginatorSettle(reason = 'unknown') {
+        if (
+            this.hasSettledInitialPaginatorLayout ||
+            this.initialPaginatorSettleHandle
+        ) {
+            return;
+        }
+        const renderer = this.view?.renderer;
+        if (!renderer || typeof renderer.renderIfContainerSizeChanged !== 'function') {
+            return;
+        }
+        this.initialPaginatorSettleHandle = requestAnimationFrame(() => {
+            this.initialPaginatorSettleHandle = null;
+            this.hasSettledInitialPaginatorLayout = true;
+            try {
+                applyStoredChromeInsets(`initial-paginator-settle.${reason}`);
+                renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`)
+                    .then((result) => {
+                        if (result?.rendered) {
+                            this.#updatePageReadMarker('initial-paginator-settle.rendered');
+                        }
+                    })
+                    .catch((error) => console.error(error));
+            } catch (error) {
+                console.error(error);
+                this.hasSettledInitialPaginatorLayout = false;
+            }
         });
     }
     #formatTransition(before, after) {
@@ -3955,6 +4119,7 @@ class Reader {
         });
         if (!shouldShowPageTracking) {
             buttonHost.innerHTML = '';
+            this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
             return;
         }
@@ -3974,6 +4139,7 @@ class Reader {
                     <span class="sr-only">${completionAction.label}</span>
                 </button>
             `;
+            this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
             this.#queueLayoutDiagnostics('page-tracking-render', {
                 completionAction: completionAction.type,
@@ -4001,6 +4167,7 @@ class Reader {
                 </button>
             `;
         }).join('');
+        this.#updatePageReadMarker(reason);
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
@@ -4027,6 +4194,7 @@ class Reader {
             mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
         });
         this.#flashForwardSideNavChevron();
+        this.#clearVisiblePageReadChrome('page-turn-start');
         if (this.isRTL) {
             await this.view.goLeft();
         } else {
@@ -4063,7 +4231,9 @@ class Reader {
             this.#mainDocumentSwipeState = null;
             return;
         }
-        if (target.closest?.('#reader-stage, #side-bar, input, textarea, select, [contenteditable="true"]')) {
+        const isExcludedTouchTarget = target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
+        const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
+        if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
             return;
         }
@@ -4100,14 +4270,18 @@ class Reader {
             : (this.isRTL ? 'right' : 'left'));
         if (goForward) {
             if (this.isRTL) {
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 await this.view?.prev?.();
             } else {
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 await this.view?.next?.();
             }
         } else {
             if (this.isRTL) {
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 await this.view?.next?.();
             } else {
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 await this.view?.prev?.();
             }
         }
@@ -4238,6 +4412,7 @@ class Reader {
         }
         this.pageTrackingStates = states;
         this.#renderPageTrackingButtons(reason);
+        this.#updatePageReadMarker(reason, visibleScreenState, doc);
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -4746,6 +4921,11 @@ class Reader {
         this.hasLoadedLastPosition = false
         this.lastCFIPersistenceObservation = null;
         this.unstableCFIs.clear();
+        if (this.initialPaginatorSettleHandle) {
+            cancelAnimationFrame(this.initialPaginatorSettleHandle);
+            this.initialPaginatorSettleHandle = null;
+        }
+        this.hasSettledInitialPaginatorLayout = false;
         this.view = await getView(file, false)
         markEPUBPerf('view.ready', {
             hasRenderer: !!this.view?.renderer,
@@ -4852,9 +5032,15 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const leftSideBtn = document.getElementById('btn-scroll-left');
-        if (leftSideBtn) leftSideBtn.addEventListener('click', async () => await this.view.goLeft());
+        if (leftSideBtn) leftSideBtn.addEventListener('click', async () => {
+            this.#clearVisiblePageReadChrome('page-turn-start');
+            await this.view.goLeft();
+        });
         const rightSideBtn = document.getElementById('btn-scroll-right');
-        if (rightSideBtn) rightSideBtn.addEventListener('click', async () => await this.view.goRight());
+        if (rightSideBtn) rightSideBtn.addEventListener('click', async () => {
+            this.#clearVisiblePageReadChrome('page-turn-start');
+            await this.view.goRight();
+        });
 
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
@@ -4996,6 +5182,7 @@ class Reader {
         const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
             if (event.target && event.target.ownerDocument !== document) return
+            if (event.target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]')) return
 
                 window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                     touchedEntryWithElementId: null,
@@ -5335,6 +5522,7 @@ class Reader {
             } else if (!isRTL && await renderer.atStart()) {
                 this.buttons.prev.click();
             } else {
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 await this.view.goLeft();
             }
         } else if (k === 'ArrowRight' || k === 'l') {
@@ -5343,6 +5531,7 @@ class Reader {
             } else if (!isRTL && await renderer.atEnd()) {
                 this.buttons.next.click();
             } else {
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 await this.view.goRight();
             }
         }
@@ -5350,6 +5539,7 @@ class Reader {
     #onGoTo({
         willLoadNewIndex
     }) {
+        this.#clearVisiblePageReadChrome('goTo');
         postEPUBFlashLog('js.renderer.goTo', {
             willLoadNewIndex: !!willLoadNewIndex,
             intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
@@ -5392,6 +5582,7 @@ class Reader {
             once: true,
             anchor: 'document.animation-frame.first',
         });
+        this.#scheduleInitialPaginatorSettle('did-display');
         requestAnimationFrame(() => {
             const livePaginator = this.view?.renderer?.querySelector?.('foliate-paginator');
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
@@ -5412,6 +5603,7 @@ class Reader {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
             });
+            this.#updatePageReadMarker('did-display.raf');
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
@@ -5846,6 +6038,7 @@ class Reader {
             currentLocation: detail?.location?.current ?? null,
             totalLocation: detail?.location?.total ?? null,
         });
+        this.#updatePageReadMarker('relocate');
 
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
@@ -5907,12 +6100,14 @@ class Reader {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'prev':
                 // Go to previous section, then jump to its end
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 nav = this.view.renderer.prevSection().then(() => {
                     // TODO: Add this here...
                     //this.view.fraction = 1;
                 });
                 break;
             case 'next':
+                this.#clearVisiblePageReadChrome('page-turn-start');
                 nav = this.view.renderer.nextSection();
                 break;
         }

@@ -8,46 +8,55 @@ import Combine
 import RealmSwiftGaps
 import LakeOfFireContent
 
-private struct ReaderStatusBarFadeMask: ViewModifier {
+private struct ReaderStatusBarFadeOverlay: ViewModifier {
     var topFadeHeight: CGFloat
-    var edgeOpacity: CGFloat = 0.125
+    var backgroundColor: Color
 
     func body(content: Content) -> some View {
-        content.mask {
-            GeometryReader { proxy in
-                let containerHeight = proxy.size.height
-                let clampedTopFadeHeight = min(topFadeHeight, containerHeight)
-                let centerHeight = max(0, containerHeight - clampedTopFadeHeight)
-
-                VStack(spacing: 0) {
-                    if clampedTopFadeHeight > 0 {
-                        VStack(spacing: 0) {
-                            Color.white.opacity(edgeOpacity)
-                                .frame(height: clampedTopFadeHeight / 2)
-                            LinearGradient(
-                                stops: [
-                                    .init(color: .white.opacity(1), location: 0),
-                                    .init(color: .white.opacity(edgeOpacity), location: 1),
-                                ],
-                                startPoint: .bottom,
-                                endPoint: .top
-                            )
-                            .frame(height: clampedTopFadeHeight / 2)
-                        }
-                        .frame(height: clampedTopFadeHeight)
-                    }
-
-                    Color.white
-                        .frame(height: centerHeight)
-                }
+        content.overlay(alignment: .top) {
+            if topFadeHeight > 0 {
+                LinearGradient(
+                    stops: [
+                        .init(color: backgroundColor, location: 0),
+                        .init(color: backgroundColor.opacity(0), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: topFadeHeight)
+                .ignoresSafeArea(.all, edges: .top)
+                .allowsHitTesting(false)
             }
         }
     }
 }
 
+private func readerThemeBackgroundColor(
+    colorScheme: ColorScheme,
+    lightModeTheme: LightModeTheme,
+    darkModeTheme: DarkModeTheme
+) -> Color {
+    switch colorScheme {
+    case .dark:
+        switch darkModeTheme {
+        case .black:
+            return .black
+        case .gray:
+            return Color(red: Double(0x31) / 255, green: Double(0x32) / 255, blue: Double(0x34) / 255)
+        }
+    default:
+        switch lightModeTheme {
+        case .white:
+            return .white
+        case .beige:
+            return Color(red: Double(0xf7) / 255, green: Double(0xf0) / 255, blue: Double(0xd8) / 255)
+        }
+    }
+}
+
 private extension View {
-    func readerStatusBarFade(top: CGFloat, edgeOpacity: CGFloat = 0.125) -> some View {
-        modifier(ReaderStatusBarFadeMask(topFadeHeight: top, edgeOpacity: edgeOpacity))
+    func readerStatusBarFade(top: CGFloat, backgroundColor: Color) -> some View {
+        modifier(ReaderStatusBarFadeOverlay(topFadeHeight: top, backgroundColor: backgroundColor))
     }
 }
 
@@ -604,6 +613,9 @@ public struct Reader: View {
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
 
     @State private var obscuredInsets: EdgeInsets? = nil
 
@@ -645,6 +657,11 @@ public struct Reader: View {
 
     public var body: some View {
         let pageURL = readerContent.content?.url ?? readerContent.pageURL
+        let statusBarFadeBackgroundColor = readerThemeBackgroundColor(
+            colorScheme: colorScheme,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
+        )
         let sampledTopInset = max(0, obscuredInsets?.top ?? 0)
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
         let effectiveTopInset = explicitTopInset
@@ -686,7 +703,8 @@ public struct Reader: View {
         )
 #if os(iOS)
         .readerStatusBarFade(
-            top: max(0, (obscuredInsets?.top ?? 0) + 8 + 2)
+            top: max(0, (obscuredInsets?.top ?? 0) + 8 + 2),
+            backgroundColor: statusBarFadeBackgroundColor
         )
         .ignoresSafeArea(.all, edges: .all)
         .modifier {

@@ -23,6 +23,8 @@
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
                     --nav-page-read-clearance: 50px;
                     --nav-relocate-reserve: 150px;
+                    --mnb-tracking-section-border-size: 3px;
+                    --mnb-ebook-read-marker-padding: 1px;
                 }
                 @media screen and (min-width: 960px) {
                     body {
@@ -259,6 +261,51 @@
                     left: 0;
                     overflow: hidden;
                     z-index: 1;
+                    display: grid;
+                    grid-template-rows: 0 minmax(0, 1fr);
+                }
+                body[data-page-read-marker-axis="block"] #reader-stage {
+                    grid-template-rows: calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding)) minmax(0, 1fr);
+                }
+                #page-read-marker-top {
+                    display: block;
+                    grid-row: 1;
+                    width: var(--mnb-ebook-read-marker-top-width, 100%);
+                    margin-inline-start: var(--mnb-ebook-read-marker-top-left, 0px);
+                    height: var(--mnb-tracking-section-border-size);
+                    align-self: start;
+                    border-radius: var(--mnb-tracking-section-border-size);
+                    background: var(--theme-tracking-read-color);
+                    opacity: 0;
+                    visibility: hidden;
+                    transition: opacity 240ms ease, visibility 0s linear 240ms;
+                    pointer-events: none;
+                    contain: strict;
+                }
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="block"] #page-read-marker-top {
+                    opacity: 1;
+                    visibility: visible;
+                    transition-delay: 0s;
+                }
+                #page-read-marker-side {
+                    position: absolute;
+                    left: var(--mnb-ebook-read-marker-side-left, 0px);
+                    top: var(--mnb-ebook-read-marker-side-top, 0px);
+                    width: var(--mnb-tracking-section-border-size);
+                    height: var(--mnb-ebook-read-marker-side-height, 100%);
+                    border-radius: var(--mnb-tracking-section-border-size);
+                    background: var(--theme-tracking-read-color);
+                    opacity: 0;
+                    visibility: hidden;
+                    transition: opacity 240ms ease, visibility 0s linear 240ms;
+                    pointer-events: none;
+                    contain: strict;
+                    z-index: 2;
+                }
+                body[data-page-read-marker-read="true"][data-page-read-marker-axis="inline"] #page-read-marker-side {
+                    opacity: 1;
+                    visibility: visible;
+                    transition-delay: 0s;
                 }
                 .nav-relocate-button,
                 .nav-section-progress,
@@ -1428,7 +1475,10 @@
             </div>
             <div id="toc-view"></div>
         </div>
-        <div id="reader-stage" aria-hidden="false"></div>
+        <div id="reader-stage" aria-hidden="false">
+            <div id="page-read-marker-top" aria-hidden="true"></div>
+            <div id="page-read-marker-side" aria-hidden="true"></div>
+        </div>
         <div id="nav-bar" class="toolbar">
                 <div id="nav-content">
                     <div id="nav-top-row">

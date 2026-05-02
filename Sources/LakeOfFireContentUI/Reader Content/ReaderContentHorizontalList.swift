@@ -512,6 +512,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         resetScrollOnAppear: Bool = false,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
+        let resolvedSortOrder = sortOrder ?? .publicationDate
         self.contents = contents
         if let contentFilter = contentFilter {
             self.contentFilter = contentFilter
@@ -526,6 +527,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         self.postSortTransform = postSortTransform
         self.resetScrollOnAppear = resetScrollOnAppear
         self.emptyStateView = { emptyStateView() }
+        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: resolvedSortOrder))
     }
 }
 

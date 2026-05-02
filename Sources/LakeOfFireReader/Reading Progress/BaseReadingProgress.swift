@@ -15,6 +15,7 @@ public protocol ReadingProgressProtocol: Object, ObjectKeyIdentifiable {
 
     var wordsRead: Int { get }
     var uniqueWordsLookedUp: Int { get }
+    var trackedKanjiIDsRead: MutableSet<String> { get }
 }
 
 open class BaseReadingProgress: Object, ObjectKeyIdentifiable, ReadingProgressProtocol, ChangeMetadataRecordable {
@@ -44,7 +45,7 @@ open class BaseReadingProgress: Object, ObjectKeyIdentifiable, ReadingProgressPr
     @Persisted public var uniqueLearningWordsRead = 0
     @Persisted public var uniqueFamiliarWordsRead = 0
 
-    // TODO: Also track kanjiRead in session
+    @Persisted public var trackedKanjiIDsRead: MutableSet<String>
     @Persisted public var trackedWordIDsRead: MutableSet<Int>
 
     @Persisted public var flashcardsCreated = 0

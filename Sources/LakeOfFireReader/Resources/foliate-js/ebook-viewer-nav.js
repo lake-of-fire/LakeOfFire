@@ -1339,6 +1339,28 @@ export class NavigationHUD {
         return { index: null, source: 'none', resolvedHref: null };
     }
 
+    _isLastLinearSection(sectionIndex) {
+        if (typeof sectionIndex !== 'number' || sectionIndex < 0) {
+            return false;
+        }
+        const linearIndexes = Array.from(this.linearSectionIndexes ?? [])
+            .filter(index => typeof index === 'number' && index >= 0)
+            .sort((a, b) => a - b);
+        if (linearIndexes.length > 0) {
+            return !linearIndexes.some(index => index > sectionIndex);
+        }
+        const sections = Array.isArray(this.navContext?.sections) ? this.navContext.sections : [];
+        if (sections.length === 0) {
+            return false;
+        }
+        for (let index = sectionIndex + 1; index < sections.length; index += 1) {
+            if (sections[index]?.linear !== 'no') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     _toggleCompletionStack(forceShow) {
         const shouldShow = typeof forceShow === 'boolean'
             ? forceShow
@@ -1497,9 +1519,10 @@ export class NavigationHUD {
                 this.lastTerminalPagesLeftPageNumber = null;
             }
             if (!center) return;
+            const progressScope = this._isLastLinearSection(sectionResolution.index) ? 'book' : 'chapter';
             const label = pagesLeft === 1
-                ? '1 page left in chapter'
-                : `${pagesLeft} pages left in chapter`;
+                ? `1 page left in ${progressScope}`
+                : `${pagesLeft} pages left in ${progressScope}`;
             center.textContent = label;
             center.hidden = false;
             logPagesLeft('label.set', {

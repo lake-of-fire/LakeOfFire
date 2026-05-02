@@ -183,29 +183,6 @@ struct ReaderContentListAppearance: Sendable {
     }
 }
 
-private struct FeedCellLayoutLog: View {
-    let label: String
-    let details: String
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onAppear {
-                    log(frame: proxy.frame(in: .global))
-                }
-                .onChange(of: proxy.frame(in: .global)) { frame in
-                    log(frame: frame)
-                }
-        }
-    }
-
-    private func log(frame: CGRect) {
-        debugPrint(
-            "# FEEDCELL \(label) minX=\(frame.minX) minY=\(frame.minY) width=\(frame.width) height=\(frame.height) \(details)"
-        )
-    }
-}
-
 // MARK: - Shared selection syncing
 
 private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
@@ -387,12 +364,19 @@ public enum ReaderContentSortOrder: Sendable {
 @MainActor
 public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
     public init() { }
+
+    public init(initialContents contents: [C], sortOrder: ReaderContentSortOrder? = nil) {
+        let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
+        self.filteredContentIDs = initialContents.map(\.compoundKey)
+        self.filteredContents = initialContents
+    }
     
     @Published public var filteredContents: [C] = []
     public var filteredContentIDs: [String] = []
     public var realmConfiguration: Realm.Configuration?
     var refreshSelectionTask: Task<Void, Error>?
     @Published public var loadContentsTask: Task<Void, Error>?
+    private var currentLoadID: UUID?
     
     @Published public var hasLoadedBefore = false
     
@@ -402,6 +386,51 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     
     public var showLoadingIndicator: Bool {
         return !hasLoadedBefore || isLoading
+    }
+
+    private static func initialDisplayContents(from contents: [C], sortOrder: ReaderContentSortOrder?) -> [C] {
+        let contents = contents.map { $0.realm == nil ? $0 : $0.freeze() }
+        guard let sortOrder else { return contents }
+
+        switch sortOrder {
+        case .publicationDate:
+            return contents.sorted { lhs, rhs in
+                switch (lhs.publicationDate, rhs.publicationDate) {
+                case let (l?, r?):
+                    if l != r { return l > r }
+                    return lhs.createdAt > rhs.createdAt
+                case (nil, nil):
+                    return lhs.createdAt > rhs.createdAt
+                case (nil, _?):
+                    return false
+                case (_?, nil):
+                    return true
+                }
+            }
+        case .createdAt:
+            return contents.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+        case .lastVisitedAt:
+            if let historyRecords = contents as? [HistoryRecord] {
+                return historyRecords.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)]) as? [C] ?? contents
+            }
+            return contents
+        case .title:
+            return contents.sorted { lhs, rhs in
+                if lhs.title != rhs.title {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
+        case .urlAddress:
+            return contents.sorted { lhs, rhs in
+                let l = lhs.url.absoluteString
+                let r = rhs.url.absoluteString
+                if l != r {
+                    return l.localizedCaseInsensitiveCompare(r) == .orderedAscending
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
+        }
     }
 
     @MainActor
@@ -428,32 +457,47 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         sortOrder: ReaderContentSortOrder? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
-        if sortOrder == nil && contentFilter == nil {
-            applyFilteredContents(contents, ids: contents.map { $0.compoundKey })
+        let contentIDs = contents.map(\.compoundKey)
+
+        if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
+            applyFilteredContents(
+                contents.map { $0.realm == nil ? $0 : $0.freeze() },
+                ids: contentIDs
+            )
             return
+        }
+
+        if !hasLoadedBefore,
+           filteredContents.isEmpty,
+           !contents.isEmpty,
+           postSortTransform == nil {
+            let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
+            applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
         }
         
         let realmConfig = contents.first?.realm?.configuration
         self.realmConfiguration = realmConfig
-        let refs = contents.map { ThreadSafeReference(to: $0) }
         loadContentsTask?.cancel()
-        loadContentsTask = Task { @ReaderContentListActor in
+        let loadID = UUID()
+        currentLoadID = loadID
+        let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
-            //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
-            //                try await contentFilter($0)
-            //            })
-            guard let realmConfig else {
-                await { @MainActor [weak self] in
-                    self?.applyFilteredContents([], ids: [])
-                }()
-                return
-            }
-            let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig)
-            let contents = refs.compactMap { realm.resolve($0) }
-            for (idx, content) in contents.enumerated() {
-                try Task.checkCancellation()
-                if try await contentFilter?(idx, content) ?? true {
-                    filtered.append(content)
+
+            if let realmConfig {
+                let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig)
+                let resolvedContents = contentIDs.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
+                for (idx, content) in resolvedContents.enumerated() {
+                    try Task.checkCancellation()
+                    if try await contentFilter?(idx, content) ?? true {
+                        filtered.append(content)
+                    }
+                }
+            } else {
+                for (idx, content) in contents.enumerated() {
+                    try Task.checkCancellation()
+                    if try await contentFilter?(idx, content) ?? true {
+                        filtered.append(content)
+                    }
                 }
             }
             
@@ -513,15 +557,23 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
-                let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                let contents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
-                self.applyFilteredContents(
-                    (contents as [any ReaderContentProtocol]) as? [C] ?? self.filteredContents,
-                    ids: ids
-                )
+                guard self.currentLoadID == loadID else { return }
+
+                let resolvedContents: [C]
+                if let realmConfig {
+                    let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
+                    guard self.currentLoadID == loadID else { return }
+                    resolvedContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
+                } else {
+                    resolvedContents = filtered.map { $0.realm == nil ? $0 : $0.freeze() }
+                }
+                self.applyFilteredContents(resolvedContents, ids: ids)
             }()
         }
-        try? await loadContentsTask?.value
+        loadContentsTask = task
+
+        try? await task.value
+        guard currentLoadID == loadID else { return }
         loadContentsTask = nil
     }
 }
@@ -566,12 +618,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .padding(appearance.usesNativeRowInsets ? 0 : 11)
-        .background(
-            FeedCellLayoutLog(
-                label: "reader-content-cell-wrapper",
-                details: "title=\(String(item.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
-            )
-        )
     }
 
     @ViewBuilder private func rowContent(item: C) -> some View {
@@ -685,12 +731,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 $0
             }
         }
-        .background(
-            FeedCellLayoutLog(
-                label: "reader-content-row",
-                details: "title=\(String(content.title.prefix(80))) nativeInsets=\(appearance.usesNativeRowInsets) card=\(appearance.useCardBackground) clearRowBackground=\(appearance.clearRowBackground)"
-            )
-        )
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
@@ -1202,6 +1242,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.headerView = headerView
         self.emptyStateView = emptyStateView
         self.onContentSelected = onContentSelected
+        _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: sortOrder))
     }
 }
 

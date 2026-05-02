@@ -191,6 +191,41 @@ private func isInternalReaderURL(_ url: URL) -> Bool {
     url.scheme == "internal" && url.host == "local"
 }
 
+private struct ReaderContentPublicationDateSnapshot: Sendable {
+    let publicationDate: Date
+    let displayAbsolutePublicationDate: Bool
+    let contentType: String
+}
+
+private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPublicationDateSnapshot) -> String {
+    if snapshot.displayAbsolutePublicationDate {
+        return ReaderDateFormatter.absoluteString(from: snapshot.publicationDate)
+    }
+    return ReaderDateFormatter.relativeString(from: snapshot.publicationDate)
+        ?? ReaderDateFormatter.absoluteString(from: snapshot.publicationDate)
+}
+
+internal func readerContentPublicationDateFallback(for url: URL) async -> String? {
+    let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+    let snapshot = try? await { @RealmBackgroundActor () -> ReaderContentPublicationDateSnapshot? in
+        let matches = try await ReaderContentLoader.loadAll(url: resolvedURL)
+        let candidates = matches.compactMap { content -> ReaderContentPublicationDateSnapshot? in
+            guard content.displayPublicationDate || content.isPhysicalMedia,
+                  let publicationDate = content.publicationDate else {
+                return nil
+            }
+            return ReaderContentPublicationDateSnapshot(
+                publicationDate: publicationDate,
+                displayAbsolutePublicationDate: content.displayAbsolutePublicationDate,
+                contentType: String(describing: type(of: content))
+            )
+        }
+        return candidates.first { $0.contentType != String(describing: HistoryRecord.self) } ?? candidates.first
+    }()
+
+    return snapshot.map(formattedReaderContentPublicationDate)
+}
+
 private enum ReaderWritingDirectionSetting: String {
     case horizontal
     case vertical
@@ -2730,7 +2765,7 @@ public class ReaderModeViewModel: ObservableObject {
                 let swiftReadability = await processReadabilityHTMLInSwift(
                     html: html,
                     url: content.url,
-                    snippetPublishedTime: content.humanReadablePublicationDate,
+                    snippetPublishedTime: await readerContentPublicationDateFallback(for: content.url),
                     meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
                 )
                 readabilityResolveElapsed = CFAbsoluteTimeGetCurrent() - readabilityProcessingStart
@@ -3627,7 +3662,7 @@ public class ReaderModeViewModel: ObservableObject {
                         html: html,
                         contentURL: committedURL,
                         fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
-                        publishedTime: content.humanReadablePublicationDate,
+                        publishedTime: await readerContentPublicationDateFallback(for: committedURL),
                         preferredTitle: content.title,
                         hideReaderTitleOverride: content.isTitlePrefixOfContent
                        ) {

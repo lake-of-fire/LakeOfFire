@@ -77,6 +77,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var totalWordCount: Int?
     @Published var remainingTime: TimeInterval?
     @Published var syncStatusPresentation: ReaderContentSyncStatusPresentation?
+    @Published var hasLoadedDisplayState = false
     // Continue Reading menu is driven by an injected provider in the environment.
 
     init() { }
@@ -86,6 +87,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         item: C,
         includeSource: Bool
     ) async throws {
+        hasLoadedDisplayState = false
         debugPrint("# loading", item.url.lastPathComponent)
         
         guard let config = item.realm?.configuration else { return }
@@ -172,6 +174,9 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.totalWordCount = metadataResult?.totalWordCount
                     self.remainingTime = metadataResult?.remainingTime
                     self.syncStatusPresentation = syncStatusPresentation
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        self.hasLoadedDisplayState = true
+                    }
                 }()
                 // Continue Reading state is provided externally via environment provider.
             }
@@ -528,6 +533,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if let formatted = viewModel.humanReadablePublicationDate, !formatted.isEmpty {
             return formatted
         }
+        if item.displayPublicationDate || item.isPhysicalMedia {
+            if let fallback = item.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+                return fallback
+            }
+        }
         if appearance.isEbookStyle {
             if let fallback = item.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
                 return fallback
@@ -592,7 +602,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if item.hasPrimaryMedia { return !appearance.isEbookStyle }
         return false
     }
-    
+
+    private var bottomAccessoryVerticalOffset: CGFloat {
+        guard readerContentCellStyle == .card else { return 0 }
+        return 1
+    }
+
     @ViewBuilder
     private var audioBadge: some View {
         if item.primaryMediaKindRawValue?.lowercased() == "video" {
@@ -611,6 +626,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if showsNewBadge {
             ReaderNewBadge()
                 .controlSize(.small)
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
         }
     }
 
@@ -699,6 +715,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             }
         }
         .frame(height: scaledSmallNewBadgeHeight)
+        .animation(.easeInOut(duration: 0.2), value: showsNewBadge)
     }
 
     @ViewBuilder
@@ -717,18 +734,33 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsNewBadge: Bool {
-        appearance.showsNewBadge && (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
+        viewModel.hasLoadedDisplayState &&
+        appearance.showsNewBadge &&
+        (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
 
     @ViewBuilder
-    private var progressRow: some View {
+    private var publicationDateRow: some View {
+        if let publicationDate = publicationDateText {
+            Text(publicationDate)
+                .lineLimit(1)
+                .allowsTightening(true)
+                .minimumScaleFactor(0.9)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .layoutPriority(2)
+        }
+    }
+
+    @ViewBuilder
+    private var progressMetadata: some View {
         if shouldShowProgressRow {
             HStack(spacing: 8) {
                 if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
                     ProgressView(value: min(1, readingProgressFloat))
                         .progressViewStyle(LinearProgressViewStyle())
                         .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                        .frame(width: progressBarWidth)
+                        .frame(width: 24)
 
                     if let remainingDurationText {
                         Text(remainingDurationText)
@@ -744,6 +776,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .frame(width: progressBarWidth)
                 }
             }
+            .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+    }
+
+    @ViewBuilder
+    private var progressRow: some View {
+        if shouldShowProgressRow {
+            publicationDateRow
+                .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 
@@ -799,18 +840,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var metadataRow: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            if let publicationDate = publicationDateText {
-                Text(publicationDate)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.9)
-                    .font(.footnote)
-                    .layoutPriority(2)
+        HStack(alignment: .center, spacing: 6) {
+            if isProgressVisible {
+                progressMetadata
+            } else {
+                publicationDateRow
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             Spacer(minLength: ReaderContentCell<C>.buttonSize * 2 + 6)
         }
+        .frame(height: ReaderContentCell<C>.buttonSize, alignment: .center)
+        .offset(y: bottomAccessoryVerticalOffset)
         .foregroundStyle(.secondary)
         .overlay(alignment: .bottomTrailing) {
             HStack(spacing: 6) {
@@ -825,7 +866,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .accessibilityHidden(!viewModel.forceShowBookmark)
 
                 trailingMenuButton
-                    .frame(height: ReaderContentCell<C>.buttonSize, alignment: .bottom)
+                    .frame(height: ReaderContentCell<C>.buttonSize, alignment: .center)
             }
             .foregroundStyle(.secondary)
             .buttonStyle(.clearBordered)
@@ -833,6 +874,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
         .buttonStyle(.clearBordered)
         .controlSize(.small)
+        .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
     }
 
     @ViewBuilder

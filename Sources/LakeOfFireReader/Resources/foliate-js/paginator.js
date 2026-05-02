@@ -657,6 +657,7 @@ export class Paginator extends HTMLElement {
         this.#cachedSizes = null
         //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
+        this.#invalidateVisibleRangeCache()
 
         //        this.render()
         //        requestAnimationFrame(() => {
@@ -695,9 +696,14 @@ export class Paginator extends HTMLElement {
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
     #pendingPageTurnDirection = null
+    #queuedPageTurn = null
 
     #cachedSizes = null
     #cachedStart = null
+    #lastRenderContainerSize = null
+    #visibleRangeCache = null
+    #visibleRangeInFlight = null
+    #visibleRangeCacheVersion = 0
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
@@ -964,6 +970,7 @@ export class Paginator extends HTMLElement {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
+        this.#invalidateVisibleRangeCache()
         this.#setLoading(true)
     }
     async #onExpand() {
@@ -971,6 +978,7 @@ export class Paginator extends HTMLElement {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
+        this.#invalidateVisibleRangeCache()
 
         if (this.#scrolledToAnchorOnLoad) {
             // wait a frame to ensure layout has settled before scrolling
@@ -982,6 +990,11 @@ export class Paginator extends HTMLElement {
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
+    }
+    #invalidateVisibleRangeCache() {
+        this.#visibleRangeCache = null
+        this.#visibleRangeInFlight = null
+        this.#visibleRangeCacheVersion += 1
     }
     async #getSentinelVisibilities() {
         //        console.log("trackSentinelVisibilities...")
@@ -1163,6 +1176,7 @@ export class Paginator extends HTMLElement {
             width,
             height
         } = await this.sizes()
+        this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
         this.#top.classList.toggle('mnb-vertical-paginated', vertical && flow !== 'scrolled')
@@ -1313,6 +1327,7 @@ export class Paginator extends HTMLElement {
         if (!this.#view) {
             return
         }
+        this.#invalidateVisibleRangeCache()
 
         // avoid unwanted triggers
         //        this.#hasResizeObserverTriggered = false
@@ -1323,6 +1338,31 @@ export class Paginator extends HTMLElement {
             rtl: this.#rtl,
         }))
         //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
+    }
+    async renderIfContainerSizeChanged(reason = 'unspecified') {
+        if (!this.#view || this.#isCacheWarmer) {
+            return { rendered: false, reason: 'unavailable' }
+        }
+        const currentSize = {
+            width: Math.round(this.#container?.clientWidth || 0),
+            height: Math.round(this.#container?.clientHeight || 0),
+        }
+        const previousSize = this.#lastRenderContainerSize
+        const changed =
+            !!previousSize &&
+            currentSize.width > 0 &&
+            currentSize.height > 0 &&
+            (currentSize.width !== previousSize.width || currentSize.height !== previousSize.height)
+        if (!changed) {
+            return { rendered: false, reason: 'unchanged', previousSize, currentSize }
+        }
+        this.#cachedSizes = null
+        this.#cachedStart = null
+        this.#view.cachedViewSize = null
+        this.#view.cachedSizes = null
+        this.#invalidateVisibleRangeCache()
+        await this.render()
+        return { rendered: true, previousSize, currentSize }
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
@@ -2341,7 +2381,10 @@ export class Paginator extends HTMLElement {
             if (this.sections[index]?.linear !== 'no') return index
     }
     async #turnPage(dir, distance) {
-        if (this.#locked) return
+        if (this.#locked) {
+            this.#queuedPageTurn = { dir, distance }
+            return
+        }
 
         this.#locked = true
         this.#pendingPageTurnDirection = dir > 0 ? 'forward' : 'backward'
@@ -2356,6 +2399,13 @@ export class Paginator extends HTMLElement {
         } finally {
             this.#pendingPageTurnDirection = null
             this.#locked = false
+            const queuedPageTurn = this.#queuedPageTurn
+            this.#queuedPageTurn = null
+            if (queuedPageTurn) {
+                queueMicrotask(() => {
+                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance)
+                })
+            }
         }
     }
     async prev(distance) {
