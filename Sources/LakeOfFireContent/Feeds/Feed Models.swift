@@ -913,8 +913,8 @@ public extension Feed {
             rssData = cleanRssData(rssData)
             logRSS("stage=fetch.cleaned feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) bytesAfterClean=\(rssData.count)")
             let parser = FeedKit.FeedParser(data: rssData)
-            return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
-                parser.parseAsync { [weak self] parserResult in
+            return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
+                parser.parseAsync { parserResult in
                     switch parserResult {
                     case .success(let feed):
                         switch feed {
@@ -925,10 +925,9 @@ public extension Feed {
                                 return
                             }
                             logRSS("stage=parse.rss.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) items=\(items.count)")
-                            Task { @MainActor [weak self] in
-                                guard let self = self else { return }
+                            Task { @MainActor in
                                 do {
-                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
                                     logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=rss")
                                     continuation.resume(returning: ())
@@ -945,10 +944,9 @@ public extension Feed {
                                 return
                             }
                             logRSS("stage=parse.atom.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) entries=\(items.count)")
-                            Task { @MainActor [weak self] in
-                                guard let self = self else { return }
+                            Task { @MainActor in
                                 do {
-                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
                                     logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
                                     continuation.resume(returning: ())

@@ -252,6 +252,7 @@ struct LibraryCategoriesView: View {
                     archiveView
                 }
             }
+            .headerProminence(.increased)
             .listStyle(.sidebar)
 #if os(iOS)
             .toolbar {

@@ -312,20 +312,23 @@ internal func buildCanonicalReadabilityHTML(
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
     let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double
-    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<button type=\"button\" class=\"reader-view-original\">View Original</button>"
+    let viewOriginal = isInternalReaderURL(contentURL) ? nil : "<a class=\"reader-view-original\" href=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\">View Original</a>"
     let bylineLine = resolvedByline.isEmpty
         ? ""
         : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
     let publicationDateText = publishedTime.map(escapeReadabilityText)
-    let metaItems = [publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" }]
+    let metaItems = [
+        publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" },
+        viewOriginal,
+    ]
         .compactMap { $0 }
     let metaLine = metaItems.isEmpty
         ? ""
         : """
-        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\"></span>"))</div>
+        <div id="reader-meta-line" class="byline-meta-line">\(metaItems.joined(separator: "<span class=\"reader-meta-divider\">·</span>"))</div>
         """
     let actionLine = """
-        <div id="reader-header-actions">\(viewOriginal ?? "")</div>
+        <div id="reader-header-actions"></div>
         """
     let availabilityAttributes = "data-mnb-reader-mode-available=\"true\" data-mnb-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-mnb-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass

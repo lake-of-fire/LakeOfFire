@@ -212,12 +212,19 @@ private struct ReaderLoadingOverlay: View {
             return
         }
 
-        guard isVisible else {
+        let trimmedMessage = latestStatusMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMessage = !(trimmedMessage?.isEmpty ?? true)
+
+        if !hasMessage, displayedMessage != nil, !isVisible {
+            cancelHideWork()
+            displayedMessage = nil
+            isShowingStatus = false
             return
         }
 
-        let trimmedMessage = latestStatusMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasMessage = !(trimmedMessage?.isEmpty ?? true)
+        guard isVisible else {
+            return
+        }
 
         if hasMessage, let message = trimmedMessage {
             cancelHideWork()
@@ -246,7 +253,7 @@ private struct ReaderLoadingOverlay: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
         } else {
             if displayedMessage != nil {
-                cancelHideWork()
+                scheduleHide()
                 return
             }
         }

@@ -11,27 +11,32 @@ public extension ReaderProtocol {
     }
 }
 
-public class ReaderProtocolRegistry {
+public final class ReaderProtocolRegistry: @unchecked Sendable {
     public static let shared = ReaderProtocolRegistry(readerProtocols: [
         EbookReaderProtocol.self,
         InternalReaderProtocol.self,
         TranscriptReaderProtocol.self,
     ])
-    
+
+    private let lock = NSLock()
+    private var readerProtocols: [ReaderProtocol.Type] = []
+
     public init(readerProtocols: [ReaderProtocol.Type]) {
         for readerProtocol in readerProtocols {
             register(readerProtocol)
         }
     }
-    
-    var readerProtocols: [ReaderProtocol.Type] = []
-    
+
     public func register(_ readerProtocol: ReaderProtocol.Type) {
-        readerProtocols.append(readerProtocol)
+        lock.withLock {
+            readerProtocols.append(readerProtocol)
+        }
     }
-    
+
     public func get(forURL url: URL) -> ReaderProtocol.Type? {
         guard let scheme = url.scheme else { return nil }
-        return readerProtocols.first { $0.urlScheme == scheme }
+        return lock.withLock {
+            readerProtocols.first { $0.urlScheme == scheme }
+        }
     }
 }

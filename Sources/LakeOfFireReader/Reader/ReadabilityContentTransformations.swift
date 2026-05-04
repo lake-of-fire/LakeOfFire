@@ -320,7 +320,6 @@ private func shouldPreferPipePrefixTitle(url: URL) -> Bool {
 
 public func wireViewOriginalLinks(doc: Document, url: URL) throws {
     let originalLinks = try doc.getElementsByClass("reader-view-original")
-    try originalLinks.attr("href", url.absoluteString)
     guard !originalLinks.isEmpty() else { return }
     guard let header = try doc.getElementById("reader-header") else { return }
     let actions: Element
@@ -338,7 +337,20 @@ public func wireViewOriginalLinks(doc: Document, url: URL) throws {
         guard let insertedActions = try doc.getElementById("reader-header-actions") else { return }
         actions = insertedActions
     }
-    for link in originalLinks.array() where link.parent()?.id() != "reader-header-actions" {
+    for originalLink in originalLinks.array() {
+        let link: Element
+        if originalLink.tagName().lowercased() == "button" {
+            let baseURI = originalLink.ownerDocument()?.getBaseUri() ?? ""
+            let anchor = try Element(Tag.valueOf("a"), baseURI)
+            try anchor.attr("class", "reader-view-original")
+            try anchor.text(originalLink.text(trimAndNormaliseWhitespace: false))
+            try originalLink.replaceWith(anchor)
+            link = anchor
+        } else {
+            link = originalLink
+        }
+        try link.attr("href", url.absoluteString)
+        guard link.parent()?.id() != "reader-header-actions" else { continue }
         try link.remove()
         try actions.appendChild(link)
     }

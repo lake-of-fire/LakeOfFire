@@ -30,6 +30,21 @@ public class FeedViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let feedID: UUID
     private let feedTitle: String
+
+    @MainActor
+    private func reloadEntries(feedID: UUID, reason: String) async {
+        do {
+            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            let entries = Array(
+                realm.objects(FeedEntry.self)
+                    .where { $0.feedID == feedID && !$0.isDeleted }
+            )
+            logRSS("stage=feedView.reloadEntries feedID=\(feedID.uuidString) reason=\(reason) count=\(entries.count)")
+            self.entries = entries
+        } catch {
+            logRSS("stage=feedView.reloadEntries.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
+        }
+    }
     
     public init(feed: Feed) {
         self.feedID = feed.id
@@ -67,6 +82,7 @@ public class FeedViewModel: ObservableObject {
         if force || shouldRefresh {
             do {
                 try await feed.fetch()
+                await reloadEntries(feedID: feed.id, reason: force ? "forceFetchComplete" : "autoFetchComplete")
                 logRSS("stage=feedView.fetchFinished feedID=\(feed.id.uuidString) title=\(feed.title)")
             } catch {
                 logRSS("stage=feedView.fetchError feedID=\(feed.id.uuidString) title=\(feed.title) error=\(error)")
