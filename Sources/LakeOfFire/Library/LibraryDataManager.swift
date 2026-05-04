@@ -737,7 +737,7 @@ public class LibraryDataManager: NSObject {
             }
         }
     }
-    
+
     @RealmBackgroundActor
     func importOPMLEntry(_ opmlEntry: OPMLEntry, opml: OPML, download: Downloadable?, category: FeedCategory? = nil, importedCategories: OrderedSet<FeedCategory> = OrderedSet(), importedFeeds: OrderedSet<Feed> = OrderedSet(), importedScripts: OrderedSet<UserScript> = OrderedSet()) async throws -> (OrderedSet<FeedCategory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
         var category = category
@@ -749,7 +749,10 @@ public class LibraryDataManager: NSObject {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
+        let realm = try await Realm(
+            configuration: LibraryDataManager.realmConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {

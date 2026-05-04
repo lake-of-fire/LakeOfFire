@@ -916,8 +916,8 @@ public extension Feed {
             )
             rssData = cleanRssData(rssData)
             let parser = FeedKit.FeedParser(data: rssData)
-            return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
-                parser.parseAsync { [weak self] parserResult in
+            return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
+                parser.parseAsync { parserResult in
                     switch parserResult {
                     case .success(let feed):
                         switch feed {
@@ -926,10 +926,9 @@ public extension Feed {
                                 continuation.resume(throwing: FeedError.parserFailed)
                                 return
                             }
-                            Task { @MainActor [weak self] in
-                                guard let self = self else { return }
+                            Task { @MainActor in
                                 do {
-                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
                                     continuation.resume(returning: ())
                                 } catch {
@@ -942,10 +941,9 @@ public extension Feed {
                                 continuation.resume(throwing: FeedError.parserFailed)
                                 return
                             }
-                            Task { @MainActor [weak self] in
-                                guard let self = self else { return }
+                            Task { @MainActor in
                                 do {
-                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
                                     continuation.resume(returning: ())
                                 } catch {

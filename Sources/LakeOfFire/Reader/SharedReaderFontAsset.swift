@@ -4,6 +4,7 @@ private func sharedReaderFontLog(
     _ stage: String,
     _ metadata: [String: String] = [:]
 ) {
+#if DEBUG
     let payload = metadata
         .sorted { $0.key < $1.key }
         .map { "\($0.key)=\($0.value)" }
@@ -13,6 +14,7 @@ private func sharedReaderFontLog(
     } else {
         print("# EPUB", "sharedReaderFont.\(stage)", payload)
     }
+#endif
 }
 
 public struct SharedReaderFontAsset: Equatable, Sendable {

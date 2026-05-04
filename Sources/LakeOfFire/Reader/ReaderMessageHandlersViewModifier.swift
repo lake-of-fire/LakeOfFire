@@ -398,7 +398,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 guard let payload = message.body as? [String: Any] else {
+#if DEBUG
                     debugPrint("# EPUB  readabilityInit.swiftLog", "body=\(String(describing: message.body))")
+#endif
                     return
                 }
                 let logMessage = payload["message"] as? String ?? "# EPUB  SwiftReadability.print"
@@ -476,7 +478,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         arguments: ["bookKey": bookKey],
                         in: message.frameInfo
                     )
+#if DEBUG
                     debugPrint("# EPUB  paginationBookKey.set", "key=\(bookKey.prefix(72))…")
+#endif
                 }
             }),
             ("trackingSizeCache", { [weak self] message in
@@ -554,7 +558,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 in: message.frameInfo
                             )
                         }
+#if DEBUG
                         debugPrint("# EPUB  trackingSizeCache miss", "key=\(key.prefix(72))…")
+#endif
                     }
                 default:
                     break
@@ -575,7 +581,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 guard let payload = message.body as? [String: Any],
                       let shouldHide = payload["hideNavigationDueToScroll"] as? Bool else {
+#if DEBUG
                     debugPrint("# HIDENAV native.message.skip", "reason=invalid-payload", "body=\(String(describing: message.body))")
+#endif
                     return
                 }
                 let source = payload["source"] as? String

@@ -11,11 +11,15 @@ import RealmSwiftGaps
 import UniformTypeIdentifiers
 
 private func logReaderLoad(_ message: String) {
+#if DEBUG
     debugPrint("# READERLOAD \(message)")
+#endif
 }
 
 private func logSnippetEvent(_ stage: String, _ parts: String...) {
+#if DEBUG
     debugPrint("# SNIPPETS", stage, parts.joined(separator: " "))
+#endif
 }
 
 private let readerContentLoaderVerboseLoggingEnabled =

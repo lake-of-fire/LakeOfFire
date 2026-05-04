@@ -5,11 +5,15 @@ private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInterna
 private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
 
 private func logReaderLoad(_ message: String) {
+#if DEBUG
     debugPrint("# READERLOAD \(message)")
+#endif
 }
 
 private func logTitleTrace(_ message: String) {
+#if DEBUG
     debugPrint("# TITLE \(message)")
+#endif
 }
 
 @MainActor
@@ -327,7 +331,9 @@ public class ReaderContent: ObservableObject {
                 "stage=readerContent.updateContentTitle persisted contentURL=\(contentURL.absoluteString) finalTitle=\(trimmed.debugTitleFragment) isTitlePrefixOfContent=\(isTitlePrefixOfContent)"
             )
         } catch {
+#if DEBUG
             debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
+#endif
         }
     }
 }

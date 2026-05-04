@@ -59,6 +59,12 @@ private extension View {
     }
 }
 
+private func logSafeArea(_ message: @autoclosure () -> String) {
+#if DEBUG
+    debugPrint("# SAFEAREA \(message())")
+#endif
+}
+
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
 private var ebookChromeInsetRevision: Int = 0
@@ -81,7 +87,9 @@ func applyAdaptiveReaderWidth(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
+#if DEBUG
         debugPrint("# EPUB  readerAdaptiveWidth.set.skip", "reason=\(reason)", "info=no asyncCaller")
+#endif
         return
     }
     let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
@@ -108,7 +116,9 @@ func syncReaderPaginationTrackingSettingsKey(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
+#if DEBUG
         debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+#endif
         return
     }
     let key = readerPaginationTrackingSettingsKey(
@@ -121,9 +131,13 @@ func syncReaderPaginationTrackingSettingsKey(
             "window.paginationTrackingSettingsKey = '" + key + "';",
             true
         )
+#if DEBUG
         debugPrint("# EPUB  paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
+#endif
     } catch {
+#if DEBUG
         debugPrint("# EPUB  paginationSettingsKey.set.error", error.localizedDescription)
+#endif
     }
 }
 
@@ -153,7 +167,9 @@ func applyReaderFontSize(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
+#if DEBUG
         debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+#endif
         return
     }
     do {
@@ -878,6 +894,17 @@ public struct Reader: View {
             "\(effectiveToolbarBottomOffset)",
             "\(readerViewModel.ebookChromeInsetsResyncID)",
         ].joined(separator: "|")
+        let safeAreaBottomSignature = [
+            "stage=lakeReader.computeBottom",
+            "pageURL=\(pageURL.absoluteString)",
+            "readerContentPageURL=\(readerContent.pageURL.absoluteString)",
+            "sampledBottom=\(sampledBottomInset)",
+            "additionalBottom=\(additionalBottomInset)",
+            "ebookChromeBottom=\(ebookChromeBottomInset)",
+            "effectiveBottom=\(effectiveBottomInset)",
+            "toolbarBottomOffset=\(effectiveToolbarBottomOffset)",
+            "isEBook=\(pageURL.isEBookURL)"
+        ].joined(separator: " ")
 
         //            VStack(spacing: 0) {
         ReaderWebView(
@@ -913,6 +940,9 @@ public struct Reader: View {
                             bottom: max(0, geometry.safeAreaInsets.bottom),
                             trailing: max(0, geometry.safeAreaInsets.trailing)
                         )
+                        logSafeArea(
+                            "stage=lakeReader.geometryInitialBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
+                        )
                         obscuredInsets = sampledInsets
                     }
                     .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
@@ -921,6 +951,9 @@ public struct Reader: View {
                             leading: max(0, safeAreaInsets.leading),
                             bottom: max(0, safeAreaInsets.bottom),
                             trailing: max(0, safeAreaInsets.trailing)
+                        )
+                        logSafeArea(
+                            "stage=lakeReader.geometryChangedBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
                         )
                         obscuredInsets = sampledInsets
                     }
@@ -941,6 +974,9 @@ public struct Reader: View {
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
+        .task(id: safeAreaBottomSignature) {
+            logSafeArea(safeAreaBottomSignature)
+        }
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
             debugPrint(
@@ -1045,7 +1081,9 @@ public struct Reader: View {
                         duplicateInMultiTargetFrames: true
                     )
                 } catch {
+#if DEBUG
                     debugPrint("# EPUB  title.sync.failed", error.localizedDescription)
+#endif
                 }
             }
         }

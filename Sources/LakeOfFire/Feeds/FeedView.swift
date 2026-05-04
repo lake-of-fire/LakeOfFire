@@ -8,11 +8,15 @@ import LakeKit
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
 private func logDetent(_ message: String) {
+#if DEBUG
     debugPrint("# DETENT \(message)")
+#endif
 }
 
 private func logFeedFlash(_ message: String) {
+#if DEBUG
     debugPrint("# FEEDFLASH \(message)")
+#endif
 }
 
 @MainActor
@@ -25,6 +29,25 @@ public class FeedViewModel: ObservableObject {
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
+
+    @MainActor
+    private func reloadEntries(feedID: UUID, reason: String) async {
+        do {
+            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            let entries = Array(
+                realm.objects(FeedEntry.self)
+                    .where { $0.feedID == feedID && !$0.isDeleted }
+            )
+            logFeedFlash(
+                "model.reloadEntries instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) entries=\(entries.count) entryIDs=\(entries.map(\.compoundKey).joined(separator: ","))"
+            )
+            self.entries = entries
+        } catch {
+            logFeedFlash(
+                "model.reloadEntries.error instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) error=\(error.localizedDescription)"
+            )
+        }
+    }
     
     public init(feed: Feed) {
         entries = feed.getEntries()
@@ -73,6 +96,7 @@ public class FeedViewModel: ObservableObject {
             logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
             logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
             try await feed.fetch()
+            await reloadEntries(feedID: feed.id, reason: "forceFetchComplete")
             logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce")
             logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce entries=\(entries?.count ?? -1)")
             return
@@ -87,6 +111,7 @@ public class FeedViewModel: ObservableObject {
         let now = Date()
         if let lastAttempt = Self.recentAutomaticFetchAttempts[feed.id],
            now.timeIntervalSince(lastAttempt) < Self.automaticFetchAttemptSuppressionInterval {
+            await reloadEntries(feedID: feed.id, reason: "skipRecentAttempt")
             logDetent(
                 "feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt)))"
             )
@@ -100,6 +125,7 @@ public class FeedViewModel: ObservableObject {
         logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
         logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
         try await feed.fetch()
+        await reloadEntries(feedID: feed.id, reason: "autoFetchComplete")
         logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto")
         logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto entries=\(entries?.count ?? -1)")
     }

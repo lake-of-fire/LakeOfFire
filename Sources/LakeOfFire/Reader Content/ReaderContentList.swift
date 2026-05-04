@@ -6,19 +6,27 @@ import SwiftUtilities
 import LakeKit
 
 private func logReaderLoad(_ message: String) {
+#if DEBUG
     debugPrint("# READERLOAD \(message)")
+#endif
 }
 
 private func logSnippetLoad(_ message: String) {
+#if DEBUG
     debugPrint("# SNIPPETLOAD", message)
+#endif
 }
 
 private func logDetent(_ message: String) {
+#if DEBUG
     debugPrint("# DETENT \(message)")
+#endif
 }
 
 private func logFeedFlash(_ message: String) {
+#if DEBUG
     debugPrint("# FEEDFLASH \(message)")
+#endif
 }
 
 public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {

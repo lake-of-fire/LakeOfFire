@@ -16,6 +16,7 @@ const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
+const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
@@ -71,6 +72,7 @@ const logMarkReadNav = (event, detail = {}) => {
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
 // We only need a no-op logger for nav diagnostics.
 const logFix = (event, detail = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     try {
         const payload = { event, ...detail };
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKFIX1 ${JSON.stringify(payload)}`);
@@ -79,6 +81,7 @@ const logFix = (event, detail = {}) => {
     }
 };
 const logBug = (event, detail = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     try {
         const payload = { event, ...detail };
         window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKBUG1 ${JSON.stringify(payload)}`);
@@ -428,7 +431,7 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
-        console.log('# HIDENAV js.navHUD.set', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.navHUD.set', JSON.stringify({
             source,
             previous,
             requestedHide: !!shouldHide,

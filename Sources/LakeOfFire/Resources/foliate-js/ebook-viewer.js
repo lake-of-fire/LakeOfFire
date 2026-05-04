@@ -8,6 +8,8 @@ import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
+const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
+
 window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: msg,
@@ -754,6 +756,7 @@ const debounce = (fn, delay) => {
 };
 
 const postReaderLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     const payload = {
         prefix: '# READER',
         event,
@@ -767,11 +770,12 @@ const postReaderLog = (event, details = {}) => {
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(payload);
     } catch (error) {
-        console.debug('# READER', event, details, error);
+        if (manabiDiagnosticsEnabled()) console.debug('# READER', event, details, error);
     }
 };
 
 const postEPUBLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     const payload = {
         prefix: '# EPUB',
         event,
@@ -785,7 +789,7 @@ const postEPUBLog = (event, details = {}) => {
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(payload);
     } catch (error) {
-        console.debug('# EPUB', event, details, error);
+        if (manabiDiagnosticsEnabled()) console.debug('# EPUB', event, details, error);
     }
 };
 
@@ -1627,7 +1631,7 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
     const before = captureNavVisibilityState();
-    console.log('# HIDENAV js.bridge.begin', JSON.stringify({
+    if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.bridge.begin', JSON.stringify({
         source,
         requestedHide: normalized,
         before,
@@ -1668,7 +1672,7 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         afterNavHiddenClass: globalThis.reader?.navHUD?.navBar?.classList?.contains?.('nav-hidden') ?? null,
         afterNavHiddenScrollClass: globalThis.reader?.navHUD?.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
     });
-    console.log('# HIDENAV js.bridge.finish', JSON.stringify({
+    if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.bridge.finish', JSON.stringify({
         source,
         requestedHide: normalized,
         after: captureNavVisibilityState(),
@@ -4853,7 +4857,7 @@ class Reader {
         const startTargetDescription = startTarget
             ? `${startTarget.tagName || 'unknown'}${startTarget.id ? `#${startTarget.id}` : ''}${startTarget.className ? `.${String(startTarget.className).replace(/\s+/g, '.')}` : ''}`
             : null;
-        console.log('# HIDENAV js.mainTouch.start.begin', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.start.begin', JSON.stringify({
             touchCount: event.touches?.length ?? null,
             changedTouchCount: event.changedTouches?.length ?? null,
             clientX: firstTouch?.clientX ?? null,
@@ -4868,14 +4872,14 @@ class Reader {
         }));
         if (event.touches?.length !== 1) {
             this.#mainDocumentSwipeState = null;
-            console.log('# HIDENAV js.mainTouch.start.skip', JSON.stringify({ reason: 'touch-count', touchCount: event.touches?.length ?? null }));
+            if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.start.skip', JSON.stringify({ reason: 'touch-count', touchCount: event.touches?.length ?? null }));
             return;
         }
         const touch = event.changedTouches?.[0];
         const target = event.target;
         if (!touch || !target || target.ownerDocument !== document) {
             this.#mainDocumentSwipeState = null;
-            console.log('# HIDENAV js.mainTouch.start.skip', JSON.stringify({
+            if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.start.skip', JSON.stringify({
                 reason: 'missing-touch-or-non-main-document',
                 hasTouch: !!touch,
                 hasTarget: !!target,
@@ -4887,7 +4891,7 @@ class Reader {
         const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
         if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
-            console.log('# HIDENAV js.mainTouch.start.skip', JSON.stringify({
+            if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.start.skip', JSON.stringify({
                 reason: 'excluded-target',
                 target: startTargetDescription,
                 isExcludedTouchTarget: !!isExcludedTouchTarget,
@@ -4904,7 +4908,7 @@ class Reader {
             startY: touch.screenY,
             triggered: false,
         };
-        console.log('# HIDENAV js.mainTouch.start.accept', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.start.accept', JSON.stringify({
             startX: touch.screenX,
             startY: touch.screenY,
             clientX: touch.clientX,
@@ -4958,7 +4962,7 @@ class Reader {
         }
     }
     #onMainDocumentTouchEnd() {
-        console.log('# HIDENAV js.mainTouch.end', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.end', JSON.stringify({
             hadSwipeState: !!this.#mainDocumentSwipeState,
             triggered: this.#mainDocumentSwipeState?.triggered ?? null,
             hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
@@ -5396,7 +5400,7 @@ class Reader {
         if (unreadSegmentCount > 0) {
             const unreadSegmentIdentifiers = segmentIdentifiers
                 .filter((identifier) => !readSegmentIdentifiers.has(identifier));
-            console.log('# UNREAD', JSON.stringify({
+            if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
                 event: 'js.currentSectionReadState.unreadSegments',
                 documentURL: doc.URL || doc.location?.href || null,
                 currentPageNumber,
@@ -5427,7 +5431,7 @@ class Reader {
         const contents = this.view?.renderer?.getContents?.() || [];
         const doc = contents[0]?.doc;
         if (!isDocumentLike(doc)) {
-            console.log('# UNREAD', JSON.stringify({
+            if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
                 event: 'js.ebookMarkAllSectionsAsRead.skipped',
                 reason: 'missing-document',
             }));
@@ -5478,7 +5482,7 @@ class Reader {
         const payloadSegmentIdentifiers = payloadSegments
             .map((segment) => segment.segmentIdentifier)
             .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        console.log('# UNREAD', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
             event: 'js.ebookMarkAllSectionsAsRead.dispatch',
             documentURL: doc.URL || doc.location?.href || null,
             segmentNodeCount: segmentNodes.length,
@@ -5512,7 +5516,7 @@ class Reader {
             ...payloadSentenceIdentifiers,
         ]));
         this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-all-read');
-        console.log('# UNREAD', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
             event: 'js.ebookMarkAllSectionsAsRead.optimisticApplied',
             documentURL: doc.URL || doc.location?.href || null,
             optimisticReadSegmentCount: optimisticProgress.readSegmentIdentifiers.length,

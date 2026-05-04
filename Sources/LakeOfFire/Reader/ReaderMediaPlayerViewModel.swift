@@ -7,6 +7,14 @@ import RealmSwiftGaps
 import WebKit
 import AVFoundation
 
+@inline(__always)
+private func mediaDebugPrint(_ values: Any..., separator: String = " ", terminator: String = "\n") {
+#if DEBUG
+    let output = values.map { String(describing: $0) }.joined(separator: separator)
+    Swift.print(output, terminator: terminator)
+#endif
+}
+
 public enum ReaderPlaybackSource: String, Sendable {
     case recordedAudio
     case aiTextToSpeech
@@ -103,7 +111,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
         currentContentURL = content.url
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
-        debugPrint(
+        mediaDebugPrint(
             "# MEDIA mediaPlayer.navigation",
             "pageURL=\(newState.pageURL.absoluteString)",
             "contentURL=\(content.url.absoluteString)",
@@ -114,34 +122,34 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             "playbackSource=\(playbackSource.rawValue)"
         )
 #if DEBUG
-        debugPrint(
+        mediaDebugPrint(
             "# AUDIO ReaderMediaPlayerViewModel.onNavigationCommitted url=\(newState.pageURL.absoluteString) voiceCount=\(voiceAudioURLs.count) host=\(newState.pageURL.host ?? "nil") isReaderMode=\(newState.pageURL.isNativeReaderView)"
         )
 #endif
         if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
             if voiceAudioURLs != audioURLs {
 #if DEBUG
-                debugPrint(
+                mediaDebugPrint(
                     "# AUDIO ReaderMediaPlayerViewModel.audioURLsUpdated old=\(audioURLs.map { $0.absoluteString }) new=\(voiceAudioURLs.map { $0.absoluteString })"
                 )
 #endif
                 audioURLs = voiceAudioURLs
             }
             if !voiceAudioURLs.isEmpty && content.autoOpenMediaPlayer {
-                debugPrint(
+                mediaDebugPrint(
                     "# MEDIA mediaPlayer.autoOpen",
                     "contentURL=\(content.url.absoluteString)",
                     "voiceCount=\(voiceAudioURLs.count)"
                 )
 #if DEBUG
                 if !isMediaPlayerPresented {
-                    debugPrint("# AUDIO ReaderMediaPlayerViewModel.presentingNowPlaying reason=navigation voiceCount=\(voiceAudioURLs.count)")
+                    mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.presentingNowPlaying reason=navigation voiceCount=\(voiceAudioURLs.count)")
                 }
 #endif
                 isMediaPlayerPresented = true
             } else if playbackSource == .recordedAudio, isMediaPlayerPresented {
 #if DEBUG
-                debugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=noRecordedAudio")
+                mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=noRecordedAudio")
 #endif
                 cancelAutoplayRequest(reason: "navigation.noRecordedAudio")
                 isMediaPlayerPresented = false
@@ -152,13 +160,13 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 guard let self = self else { return }
                 if self.isMediaPlayerPresented {
 #if DEBUG
-                    debugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=readerMode")
+                    mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=readerMode")
 #endif
                     self.isMediaPlayerPresented = false
                 }
                 if voiceAudioURLs != audioURLs {
 #if DEBUG
-                    debugPrint("# AUDIO ReaderMediaPlayerViewModel.audioURLsUpdated reason=readerMode old=\(audioURLs.map { $0.absoluteString }) new=\(voiceAudioURLs.map { $0.absoluteString })")
+                    mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.audioURLsUpdated reason=readerMode old=\(audioURLs.map { $0.absoluteString }) new=\(voiceAudioURLs.map { $0.absoluteString })")
 #endif
                     audioURLs = voiceAudioURLs
                 }
@@ -171,7 +179,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func requestAutoplay() {
         let token = UUID()
         autoplayRequestToken = token
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD autoplay.request",
             "source=\(playbackSource.rawValue)",
             "token=\(token.uuidString)"
@@ -182,7 +190,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func cancelAutoplayRequest(reason: String) {
         guard let token = autoplayRequestToken else { return }
         autoplayRequestToken = nil
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD autoplay.cancel",
             "source=\(playbackSource.rawValue)",
             "token=\(token.uuidString)",
@@ -197,7 +205,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         if didMatch {
             autoplayRequestToken = nil
         }
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD autoplay.consume",
             "source=\(playbackSource.rawValue)",
             "token=\(token.uuidString)",
@@ -208,14 +216,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func presentRecordedAudio(autoplay: Bool) {
-        debugPrint(
+        mediaDebugPrint(
             "# MEDIA mediaPlayer.presentRecordedAudio",
             "autoplay=\(autoplay)",
             "hasRecordedAudio=\(hasRecordedAudio)",
             "audioURLCount=\(audioURLs.count)",
             "contentURL=\(currentContentURL?.absoluteString ?? "nil")"
         )
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD present.recorded",
             "autoplay=\(autoplay)",
             "hasRecordedAudio=\(hasRecordedAudio)"
@@ -237,7 +245,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
         playbackSource = .recordedAudio
         isMediaPlayerPresented = true
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD present.recorded.transition",
             "reason=\(reason)",
             "hasRecordedAudio=\(hasRecordedAudio)",
@@ -252,7 +260,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             do {
                 try await ReaderContentLoader.updateContent(url: currentContentURL) { object in
                     guard !object.autoOpenMediaPlayer else { return false }
-                    debugPrint(
+                    mediaDebugPrint(
                         "# MEDIA autoOpen.persist",
                         "contentURL=\(object.url.absoluteString)",
                         "contentType=\(String(describing: type(of: object)))"
@@ -261,7 +269,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                     return true
                 }
             } catch {
-                debugPrint("# AUDIO autoOpenMediaPlayer.persist.error", error.localizedDescription)
+                mediaDebugPrint("# AUDIO autoOpenMediaPlayer.persist.error", error.localizedDescription)
             }
         }
     }
@@ -273,14 +281,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         preferredLanguage: String = "ja-JP",
         autoplay: Bool
     ) -> Bool {
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD present.ai",
             "incomingUtteranceCount=\(utterances.count)",
             "preferredLanguage=\(preferredLanguage)",
             "autoplay=\(autoplay)"
         )
         guard configureAITTSQueue(utterances: utterances, preferredLanguage: preferredLanguage) else {
-            debugPrint("# READALOUD present.ai.rejected", "reason=queueConfigurationFailed")
+            mediaDebugPrint("# READALOUD present.ai.rejected", "reason=queueConfigurationFailed")
             return false
         }
         playbackSource = .aiTextToSpeech
@@ -288,7 +296,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         if autoplay {
             requestAutoplay()
         }
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD present.ai.ready",
             "queueCount=\(ttsUtteranceCount)",
             "source=\(playbackSource.rawValue)"
@@ -309,7 +317,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             return ReaderTTSUtterance(sentenceIdentifier: trimmedIdentifier, text: trimmedText)
         }
         guard !normalized.isEmpty else {
-            debugPrint(
+            mediaDebugPrint(
                 "# READALOUD ai.queue.invalid",
                 "incomingUtteranceCount=\(utterances.count)",
                 "normalizedUtteranceCount=\(normalized.count)"
@@ -332,7 +340,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsCurrentSentenceIdentifier = normalized.first?.sentenceIdentifier
         ttsCurrentSentenceText = normalized.first?.text
         ttsProgressValue = 0
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD ai.queue.ready",
             "utteranceCount=\(normalized.count)",
             "preferredLanguage=\(preferredLanguage)",
@@ -358,21 +366,21 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func playAITTS() {
         guard hasPreparedAITTS else {
-            debugPrint("# READALOUD ai.play.skip", "reason=queueNotPrepared")
+            mediaDebugPrint("# READALOUD ai.play.skip", "reason=queueNotPrepared")
             return
         }
         guard !ttsUtterances.isEmpty else {
-            debugPrint("# READALOUD ai.play.skip", "reason=emptyQueue")
+            mediaDebugPrint("# READALOUD ai.play.skip", "reason=emptyQueue")
             return
         }
         if speechSynthesizer.isPaused {
             guard speechSynthesizer.continueSpeaking() else {
-                debugPrint("# READALOUD ai.play.resumeFailed")
+                mediaDebugPrint("# READALOUD ai.play.resumeFailed")
                 return
             }
             isPlaying = true
             registerPlaybackStart(contentKey: currentContentKey)
-            debugPrint("# READALOUD ai.play.resumed")
+            mediaDebugPrint("# READALOUD ai.play.resumed")
             return
         }
         let upperBound = max(ttsProgressUpperBound, 1)
@@ -384,9 +392,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 ttsCurrentSentenceText = firstUtterance.text
             }
             updateAITTSProgress()
-            debugPrint("# READALOUD ai.play.restartFromBeginning", "upperBound=\(upperBound)")
+            mediaDebugPrint("# READALOUD ai.play.restartFromBeginning", "upperBound=\(upperBound)")
         }
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD ai.play.begin",
             "startIndex=\(ttsCurrentUtteranceIndex)",
             "queueCount=\(ttsUtterances.count)"
@@ -397,15 +405,15 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func pauseAITTS() {
         guard speechSynthesizer.isSpeaking else {
-            debugPrint("# READALOUD ai.pause.skip", "reason=notSpeaking")
+            mediaDebugPrint("# READALOUD ai.pause.skip", "reason=notSpeaking")
             return
         }
         guard speechSynthesizer.pauseSpeaking(at: .word) else {
-            debugPrint("# READALOUD ai.pause.failed")
+            mediaDebugPrint("# READALOUD ai.pause.failed")
             return
         }
         isPlaying = false
-        debugPrint("# READALOUD ai.pause")
+        mediaDebugPrint("# READALOUD ai.pause")
     }
 
     @MainActor
@@ -492,7 +500,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             isPlaying = true
             registerPlaybackStart(contentKey: currentContentKey)
             updateAITTSProgress()
-            debugPrint(
+            mediaDebugPrint(
                 "# READALOUD ai.speak.queued",
                 "startIndex=\(startIndex)",
                 "queuedCount=\(ttsUtterances.count - startIndex)",
@@ -519,7 +527,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
         updateAITTSProgress()
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD ai.speak.queued",
             "startIndex=\(startIndex)",
             "queuedCount=\(ttsUtterances.count - startIndex)",
@@ -602,7 +610,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
         updateAITTSProgress()
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD ai.delegate.didStart",
             "index=\(index)",
             "textLength=\(utterance.speechString.count)"
@@ -625,14 +633,14 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
         guard ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] != nil else { return }
         isPlaying = false
-        debugPrint("# READALOUD ai.delegate.didPause")
+        mediaDebugPrint("# READALOUD ai.delegate.didPause")
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
         guard ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(utterance)] != nil else { return }
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
-        debugPrint("# READALOUD ai.delegate.didContinue")
+        mediaDebugPrint("# READALOUD ai.delegate.didContinue")
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
@@ -651,7 +659,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
             ttsCurrentCharacterRange = nil
             updateAITTSProgress()
         }
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD ai.delegate.didFinish",
             "index=\(index)",
             "remainingQueued=\(ttsUtteranceObjectIdentifierToIndex.count)",
@@ -667,13 +675,13 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         ttsUtteranceObjectIdentifierToIndex.removeValue(forKey: key)
         if ignoresCancellationCallbacksForQueueSwap {
             ignoresCancellationCallbacksForQueueSwap = false
-            debugPrint("# READALOUD ai.delegate.didCancel", "reason=queueSwap")
+            mediaDebugPrint("# READALOUD ai.delegate.didCancel", "reason=queueSwap")
             return
         }
         if !synthesizer.isSpeaking && !synthesizer.isPaused {
             isPlaying = false
         }
-        debugPrint(
+        mediaDebugPrint(
             "# READALOUD ai.delegate.didCancel",
             "remainingQueued=\(ttsUtteranceObjectIdentifierToIndex.count)",
             "isSpeaking=\(synthesizer.isSpeaking)"

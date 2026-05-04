@@ -16,6 +16,7 @@ const CSS_DEFAULTS = {
 };
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
         ?? (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -1548,7 +1549,7 @@ export class Paginator extends HTMLElement {
         const target = touch.target;
         const inHost = this.#container.contains(target);
         const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
-        console.log('# HIDENAV js.paginator.touchStart', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchStart', JSON.stringify({
             hasTouch: !!touch,
             clientX: touch?.clientX ?? null,
             clientY: touch?.clientY ?? null,
@@ -1568,7 +1569,7 @@ export class Paginator extends HTMLElement {
         }));
         if (!inHost && !inIframe) {
             this.#touchState = null;
-            console.log('# HIDENAV js.paginator.touchStart.skip', JSON.stringify({ reason: 'outside-host-and-iframe' }));
+            if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchStart.skip', JSON.stringify({ reason: 'outside-host-and-iframe' }));
             return;
         }
         this.#touchState = {
@@ -1636,7 +1637,7 @@ export class Paginator extends HTMLElement {
     }
     #onTouchEnd(e) {
         const touch = e.changedTouches?.[0] ?? null;
-        console.log('# HIDENAV js.paginator.touchEnd', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchEnd', JSON.stringify({
             hadTouchState: !!this.#touchState,
             triggered: this.#touchState?.triggered ?? null,
             clientX: touch?.clientX ?? null,

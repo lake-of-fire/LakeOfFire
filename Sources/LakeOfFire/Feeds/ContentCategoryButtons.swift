@@ -15,7 +15,9 @@ public extension EnvironmentValues {
 }
 
 private func logNav(_ message: String) {
+#if DEBUG
     debugPrint("# NAV \(message)")
+#endif
 }
 
 @MainActor

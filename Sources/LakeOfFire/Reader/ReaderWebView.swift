@@ -16,6 +16,12 @@ fileprivate let blockedHosts = Set([
     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
 ])
 
+private func logSafeArea(_ message: @autoclosure () -> String) {
+#if DEBUG
+    debugPrint("# SAFEAREA \(message())")
+#endif
+}
+
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {
@@ -248,7 +254,9 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
             ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
+#if DEBUG
             print("# EPUB", "readerWebView.schemeHandlerBindings", ebookSchemeBindingState)
+#endif
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -312,7 +320,7 @@ fileprivate struct ReaderWebViewInternal: View {
         let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
             ? 0
             : (obscuredInsets?.top ?? 0)
-        let sampledBottom = additionalInsets.bottom > 0 || usesEBookChromeInsets
+        let sampledBottom = usesEBookChromeInsets
             ? 0
             : (obscuredInsets?.bottom ?? 0)
         return EdgeInsets(
@@ -335,6 +343,15 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
+        let safeAreaBottomSignature = [
+            "stage=readerWebView.resolveBottom",
+            "stateURL=\(state.pageURL.absoluteString)",
+            "usesEBookChromeInsets=\(usesEBookChromeInsets)",
+            "sampledBottom=\(obscuredInsets?.bottom ?? 0)",
+            "additionalBottom=\(additionalBottomSafeAreaInset ?? 0)",
+            "resolvedPolicy=sampledPlusAdditionalWhenNotEBook",
+            "resolvedBottom=\(resolvedObscuredInsets.bottom)"
+        ].joined(separator: " ")
 
         WebView(
             config: WebViewConfig(
@@ -373,6 +390,9 @@ fileprivate struct ReaderWebViewInternal: View {
             textSelection: $textSelection,
             webViewPrewarmer: webViewPrewarmer
         )
+        .task(id: safeAreaBottomSignature) {
+            logSafeArea(safeAreaBottomSignature)
+        }
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }

@@ -127,7 +127,9 @@ private enum SwiftReadabilityProcessingOutcome {
 }
 
 private func logTitleTrace(_ message: String) {
+#if DEBUG
     debugPrint("# TITLE \(message)")
+#endif
 }
 
 private extension String {
@@ -1457,7 +1459,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if expectedSyntheticReaderLoaderURL != nil {
+#if DEBUG
             debugPrint("# EPUB  readerMode.complete.defer.emptyReadability.expectedSyntheticCommit", canonicalURL.absoluteString)
+#endif
             return true
         }
 
@@ -1526,8 +1530,10 @@ public class ReaderModeViewModel: ObservableObject {
             metadata["fontCSSBase64Length"] = String(base64.count)
             metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
         }
+#if DEBUG
         print("# EPUB", "sharedReaderFont.inject", metadata)
         print("# FONT", "sharedReaderFont.inject", metadata)
+#endif
     }
 
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
@@ -3419,7 +3425,9 @@ public class ReaderModeViewModel: ObservableObject {
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
         if !scriptCaller.hasAsyncCaller {
+#if DEBUG
             debugPrint("# EPUB  paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(newState.pageURL.absoluteString)")
+#endif
         } else {
             do {
                 try await scriptCaller.evaluateJavaScript(
@@ -3428,9 +3436,13 @@ public class ReaderModeViewModel: ObservableObject {
                     in: nil,
                     duplicateInMultiTargetFrames: true
                 )
+#if DEBUG
                 debugPrint("# EPUB  paginationBookKey.set", "key=\(newState.pageURL.absoluteString.prefix(72))…")
+#endif
             } catch {
+#if DEBUG
                 debugPrint("# EPUB  paginationBookKey.set.error", error.localizedDescription)
+#endif
             }
         }
 
@@ -3559,15 +3571,20 @@ public class ReaderModeViewModel: ObservableObject {
         if let deferral = navigationFinishedDeferral(newState: newState) {
             switch deferral {
             case .loader:
+#if DEBUG
                 debugPrint("# FLASH readerMode.navFinished.defer.loader", "pageURL=\(newState.pageURL)")
+#endif
             case .synthetic(let pendingURL, let expectedURL):
+#if DEBUG
                 debugPrint(
                     "# FLASH readerMode.navFinished.defer.synthetic",
                     "pageURL=\(newState.pageURL)",
                     "pending=\(pendingURL)",
                     "expected=\(expectedURL)"
                 )
+#endif
             case .pending(let pendingURL):
+#if DEBUG
                 debugPrint(
                     "# FLASH readerMode.navFinished.defer.pending",
                     "pageURL=\(newState.pageURL.absoluteString)",
@@ -3575,6 +3592,7 @@ public class ReaderModeViewModel: ObservableObject {
                     "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
                     "isReaderModeLoading=\(isReaderModeLoading)"
                 )
+#endif
             }
             return
         }
