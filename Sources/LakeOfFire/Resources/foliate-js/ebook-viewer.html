@@ -6,6 +6,9 @@
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
             <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; font-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src blob: data:; object-src blob: data:; form-action 'none';" />
             <style>
+                :root {
+                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+                }
                 body {
                     --active-bg: rgba(0, 0, 0, .05);
                     --side-nav-width: 28px;
@@ -83,8 +86,6 @@
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
-                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
-                    
                     margin: 0 auto;
                     height: 100%;
                     /*height: 100dvh;*/
@@ -262,9 +263,6 @@
                     z-index: 1;
                     display: grid;
                     grid-template-rows: 0 minmax(0, 1fr);
-                }
-                body[data-page-read-marker-axis="block"] #reader-stage {
-                    grid-template-rows: calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding)) minmax(0, 1fr);
                 }
                 #page-read-marker-top {
                     display: block;
@@ -838,6 +836,14 @@
                     color: currentColor;
                     transition: max-width 240ms ease, opacity 180ms ease;
                 }
+                body #page-tracking-container .page-read-button,
+                body #page-tracking-container .page-read-button *,
+                body #nav-hidden-buttons button,
+                body #nav-hidden-buttons button *,
+                body #nav-bar,
+                body #nav-bar * {
+                    font-family: var(--mnb-ui-font-family) !important;
+                }
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button {
                     width: fit-content;
                     height: var(--page-read-button-height);
@@ -895,9 +901,7 @@
                     border: none;
                     background-color: var(--theme-tracking-read-color);
                     color: white;
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-read-color) 24%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    box-shadow: none;
                     width: var(--page-read-button-height);
                     height: var(--page-read-button-height);
                     min-width: var(--page-read-button-height);
@@ -909,6 +913,9 @@
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
                     transform: scale(0.68);
+                    box-shadow:
+                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-read-color) 24%, transparent),
+                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
                 }
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
                     background-color: transparent;
@@ -923,6 +930,9 @@
                 }
                 .page-read-button[data-read-state="pending"] {
                     border-color: var(--mnb-red);
+                    box-shadow: none;
+                }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-read-state="pending"] {
                     box-shadow:
                         0px 1px 6px 1px color-mix(in srgb, var(--mnb-red) 15%, transparent),
                         0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);

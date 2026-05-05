@@ -69,9 +69,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-                        let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
-                        let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
+                        let ref = ThreadSafeReference(to: libraryConfiguration)
                         try await { @MainActor [weak self] in
+                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                            guard let libraryConfiguration = realm.resolve(ref) else { return }
+                            let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
+                            let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
                             guard let self else { return }
                             if self.webViewSystemScripts != webViewSystemScripts {
                                 self.webViewSystemScripts = webViewSystemScripts

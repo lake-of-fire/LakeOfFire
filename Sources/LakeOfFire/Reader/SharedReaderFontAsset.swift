@@ -296,7 +296,7 @@ internal func sharedReaderFontResponse(
         }
         html,
         body,
-        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(mnb-sen rt) {
+        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(mnb-sen rt) {
           font-family: '\(familyName)' !important;
         }
         mnb-sen rt {

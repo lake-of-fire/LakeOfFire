@@ -39,6 +39,31 @@ const postPaginatorPageNumLog = (event, details = {}) => {
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
+const postMay4PaginatorLog = (event, details = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY4 ' + JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            ...details,
+        }));
+    } catch {}
+};
+const roundMay4Number = value =>
+    Number.isFinite(value) ? Number(value.toFixed(1)) : null;
+const rectMay4 = element => {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+    const rect = element.getBoundingClientRect();
+    return {
+        x: roundMay4Number(rect.x),
+        y: roundMay4Number(rect.y),
+        width: roundMay4Number(rect.width),
+        height: roundMay4Number(rect.height),
+        top: roundMay4Number(rect.top),
+        right: roundMay4Number(rect.right),
+        bottom: roundMay4Number(rect.bottom),
+        left: roundMay4Number(rect.left),
+    };
+};
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
@@ -465,7 +490,7 @@ class View {
         await this.#awaitDirection();
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
-        this.#size = vertical ? height : width
+        this.#size = width
         //        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
@@ -504,10 +529,54 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
+        postMay4PaginatorLog('paginator.columnize.beforeExpand', {
+            vertical,
+            width,
+            height,
+            pageSize: this.#size,
+            gap,
+            columnWidth,
+            divisor: divisor ?? null,
+            elementClientWidth: this.#element?.clientWidth ?? null,
+            elementClientHeight: this.#element?.clientHeight ?? null,
+            elementScrollWidth: this.#element?.scrollWidth ?? null,
+            elementScrollHeight: this.#element?.scrollHeight ?? null,
+            documentElementClientWidth: doc.documentElement?.clientWidth ?? null,
+            documentElementClientHeight: doc.documentElement?.clientHeight ?? null,
+            documentElementScrollWidth: doc.documentElement?.scrollWidth ?? null,
+            documentElementScrollHeight: doc.documentElement?.scrollHeight ?? null,
+            bodyScrollWidth: doc.body?.scrollWidth ?? null,
+            bodyScrollHeight: doc.body?.scrollHeight ?? null,
+            writingMode: doc.defaultView?.getComputedStyle?.(doc.body)?.writingMode ?? null,
+        })
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
         await this.expand()
+        const iframeRect = rectMay4(this.#iframe);
+        postMay4PaginatorLog('paginator.columnize.afterExpand', {
+            vertical,
+            width,
+            height,
+            pageSize: this.#size,
+            gap,
+            columnWidth,
+            divisor: divisor ?? null,
+            elementClientWidth: this.#element?.clientWidth ?? null,
+            elementClientHeight: this.#element?.clientHeight ?? null,
+            elementScrollWidth: this.#element?.scrollWidth ?? null,
+            elementScrollHeight: this.#element?.scrollHeight ?? null,
+            iframeLeft: iframeRect?.left ?? null,
+            iframeWidth: iframeRect?.width ?? null,
+            iframeHeight: iframeRect?.height ?? null,
+            documentElementClientWidth: doc.documentElement?.clientWidth ?? null,
+            documentElementClientHeight: doc.documentElement?.clientHeight ?? null,
+            documentElementScrollWidth: doc.documentElement?.scrollWidth ?? null,
+            documentElementScrollHeight: doc.documentElement?.scrollHeight ?? null,
+            bodyScrollWidth: doc.body?.scrollWidth ?? null,
+            bodyScrollHeight: doc.body?.scrollHeight ?? null,
+            writingMode: doc.defaultView?.getComputedStyle?.(doc.body)?.writingMode ?? null,
+        })
         //        console.log("columnize... await'd expand")
         //            //            this.#debouncedExpand()
         //        }
@@ -522,8 +591,10 @@ class View {
             requestAnimationFrame(async () => {
                 //                console.log("expand... inside 0")
                 const documentElement = this.document?.documentElement
-                const side = this.#vertical ? 'height' : 'width'
-                const otherSide = this.#vertical ? 'width' : 'height'
+                const side = this.#column
+                    ? 'width'
+                    : (this.#vertical ? 'width' : 'height')
+                const otherSide = side === 'width' ? 'height' : 'width'
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
                 //                let contentSize = documentElement?.[scrollProp] ?? 0;
 
@@ -534,7 +605,14 @@ class View {
                     // which seem to be supported only by WebKit and only for horizontal writing
                     const contentStart = this.#vertical ? 0
                         : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                    const contentSize = contentStart + contentRect[side]
+                    const measuredContentSize = contentStart + contentRect[side]
+                    const scrollContentSize = Math.max(
+                        documentElement?.[scrollProp] ?? 0,
+                        this.document?.body?.[scrollProp] ?? 0
+                    )
+                    const contentSize = this.#vertical && scrollContentSize > 0
+                        ? scrollContentSize
+                        : measuredContentSize
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * this.#size
 
@@ -548,8 +626,8 @@ class View {
                     }
                     if (this.#overlayer) {
                         this.#overlayer.element.style.margin = '0'
-                        this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
-                        this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
+                        this.#overlayer.element.style.left = side === 'width' ? `${this.#size}px` : '0'
+                        this.#overlayer.element.style.top = side === 'height' ? `${this.#size}px` : '0'
                         this.#overlayer.element.style[side] = `${expandedSize}px`
                         this.#overlayer.redraw()
                     }
@@ -1207,7 +1285,7 @@ export class Paginator extends HTMLElement {
             height
         } = await this.sizes()
         this.#lastRenderContainerSize = { width, height }
-        const size = vertical ? height : width
+        const size = width
         const flow = this.getAttribute('flow')
         this.#top.classList.toggle('mnb-vertical-paginated', vertical && flow !== 'scrolled')
 
@@ -1324,6 +1402,25 @@ export class Paginator extends HTMLElement {
             columnWidth = (size / divisor) - gap
         }
 
+        postMay4PaginatorLog('paginator.beforeRender.layout', {
+            vertical,
+            flow,
+            width,
+            height,
+            size,
+            isPaginatedVertical,
+            topMargin,
+            bottomMargin,
+            gap,
+            divisor: divisor ?? null,
+            columnWidth,
+            isSingleMediaElementWithoutText,
+            containerClientWidth: this.#container?.clientWidth ?? null,
+            containerClientHeight: this.#container?.clientHeight ?? null,
+            containerScrollWidth: this.#container?.scrollWidth ?? null,
+            containerScrollHeight: this.#container?.scrollHeight ?? null,
+        })
+
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 
         const marginalDivisor = vertical ?
@@ -1402,7 +1499,7 @@ export class Paginator extends HTMLElement {
         const {
             scrolled
         } = this
-        return this.#vertical ? (scrolled ? 'scrollLeft' : 'scrollTop') :
+        return this.#vertical ? 'scrollLeft' :
             scrolled ? 'scrollTop' : 'scrollLeft'
     }
     async sideProp() {
@@ -1410,7 +1507,7 @@ export class Paginator extends HTMLElement {
         const {
             scrolled
         } = this
-        return this.#vertical ? (scrolled ? 'width' : 'height') :
+        return this.#vertical ? 'width' :
             scrolled ? 'height' : 'width'
     }
     async sizes() {
@@ -2354,6 +2451,7 @@ export class Paginator extends HTMLElement {
             willLoadNewIndex: willLoadNewIndex
         }))
         if (!willLoadNewIndex) {
+            if (anchor == null && !select) return
             await this.#display({
                 index,
                 anchor,

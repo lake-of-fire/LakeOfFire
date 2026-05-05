@@ -28,7 +28,7 @@ public struct ReadabilityImagesUserScript {
         WebViewUserScript(
             source: userScriptSource,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false,
+            forMainFrameOnly: true,
             in: .page,
             allowedDomains: Set()
         )

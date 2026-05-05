@@ -323,10 +323,13 @@ fileprivate struct ReaderWebViewInternal: View {
         let sampledBottom = usesEBookChromeInsets
             ? 0
             : (obscuredInsets?.bottom ?? 0)
+        let additionalBottom = usesEBookChromeInsets
+            ? 0
+            : additionalInsets.bottom
         return EdgeInsets(
             top: max(0, sampledTop + additionalInsets.top),
             leading: max(0, (obscuredInsets?.leading ?? 0) + additionalInsets.leading),
-            bottom: max(0, sampledBottom + additionalInsets.bottom),
+            bottom: max(0, sampledBottom + additionalBottom),
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
 #else
