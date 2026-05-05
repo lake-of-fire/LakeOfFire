@@ -68,14 +68,18 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --mnb-nav-bar-height: 54px;
+                    --mnb-nav-bar-height: 64px;
                     --mnb-obscured-top-inset: 0px;
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-obscured-bottom-inset: 0px;
                     --mnb-system-bottom-inset: env(safe-area-inset-bottom, 0px);
                     --mnb-toolbar-visual-drop: 6px;
+                    --mnb-toolbar-visual-bottom-inset: max(
+                        0px,
+                        calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px))
+                    );
                     --mnb-toolbar-physical-bottom-inset: max(
-                        calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px)),
+                        var(--mnb-toolbar-visual-bottom-inset, 0px),
                         calc(var(--mnb-obscured-bottom-inset, 0px) + var(--mnb-system-bottom-inset, 0px))
                     );
                     --nav-primary-hidden-shift-y: 14px;
@@ -245,7 +249,7 @@
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
+                    bottom: var(--mnb-toolbar-visual-bottom-inset, 0px);
                     height: var(--mnb-nav-bar-height) !important;
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);
@@ -517,7 +521,7 @@
                     position: absolute;
                     top: auto;
                     bottom: calc(
-                        var(--mnb-toolbar-physical-bottom-inset, 0px)
+                        var(--mnb-toolbar-visual-bottom-inset, 0px)
                         + 8px
                         + ((var(--page-read-button-height) - 26px) / 2)
                     );
@@ -686,7 +690,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
+                    bottom: calc(var(--mnb-toolbar-visual-bottom-inset, 0px) + 7px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -696,6 +700,7 @@
                     min-width: 0;
                     z-index: 7;
                     pointer-events: auto;
+                    padding-block: 5px;
                 }
                 #page-tracking-buttons {
                     display: flex;
@@ -777,9 +782,7 @@
                     outline: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button {
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 18%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    box-shadow: none;
                     opacity: 1;
                     width: calc(var(--page-read-button-height) * 0.85);
                     height: calc(var(--page-read-button-height) * 0.85);
@@ -849,6 +852,9 @@
                     height: var(--page-read-button-height);
                     min-width: var(--page-read-button-height);
                     min-height: var(--page-read-button-height);
+                    box-shadow:
+                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 18%, transparent),
+                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
                     justify-content: flex-start;
                     padding-inline-start: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 3px);
                     padding-inline-end: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px);
@@ -913,9 +919,7 @@
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
                     transform: scale(0.68);
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-read-color) 24%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    box-shadow: none;
                 }
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
                     background-color: transparent;
@@ -933,9 +937,7 @@
                     box-shadow: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-read-state="pending"] {
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--mnb-red) 15%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    box-shadow: none;
                 }
                 .page-read-button[data-read-state="pending"] .mnb-tracking-button-status {
                     background-color: var(--mnb-red);

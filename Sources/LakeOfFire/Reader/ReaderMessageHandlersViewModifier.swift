@@ -440,7 +440,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     if logMessage.hasPrefix("# EBOOKFIX1")
                         || logMessage.hasPrefix("# BOOKBUG1")
                         || logMessage.hasPrefix("# EBOOKHTML")
-                        || logMessage.hasPrefix("# EBOOKFETCH") {
+                        || logMessage.hasPrefix("# EBOOKFETCH")
+                        || logMessage.hasPrefix("# EPUBLOAD")
+                        || logMessage.hasPrefix("# EPUB ")
+                        || logMessage.hasPrefix("# READER ")
+                        || logMessage.hasPrefix("# REPLACETEXT ") {
                         Logger.shared.logger.info("\(logMessage)")
                     }
                     debugPrint(logMessage)
@@ -473,6 +477,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(logMessage)
                 } else {
                     debugPrint(logMessage, components.joined(separator: " "))
+                }
+                if logMessage.hasPrefix("# EPUB")
+                    || logMessage.hasPrefix("# READER")
+                    || logMessage.hasPrefix("# REPLACETEXT")
+                    || logMessage.hasPrefix("# EPUBLOAD") {
+                    let line = components.isEmpty
+                        ? logMessage
+                        : "\(logMessage) \(components.joined(separator: " "))"
+                    Logger.shared.logger.info("\(line)")
                 }
             }),
             ("readerDocState", { @MainActor [weak self] message in

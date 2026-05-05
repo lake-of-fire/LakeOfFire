@@ -793,6 +793,101 @@ const postEPUBLog = (event, details = {}) => {
     }
 };
 
+const postEPUBLoadLog = (event, details = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        sessionID: currentEPUBPerfSession?.id ?? null,
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EPUBLOAD ${JSON.stringify(payload)}`);
+    } catch (error) {
+        try { console.log('# EPUBLOAD', event, details, error); } catch (_error) {}
+    }
+};
+globalThis.__manabiPostEPUBLoadLog = postEPUBLoadLog;
+
+const postShortLineLog = (event, details = {}) => {
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# SHORTLINE ${JSON.stringify(payload)}`);
+    } catch (error) {
+        try { console.log('# SHORTLINE', event, details, error); } catch (_error) {}
+    }
+};
+
+const loadRectSnapshot = element => {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+    const rect = element.getBoundingClientRect();
+    const round = value => Number.isFinite(value) ? Number(value.toFixed(1)) : null;
+    return {
+        x: round(rect.x),
+        y: round(rect.y),
+        width: round(rect.width),
+        height: round(rect.height),
+        top: round(rect.top),
+        right: round(rect.right),
+        bottom: round(rect.bottom),
+        left: round(rect.left),
+    };
+};
+
+const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
+    const renderer = globalThis.reader?.view?.renderer ?? null;
+    const readerDoc = globalThis.reader?.view?.renderer?.view?.document ?? null;
+    const body = document.body;
+    const readerBody = readerDoc?.body ?? null;
+    const readerRoot = readerDoc?.documentElement ?? null;
+    const readerBodyStyle = readerDoc?.defaultView && readerBody
+        ? readerDoc.defaultView.getComputedStyle(readerBody)
+        : null;
+    return {
+        reason,
+        href: location.href,
+        sessionID: currentEPUBPerfSession?.id ?? null,
+        bodyLoading: !!body?.classList?.contains?.('loading'),
+        hasReader: !!globalThis.reader,
+        hasView: !!globalThis.reader?.view,
+        hasRenderer: !!renderer,
+        rendererDisplay: renderer?.style?.display || null,
+        rendererFlow: renderer?.getAttribute?.('flow') || null,
+        rendererDir: renderer?.getAttribute?.('dir') || null,
+        rendererRect: loadRectSnapshot(renderer),
+        foliateViewRect: loadRectSnapshot(document.querySelector('foliate-view')),
+        loadingIndicatorRect: loadRectSnapshot(document.querySelector('#loading-indicator')),
+        windowInnerWidth: window.innerWidth,
+        windowInnerHeight: window.innerHeight,
+        visualViewportWidth: window.visualViewport?.width ?? null,
+        visualViewportHeight: window.visualViewport?.height ?? null,
+        sourceKind: globalThis.ebookSource?.kind || null,
+        sourceURL: globalThis.ebookSource?.url || null,
+        firstLiveSectionHref: globalThis.__manabiFirstLiveSectionHref || null,
+        liveProcessedSectionCount: globalThis.__manabiLiveProcessedSectionHrefs?.size ?? null,
+        liveSettledSectionCount: globalThis.__manabiLiveSettledSectionHrefs?.size ?? null,
+        cacheWarmerReady: !!globalThis.__manabiCacheWarmerReady,
+        cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
+        inflightReplaceTextCount: globalThis.__manabiInflightReplaceTextCount ?? null,
+        readerDocumentURL: readerDoc?.location?.href || null,
+        readerDocumentReadyState: readerDoc?.readyState || null,
+        readerWritingMode: readerBodyStyle?.writingMode || null,
+        readerDirection: readerBodyStyle?.direction || null,
+        readerBodyClass: readerBody?.className || null,
+        readerBodySegmentCount: readerDoc?.querySelectorAll?.('mnb-seg')?.length ?? null,
+        readerBodySentenceCount: readerDoc?.querySelectorAll?.('mnb-sen')?.length ?? null,
+        readerBodyTextLength: readerBody?.innerText?.length ?? null,
+        readerDocumentClientWidth: readerRoot?.clientWidth ?? null,
+        readerDocumentClientHeight: readerRoot?.clientHeight ?? null,
+        readerDocumentScrollWidth: readerRoot?.scrollWidth ?? null,
+        readerDocumentScrollHeight: readerRoot?.scrollHeight ?? null,
+        ...extra,
+    };
+};
+
 const isCacheWarmerDocument = (doc) => doc?.body?.dataset?.isCacheWarmer === 'true';
 
 const captureEPUBOverlapState = () => ({
@@ -861,6 +956,7 @@ const postEPUBFlashLog = (event, details = {}) => {
 };
 
 const postMay4Log = (event, details = {}) => {
+    if (!globalThis.manabiDebugMay4PageTrackingEnabled) return;
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.('# MAY4 ' + JSON.stringify({
             event,
@@ -3624,7 +3720,14 @@ const getCSSForBookContent = ({
     spacing,
     justify,
     hyphenate
-}) => `
+}) => {
+    const parsedSpacing = Number.parseFloat(spacing)
+    const rubyReservedSpacing = Number.isFinite(parsedSpacing)
+        ? Math.max(parsedSpacing, 1.8)
+        : 1.8
+    const rubyReservedSegmentPaddingEm = Math.max(rubyReservedSpacing - 1.05, 0)
+
+    return `
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
         color-scheme: light dark;
@@ -3661,6 +3764,21 @@ const getCSSForBookContent = ({
         -webkit-hyphenate-limit-lines: 2;
         hanging-punctuation: allow-end last;
         widows: 2;
+    }
+    html:lang(ja) :is(p, li, blockquote, dd),
+    body:lang(ja) :is(p, li, blockquote, dd),
+    :lang(ja):is(p, li, blockquote, dd),
+    body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
+    body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
+    body[data-mnb-has-sentences="true"] mnb-sen,
+    body[data-mnb-has-segments="true"] mnb-seg {
+        /*
+           Reserve ruby annotation space even on lines without <rt>. WebKit's
+           ruby layout otherwise lets mixed ruby/non-ruby Japanese text fall
+           off a consistent line grid.
+        */
+        --mnb-ruby-reserved-line-height: ${rubyReservedSpacing};
+        line-height: ${rubyReservedSpacing} !important;
     }
     /*
        Neutralize book-provided body/p justification as well. Some EPUBs ship
@@ -3704,16 +3822,27 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing mnb-seg {
         /*
-           Vertical pagination is column-based. Keep inline-block for learning
-           highlight geometry, but let WebKit choose column breaks normally;
-           otherwise whole word/phrase chunks get pushed to the next page,
-           leaving mostly empty pages and splitting sentences at awkward points.
+           Temporary pagination probe: let vertical text segments participate in
+           normal inline layout instead of forcing every segment to inline-block.
         */
+        display: inline !important;
         break-inside: auto !important;
         break-before: auto !important;
         break-after: auto !important;
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
+    }
+    body.reader-vertical-writing mnb-seg:not(:has(rt)) {
+        /*
+           In vertical WebKit layout, line-height fixes the paragraph grid, but
+           an inline no-ruby segment's own rect still only covers the base glyph.
+           Reserve the missing rt lane, but clip tracking backgrounds to the
+           base glyph content so learning-status highlights do not fill it.
+        */
+        padding-right: ${rubyReservedSegmentPaddingEm}em !important;
+        background-clip: content-box !important;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
     }
 
     mnb-sen ruby.mnb-gen > rt,
@@ -3760,6 +3889,102 @@ reader-sentinel {
          break-inside: avoid !important;
     }
 `
+}
+
+const collectShortLineDiagnosticsForDocument = (doc, options = {}) => {
+    if (!doc?.body) return { reason: 'missing-document' };
+    const round = (value, digits = 2) =>
+        Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
+    const viewportHeight = doc.defaultView?.innerHeight ?? 0;
+    const viewportWidth = doc.defaultView?.innerWidth ?? 0;
+    const blocks = Array.from(doc.querySelectorAll('p, li, blockquote, dd, mnb-sen, mnb-seg'))
+        .filter(element => {
+            const text = element.textContent?.trim() || '';
+            if (!text) return false;
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            if (viewportHeight > 0 && (rect.bottom < 0 || rect.top > viewportHeight)) return false;
+            if (viewportWidth > 0 && (rect.right < 0 || rect.left > viewportWidth)) return false;
+            return true;
+        })
+        .slice(0, 8);
+    const samples = blocks.map((element, blockIndex) => {
+        const style = doc.defaultView?.getComputedStyle?.(element);
+        const writingMode = style?.writingMode || '';
+        const vertical = writingMode.startsWith('vertical');
+        const range = doc.createRange();
+        range.selectNodeContents(element);
+        const rects = Array.from(range.getClientRects())
+            .filter(rect => rect.width > 0 && rect.height > 0)
+            .slice(0, 240);
+        range.detach?.();
+
+        const rubyRects = Array.from(element.querySelectorAll('rt'))
+            .flatMap(rt => Array.from(rt.getClientRects?.() || []))
+            .filter(rect => rect.width > 0 && rect.height > 0);
+        const groups = new Map();
+        for (const rect of rects) {
+            const key = vertical ? Math.round(rect.left) : Math.round(rect.top);
+            const existing = groups.get(key) || {
+                minBlockStart: vertical ? rect.left : rect.top,
+                maxBlockEnd: vertical ? rect.right : rect.bottom,
+                minInlineStart: vertical ? rect.top : rect.left,
+                maxInlineEnd: vertical ? rect.bottom : rect.right,
+                rectCount: 0,
+                hasRubyRect: false,
+            };
+            existing.minBlockStart = Math.min(existing.minBlockStart, vertical ? rect.left : rect.top);
+            existing.maxBlockEnd = Math.max(existing.maxBlockEnd, vertical ? rect.right : rect.bottom);
+            existing.minInlineStart = Math.min(existing.minInlineStart, vertical ? rect.top : rect.left);
+            existing.maxInlineEnd = Math.max(existing.maxInlineEnd, vertical ? rect.bottom : rect.right);
+            existing.rectCount += 1;
+            existing.hasRubyRect = existing.hasRubyRect || rubyRects.some(rubyRect =>
+                !(rubyRect.right < rect.left
+                    || rubyRect.left > rect.right
+                    || rubyRect.bottom < rect.top
+                    || rubyRect.top > rect.bottom)
+            );
+            groups.set(key, existing);
+        }
+        const lines = Array.from(groups.values())
+            .sort((a, b) => a.minBlockStart - b.minBlockStart)
+            .map(line => ({
+                blockStart: round(line.minBlockStart),
+                advance: round(line.maxBlockEnd - line.minBlockStart),
+                inlineSize: round(line.maxInlineEnd - line.minInlineStart),
+                rectCount: line.rectCount,
+                hasRubyRect: line.hasRubyRect,
+            }))
+            .slice(0, 12);
+        const advances = lines.map(line => line.advance).filter(value => Number.isFinite(value));
+        const blockStarts = lines.map(line => line.blockStart).filter(value => Number.isFinite(value));
+        const blockDeltas = blockStarts.slice(1).map((value, index) => round(value - blockStarts[index]));
+        return {
+            blockIndex,
+            tagName: element.tagName?.toLowerCase() || null,
+            className: typeof element.className === 'string' ? element.className.slice(0, 80) : null,
+            text: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+            computedLineHeight: style?.lineHeight || null,
+            computedFontSize: style?.fontSize || null,
+            writingMode: writingMode || null,
+            hasRuby: !!element.querySelector('ruby, rt'),
+            rectCount: rects.length,
+            rubyRectCount: rubyRects.length,
+            minAdvance: advances.length ? round(Math.min(...advances)) : null,
+            maxAdvance: advances.length ? round(Math.max(...advances)) : null,
+            blockDeltas,
+            lines,
+        };
+    });
+    return {
+        reason: options.reason || null,
+        documentURL: doc.location?.href || doc.URL || null,
+        viewportWidth: round(viewportWidth),
+        viewportHeight: round(viewportHeight),
+        blockCount: blocks.length,
+        samples,
+    };
+};
 
 const $ = document.querySelector.bind(document)
 
@@ -3796,6 +4021,10 @@ class Reader {
             }, 360);
         }
         if (previousVisible !== nextVisible) {
+            postEPUBLoadLog('loading.class.changed', collectEPUBLoadDiagnostics('loading.class.changed', {
+                previous: previousVisible,
+                next: nextVisible,
+            }));
             postEPUBFlashLog('js.loadingClass.changed', {
                 previous: previousVisible,
                 next: nextVisible,
@@ -6109,6 +6338,10 @@ class Reader {
         await this.#advanceAfterMarkRead();
     }
     async open(file) {
+        postEPUBLoadLog('reader.open.begin', collectEPUBLoadDiagnostics('reader.open.begin', {
+            fileKind: file?.kind || 'nil',
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+        }));
         postEPUBFlashLog('js.reader.open.beforeLoading', {
             fileKind: file?.kind || 'nil',
         });
@@ -6134,6 +6367,10 @@ class Reader {
         }
         this.hasSettledInitialPaginatorLayout = false;
         this.view = await getView(file, false)
+        postEPUBLoadLog('reader.open.view.ready', collectEPUBLoadDiagnostics('reader.open.view.ready', {
+            hasRenderer: !!this.view?.renderer,
+            hasBook: !!this.view?.book,
+        }));
         markEPUBPerf('view.ready', {
             hasRenderer: !!this.view?.renderer,
             hasBook: !!this.view?.book,
@@ -6147,6 +6384,9 @@ class Reader {
         this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
+        postEPUBLoadLog('reader.open.listeners.ready', collectEPUBLoadDiagnostics('reader.open.listeners.ready', {
+            rendererFlow: this.view.renderer?.getAttribute?.('flow') || null,
+        }));
         
         const {
             book
@@ -6159,6 +6399,12 @@ class Reader {
         this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         applyStoredChromeInsets('reader.open');
+        postEPUBLoadLog('reader.open.before-view-open', collectEPUBLoadDiagnostics('reader.open.before-view-open', {
+            bookDir: this.bookDir,
+            isRTL: this.isRTL,
+            sectionCount: Array.isArray(book.sections) ? book.sections.length : null,
+            pageListCount: Array.isArray(book.pageList) ? book.pageList.length : null,
+        }));
         markEPUBPerf('renderer.ready', {
             bookDir: this.bookDir,
             isRTL: !!this.isRTL,
@@ -6465,6 +6711,9 @@ class Reader {
         postReaderLog('ebook.readerOpen.calibreBookmarks.start', {
             hasMethod: typeof book.getCalibreBookmarks === 'function',
         });
+        postEPUBLoadLog('reader.open.calibre-bookmarks.start', collectEPUBLoadDiagnostics('reader.open.calibre-bookmarks.start', {
+            hasMethod: typeof book.getCalibreBookmarks === 'function',
+        }));
         let calibreBookmarksPendingLogged = false;
         const calibreBookmarksPendingTimer = setTimeout(() => {
             calibreBookmarksPendingLogged = true;
@@ -6481,12 +6730,20 @@ class Reader {
             bookmarks = await book.getCalibreBookmarks?.()
         } catch (error) {
             clearTimeout(calibreBookmarksPendingTimer);
+            postEPUBLoadLog('reader.open.calibre-bookmarks.error', collectEPUBLoadDiagnostics('reader.open.calibre-bookmarks.error', {
+                message: error?.message || String(error),
+                stack: error?.stack || null,
+            }));
             postReaderLog('ebook.readerOpen.calibreBookmarks.error', {
                 message: error?.message || String(error),
             });
             throw error;
         }
         clearTimeout(calibreBookmarksPendingTimer);
+        postEPUBLoadLog('reader.open.calibre-bookmarks.end', collectEPUBLoadDiagnostics('reader.open.calibre-bookmarks.end', {
+            pendingLogged: calibreBookmarksPendingLogged,
+            bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
+        }));
         postReaderLog('ebook.readerOpen.calibreBookmarks.end', {
             pendingLogged: calibreBookmarksPendingLogged,
             bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
@@ -6556,6 +6813,15 @@ class Reader {
             hasRenderer: !!this.view?.renderer,
             bodyClassName: document.body?.className || 'nil',
         });
+        postEPUBLoadLog('reader.open.end', collectEPUBLoadDiagnostics('reader.open.end', {
+            elapsedMs: Math.round(
+                (typeof performance !== 'undefined' && typeof performance.now === 'function'
+                    ? performance.now()
+                    : Date.now()) - readerOpenStartedAt
+            ),
+            hasRenderer: !!this.view?.renderer,
+            bodyClassName: document.body?.className || 'nil',
+        }));
         markEPUBPerf('reader.open.end', {
             elapsedMs: safeRound(
                 (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -6762,6 +7028,10 @@ class Reader {
     }
     async #onDidDisplay({}) {
         const navVisibilityBefore = captureNavVisibilityState();
+        postEPUBLoadLog('renderer.didDisplay.begin', collectEPUBLoadDiagnostics('renderer.didDisplay.begin', {
+            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+        }));
         postEPUBFlashLog('js.renderer.didDisplay.beforeLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -6780,6 +7050,13 @@ class Reader {
             });
         }
         this.setLoadingIndicator(false);
+        try {
+            globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
+        } catch (_error) {}
+        postEPUBLoadLog('renderer.didDisplay.loading-cleared', collectEPUBLoadDiagnostics('renderer.didDisplay.loading-cleared', {
+            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+        }));
         postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -6821,8 +7098,24 @@ class Reader {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
             });
+            for (const content of this.view?.renderer?.getContents?.() || []) {
+                postShortLineLog('did-display.raf', {
+                    index: content.index ?? null,
+                    ...collectShortLineDiagnosticsForDocument(content.doc, {
+                        reason: 'did-display.raf',
+                    }),
+                });
+            }
             this.#updatePageReadMarker('did-display.raf');
             setTimeout(() => {
+                for (const content of this.view?.renderer?.getContents?.() || []) {
+                    postShortLineLog('did-display.750ms', {
+                        index: content.index ?? null,
+                        ...collectShortLineDiagnosticsForDocument(content.doc, {
+                            reason: 'did-display.750ms',
+                        }),
+                    });
+                }
                 postEPUBFlashLog('js.renderer.didDisplay.750ms', {
                     rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
                     rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -7919,6 +8212,9 @@ window.loadEBook = ({
     url,
     layoutMode,
 }) => {
+    try {
+        globalThis.__manabiFinishEPUBLoadWatchdogs?.('new-load');
+    } catch (_error) {}
     globalThis.__manabiLiveProcessedSectionHrefs = new Set();
     globalThis.__manabiLiveSettledSectionHrefs = new Set();
     globalThis.__manabiFirstLiveSectionHref = null;
@@ -7927,6 +8223,28 @@ window.loadEBook = ({
         layoutMode: layoutMode || 'default',
         sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
     });
+    let loadSettled = false;
+    const loadWatchdogTimers = [1000, 3000, 8000, 20000, 45000].map(delayMs =>
+        setTimeout(() => {
+            if (loadSettled) return;
+            postEPUBLoadLog('viewer.load.pending', collectEPUBLoadDiagnostics('viewer.load.pending', {
+                delayMs,
+                hasURL: typeof url === 'string' && url.length > 0,
+                layoutMode: layoutMode || 'default',
+                sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
+            }));
+        }, delayMs)
+    );
+    const finishLoadWatchdogs = () => {
+        loadSettled = true;
+        for (const timer of loadWatchdogTimers) clearTimeout(timer);
+    };
+    globalThis.__manabiFinishEPUBLoadWatchdogs = finishLoadWatchdogs;
+    postEPUBLoadLog('viewer.load.start', collectEPUBLoadDiagnostics('viewer.load.start', {
+        hasURL: typeof url === 'string' && url.length > 0,
+        layoutMode: layoutMode || 'default',
+        sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
+    }));
     postReaderLog('ebook.viewer.load.start', {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || 'default',
@@ -7959,6 +8277,10 @@ window.loadEBook = ({
                 .then(res => res.blob())
                 .then((blob) => {
                     window.blob = blob
+                    postEPUBLoadLog('viewer.load.blob.ready', collectEPUBLoadDiagnostics('viewer.load.blob.ready', {
+                        blobSize: blob.size,
+                        blobType: blob.type || 'nil',
+                    }));
                     markEPUBPerf('source.ready', {
                         sourceKind: 'blob',
                         blobSize: blob.size,
@@ -7976,6 +8298,9 @@ window.loadEBook = ({
         sourcePromise
         .then(async (source) => {
             if (source?.kind === 'native') {
+                postEPUBLoadLog('viewer.load.native-source.ready', collectEPUBLoadDiagnostics('viewer.load.native-source.ready', {
+                    sourceURL: source.url,
+                }));
                 markEPUBPerf('source.ready', {
                     sourceKind: 'native',
                     sourceURL: source.url,
@@ -7992,6 +8317,9 @@ window.loadEBook = ({
             markEPUBPerf('reader.open.dispatch', {
                 fileKind: source?.kind || 'nil',
             });
+            postEPUBLoadLog('viewer.reader-open.dispatch', collectEPUBLoadDiagnostics('viewer.reader-open.dispatch', {
+                fileKind: source?.kind || 'nil',
+            }));
             await reader.open(source)
         })
         .then(async () => {
@@ -8000,6 +8328,11 @@ window.loadEBook = ({
                 bookDir: globalThis.reader?.bookDir || 'nil',
                 isRTL: !!globalThis.reader?.isRTL,
             });
+            postEPUBLoadLog('viewer.reader-open.resolved', collectEPUBLoadDiagnostics('viewer.reader-open.resolved', {
+                hasRenderer: !!globalThis.reader?.view?.renderer,
+                bookDir: globalThis.reader?.bookDir || 'nil',
+                isRTL: !!globalThis.reader?.isRTL,
+            }));
             postReaderLog('ebook.viewer.load.opened', {
                 hasRenderer: !!globalThis.reader?.view?.renderer,
                 bookDir: globalThis.reader?.bookDir || 'nil',
@@ -8015,6 +8348,14 @@ window.loadEBook = ({
             })
         })
         .catch((error) => {
+            finishLoadWatchdogs();
+            try {
+                reader?.setLoadingIndicator?.(false);
+            } catch (_error) {}
+            postEPUBLoadLog('viewer.load.error', collectEPUBLoadDiagnostics('viewer.load.error', {
+                message: error?.message || String(error),
+                stack: error?.stack || null,
+            }));
             markEPUBPerf('load.error', {
                 message: error?.message || String(error),
             }, {

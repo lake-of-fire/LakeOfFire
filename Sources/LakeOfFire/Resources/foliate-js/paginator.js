@@ -39,29 +39,31 @@ const postPaginatorPageNumLog = (event, details = {}) => {
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
-const postMay4PaginatorLog = (event, details = {}) => {
+const postPaginatorLoadLog = (event, details = {}) => {
     try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY4 ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            ...details,
-        }));
-    } catch {}
+        if (typeof globalThis.__manabiPostEPUBLoadLog === 'function') {
+            globalThis.__manabiPostEPUBLoadLog(`paginator.${event}`, details);
+            return;
+        }
+        const payload = { event: `paginator.${event}`, timestamp: Date.now(), ...details };
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EPUBLOAD ${JSON.stringify(payload)}`);
+    } catch (_error) {
+        try { console.log('# EPUBLOAD', `paginator.${event}`, details); } catch (_) {}
+    }
 };
-const roundMay4Number = value =>
-    Number.isFinite(value) ? Number(value.toFixed(1)) : null;
-const rectMay4 = element => {
+const rectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
     const rect = element.getBoundingClientRect();
+    const round = value => Number.isFinite(value) ? Number(value.toFixed(1)) : null;
     return {
-        x: roundMay4Number(rect.x),
-        y: roundMay4Number(rect.y),
-        width: roundMay4Number(rect.width),
-        height: roundMay4Number(rect.height),
-        top: roundMay4Number(rect.top),
-        right: roundMay4Number(rect.right),
-        bottom: roundMay4Number(rect.bottom),
-        left: roundMay4Number(rect.left),
+        x: round(rect.x),
+        y: round(rect.y),
+        width: round(rect.width),
+        height: round(rect.height),
+        top: round(rect.top),
+        right: round(rect.right),
+        bottom: round(rect.bottom),
+        left: round(rect.left),
     };
 };
 
@@ -369,40 +371,99 @@ class View {
     }
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
+        const loadStartedAt = manabiPerfNow();
+        postPaginatorLoadLog('view.load.start', {
+            src,
+            isCacheWarmer: !!this.#isCacheWarmer,
+        });
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
-        return new Promise(async (resolve) => {
+        return new Promise((resolve, reject) => {
             if (this.#isCacheWarmer) {
                 console.log("Don't create View for cache warmers")
                 resolve()
             } else {
                 this.#iframe.addEventListener('load', async () => {
-                    const doc = this.document
+                    try {
+                        const doc = this.document
+                        postPaginatorLoadLog('view.iframe.load', {
+                            src,
+                            readyState: doc?.readyState || null,
+                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        });
 
-                    await afterLoad?.(doc)
+                        await afterLoad?.(doc)
+                        postPaginatorLoadLog('view.afterLoad.end', {
+                            src,
+                            documentURL: doc?.location?.href || null,
+                            bodyTextLength: doc?.body?.innerText?.length ?? null,
+                            segmentCount: doc?.querySelectorAll?.('mnb-seg')?.length ?? null,
+                            sentenceCount: doc?.querySelectorAll?.('mnb-sen')?.length ?? null,
+                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        });
 
-                    const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
-                    const direction = await getDirection({ bodylessStyle, bodylessDoc });
-                    this.#vertical = direction.vertical;
-                    this.#verticalRTL = direction.verticalRTL;
-                    this.#rtl = direction.rtl;
-                    this.#directionReadyResolve?.();
+                        const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
+                        const direction = await getDirection({ bodylessStyle, bodylessDoc });
+                        this.#vertical = direction.vertical;
+                        this.#verticalRTL = direction.verticalRTL;
+                        this.#rtl = direction.rtl;
+                        this.#directionReadyResolve?.();
+                        postPaginatorLoadLog('view.direction.ready', {
+                            src,
+                            vertical: this.#vertical,
+                            verticalRTL: this.#verticalRTL,
+                            rtl: this.#rtl,
+                            writingMode: bodylessStyle?.writingMode || null,
+                            cssDirection: bodylessStyle?.direction || null,
+                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        });
 
-                    this.#contentRange.selectNodeContents(doc.body)
+                        this.#contentRange.selectNodeContents(doc.body)
 
-                    const layout = await beforeRender?.({
-                        vertical: this.#vertical,
-                        rtl: this.#rtl,
-                    })
-                    await this.render(layout)
+                        const layout = await beforeRender?.({
+                            vertical: this.#vertical,
+                            rtl: this.#rtl,
+                        })
+                        postPaginatorLoadLog('view.beforeRender.end', {
+                            src,
+                            flow: layout?.flow || null,
+                            width: layout?.width ?? null,
+                            height: layout?.height ?? null,
+                            gap: layout?.gap ?? null,
+                            columnWidth: layout?.columnWidth ?? null,
+                            divisor: layout?.divisor ?? null,
+                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        });
+                        await this.render(layout)
 
-                    this.#resizeObserver.observe(doc.body)
+                        this.#resizeObserver.observe(doc.body)
 
-                    resolve()
+                        postPaginatorLoadLog('view.load.end', {
+                            src,
+                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        });
+                        resolve()
+                    } catch (error) {
+                        postPaginatorLoadLog('view.load.error', {
+                            src,
+                            message: error?.message || String(error),
+                            stack: error?.stack || null,
+                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        });
+                        reject(error)
+                    }
                 }, {
                     once: true
                 })
+                this.#iframe.addEventListener('error', error => {
+                    postPaginatorLoadLog('view.iframe.error', {
+                        src,
+                        message: error?.message || String(error),
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                    });
+                    reject(error);
+                }, { once: true })
                 this.#iframe.src = src
             }
         })
@@ -411,10 +472,22 @@ class View {
         //        console.log("render(layout)...")
         if (!layout) {
             //            console.log("render(layout)... return")
+            postPaginatorLoadLog('view.render.skip', {
+                reason: 'missing-layout',
+            });
             return
         }
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
+        postPaginatorLoadLog('view.render.start', {
+            flow: layout.flow,
+            column: this.#column,
+            vertical: this.#vertical,
+            width: layout.width ?? null,
+            height: layout.height ?? null,
+            columnWidth: layout.columnWidth ?? null,
+            gap: layout.gap ?? null,
+        });
 
         if (this.#vertical) {
             this.document.body?.classList.add('reader-vertical-writing')
@@ -429,6 +502,11 @@ class View {
             await this.scrolled(layout)
             //            console.log("render(layout)... await'd scrolled")
         }
+        postPaginatorLoadLog('view.render.end', {
+            flow: layout.flow,
+            column: this.#column,
+            vertical: this.#vertical,
+        });
     }
     async scrolled({
         gap,
@@ -490,7 +568,16 @@ class View {
         await this.#awaitDirection();
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
-        this.#size = width
+        this.#size = vertical ? height : width
+        postPaginatorLoadLog('view.columnize.start', {
+            vertical,
+            width,
+            height,
+            pageSize: this.#size,
+            gap,
+            columnWidth,
+            divisor: divisor ?? null,
+        });
         //        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
@@ -529,54 +616,18 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
-        postMay4PaginatorLog('paginator.columnize.beforeExpand', {
-            vertical,
-            width,
-            height,
-            pageSize: this.#size,
-            gap,
-            columnWidth,
-            divisor: divisor ?? null,
-            elementClientWidth: this.#element?.clientWidth ?? null,
-            elementClientHeight: this.#element?.clientHeight ?? null,
-            elementScrollWidth: this.#element?.scrollWidth ?? null,
-            elementScrollHeight: this.#element?.scrollHeight ?? null,
-            documentElementClientWidth: doc.documentElement?.clientWidth ?? null,
-            documentElementClientHeight: doc.documentElement?.clientHeight ?? null,
-            documentElementScrollWidth: doc.documentElement?.scrollWidth ?? null,
-            documentElementScrollHeight: doc.documentElement?.scrollHeight ?? null,
-            bodyScrollWidth: doc.body?.scrollWidth ?? null,
-            bodyScrollHeight: doc.body?.scrollHeight ?? null,
-            writingMode: doc.defaultView?.getComputedStyle?.(doc.body)?.writingMode ?? null,
-        })
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
         await this.expand()
-        const iframeRect = rectMay4(this.#iframe);
-        postMay4PaginatorLog('paginator.columnize.afterExpand', {
+        postPaginatorLoadLog('view.columnize.end', {
             vertical,
             width,
             height,
             pageSize: this.#size,
-            gap,
-            columnWidth,
-            divisor: divisor ?? null,
-            elementClientWidth: this.#element?.clientWidth ?? null,
-            elementClientHeight: this.#element?.clientHeight ?? null,
-            elementScrollWidth: this.#element?.scrollWidth ?? null,
-            elementScrollHeight: this.#element?.scrollHeight ?? null,
-            iframeLeft: iframeRect?.left ?? null,
-            iframeWidth: iframeRect?.width ?? null,
-            iframeHeight: iframeRect?.height ?? null,
-            documentElementClientWidth: doc.documentElement?.clientWidth ?? null,
-            documentElementClientHeight: doc.documentElement?.clientHeight ?? null,
-            documentElementScrollWidth: doc.documentElement?.scrollWidth ?? null,
-            documentElementScrollHeight: doc.documentElement?.scrollHeight ?? null,
-            bodyScrollWidth: doc.body?.scrollWidth ?? null,
-            bodyScrollHeight: doc.body?.scrollHeight ?? null,
-            writingMode: doc.defaultView?.getComputedStyle?.(doc.body)?.writingMode ?? null,
-        })
+            elementRect: rectSnapshot(this.#element),
+            iframeRect: rectSnapshot(this.#iframe),
+        });
         //        console.log("columnize... await'd expand")
         //            //            this.#debouncedExpand()
         //        }
@@ -585,100 +636,141 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
+        const expandStartedAt = manabiPerfNow();
         await this.onBeforeExpand()
+        postPaginatorLoadLog('view.expand.start', {
+            vertical: this.#vertical,
+            column: this.#column,
+        });
         //        console.log("expand...")
-        return new Promise(resolve => {
+        return new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
-                //                console.log("expand... inside 0")
-                const documentElement = this.document?.documentElement
-                const side = this.#column
-                    ? 'width'
-                    : (this.#vertical ? 'width' : 'height')
-                const otherSide = side === 'width' ? 'height' : 'width'
-                const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
-                //                let contentSize = documentElement?.[scrollProp] ?? 0;
+                try {
+                    //                console.log("expand... inside 0")
+                    const documentElement = this.document?.documentElement
+                    const side = this.#vertical ? 'height' : 'width'
+                    const otherSide = side === 'width' ? 'height' : 'width'
+                    const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
+                    //                let contentSize = documentElement?.[scrollProp] ?? 0;
 
-                if (this.#column) {
-                    const contentRect = this.#contentRange.getBoundingClientRect()
-                    const rootRect = documentElement.getBoundingClientRect()
-                    // offset caused by column break at the start of the page
-                    // which seem to be supported only by WebKit and only for horizontal writing
-                    const contentStart = this.#vertical ? 0
-                        : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                    const measuredContentSize = contentStart + contentRect[side]
-                    const scrollContentSize = Math.max(
-                        documentElement?.[scrollProp] ?? 0,
-                        this.document?.body?.[scrollProp] ?? 0
-                    )
-                    const contentSize = this.#vertical && scrollContentSize > 0
-                        ? scrollContentSize
-                        : measuredContentSize
-                    const pageCount = Math.ceil(contentSize / this.#size)
-                    const expandedSize = pageCount * this.#size
+                    if (this.#column) {
+                        const contentRect = this.#contentRange.getBoundingClientRect()
+                        const rootRect = documentElement.getBoundingClientRect()
+                        // offset caused by column break at the start of the page
+                        // which seem to be supported only by WebKit and only for horizontal writing
+                        const contentStart = this.#vertical ? 0
+                            : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                        const measuredContentSize = contentStart + contentRect[side]
+                        const scrollContentSize = Math.max(
+                            documentElement?.[scrollProp] ?? 0,
+                            this.document?.body?.[scrollProp] ?? 0
+                        )
+                        const contentSize = this.#vertical && scrollContentSize > 0
+                            ? scrollContentSize
+                            : measuredContentSize
+                        const pageCount = Math.ceil(contentSize / this.#size)
+                        const expandedSize = pageCount * this.#size
+                        postPaginatorLoadLog('view.expand.measure.column', {
+                            vertical: this.#vertical,
+                            side,
+                            otherSide,
+                            pageSize: this.#size,
+                            contentStart,
+                            measuredContentSize,
+                            scrollContentSize,
+                            contentSize,
+                            pageCount,
+                            expandedSize,
+                            documentClientWidth: documentElement?.clientWidth ?? null,
+                            documentClientHeight: documentElement?.clientHeight ?? null,
+                            documentScrollWidth: documentElement?.scrollWidth ?? null,
+                            documentScrollHeight: documentElement?.scrollHeight ?? null,
+                            bodyScrollWidth: this.document?.body?.scrollWidth ?? null,
+                            bodyScrollHeight: this.document?.body?.scrollHeight ?? null,
+                            contentRect: rectSnapshot(this.#contentRange),
+                            rootRect: rectSnapshot(documentElement),
+                        });
 
-                    this.#element.style.padding = '0'
-                    this.#iframe.style[side] = `${expandedSize}px`
-                    this.#element.style[side] = `${expandedSize + this.#size * 2}px`
-                    this.#iframe.style[otherSide] = '100%'
-                    this.#element.style[otherSide] = '100%'
-                    if (documentElement) {
-                        documentElement.style[side] = `${this.#size}px`
-                    }
-                    if (this.#overlayer) {
-                        this.#overlayer.element.style.margin = '0'
-                        this.#overlayer.element.style.left = side === 'width' ? `${this.#size}px` : '0'
-                        this.#overlayer.element.style.top = side === 'height' ? `${this.#size}px` : '0'
-                        this.#overlayer.element.style[side] = `${expandedSize}px`
-                        this.#overlayer.redraw()
-                    }
-                } else {
-                    const contentSize = documentElement.getBoundingClientRect()[side]
-                    const expandedSize = contentSize
-                    const {
-                        topMargin,
-                        bottomMargin
-                    } = this.layout
-                    //                    const paddingTop = `${marginTop}px`
-                    //                    const paddingBottom = `${marginBottom}px`
-                    const paddingTop = `${topMargin}px`
-                    const paddingBottom = `${bottomMargin}px`
-                    if (this.#vertical) {
-                        this.#element.style.paddingLeft = paddingTop
-                        this.#element.style.paddingRight = paddingBottom
-                        this.#element.style.paddingTop = '0'
-                        this.#element.style.paddingBottom = '0'
-                    } else {
-                        this.#element.style.paddingLeft = '0'
-                        this.#element.style.paddingRight = '0'
-                        this.#element.style.paddingTop = paddingTop
-                        this.#element.style.paddingBottom = paddingBottom
-                    }
-                    this.#iframe.style[side] = `${expandedSize}px`
-                    this.#element.style[side] = `${expandedSize}px`
-                    this.#iframe.style[otherSide] = '100%'
-                    this.#element.style[otherSide] = '100%'
-                    if (this.#overlayer) {
-                        if (this.#vertical) {
-                            this.#overlayer.element.style.marginLeft = paddingTop
-                            this.#overlayer.element.style.marginRight = paddingBottom
-                            this.#overlayer.element.style.marginTop = '0'
-                            this.#overlayer.element.style.marginBottom = '0'
-                        } else {
-                            this.#overlayer.element.style.marginLeft = '0'
-                            this.#overlayer.element.style.marginRight = '0'
-                            this.#overlayer.element.style.marginTop = paddingTop
-                            this.#overlayer.element.style.marginBottom = paddingBottom
+                        this.#element.style.padding = '0'
+                        this.#iframe.style[side] = `${expandedSize}px`
+                        this.#element.style[side] = `${expandedSize + this.#size * 2}px`
+                        this.#iframe.style[otherSide] = '100%'
+                        this.#element.style[otherSide] = '100%'
+                        if (documentElement) {
+                            documentElement.style[side] = `${this.#size}px`
                         }
-                        this.#overlayer.element.style.left = '0'
-                        this.#overlayer.element.style.top = '0'
-                        this.#overlayer.element.style[side] = `${expandedSize}px`
-                        this.#overlayer.redraw()
+                        if (this.#overlayer) {
+                            this.#overlayer.element.style.margin = '0'
+                            this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
+                            this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
+                            this.#overlayer.element.style[side] = `${expandedSize}px`
+                            this.#overlayer.redraw()
+                        }
+                    } else {
+                        const contentSize = documentElement.getBoundingClientRect()[side]
+                        const expandedSize = contentSize
+                        const {
+                            topMargin,
+                            bottomMargin
+                        } = this.layout
+                        //                    const paddingTop = `${marginTop}px`
+                        //                    const paddingBottom = `${marginBottom}px`
+                        const paddingTop = `${topMargin}px`
+                        const paddingBottom = `${bottomMargin}px`
+                        if (this.#vertical) {
+                            this.#element.style.paddingLeft = paddingTop
+                            this.#element.style.paddingRight = paddingBottom
+                            this.#element.style.paddingTop = '0'
+                            this.#element.style.paddingBottom = '0'
+                        } else {
+                            this.#element.style.paddingLeft = '0'
+                            this.#element.style.paddingRight = '0'
+                            this.#element.style.paddingTop = paddingTop
+                            this.#element.style.paddingBottom = paddingBottom
+                        }
+                        this.#iframe.style[side] = `${expandedSize}px`
+                        this.#element.style[side] = `${expandedSize}px`
+                        this.#iframe.style[otherSide] = '100%'
+                        this.#element.style[otherSide] = '100%'
+                        if (this.#overlayer) {
+                            if (this.#vertical) {
+                                this.#overlayer.element.style.marginLeft = paddingTop
+                                this.#overlayer.element.style.marginRight = paddingBottom
+                                this.#overlayer.element.style.marginTop = '0'
+                                this.#overlayer.element.style.marginBottom = '0'
+                            } else {
+                                this.#overlayer.element.style.marginLeft = '0'
+                                this.#overlayer.element.style.marginRight = '0'
+                                this.#overlayer.element.style.marginTop = paddingTop
+                                this.#overlayer.element.style.marginBottom = paddingBottom
+                            }
+                            this.#overlayer.element.style.left = '0'
+                            this.#overlayer.element.style.top = '0'
+                            this.#overlayer.element.style[side] = `${expandedSize}px`
+                            this.#overlayer.redraw()
+                        }
                     }
+                    //                console.log("expand... call onexpand")
+                    await this.onExpand()
+                    //                console.log("expand... call'd onexpand")
+                    postPaginatorLoadLog('view.expand.end', {
+                        vertical: this.#vertical,
+                        column: this.#column,
+                        elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
+                        elementRect: rectSnapshot(this.#element),
+                        iframeRect: rectSnapshot(this.#iframe),
+                    });
+                    resolve()
+                } catch (error) {
+                    postPaginatorLoadLog('view.expand.error', {
+                        vertical: this.#vertical,
+                        column: this.#column,
+                        message: error?.message || String(error),
+                        stack: error?.stack || null,
+                        elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
+                    });
+                    reject(error)
                 }
-                //                console.log("expand... call onexpand")
-                await this.onExpand()
-                //                console.log("expand... call'd onexpand")
-                resolve()
             })
         })
     }
@@ -1285,7 +1377,7 @@ export class Paginator extends HTMLElement {
             height
         } = await this.sizes()
         this.#lastRenderContainerSize = { width, height }
-        const size = width
+        const size = vertical ? height : width
         const flow = this.getAttribute('flow')
         this.#top.classList.toggle('mnb-vertical-paginated', vertical && flow !== 'scrolled')
 
@@ -1402,25 +1494,6 @@ export class Paginator extends HTMLElement {
             columnWidth = (size / divisor) - gap
         }
 
-        postMay4PaginatorLog('paginator.beforeRender.layout', {
-            vertical,
-            flow,
-            width,
-            height,
-            size,
-            isPaginatedVertical,
-            topMargin,
-            bottomMargin,
-            gap,
-            divisor: divisor ?? null,
-            columnWidth,
-            isSingleMediaElementWithoutText,
-            containerClientWidth: this.#container?.clientWidth ?? null,
-            containerClientHeight: this.#container?.clientHeight ?? null,
-            containerScrollWidth: this.#container?.scrollWidth ?? null,
-            containerScrollHeight: this.#container?.scrollHeight ?? null,
-        })
-
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 
         const marginalDivisor = vertical ?
@@ -1499,7 +1572,7 @@ export class Paginator extends HTMLElement {
         const {
             scrolled
         } = this
-        return this.#vertical ? 'scrollLeft' :
+        return this.#vertical ? (scrolled ? 'scrollLeft' : 'scrollTop') :
             scrolled ? 'scrollTop' : 'scrollLeft'
     }
     async sideProp() {
@@ -1507,7 +1580,7 @@ export class Paginator extends HTMLElement {
         const {
             scrolled
         } = this
-        return this.#vertical ? 'width' :
+        return this.#vertical ? (scrolled ? 'width' : 'height') :
             scrolled ? 'height' : 'width'
     }
     async sizes() {
@@ -2297,6 +2370,10 @@ export class Paginator extends HTMLElement {
         //            console.log("#display...")
         this.#setLoading(true)
         const displayStartedAt = manabiPerfNow();
+        postPaginatorLoadLog('display.start', {
+            currentIndex: this.#index,
+            isCacheWarmer: !!this.#isCacheWarmer,
+        });
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('display.start', {
                 currentIndex: this.#index,
@@ -2315,13 +2392,22 @@ export class Paginator extends HTMLElement {
             markPaginatorPerf('display.resolved', {
                 targetIndex: index,
                 hasSource: !!src,
-                anchorKind: typeof anchor === 'function'
-                    ? 'function'
-                    : (anchor instanceof Range ? 'range' : typeof anchor),
-            }, {
-                once: true,
-            });
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+        }, {
+            once: true,
+        });
         }
+        postPaginatorLoadLog('display.resolved', {
+            targetIndex: index,
+            hasSource: !!src,
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+            select: !!select,
+            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        });
 
         //            console.log("#display...awaited promise")
         this.#index = index
@@ -2379,6 +2465,11 @@ export class Paginator extends HTMLElement {
                         once: true,
                     });
                 }
+                postPaginatorLoadLog('display.view-load.start', {
+                    targetIndex: index,
+                    src,
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                });
                 await view.load(src, afterLoad, beforeRender)
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
@@ -2388,6 +2479,11 @@ export class Paginator extends HTMLElement {
                         once: true,
                     });
                 }
+                postPaginatorLoadLog('display.view-load.end', {
+                    targetIndex: index,
+                    src,
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                });
                 this.#view = view
 
                 // Reset chevrons when loading new section
@@ -2413,6 +2509,14 @@ export class Paginator extends HTMLElement {
                 once: true,
             });
         }
+        postPaginatorLoadLog('display.scroll-to-anchor.start', {
+            targetIndex: index,
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+            select: !!select,
+            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        });
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
         //            console.log("#display... scrolledToAnchorOnLoad = true")
@@ -2424,6 +2528,11 @@ export class Paginator extends HTMLElement {
                 once: true,
             });
         }
+        postPaginatorLoadLog('display.scroll-to-anchor.end', {
+            targetIndex: index,
+            elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
+            totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        });
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
         if (!this.#isCacheWarmer) {
@@ -2434,6 +2543,10 @@ export class Paginator extends HTMLElement {
                 once: true,
             });
         }
+        postPaginatorLoadLog('display.didDisplay.dispatch', {
+            targetIndex: index,
+            totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        });
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
     }
@@ -2450,13 +2563,32 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
         }))
+        postPaginatorLoadLog('goTo.request', {
+            index,
+            currentIndex: this.#index,
+            willLoadNewIndex,
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+            select: !!select,
+        });
         if (!willLoadNewIndex) {
             if (anchor == null && !select) return
-            await this.#display({
-                index,
-                anchor,
-                select
-            })
+            try {
+                await this.#display({
+                    index,
+                    anchor,
+                    select
+                })
+            } catch (error) {
+                postPaginatorLoadLog('goTo.display.error', {
+                    index,
+                    willLoadNewIndex,
+                    message: error?.message || String(error),
+                    stack: error?.stack || null,
+                });
+                throw error;
+            }
         } else {
             // hide the view until final relocate needs
             this.style.display = 'none'
@@ -2484,19 +2616,34 @@ export class Paginator extends HTMLElement {
                 loadPromise = this.sections[index].load();
                 this.#prefetchCache.set(index, loadPromise);
             }
-            await this.#display(Promise.resolve(loadPromise)
-                .then(src => ({
+            try {
+                await this.#display(Promise.resolve(loadPromise)
+                    .then(src => ({
+                        index,
+                        src,
+                        anchor,
+                        onLoad,
+                        select
+                    }))
+                    .catch(error => {
+                        postPaginatorLoadLog('goTo.section-load.error', {
+                            index,
+                            message: error?.message || String(error),
+                            stack: error?.stack || null,
+                        });
+                        console.error(error);
+                        console.warn(new Error(`Failed to load section ${index}`));
+                        return {};
+                    }));
+            } catch (error) {
+                postPaginatorLoadLog('goTo.display.error', {
                     index,
-                    src,
-                    anchor,
-                    onLoad,
-                    select
-                }))
-                .catch(error => {
-                    console.error(error);
-                    console.warn(new Error(`Failed to load section ${index}`));
-                    return {};
-                }));
+                    willLoadNewIndex,
+                    message: error?.message || String(error),
+                    stack: error?.stack || null,
+                });
+                throw error;
+            }
 
             clearTimeout(this.#prefetchTimer);
             this.#prefetchTimer = setTimeout(() => {
