@@ -1,0 +1,22 @@
+import LakeOfFireWeb
+import LakeOfFireFiles
+import SwiftUI
+import LakeOfFireContent
+import LakeOfFireCore
+import LakeImage
+
+public struct ReaderContentSourceIconImage: View {
+    let sourceIconURL: URL
+    let iconSize: CGFloat
+
+    public init(sourceIconURL: URL, iconSize: CGFloat) {
+        self.sourceIconURL = sourceIconURL
+        self.iconSize = iconSize
+    }
+
+    public var body: some View {
+        LakeImage(sourceIconURL)
+            .cornerRadius(iconSize / 5, antialiased: true)
+            .frame(width: iconSize, height: iconSize)
+    }
+}
