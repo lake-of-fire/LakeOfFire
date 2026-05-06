@@ -532,9 +532,25 @@
         }
     }
 
+    window.manabi_readability = manabi_readability;
+    let manabi_requestAutomaticReadability = function (reason) {
+        let handler = window.webkit?.messageHandlers?.readabilityNeedsUpdate;
+        if (!handler) {
+            return;
+        }
+        try {
+            handler.postMessage({
+                reason: reason,
+                windowURL: getOriginURL(),
+            });
+        } catch (_error) {
+            // Ignore native bridge errors; Readability availability is opportunistic.
+        }
+    }
+
     let manabi_debouncedReadability = manabi_debounce(function () {
-        if (document.body.dataset.manabiReaderModeAvailableFor !== window.location.href) {
-            manabi_readability()
+        if (document.body?.dataset?.manabiReaderModeAvailableFor !== window.location.href) {
+            manabi_requestAutomaticReadability('mutation')
         }
     } , 3 * 1000)
     
@@ -591,13 +607,6 @@
         })
         let observerConfig = {attributes: true, childList: true,  characterData: true}
         
-        let attachShadow = Element.prototype.attachShadow
-        Element.prototype.attachShadow = function (shadowConfig) {
-            let shadow = attachShadow.call(this, {...shadowConfig, mode: 'open'})
-            observer.observe(shadow, observerConfig)
-            return shadow
-        }
-        
         let uuid = null;
         let initializeFrameStateRefreshes = () => {
             //if (document.body) {
@@ -637,7 +646,7 @@
         if (document.readyState === 'complete') {
             if (!hasCalledReadabilityOnPageLoad) {
                 hasCalledReadabilityOnPageLoad = true
-                manabi_readability()
+                manabi_requestAutomaticReadability('page-load')
                 initializeFrameStateRefreshes()
                 observer.observe(document, observerConfig)
             }
@@ -645,7 +654,7 @@
             document.addEventListener('DOMContentLoaded', (event) => {
                 if (!hasCalledReadabilityOnPageLoad) {
                     hasCalledReadabilityOnPageLoad = true
-                    manabi_readability()
+                    manabi_requestAutomaticReadability('dom-content-loaded')
                     initializeFrameStateRefreshes()
                     observer.observe(document, observerConfig)
                 }
@@ -653,7 +662,7 @@
             document.addEventListener('readystatechange', () => {
                 if (document.readyState === 'complete' && !hasCalledReadabilityOnPageLoad) {
                     hasCalledReadabilityOnPageLoad = true
-                    manabi_readability()
+                    manabi_requestAutomaticReadability('ready-state-complete')
                     initializeFrameStateRefreshes()
                     observer.observe(document, observerConfig)
                 }
@@ -664,7 +673,7 @@
         window.onpageshow = function(event) {
             if (event.persisted) {
                 // From back/forward cache... Re-run initialization
-                manabi_readability()
+                manabi_requestAutomaticReadability('page-show-persisted')
                 initializeFrameStateRefreshes()
                 observer.observe(document, observerConfig)
             }

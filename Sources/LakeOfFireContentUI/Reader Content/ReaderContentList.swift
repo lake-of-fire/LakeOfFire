@@ -40,32 +40,53 @@ public actor ReaderContentListActor: CachedRealmsActor {
 }
 
 @MainActor
+public enum ReaderContentListDeleteDialog: @preconcurrency Identifiable {
+    case confirm(
+        items: [any DeletableReaderContent],
+        title: String,
+        message: String,
+        actionTitle: String
+    )
+    case error(title: String, message: String)
+
+    public var id: String {
+        switch self {
+        case .confirm(let items, let title, let message, let actionTitle):
+            let itemIDs = items.map { $0.compoundKey }.joined(separator: "|")
+            return "confirm:\(title)|\(message)|\(actionTitle)|\(itemIDs)"
+        case .error(let title, let message):
+            return "error:\(title)|\(message)"
+        }
+    }
+}
+
+@MainActor
 public class ReaderContentListModalsModel: ObservableObject {
-    @Published var confirmDelete: Bool = false
-    @Published var confirmDeletionOf: [(any DeletableReaderContent)]? {
-        didSet { refreshDeletionTexts() }
-    }
-    
-    // Published strings instead of computed properties
-    @Published var deletionConfirmationTitle: String = "Are you sure?"
-    @Published var deletionConfirmationMessage: String = "Do you really want to delete?"
-    @Published var deletionConfirmationActionTitle: String = "Delete"
-    
-    public init() {
-        refreshDeletionTexts()
-    }
-    
-    private func refreshDeletionTexts() {
-        guard let first = confirmDeletionOf?.first else {
-            deletionConfirmationTitle = "Are you sure?"
-            deletionConfirmationMessage = "Do you really want to delete?"
-            deletionConfirmationActionTitle = "Delete"
+    @Published var deleteDialog: ReaderContentListDeleteDialog?
+
+    public init() { }
+
+    func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
+        guard let first = items.first else {
+            deleteDialog = nil
             return
         }
-        deletionConfirmationTitle = first.deletionConfirmationTitle
-        deletionConfirmationMessage = first.deletionConfirmationMessage
-        // Use the content's delete action title if provided by the protocol
-        deletionConfirmationActionTitle = first.deletionConfirmationActionTitle
+        deleteDialog = .confirm(
+            items: items,
+            title: first.deletionConfirmationTitle,
+            message: first.deletionConfirmationMessage,
+            actionTitle: first.deletionConfirmationActionTitle
+        )
+    }
+
+    func presentDeleteError(for error: Error) {
+        let alert = ReaderFileOperationMessageMapper.deleteAlert(for: error)
+            ?? ("Delete Failed", error.localizedDescription)
+        deleteDialog = .error(title: alert.title, message: alert.message)
+    }
+
+    func clearDeleteDialog() {
+        deleteDialog = nil
     }
 }
 
@@ -79,46 +100,77 @@ struct ReaderContentListSheetsModifier: ViewModifier {
         let hostID = ObjectIdentifier(readerContentListModalsModel)
         let logPrefix = "# DELETEMODAL [\(origin)] host=\(hostID)"
         content
-            .onChange(of: readerContentListModalsModel.confirmDelete) { newValue in
-                debugPrint("\(logPrefix) confirmDelete changed -> \(newValue) isActive=\(isActive)")
+            .onReceive(readerContentListModalsModel.$deleteDialog) { newValue in
+                debugPrint("\(logPrefix) deleteDialog updated \(String(describing: newValue))")
             }
-            .onReceive(readerContentListModalsModel.$confirmDeletionOf) { newValue in
-                debugPrint("\(logPrefix) confirmDeletionOf updated count=\(newValue?.count ?? 0)")
-            }
-            .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: Binding<Bool>(
+            .alert(item: Binding<ReaderContentListDeleteDialog?>(
                 get: {
-                    readerContentListModalsModel.confirmDelete && isActive
+                    guard isActive else { return nil }
+                    return readerContentListModalsModel.deleteDialog
                 },
                 set: { newValue in
-                    debugPrint("\(logPrefix) SHEET SET", newValue)
+                    debugPrint("\(logPrefix) SHEET SET \(String(describing: newValue))")
                     if isActive {
-                        Task { @MainActor in
-                            readerContentListModalsModel.confirmDelete = newValue
-                        }
-                    } else {
-                        debugPrint("\(logPrefix) ignoring set newValue=\(newValue) because isActive=false")
+                        readerContentListModalsModel.deleteDialog = newValue
                     }
                 }
-            ), actions: {
-                Button("Cancel", role: .cancel) {
-                    debugPrint("\(logPrefix) cancel tapped")
-                    readerContentListModalsModel.confirmDeletionOf = nil
-                }
-                Button(readerContentListModalsModel.deletionConfirmationActionTitle, role: .destructive) {
-                    guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
-                    debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
-                    Task { @MainActor in
-                        for item in items {
-                            try await item.delete()
+            )) { dialog in
+                switch dialog {
+                case .confirm(let items, let title, let message, let actionTitle):
+                    return Alert(
+                        title: Text(title),
+                        message: Text(message),
+                        primaryButton: .destructive(Text(actionTitle)) {
+                            debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
+                            Task { @MainActor in
+                                do {
+                                    try await preflightDeleteBatch(items)
+                                    for item in items {
+                                        try await item.delete()
+                                    }
+                                    readerContentListModalsModel.clearDeleteDialog()
+                                } catch {
+                                    debugPrint("\(logPrefix) delete failed \(error.localizedDescription)")
+                                    readerContentListModalsModel.presentDeleteError(for: error)
+                                }
+                            }
+                        },
+                        secondaryButton: .cancel {
+                            debugPrint("\(logPrefix) cancel tapped")
+                            readerContentListModalsModel.clearDeleteDialog()
                         }
-                    }
+                    )
+                case .error(let title, let message):
+                    return Alert(
+                        title: Text(title),
+                        message: Text(message),
+                        dismissButton: .default(Text("OK")) {
+                            readerContentListModalsModel.clearDeleteDialog()
+                        }
+                    )
                 }
-            }, message: {
-                Text(readerContentListModalsModel.deletionConfirmationMessage)
-            })
+            }
             .onAppear {
                 debugPrint("\(logPrefix) sheets modifier appear isActive=\(isActive)")
             }
+    }
+}
+
+@MainActor
+private func preflightDeleteBatch(_ items: [any DeletableReaderContent]) async throws {
+    for case let contentFile as ContentFile in items {
+        guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
+            continue
+        }
+        let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
+        switch eligibility {
+        case .allowed:
+            continue
+        case .blockedCloudOnly:
+            throw ReaderFileDeleteError.blockedCloudOnly
+        case .blockedLoadingStatus:
+            throw ReaderFileDeleteError.blockedLoadingStatus
+        }
     }
 }
 
@@ -681,10 +733,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                         }
                     } else {
                         // Fallback to default deletion
-                        readerContentListModalsModel.confirmDeletionOf = [content]
-                        if readerContentListModalsModel.confirmDeletionOf != nil {
-                            readerContentListModalsModel.confirmDelete = true
-                        }
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [content])
                     }
                 } label: {
                     Label("Delete", systemImage: "trash")
@@ -707,8 +756,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                         }
                     } else {
                         // Fallback to default deletion
-                        readerContentListModalsModel.confirmDeletionOf = [content]
-                        readerContentListModalsModel.confirmDelete = true
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [content])
                     }
                 } label: {
                     Label(content.deleteActionTitle, systemImage: "trash")
@@ -1053,8 +1101,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         print(error)
                     }
                 } else if let selected = selected as? [any DeletableReaderContent] {
-                    readerContentListModalsModel.confirmDeletionOf = selected
-                    readerContentListModalsModel.confirmDelete = true
+                    readerContentListModalsModel.presentDeleteConfirmation(for: selected)
                 }
             } label: {
                 if #available(iOS 26, *), allowEditing {

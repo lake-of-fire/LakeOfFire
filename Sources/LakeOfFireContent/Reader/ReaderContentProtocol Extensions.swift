@@ -21,7 +21,7 @@ public extension ReaderContentProtocol {
     }
 
     @MainActor
-    func writeAllRelatedAsync(_ block: @escaping (Realm, any ReaderContentProtocol) -> Void) async throws {
+    func writeAllRelatedAsync(_ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) -> Void) async throws {
         let targetURL = url
 
         try await { @RealmBackgroundActor in

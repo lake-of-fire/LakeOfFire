@@ -21,13 +21,13 @@ public extension String {
 
 @globalActor
 public actor ReaderContentReadingProgressLoader {
-    public static var shared = ReaderContentReadingProgressLoader()
+    nonisolated(unsafe) public static var shared = ReaderContentReadingProgressLoader()
 
     public init() { }
 
     /// Float is progress, Bool is whether article is "finished".
-    public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
-    public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
+    nonisolated(unsafe) public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
+    nonisolated(unsafe) public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
 }
 
 @globalActor
@@ -36,7 +36,7 @@ public actor ReaderContentSyncStatusLoader {
 
     public init() { }
 
-    public static var syncStatusLoader: (@Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?)?
+    nonisolated(unsafe) public static var syncStatusLoader: (@Sendable (URL) async throws -> ReaderContentSyncStatusPresentation?)?
 }
 
 public struct ReaderContentSyncStatusPresentation: Sendable, Hashable {
@@ -65,11 +65,11 @@ public enum ReaderContentSyncStatusPresentationBuilder {
     public static func defaultPresentation(for url: URL) -> ReaderContentSyncStatusPresentation {
         switch url.scheme?.lowercased() {
         case "ebook":
-            return ReaderContentSyncStatusPresentation(title: "Ebook", imageName: "book", imageIsSystemSymbol: true)
+            return ReaderContentSyncStatusPresentation(title: "Local Only", imageName: "internaldrive", imageIsSystemSymbol: true)
         case "reader-file":
-            return ReaderContentSyncStatusPresentation(title: "File", imageName: "doc", imageIsSystemSymbol: true)
+            return ReaderContentSyncStatusPresentation(title: "Local Only", imageName: "internaldrive", imageIsSystemSymbol: true)
         default:
-            return ReaderContentSyncStatusPresentation(title: "Reader", imageName: "doc.text", imageIsSystemSymbol: true)
+            return ReaderContentSyncStatusPresentation(title: "Local Only", imageName: "internaldrive", imageIsSystemSymbol: true)
         }
     }
 }
@@ -280,7 +280,7 @@ public extension ReaderContentProtocol {
     }
 
     @MainActor
-    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
+    func asyncWrite(_ block: @escaping @RealmBackgroundActor (Realm, any ReaderContentProtocol) -> Void) async throws {
         let config = realm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
@@ -367,7 +367,8 @@ public extension ReaderContentProtocol {
     var humanReadablePublicationDate: String? {
         guard let publicationDate else { return nil}
 
-        if displayAbsolutePublicationDate {
+        let oneMonthAgo = Calendar.current.date(byAdding: .month, value: -1, to: Date())
+        if displayAbsolutePublicationDate || oneMonthAgo.map({ publicationDate < $0 }) == true {
             return longDateFormatter.string(from: publicationDate)
         } else {
             return ReaderDateFormatter.relativeString(from: publicationDate)

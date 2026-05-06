@@ -669,6 +669,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         readerContentCellStyle == .plain
     }
 
+    private var bottomBlockSpacing: CGFloat {
+        isProgressVisible ? -4 : 0
+    }
+
     @ViewBuilder
     private var sourceOrAuthorRow: some View {
         if appearance.isEbookStyle, let authorText = bookAuthorText {
@@ -809,8 +813,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             if let deletable {
                 Divider()
                 Button(role: .destructive) {
-                    readerContentListModalsModel.confirmDeletionOf = [deletable]
-                    readerContentListModalsModel.confirmDelete = true
+                    readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
                     debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
                 } label: {
                     Label(deletable.deleteActionTitle, systemImage: "trash")
@@ -820,8 +823,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
             if let contentFile = resolvedContentFile {
                 Button(role: .destructive) {
-                    readerContentListModalsModel.confirmDeletionOf = [contentFile]
-                    readerContentListModalsModel.confirmDelete = true
+                    readerContentListModalsModel.presentDeleteConfirmation(for: [contentFile])
                 } label: {
                     Label(contentFile.deleteActionTitle, systemImage: "trash")
                 }
@@ -972,7 +974,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
                             Spacer(minLength: 4)
 
-                            VStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: bottomBlockSpacing) {
                                 progressRow
                                 metadataRow
                             }
@@ -996,7 +998,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
                             Spacer(minLength: 4)
 
-                            VStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: bottomBlockSpacing) {
                                 progressRow
                                 metadataRow
                             }

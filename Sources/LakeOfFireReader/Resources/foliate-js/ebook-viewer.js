@@ -8,6 +8,8 @@ import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
+const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
+
 window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: msg,
@@ -714,6 +716,7 @@ const debounce = (fn, delay) => {
 };
 
 const postReaderLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     const payload = {
         prefix: '# READER',
         event,
@@ -727,11 +730,12 @@ const postReaderLog = (event, details = {}) => {
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(payload);
     } catch (error) {
-        console.debug('# READER', event, details, error);
+        if (manabiDiagnosticsEnabled()) console.debug('# READER', event, details, error);
     }
 };
 
 const postEPUBLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     const payload = {
         prefix: '# EPUB',
         event,
@@ -745,7 +749,7 @@ const postEPUBLog = (event, details = {}) => {
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(payload);
     } catch (error) {
-        console.debug('# EPUB', event, details, error);
+        if (manabiDiagnosticsEnabled()) console.debug('# EPUB', event, details, error);
     }
 };
 
@@ -2193,6 +2197,164 @@ const rectIntersectsViewport = (rect, viewportWidth, viewportHeight) => {
         && rect.top < viewportHeight;
 };
 
+const segmentOrderCacheByDocument = new WeakMap();
+
+const orderedSegmentNodesForDocument = (doc) => {
+    const cached = segmentOrderCacheByDocument.get(doc);
+    if (cached?.root === doc.body) {
+        return cached;
+    }
+    const nodes = Array.from(doc.querySelectorAll?.('mnb-seg') ?? []);
+    const indexByNode = new Map();
+    nodes.forEach((node, index) => {
+        indexByNode.set(node, index);
+    });
+    const entry = {
+        root: doc.body,
+        nodes,
+        indexByNode,
+    };
+    segmentOrderCacheByDocument.set(doc, entry);
+    return entry;
+};
+
+const rangeBoundarySegmentIndex = (visibleRange, boundary, orderedSegments) => {
+    const startElement = visibleRange.startContainer?.nodeType === Node.ELEMENT_NODE
+        ? visibleRange.startContainer
+        : visibleRange.startContainer?.parentElement;
+    const endElement = visibleRange.endContainer?.nodeType === Node.ELEMENT_NODE
+        ? visibleRange.endContainer
+        : visibleRange.endContainer?.parentElement;
+    const element = boundary === 'end' ? endElement : startElement;
+    const directSegment = element?.closest?.('mnb-seg');
+    if (directSegment && orderedSegments.indexByNode.has(directSegment)) {
+        return orderedSegments.indexByNode.get(directSegment);
+    }
+    const sentence = element?.closest?.('mnb-sen');
+    if (sentence?.nodeType === Node.ELEMENT_NODE) {
+        const sentenceSegments = Array.from(sentence.querySelectorAll?.('mnb-seg') ?? []);
+        const segment = boundary === 'end'
+            ? sentenceSegments[sentenceSegments.length - 1]
+            : sentenceSegments[0];
+        if (segment && orderedSegments.indexByNode.has(segment)) {
+            return orderedSegments.indexByNode.get(segment);
+        }
+    }
+    return null;
+};
+
+const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, viewportWidth, viewportHeight) => {
+    const visibleSegments = [];
+    let hiddenTooltipCount = 0;
+    let missingIdentifierCount = 0;
+    let outOfViewportCount = 0;
+    let visibleRangeCheckCount = 0;
+    let visibleRangeErrorCount = 0;
+    let rectMeasureCount = 0;
+    let rectMeasureElapsedMs = 0;
+    let rangeCheckElapsedMs = 0;
+    for (const segmentNode of segmentNodes) {
+        if (segmentNode.closest('.tippy-box')) {
+            hiddenTooltipCount += 1;
+            continue;
+        }
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+        if (!segmentIdentifier) {
+            missingIdentifierCount += 1;
+            continue;
+        }
+        const rectStartedAt = performance.now();
+        const rect = segmentNode.getBoundingClientRect();
+        rectMeasureCount += 1;
+        rectMeasureElapsedMs += performance.now() - rectStartedAt;
+        const rangeStartedAt = performance.now();
+        let isInVisibleRange = false;
+        try {
+            visibleRangeCheckCount += 1;
+            isInVisibleRange = visibleRange.intersectsNode(segmentNode);
+            rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+        } catch (_error) {
+            visibleRangeErrorCount += 1;
+            rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+        }
+        if (!isInVisibleRange || !rectIntersectsViewport(rect, viewportWidth, viewportHeight)) {
+            outOfViewportCount += 1;
+            continue;
+        }
+        const sentenceNode = segmentNode.closest('mnb-sen');
+        visibleSegments.push({
+            node: segmentNode,
+            rect,
+            segmentIdentifier,
+            sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
+        });
+    }
+    return {
+        visibleSegments,
+        hiddenTooltipCount,
+        missingIdentifierCount,
+        outOfViewportCount,
+        visibleRangeCheckCount,
+        visibleRangeErrorCount,
+        rectMeasureCount,
+        rectMeasureElapsedMs,
+        rangeCheckElapsedMs,
+    };
+};
+
+const collectExpandedRangeSegments = (doc, visibleRange, viewportWidth, viewportHeight) => {
+    if (!visibleRange || visibleRange.collapsed === true) {
+        return null;
+    }
+    const orderedSegments = orderedSegmentNodesForDocument(doc);
+    const allSegmentNodes = orderedSegments.nodes;
+    if (allSegmentNodes.length === 0) {
+        return null;
+    }
+    const startIndex = rangeBoundarySegmentIndex(visibleRange, 'start', orderedSegments);
+    const endIndex = rangeBoundarySegmentIndex(visibleRange, 'end', orderedSegments);
+    if (!Number.isFinite(startIndex) && !Number.isFinite(endIndex)) {
+        return null;
+    }
+    const anchorStart = Math.max(0, Math.min(startIndex ?? endIndex, endIndex ?? startIndex));
+    const anchorEnd = Math.min(allSegmentNodes.length - 1, Math.max(startIndex ?? endIndex, endIndex ?? startIndex));
+    const fullDocumentExpansion = Math.max(anchorStart, allSegmentNodes.length - 1 - anchorEnd);
+    const expansionSizes = Array.from(new Set([32, 64, 128, 256, 512, fullDocumentExpansion]))
+        .filter((value) => Number.isFinite(value) && value >= 0);
+    let best = null;
+    for (const expansionSize of expansionSizes) {
+        const windowStart = Math.max(0, anchorStart - expansionSize);
+        const windowEnd = Math.min(allSegmentNodes.length - 1, anchorEnd + expansionSize);
+        const segmentNodes = allSegmentNodes.slice(windowStart, windowEnd + 1);
+        const measured = measureVisibleSegmentsInWindow(segmentNodes, visibleRange, viewportWidth, viewportHeight);
+        const visibleIndexes = measured.visibleSegments
+            .map((item) => orderedSegments.indexByNode.get(item.node))
+            .filter((index) => Number.isFinite(index));
+        const firstVisibleIndex = visibleIndexes.length > 0 ? Math.min(...visibleIndexes) : null;
+        const lastVisibleIndex = visibleIndexes.length > 0 ? Math.max(...visibleIndexes) : null;
+        const hasLeadingMargin = firstVisibleIndex !== null && (firstVisibleIndex > windowStart || windowStart === 0);
+        const hasTrailingMargin = lastVisibleIndex !== null && (lastVisibleIndex < windowEnd || windowEnd === allSegmentNodes.length - 1);
+        best = {
+            ...measured,
+            segmentNodes,
+            segmentCandidateSource: 'range-window',
+            orderedSegmentCount: allSegmentNodes.length,
+            anchorStart,
+            anchorEnd,
+            windowStart,
+            windowEnd,
+            expansionSize,
+            firstVisibleIndex,
+            lastVisibleIndex,
+            boundedByWindow: hasLeadingMargin && hasTrailingMargin,
+        };
+        if (best.visibleSegments.length > 0 && best.boundedByWindow) {
+            return best;
+        }
+    }
+    return null;
+};
+
 const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     if (!isDocumentLike(doc)) {
         return {
@@ -2208,22 +2370,62 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const startedAt = performance.now();
     const viewportWidth = doc.documentElement?.clientWidth || doc.defaultView?.innerWidth || 0;
     const viewportHeight = doc.documentElement?.clientHeight || doc.defaultView?.innerHeight || 0;
-    const allSegmentNodes = Array.from(doc.querySelectorAll('mnb-seg'));
-    const queryCompletedAt = performance.now();
+    if (visibleRange?.collapsed === true) {
+        postMarkReadLog('visibleRange.collect.collapsedSkipped', {
+            documentURL: doc.URL || doc.location?.href || null,
+            reason: 'collapsed-range-no-visible-page',
+            segmentCandidateCount: 0,
+            fallbackVisibleSegmentCount: 0,
+            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
+            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+        });
+        postVisibleRangeLog('collect.collapsedSkipped', {
+            documentURL: doc.URL || doc.location?.href || null,
+            reason: 'collapsed-range-no-visible-page',
+            segmentCandidateCount: 0,
+            fallbackVisibleSegmentCount: 0,
+            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
+            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+        });
+        return {
+            visibleSegments: [],
+            viewportWidth,
+            viewportHeight,
+            totalSegmentCount: 0,
+            hiddenTooltipCount: 0,
+            missingIdentifierCount: 0,
+            outOfViewportCount: 0,
+        };
+    }
     const useVisibleRange = !!visibleRange && visibleRange.collapsed !== true;
-    const useViewportFallback = !visibleRange || visibleRange.collapsed === true;
+    const useViewportFallback = !visibleRange;
     const rangeCommonAncestor = visibleRange?.commonAncestorContainer ?? null;
     const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
         ? rangeCommonAncestor
         : (rangeCommonAncestor?.parentElement || null);
-    const ancestorSegmentCandidateCount = rangeCommonAncestorElement?.querySelectorAll
-        ? rangeCommonAncestorElement.querySelectorAll('mnb-seg').length
+    const expandedRangeResult = useVisibleRange
+        ? collectExpandedRangeSegments(doc, visibleRange, viewportWidth, viewportHeight)
         : null;
+    const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? null;
+    const segmentSearchRoot = useVisibleRange && !expandedRangeResult && rangeCommonAncestorElement?.querySelectorAll
+        ? rangeCommonAncestorElement
+        : doc;
+    const allSegmentNodes = boundedSegmentNodes || [
+            ...(segmentSearchRoot.matches?.('mnb-seg') ? [segmentSearchRoot] : []),
+            ...Array.from(segmentSearchRoot.querySelectorAll?.('mnb-seg') ?? []),
+        ];
+    const queryCompletedAt = performance.now();
+    const ancestorSegmentCandidateCount = segmentSearchRoot === rangeCommonAncestorElement
+        ? allSegmentNodes.length
+        : null;
+    const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
+        || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
     postMarkReadLog('visibleRange.collect.start', {
         documentURL: doc.URL || doc.location?.href || null,
         hasVisibleRange: !!visibleRange,
         usingVisibleRange: useVisibleRange,
         segmentCandidateCount: allSegmentNodes.length,
+        segmentCandidateSource,
         ancestorSegmentCandidateCount,
         viewportWidth,
         viewportHeight,
@@ -2236,6 +2438,16 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         rangeCommonAncestor: describeMarkReadNode(rangeCommonAncestor),
         rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
         rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
+        boundedSegmentCount: boundedSegmentNodes?.length ?? null,
+        orderedSegmentCount: expandedRangeResult?.orderedSegmentCount ?? null,
+        rangeAnchorStart: expandedRangeResult?.anchorStart ?? null,
+        rangeAnchorEnd: expandedRangeResult?.anchorEnd ?? null,
+        rangeWindowStart: expandedRangeResult?.windowStart ?? null,
+        rangeWindowEnd: expandedRangeResult?.windowEnd ?? null,
+        rangeWindowExpansionSize: expandedRangeResult?.expansionSize ?? null,
+        rangeWindowBounded: expandedRangeResult?.boundedByWindow ?? null,
+        rangeWindowFirstVisibleIndex: expandedRangeResult?.firstVisibleIndex ?? null,
+        rangeWindowLastVisibleIndex: expandedRangeResult?.lastVisibleIndex ?? null,
     });
     postVisibleRangeLog('collect.start', {
         documentURL: doc.URL || doc.location?.href || null,
@@ -2243,24 +2455,29 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         usingVisibleRange: useVisibleRange,
         rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
         segmentCandidateCount: allSegmentNodes.length,
+        segmentCandidateSource,
         ancestorSegmentCandidateCount,
         viewportWidth,
         viewportHeight,
         rangeStartContainer: visibleRange?.startContainer?.nodeName || null,
         rangeEndContainer: visibleRange?.endContainer?.nodeName || null,
         rangeCommonAncestor: describeMarkReadNode(rangeCommonAncestor),
+        boundedSegmentCount: boundedSegmentNodes?.length ?? null,
+        orderedSegmentCount: expandedRangeResult?.orderedSegmentCount ?? null,
+        rangeWindowExpansionSize: expandedRangeResult?.expansionSize ?? null,
+        rangeWindowBounded: expandedRangeResult?.boundedByWindow ?? null,
     });
-    const visibleSegments = [];
-    let totalSegmentCount = 0;
-    let hiddenTooltipCount = 0;
-    let missingIdentifierCount = 0;
-    let outOfViewportCount = 0;
-    let visibleRangeCheckCount = 0;
-    let visibleRangeErrorCount = 0;
-    let rectMeasureCount = 0;
-    let rectMeasureElapsedMs = 0;
-    let rangeCheckElapsedMs = 0;
-    for (const segmentNode of allSegmentNodes) {
+    const visibleSegments = expandedRangeResult?.visibleSegments ? [...expandedRangeResult.visibleSegments] : [];
+    let totalSegmentCount = expandedRangeResult ? allSegmentNodes.length : 0;
+    let hiddenTooltipCount = expandedRangeResult?.hiddenTooltipCount ?? 0;
+    let missingIdentifierCount = expandedRangeResult?.missingIdentifierCount ?? 0;
+    let outOfViewportCount = expandedRangeResult?.outOfViewportCount ?? 0;
+    let visibleRangeCheckCount = expandedRangeResult?.visibleRangeCheckCount ?? 0;
+    let visibleRangeErrorCount = expandedRangeResult?.visibleRangeErrorCount ?? 0;
+    let rectMeasureCount = expandedRangeResult?.rectMeasureCount ?? 0;
+    let rectMeasureElapsedMs = expandedRangeResult?.rectMeasureElapsedMs ?? 0;
+    let rangeCheckElapsedMs = expandedRangeResult?.rangeCheckElapsedMs ?? 0;
+    for (const segmentNode of expandedRangeResult ? [] : allSegmentNodes) {
         totalSegmentCount += 1;
         if (segmentNode.closest('.tippy-box')) {
             hiddenTooltipCount += 1;
@@ -2444,6 +2661,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
 const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
+    const hasAnyMarkedReadContent = readSegmentIdentifiers.size > 0
+        || normalizedProgress.sentenceIdentifiersRead.length > 0;
     const {
         visibleSegments,
         viewportWidth,
@@ -2509,6 +2728,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             sentenceIdentifiers,
         },
         isRead,
+        hasAnyMarkedReadContent,
         unreadVisibleSegmentCount,
         visibleSegmentCount: visibleSegmentIdentifiers.size,
         fullLabel: isRead ? 'Read' : 'Mark Read',
@@ -3690,18 +3910,45 @@ class Reader {
         if (!renderer || typeof renderer.renderIfContainerSizeChanged !== 'function') {
             return;
         }
-        this.initialPaginatorSettleHandle = requestAnimationFrame(() => {
+        this.initialPaginatorSettleHandle = requestAnimationFrame(async () => {
             this.initialPaginatorSettleHandle = null;
-            this.hasSettledInitialPaginatorLayout = true;
             try {
                 applyStoredChromeInsets(`initial-paginator-settle.${reason}`);
-                renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`)
-                    .then((result) => {
-                        if (result?.rendered) {
-                            this.#updatePageReadMarker('initial-paginator-settle.rendered');
-                        }
-                    })
-                    .catch((error) => console.error(error));
+                const result = await renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`);
+                const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
+                    previousSize: result?.previousSize ?? null,
+                    currentSize: result?.currentSize ?? null,
+                    rendered: result?.rendered ?? false,
+                    resultReason: result?.reason ?? null,
+                });
+                const hasGap = [
+                    snapshot.toolbarGapPx,
+                    snapshot.stageGapPx,
+                ].some((value) => typeof value === 'number' && Math.abs(value) > 2);
+                const isReady = !snapshot.bodyLoading
+                    && typeof snapshot.currentPercent === 'number'
+                    && snapshot.livePaginatorBox != null;
+                if (!isReady) {
+                    return;
+                }
+                if (hasGap && typeof renderer.render === 'function') {
+                    await renderer.render();
+                    this.#updatePageReadMarker('initial-paginator-settle.forced-render');
+                    this.hasSettledInitialPaginatorLayout = true;
+                    this.#queueLayoutDiagnostics('initial-paginator-settle.forced-render', {
+                        reason,
+                        previousSize: result?.previousSize ?? null,
+                        currentSize: result?.currentSize ?? null,
+                        renderedBeforeForce: result?.rendered ?? false,
+                        toolbarGapPx: snapshot.toolbarGapPx,
+                        stageGapPx: snapshot.stageGapPx,
+                    });
+                    return;
+                }
+                if (result?.rendered) {
+                    this.#updatePageReadMarker('initial-paginator-settle.rendered');
+                }
+                this.hasSettledInitialPaginatorLayout = true;
             } catch (error) {
                 console.error(error);
                 this.hasSettledInitialPaginatorLayout = false;
@@ -3777,8 +4024,14 @@ class Reader {
         const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
         const navBar = document.getElementById('nav-bar');
         const readerStage = document.getElementById('reader-stage');
+        const pageTrackingContainer = document.getElementById('page-tracking-container');
+        const pageReadButton = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"], #page-tracking-buttons .page-read-button[data-completion-action]');
+        const pagesLeftLabel = document.getElementById('nav-section-progress-center');
         const navBarRect = navBar?.getBoundingClientRect?.() ?? null;
         const readerStageRect = readerStage?.getBoundingClientRect?.() ?? null;
+        const pageTrackingRect = pageTrackingContainer?.getBoundingClientRect?.() ?? null;
+        const pageReadButtonRect = pageReadButton?.getBoundingClientRect?.() ?? null;
+        const pagesLeftLabelRect = pagesLeftLabel?.getBoundingClientRect?.() ?? null;
         const liveFoliateViewRect = liveFoliateView?.getBoundingClientRect?.() ?? null;
         const livePaginatorRect = livePaginator?.getBoundingClientRect?.() ?? null;
         let visibleFrameRect = null;
@@ -3970,6 +4223,12 @@ class Reader {
             ),
             navBarRect: this.#formatRect(navBarRect),
             readerStageRect: this.#formatRect(readerStageRect),
+            pageTrackingRect: this.#formatRect(pageTrackingRect),
+            pageReadButtonRect: this.#formatRect(pageReadButtonRect),
+            pagesLeftLabelRect: this.#formatRect(pagesLeftLabelRect),
+            pagesLeftLabelHidden: pagesLeftLabel?.hidden ?? null,
+            pagesLeftLabelVisibleAttr: pagesLeftLabel?.dataset?.pagesLeftVisible ?? null,
+            pagesLeftLabelText: pagesLeftLabel?.textContent ?? null,
             navBarBottomGapToViewport: navBarBottom != null && Number.isFinite(viewportHeight)
                 ? safeRound(viewportHeight - navBarBottom, 1)
                 : null,
@@ -3992,6 +4251,9 @@ class Reader {
                 : null,
             toolbarGapLastRectPx: lastVisibleTextBottom != null && navBarTop != null
                 ? safeRound(navBarTop - lastVisibleTextBottom, 1)
+                : null,
+            toolbarGapViewportTextPx: Number.isFinite(viewportVisibleTextRect?.bottom) && navBarTop != null
+                ? safeRound(navBarTop - viewportVisibleTextRect.bottom, 1)
                 : null,
             stageGapPx: visibleTextBottom != null && readerStageBottom != null
                 ? safeRound(readerStageBottom - visibleTextBottom, 1)
@@ -4076,10 +4338,62 @@ class Reader {
         }
         this.lastLayoutSnapshot = layoutSnapshot;
         this.lastLayoutDiagnosticsKey = key;
+        postMay5Log('layout.toolbarGap', {
+            reason,
+            currentPercent: layoutSnapshot.currentPercent,
+            navHiddenDueToScroll: document.getElementById('nav-bar')?.classList?.contains('nav-hidden-due-to-scroll') ?? null,
+            bodyClassName: document.body?.className ?? null,
+            cssInsets: layoutSnapshot.cssInsets,
+            htmlCssInsets: layoutSnapshot.htmlCssInsets,
+            visualViewportBox: layoutSnapshot.visualViewportBox,
+            readerStageRect: layoutSnapshot.readerStageRect,
+            navBarRect: layoutSnapshot.navBarRect,
+            pageTrackingRect: layoutSnapshot.pageTrackingRect,
+            pageReadButtonRect: layoutSnapshot.pageReadButtonRect,
+            liveFoliateViewRect: layoutSnapshot.liveFoliateViewRect,
+            livePaginatorRect: layoutSnapshot.livePaginatorRect,
+            visibleFrameRect: layoutSnapshot.visibleFrameRect,
+            visibleTextRect: layoutSnapshot.visibleTextRect,
+            viewportVisibleTextRect: layoutSnapshot.viewportVisibleTextRect,
+            lastVisibleTextRect: layoutSnapshot.lastVisibleTextRect,
+            visibleTextRectCount: layoutSnapshot.visibleTextRectCount,
+            viewportVisibleTextRectCount: layoutSnapshot.viewportVisibleTextRectCount,
+            toolbarGapPx: layoutSnapshot.toolbarGapPx,
+            toolbarGapLastRectPx: layoutSnapshot.toolbarGapLastRectPx,
+            toolbarGapViewportTextPx: layoutSnapshot.toolbarGapViewportTextPx,
+            stageGapPx: layoutSnapshot.stageGapPx,
+            frameBottomToLastTextBottomPx: layoutSnapshot.frameBottomToLastTextBottomPx,
+            viewportFrameBottomToTextBottomPx: layoutSnapshot.viewportFrameBottomToTextBottomPx,
+            iframeWritingMode: layoutSnapshot.iframeWritingMode,
+            iframeBodyClientBox: layoutSnapshot.iframeBodyClientBox,
+            iframeBodyScrollBox: layoutSnapshot.iframeBodyScrollBox,
+            iframeMargins: layoutSnapshot.iframeMargins,
+            iframePadding: layoutSnapshot.iframePadding,
+            pagesLeftLabelRect: layoutSnapshot.pagesLeftLabelRect,
+            pagesLeftLabelHidden: layoutSnapshot.pagesLeftLabelHidden,
+            pagesLeftLabelVisibleAttr: layoutSnapshot.pagesLeftLabelVisibleAttr,
+            pagesLeftLabelText: layoutSnapshot.pagesLeftLabelText,
+        });
         if (shouldLogLayout) {
             postEPUBLog('ebook.layout.diagnostics', layoutSnapshot);
         }
     }
+    refreshPageTrackingVisibility(reason = 'settings-changed') {
+        this.#renderPageTrackingButtons(reason);
+        requestAnimationFrame(async () => {
+            const renderer = this.view?.renderer;
+            if (renderer && typeof renderer.renderIfContainerSizeChanged === 'function') {
+                try {
+                    await renderer.renderIfContainerSizeChanged(`page-tracking-visibility.${reason}`);
+                } catch (error) {
+                    console.error(error);
+                }
+            }
+            this.#updatePageReadMarker(`page-tracking-visibility.${reason}`);
+            this.#queueLayoutDiagnostics(`page-tracking-visibility.${reason}`);
+        });
+    }
+
     #renderPageTrackingButtons(reason = 'unspecified') {
         const container = document.getElementById('page-tracking-container');
         const buttonHost = document.getElementById('page-tracking-buttons');
@@ -4089,7 +4403,8 @@ class Reader {
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
-        const shouldShowPageTracking = !!completionAction || hasStates;
+        const markReadButtonsVisible = document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
+        const shouldShowPageTracking = markReadButtonsVisible && (!!completionAction || hasStates);
         container.hidden = !shouldShowPageTracking;
         buttonHost.hidden = !shouldShowPageTracking;
         if (this.lastPageTrackingVisibility !== null && this.lastPageTrackingVisibility && !shouldShowPageTracking) {
@@ -4109,6 +4424,7 @@ class Reader {
         this.#logMarkRead('pageTracking.render', {
             reason,
             shouldShowPageTracking,
+            markReadButtonsVisible,
             stateCount: pageTrackingStates.length,
             hasCompletionAction: !!completionAction,
             completionActionType: completionAction?.type ?? null,
@@ -4156,6 +4472,7 @@ class Reader {
                     data-page-tracking-id="${state.id}"
                     data-read-state="${readState}"
                     data-mnb-tracking-section-read="${state.isRead ? 'true' : 'false'}"
+                    data-mnb-has-any-marked-read="${state.hasAnyMarkedReadContent ? 'true' : 'false'}"
                     aria-label="${state.fullLabel}"
                     ${state.isRead || isBusy ? 'disabled' : ''}
                 >
@@ -4241,6 +4558,7 @@ class Reader {
             startX: touch.screenX,
             startY: touch.screenY,
             triggered: false,
+            chevronActive: false,
         };
     }
     async #onMainDocumentTouchMove(event) {
@@ -4256,15 +4574,34 @@ class Reader {
         const dy = touch.screenY - state.startY;
         const minSwipe = 36;
         if (Math.abs(dx) <= Math.abs(dy) || Math.abs(dx) <= 8) {
+            if (state.chevronActive) {
+                this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail: { leftOpacity: '', rightOpacity: '' },
+                }));
+                state.chevronActive = false;
+            }
             return;
         }
         event.preventDefault();
-        if (Math.abs(dx) <= minSwipe) {
-            return;
-        }
-        state.triggered = true;
+        const progress = Math.min(1, Math.abs(dx) / minSwipe);
         const swipedLeft = dx < 0;
         const goForward = swipedLeft;
+        const leftOpacity = goForward
+            ? (this.isRTL ? progress : 0)
+            : (this.isRTL ? 0 : progress);
+        const rightOpacity = goForward
+            ? (this.isRTL ? 0 : progress)
+            : (this.isRTL ? progress : 0);
+        this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
+            bubbles: true,
+            composed: true,
+            detail: { leftOpacity, rightOpacity },
+        }));
+        state.chevronActive = progress > 0;
+        if (Math.abs(dx) <= minSwipe) return;
+        state.triggered = true;
         this.#flashSideNavChevron(goForward
             ? (this.isRTL ? 'left' : 'right')
             : (this.isRTL ? 'right' : 'left'));
@@ -4287,6 +4624,13 @@ class Reader {
         }
     }
     #onMainDocumentTouchEnd() {
+        if (this.#mainDocumentSwipeState?.chevronActive) {
+            this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
+                bubbles: true,
+                composed: true,
+                detail: { leftOpacity: '', rightOpacity: '' },
+            }));
+        }
         this.#mainDocumentSwipeState = null;
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
@@ -4668,7 +5012,7 @@ class Reader {
         if (unreadSegmentCount > 0) {
             const unreadSegmentIdentifiers = segmentIdentifiers
                 .filter((identifier) => !readSegmentIdentifiers.has(identifier));
-            console.log('# UNREAD', JSON.stringify({
+            if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
                 event: 'js.currentSectionReadState.unreadSegments',
                 documentURL: doc.URL || doc.location?.href || null,
                 currentPageNumber,
@@ -4699,7 +5043,7 @@ class Reader {
         const contents = this.view?.renderer?.getContents?.() || [];
         const doc = contents[0]?.doc;
         if (!isDocumentLike(doc)) {
-            console.log('# UNREAD', JSON.stringify({
+            if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
                 event: 'js.ebookMarkAllSectionsAsRead.skipped',
                 reason: 'missing-document',
             }));
@@ -4750,7 +5094,7 @@ class Reader {
         const payloadSegmentIdentifiers = payloadSegments
             .map((segment) => segment.segmentIdentifier)
             .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        console.log('# UNREAD', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
             event: 'js.ebookMarkAllSectionsAsRead.dispatch',
             documentURL: doc.URL || doc.location?.href || null,
             segmentNodeCount: segmentNodes.length,
@@ -4784,7 +5128,7 @@ class Reader {
             ...payloadSentenceIdentifiers,
         ]));
         this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-all-read');
-        console.log('# UNREAD', JSON.stringify({
+        if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
             event: 'js.ebookMarkAllSectionsAsRead.optimisticApplied',
             documentURL: doc.URL || doc.location?.href || null,
             optimisticReadSegmentCount: optimisticProgress.readSegmentIdentifiers.length,
@@ -5072,14 +5416,16 @@ class Reader {
                 // Show chevron at full opacity
                 if (Number(value) >= 1) {
                     elem.style.removeProperty('opacity');
+                    elem.style.removeProperty('visibility');
                     elem.classList.add('chevron-visible');
                     return;
                 }
-
+                
                 // Show chevron at partial opacity
                 if (Number(value) > 0) {
                     elem.classList.remove('chevron-visible');
                     elem.style.opacity = value;
+                    elem.style.visibility = 'visible';
                     return;
                 }
 
@@ -5088,11 +5434,13 @@ class Reader {
                     this.#chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
                         elem.style.removeProperty('opacity');
+                        elem.style.removeProperty('visibility');
                         this.#chevronFadeTimers[key] = null;
                     }, FADER_DELAY);
                 } else {
                     // Already hidden: do nothing
                     elem.style.removeProperty('opacity');
+                    elem.style.removeProperty('visibility');
                     elem.classList.remove('chevron-visible');
                 }
             };

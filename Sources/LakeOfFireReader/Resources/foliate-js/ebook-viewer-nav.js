@@ -16,6 +16,7 @@ const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
+const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
@@ -79,6 +80,7 @@ const logMarkReadNav = (event, detail = {}) => {
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
 // We only need a no-op logger for nav diagnostics.
 const logFix = (event, detail = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     try {
         const payload = { event, ...detail };
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKFIX1 ${JSON.stringify(payload)}`);
@@ -87,6 +89,7 @@ const logFix = (event, detail = {}) => {
     }
 };
 const logBug = (event, detail = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
     try {
         const payload = { event, ...detail };
         window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKBUG1 ${JSON.stringify(payload)}`);
@@ -1397,12 +1400,39 @@ export class NavigationHUD {
             display: center ? getComputedStyle(center).display : null,
             opacity: center ? getComputedStyle(center).opacity : null,
         };
+        const setCenterPagesLeftVisible = (visible, label = '') => {
+            if (!center) return;
+            if (center.__pagesLeftFadeTimer) {
+                clearTimeout(center.__pagesLeftFadeTimer);
+                center.__pagesLeftFadeTimer = null;
+            }
+            if (visible) {
+                center.hidden = false;
+                center.textContent = label;
+                if (center.dataset.pagesLeftVisible !== 'true') {
+                    center.dataset.pagesLeftVisible = 'false';
+                    void center.offsetWidth;
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            if (center.textContent === label) {
+                                center.dataset.pagesLeftVisible = 'true';
+                            }
+                        });
+                    });
+                }
+                return;
+            }
+            center.dataset.pagesLeftVisible = 'false';
+            center.__pagesLeftFadeTimer = setTimeout(() => {
+                if (center.dataset.pagesLeftVisible === 'false') {
+                    center.textContent = '';
+                    center.hidden = true;
+                }
+                center.__pagesLeftFadeTimer = null;
+            }, 390);
+        };
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
-        if (center) {
-            center.hidden = true;
-            center.textContent = '';
-        }
         logPagesLeft('label.begin', {
             source,
             requestToken,
@@ -1432,6 +1462,7 @@ export class NavigationHUD {
             }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) {
+                setCenterPagesLeftVisible(false);
                 logPagesLeft('label.skip.hidden-or-completion', {
                     source,
                     requestToken,
@@ -1445,6 +1476,7 @@ export class NavigationHUD {
                 return;
             }
             if (sectionResolution.index == null) {
+                setCenterPagesLeftVisible(false);
                 logPagesLeft('label.skip.no-section', {
                     source,
                     requestToken,
@@ -1455,10 +1487,7 @@ export class NavigationHUD {
             if (!pagesLeft || pagesLeft <= 0) {
                 this.lastTerminalPagesLeftSection = sectionResolution.index;
                 this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
-                if (center) {
-                    center.textContent = '';
-                    center.hidden = true;
-                }
+                setCenterPagesLeftVisible(false);
                 logPagesLeft('label.hide.terminal', {
                     source,
                     requestToken,
@@ -1523,8 +1552,7 @@ export class NavigationHUD {
             const label = pagesLeft === 1
                 ? `1 page left in ${progressScope}`
                 : `${pagesLeft} pages left in ${progressScope}`;
-            center.textContent = label;
-            center.hidden = false;
+            setCenterPagesLeftVisible(true, label);
             logPagesLeft('label.set', {
                 source,
                 requestToken,

@@ -114,6 +114,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     )
     private let trackingSizeHistoryLimit = 10
     fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?
+    fileprivate var automaticReadabilityTask: Task<Void, Never>?
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
         let parts = cacheKey.split(separator: "|").map(String.init)
@@ -132,6 +133,54 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             return "href:\(href)"
         } else {
             return "legacy:\(cacheKey)"
+        }
+    }
+
+    private func urlsMatchIgnoringFragment(_ lhs: URL, _ rhs: URL) -> Bool {
+        if lhs == rhs {
+            return true
+        }
+        var lhsComponents = URLComponents(url: lhs, resolvingAgainstBaseURL: false)
+        var rhsComponents = URLComponents(url: rhs, resolvingAgainstBaseURL: false)
+        lhsComponents?.fragment = nil
+        rhsComponents?.fragment = nil
+        return lhsComponents?.url == rhsComponents?.url
+    }
+
+    private func canRunAutomaticReadability(for windowURL: URL?) -> Bool {
+        let state = readerViewModel.state
+        if let statusCode = state.mainFrameHTTPStatusCode,
+           ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(statusCode) {
+            return false
+        }
+        guard state.pageURL.scheme != "about",
+              state.pageURL.scheme != "blob",
+              state.pageURL.scheme != "ebook",
+              !state.pageURL.isNativeReaderView else {
+            return false
+        }
+        if let windowURL, !urlsMatchIgnoringFragment(windowURL, state.pageURL) {
+            return false
+        }
+        return true
+    }
+
+    private func scheduleAutomaticReadability(reason: String, windowURL: URL?, frameInfo: WKFrameInfo) {
+        guard canRunAutomaticReadability(for: windowURL) else { return }
+        automaticReadabilityTask?.cancel()
+        automaticReadabilityTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let delayNanoseconds: UInt64 = reason == "mutation" ? 3_000_000_000 : 100_000_000
+            do {
+                try await Task.sleep(nanoseconds: delayNanoseconds)
+            } catch {
+                return
+            }
+            guard canRunAutomaticReadability(for: windowURL) else { return }
+            try? await scriptCaller.evaluateJavaScript(
+                "window.manabi_readability?.()",
+                in: frameInfo
+            )
         }
     }
 
@@ -467,6 +516,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 readerModeViewModel.handleRenderedReaderDocumentReady(
                     pageURL: pageURL,
                     hasReaderContent: true
+                )
+            }),
+            ("readabilityNeedsUpdate", { @MainActor [weak self] message in
+                guard let self else { return }
+                guard let body = message.body as? [String: Any] else { return }
+                let reason = body["reason"] as? String ?? "unknown"
+                let windowURL = (body["windowURL"] as? String).flatMap(URL.init(string:))
+                scheduleAutomaticReadability(
+                    reason: reason,
+                    windowURL: windowURL,
+                    frameInfo: message.frameInfo
                 )
             }),
             ("trackingBookKey", { [weak self] message in

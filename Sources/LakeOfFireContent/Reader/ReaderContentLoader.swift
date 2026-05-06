@@ -11,11 +11,15 @@ import RealmSwiftGaps
 import UniformTypeIdentifiers
 
 private func logReaderLoad(_ message: String) {
+#if DEBUG
     debugPrint("# READERLOAD \(message)")
+#endif
 }
 
 private func logSnippetEvent(_ stage: String, _ parts: String...) {
+#if DEBUG
     debugPrint("# SNIPPETS", stage, parts.joined(separator: " "))
+#endif
 }
 
 private let readerContentLoaderVerboseLoggingEnabled =
@@ -61,7 +65,7 @@ public struct ReaderContentAdditionalProvider: Sendable {
 }
 
 public enum ReaderContentBackgroundAnalysisLoader {
-    public static var inlineHTMLAnalysisEnqueuer: (@Sendable (URL, URL?, String?, String) async -> Void)?
+    nonisolated(unsafe) public static var inlineHTMLAnalysisEnqueuer: (@Sendable (URL, URL?, String?, String) async -> Void)?
 }
 
 /// Loads from any source by URL.
@@ -74,7 +78,7 @@ public struct ReaderContentLoader {
     private static var recentLoadAllCache: [String: (timestamp: Date, references: [ContentReference])] = [:]
     private static let loadAllCacheTTL: TimeInterval = 5
 
-    public struct ContentReference {
+    public struct ContentReference: @unchecked Sendable {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
         public let realmConfiguration: Realm.Configuration
@@ -101,10 +105,10 @@ public struct ReaderContentLoader {
         }
     }
 
-    public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    public static var additionalContentProviders: [ReaderContentAdditionalProvider] = []
+    nonisolated(unsafe) public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    nonisolated(unsafe) public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    nonisolated(unsafe) public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    nonisolated(unsafe) public static var additionalContentProviders: [ReaderContentAdditionalProvider] = []
 
     public static func registerAdditionalContentProvider(_ provider: ReaderContentAdditionalProvider) {
         additionalContentProviders.removeAll { $0.id == provider.id }
@@ -444,7 +448,7 @@ public struct ReaderContentLoader {
         url: URL,
         skipContentFiles: Bool = false,
         skipFeedEntries: Bool = false,
-        mutate: (Object & ReaderContentProtocol) -> Bool
+        mutate: @RealmBackgroundActor (Object & ReaderContentProtocol) -> Bool
     ) async throws {
         let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
         for case let object as (Object & ReaderContentProtocol) in objects {

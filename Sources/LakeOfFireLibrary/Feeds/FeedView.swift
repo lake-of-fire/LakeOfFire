@@ -14,7 +14,9 @@ import LakeOfFireContentUI
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
 private func logRSS(_ message: String) {
+#if DEBUG
     debugPrint("# RSS \(message)")
+#endif
 }
 
 @MainActor

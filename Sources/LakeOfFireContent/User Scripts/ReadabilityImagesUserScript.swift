@@ -31,7 +31,7 @@ public struct ReadabilityImagesUserScript: Sendable {
         WebViewUserScript(
             source: userScriptSource,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false,
+            forMainFrameOnly: true,
             in: .page,
             allowedDomains: Set()
         )

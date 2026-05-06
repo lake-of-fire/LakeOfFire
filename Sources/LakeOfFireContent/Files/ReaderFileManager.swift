@@ -187,6 +187,20 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return .notSynced
         }
     }
+
+    @MainActor
+    public func deleteEligibility(forReaderBackingURL readerBackingURL: URL) async -> ReaderFileDeleteEligibility {
+        guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL) else {
+            return .blockedLoadingStatus
+        }
+        let status = (try? await cloudDriveSyncStatus(readerFileURL: canonicalURL)) ?? .loadingStatus
+        switch status {
+        case .loadingStatus, .downloading:
+            return .blockedLoadingStatus
+        case .fileMissing, .notInUbiquityContainer, .uploading, .synced, .notSynced:
+            return .allowed
+        }
+    }
     
     @RealmBackgroundActor
     public func delete(readerFileURL: URL) async throws {

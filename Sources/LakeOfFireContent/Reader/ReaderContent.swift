@@ -5,11 +5,15 @@ private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInterna
 private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
 
 private func logReaderLoad(_ message: String) {
+#if DEBUG
     debugPrint("# READERLOAD \(message)")
+#endif
 }
 
 private func logTitleTrace(_ message: String) {
+#if DEBUG
     debugPrint("# TITLE \(message)")
+#endif
 }
 
 @MainActor

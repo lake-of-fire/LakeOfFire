@@ -11,11 +11,15 @@ import LakeOfFireFiles
 let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
 
 private func logReaderLoad(_ message: String) {
+#if DEBUG
     debugPrint("# READERLOAD \(message)")
+#endif
 }
 
 private func logTitleTrace(_ message: String) {
+#if DEBUG
     debugPrint("# TITLE \(message)")
+#endif
 }
 
 public struct ReaderRequestedLocationState: Equatable, Sendable {

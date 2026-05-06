@@ -449,7 +449,9 @@ fileprivate struct FeedFetchMetadata {
 }
 
 fileprivate func logRSS(_ message: String) {
+#if DEBUG
     debugPrint("# RSS \(message)")
+#endif
 }
 
 fileprivate enum FeedFetchResult {

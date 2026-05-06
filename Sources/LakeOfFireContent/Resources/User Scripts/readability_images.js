@@ -5,7 +5,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 (function () {
-    const isEbook = window.top.location.origin.startsWith('ebook://');
+    let isEbook = false;
+    try {
+        isEbook = window.top?.location?.origin?.startsWith('ebook://') === true;
+    } catch (_error) {
+        isEbook = false;
+    }
     if (isEbook) {
         return;
     }

@@ -136,7 +136,9 @@ private enum SwiftReadabilityProcessingOutcome {
 }
 
 private func logTitleTrace(_ message: String) {
+#if DEBUG
     debugPrint("# TITLE \(message)")
+#endif
 }
 
 private extension String {
@@ -2107,6 +2109,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func logStateSnapshot(_ label: String, url: URL?) {
+#if DEBUG
         debugPrint(
             "# READERPERF state.snapshot",
             "label=\(label)",
@@ -2118,6 +2121,7 @@ public class ReaderModeViewModel: ObservableObject {
             "lastRendered=\(lastRenderedURL?.absoluteString ?? "nil")",
             "lastFallback=\(lastFallbackLoaderURL?.absoluteString ?? "nil")"
         )
+#endif
     }
 
     private func logTrace(

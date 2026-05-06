@@ -320,38 +320,16 @@ private func shouldPreferPipePrefixTitle(url: URL) -> Bool {
 
 public func wireViewOriginalLinks(doc: Document, url: URL) throws {
     let originalLinks = try doc.getElementsByClass("reader-view-original")
-    guard !originalLinks.isEmpty() else { return }
-    guard let header = try doc.getElementById("reader-header") else { return }
-    let actions: Element
-    if let existingActions = try doc.getElementById("reader-header-actions") {
-        actions = existingActions
-    } else {
-        let newActions = Element(Tag("div"), "")
-        try newActions.attr("id", "reader-header-actions")
-        if let bylineContainer = try doc.getElementById("reader-byline-container"),
-           bylineContainer.parent() === header {
-            try bylineContainer.after(newActions.outerHtml())
-        } else {
-            try header.appendChild(newActions)
-        }
-        guard let insertedActions = try doc.getElementById("reader-header-actions") else { return }
-        actions = insertedActions
-    }
-    for originalLink in originalLinks.array() {
-        let link: Element
+    for originalLink in originalLinks {
         if originalLink.tagName().lowercased() == "button" {
             let baseURI = originalLink.ownerDocument()?.getBaseUri() ?? ""
             let anchor = try Element(Tag.valueOf("a"), baseURI)
             try anchor.attr("class", "reader-view-original")
+            try anchor.attr("href", url.absoluteString)
             try anchor.text(originalLink.text(trimAndNormaliseWhitespace: false))
             try originalLink.replaceWith(anchor)
-            link = anchor
         } else {
-            link = originalLink
+            try originalLink.attr("href", url.absoluteString)
         }
-        try link.attr("href", url.absoluteString)
-        guard link.parent()?.id() != "reader-header-actions" else { continue }
-        try link.remove()
-        try actions.appendChild(link)
     }
 }
