@@ -461,6 +461,23 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 #endif
                     return
                 }
+                if let prefix = payload["prefix"] as? String,
+                   let event = payload["event"] as? String,
+                   ["# EPUB", "# EPUB ", "# READER", "# REPLACETEXT", "# EPUBLOAD"].contains(prefix) {
+                    let details = payload.keys
+                        .filter { $0 != "message" && $0 != "windowURL" && $0 != "pageURL" && $0 != "prefix" && $0 != "event" }
+                        .sorted()
+                        .compactMap { key -> String? in
+                            guard let value = payload[key] else { return nil }
+                            let printable = value is NSNull ? "<null>" : String(describing: value)
+                            return "\(key)=\(printable)"
+                        }
+                    let line = details.isEmpty ? "\(prefix) \(event)" : "\(prefix) \(event) \(details.joined(separator: " "))"
+                    debugPrint(line)
+                    Logger.shared.logger.info("\(line)")
+                    return
+                }
+
                 let logMessage = payload["message"] as? String ?? "# EPUB  SwiftReadability.print"
                 var components: [String] = []
                 if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {

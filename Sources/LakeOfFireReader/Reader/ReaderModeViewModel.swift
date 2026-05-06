@@ -195,6 +195,12 @@ private struct ReaderContentPublicationDateSnapshot: Sendable {
     let contentType: String
 }
 
+private struct ReaderContentRenderSnapshot: Sendable {
+    let url: URL
+    let title: String
+    let isTitlePrefixOfContent: Bool
+}
+
 private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPublicationDateSnapshot) -> String {
     if snapshot.displayAbsolutePublicationDate {
         return ReaderDateFormatter.absoluteString(from: snapshot.publicationDate, dateFormatter: readerContentPublicationDateFallbackFormatter)
@@ -2406,6 +2412,18 @@ public class ReaderModeViewModel: ObservableObject {
     func readerModeRouteForTesting(readerContent: ReaderContent) async -> String {
         await resolveReaderModeRoute(readerContent: readerContent).rawValue
     }
+
+    @MainActor
+    private func readerContentRenderSnapshot(readerContent: ReaderContent) async throws -> ReaderContentRenderSnapshot? {
+        guard let content = try await readerContent.getContent() else {
+            return nil
+        }
+        return ReaderContentRenderSnapshot(
+            url: content.url,
+            title: content.title,
+            isTitlePrefixOfContent: content.isTitlePrefixOfContent
+        )
+    }
     
     @MainActor
     internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
@@ -2448,21 +2466,21 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 do {
-                    let content = try await readerContent.getContent()
+                    let contentSnapshot = try await self.readerContentRenderSnapshot(readerContent: readerContent)
                     let resolvedReadabilityContent: String
                     if !cachedReadabilityContent.contains("id=\"reader-publication-date\""),
                        let publicationDateFallback = await readerContentPublicationDateFallback(for: contentURL),
                        let canonicalHTML = rebuildCanonicalSnippetReadabilityHTML(
                         html: cachedReadabilityContent,
-                        contentURL: content?.url ?? contentURL,
-                        fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? content?.title,
+                        contentURL: contentSnapshot?.url ?? contentURL,
+                        fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? contentSnapshot?.title,
                         publishedTime: publicationDateFallback,
-                        preferredTitle: content?.title,
-                        hideReaderTitleOverride: content?.isTitlePrefixOfContent
+                        preferredTitle: contentSnapshot?.title,
+                        hideReaderTitleOverride: contentSnapshot?.isTitlePrefixOfContent
                        ) {
                         debugPrint(
                             "# BYLINE capturedReadability.publicationDateFallback",
-                            "contentURL=\((content?.url ?? contentURL).absoluteString)",
+                            "contentURL=\((contentSnapshot?.url ?? contentURL).absoluteString)",
                             "publishedTime=\(publicationDateFallback)",
                             "result=rebuildCanonical"
                         )

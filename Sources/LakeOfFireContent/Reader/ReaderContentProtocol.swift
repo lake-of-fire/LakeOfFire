@@ -287,7 +287,8 @@ public extension ReaderContentProtocol {
     var humanReadablePublicationDate: String? {
         guard let publicationDate else { return nil}
         
-        if displayAbsolutePublicationDate {
+        let oneMonthAgo = Calendar.current.date(byAdding: .month, value: -1, to: Date())
+        if displayAbsolutePublicationDate || oneMonthAgo.map({ publicationDate < $0 }) == true {
             return longDateFormatter.string(from: publicationDate)
         } else {
             return ReaderDateFormatter.relativeString(from: publicationDate)

@@ -51,6 +51,21 @@ const postPaginatorLoadLog = (event, details = {}) => {
         try { console.log('# EPUBLOAD', `paginator.${event}`, details); } catch (_) {}
     }
 };
+const postMay5PaginatorLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
+    globalThis.__manabiMay5PaginatorLogCount = globalThis.__manabiMay5PaginatorLogCount || 0;
+    if (globalThis.__manabiMay5PaginatorLogCount >= 160) return;
+    globalThis.__manabiMay5PaginatorLogCount += 1;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY5 ${JSON.stringify({
+            event: `paginator.${event}`,
+            timestamp: Date.now(),
+            ...details,
+        })}`);
+    } catch (_error) {
+        try { console.log('# MAY5', `paginator.${event}`, details); } catch (_) {}
+    }
+};
 const rectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
     const rect = element.getBoundingClientRect();
@@ -2346,6 +2361,16 @@ export class Paginator extends HTMLElement {
             rightOpacity = 0;
         if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
         else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
+        postMay5PaginatorLog('swipe.chevron.progress', {
+            dx: manabiRound(dx, 2),
+            minSwipe,
+            leftOpacity: manabiRound(leftOpacity, 3),
+            rightOpacity: manabiRound(rightOpacity, 3),
+            reachedThreshold: Math.abs(dx) > minSwipe,
+            bookDir: this.bookDir ?? null,
+            vertical: this.#vertical,
+            scrolled: this.scrolled,
+        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2356,6 +2381,10 @@ export class Paginator extends HTMLElement {
         }));
         if (Math.abs(dx) > minSwipe) {
             // Enqueue the reset after meeting threshold
+            postMay5PaginatorLog('swipe.chevron.resetAfterThreshold', {
+                dx: manabiRound(dx, 2),
+                minSwipe,
+            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,

@@ -989,6 +989,36 @@ const postMay4Log = (event, details = {}) => {
     } catch {}
 };
 
+const postMay5Log = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
+    globalThis.__manabiMay5EbookViewerLogCount = globalThis.__manabiMay5EbookViewerLogCount || 0;
+    if (globalThis.__manabiMay5EbookViewerLogCount >= 160) return;
+    globalThis.__manabiMay5EbookViewerLogCount += 1;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY5 ' + JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            ...details,
+        }));
+    } catch {}
+};
+
+const requestLookupCloseForPageMotion = (reason, details = {}) => {
+    postMay5Log('lookup.close.request', {
+        reason,
+        pageURL: window.location.href,
+        ...details,
+    });
+    try {
+        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+            touchedEntryWithElementId: null,
+            wasAlreadySelected: false,
+            lookupCloseReason: reason,
+            touchstartAtMs: Date.now(),
+        });
+    } catch (_error) {}
+};
+
 const resolveFoliatePaginator = (view = null) => {
     const renderer = view?.renderer || null;
     if (renderer?.localName === 'foliate-paginator') return renderer;
@@ -3333,6 +3363,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
 const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
+    const hasAnyMarkedReadContent = readSegmentIdentifiers.size > 0
+        || normalizedProgress.sentenceIdentifiersRead.length > 0;
     const {
         visibleSegments,
         viewportWidth,
@@ -3363,6 +3395,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
                 sentenceIdentifiers: [],
             },
             isRead,
+            hasAnyMarkedReadContent,
             unreadVisibleSegmentCount,
             visibleSegmentCount: visibleSegmentIdentifiers.size,
             fullLabel: 'Read',
@@ -3436,6 +3469,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             sentenceIdentifiers,
         },
         isRead,
+        hasAnyMarkedReadContent,
         unreadVisibleSegmentCount,
         visibleSegmentCount: visibleSegmentIdentifiers.size,
         fullLabel: isRead ? 'Read' : 'Mark Read',
@@ -3866,6 +3900,34 @@ const getCSSForBookContent = ({
         background-clip: content-box !important;
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
+        background: transparent !important;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
+        background: transparent !important;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
+        border-radius: var(--segment-match-border-radius);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+        border-radius: var(--segment-match-border-radius);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
     }
 
     mnb-sen ruby.mnb-gen > rt,
@@ -4968,8 +5030,14 @@ class Reader {
         const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
         const navBar = document.getElementById('nav-bar');
         const readerStage = document.getElementById('reader-stage');
+        const pageTrackingContainer = document.getElementById('page-tracking-container');
+        const pageReadButton = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"], #page-tracking-buttons .page-read-button[data-completion-action]');
+        const pagesLeftLabel = document.getElementById('nav-section-progress-center');
         const navBarRect = navBar?.getBoundingClientRect?.() ?? null;
         const readerStageRect = readerStage?.getBoundingClientRect?.() ?? null;
+        const pageTrackingRect = pageTrackingContainer?.getBoundingClientRect?.() ?? null;
+        const pageReadButtonRect = pageReadButton?.getBoundingClientRect?.() ?? null;
+        const pagesLeftLabelRect = pagesLeftLabel?.getBoundingClientRect?.() ?? null;
         const liveFoliateViewRect = liveFoliateView?.getBoundingClientRect?.() ?? null;
         const livePaginatorRect = livePaginator?.getBoundingClientRect?.() ?? null;
         let visibleFrameRect = null;
@@ -5161,6 +5229,12 @@ class Reader {
             ),
             navBarRect: this.#formatRect(navBarRect),
             readerStageRect: this.#formatRect(readerStageRect),
+            pageTrackingRect: this.#formatRect(pageTrackingRect),
+            pageReadButtonRect: this.#formatRect(pageReadButtonRect),
+            pagesLeftLabelRect: this.#formatRect(pagesLeftLabelRect),
+            pagesLeftLabelHidden: pagesLeftLabel?.hidden ?? null,
+            pagesLeftLabelVisibleAttr: pagesLeftLabel?.dataset?.pagesLeftVisible ?? null,
+            pagesLeftLabelText: pagesLeftLabel?.textContent ?? null,
             navBarBottomGapToViewport: navBarBottom != null && Number.isFinite(viewportHeight)
                 ? safeRound(viewportHeight - navBarBottom, 1)
                 : null,
@@ -5183,6 +5257,9 @@ class Reader {
                 : null,
             toolbarGapLastRectPx: lastVisibleTextBottom != null && navBarTop != null
                 ? safeRound(navBarTop - lastVisibleTextBottom, 1)
+                : null,
+            toolbarGapViewportTextPx: Number.isFinite(viewportVisibleTextRect?.bottom) && navBarTop != null
+                ? safeRound(navBarTop - viewportVisibleTextRect.bottom, 1)
                 : null,
             stageGapPx: visibleTextBottom != null && readerStageBottom != null
                 ? safeRound(readerStageBottom - visibleTextBottom, 1)
@@ -5267,10 +5344,62 @@ class Reader {
         }
         this.lastLayoutSnapshot = layoutSnapshot;
         this.lastLayoutDiagnosticsKey = key;
+        postMay5Log('layout.toolbarGap', {
+            reason,
+            currentPercent: layoutSnapshot.currentPercent,
+            navHiddenDueToScroll: document.getElementById('nav-bar')?.classList?.contains('nav-hidden-due-to-scroll') ?? null,
+            bodyClassName: document.body?.className ?? null,
+            cssInsets: layoutSnapshot.cssInsets,
+            htmlCssInsets: layoutSnapshot.htmlCssInsets,
+            visualViewportBox: layoutSnapshot.visualViewportBox,
+            readerStageRect: layoutSnapshot.readerStageRect,
+            navBarRect: layoutSnapshot.navBarRect,
+            pageTrackingRect: layoutSnapshot.pageTrackingRect,
+            pageReadButtonRect: layoutSnapshot.pageReadButtonRect,
+            liveFoliateViewRect: layoutSnapshot.liveFoliateViewRect,
+            livePaginatorRect: layoutSnapshot.livePaginatorRect,
+            visibleFrameRect: layoutSnapshot.visibleFrameRect,
+            visibleTextRect: layoutSnapshot.visibleTextRect,
+            viewportVisibleTextRect: layoutSnapshot.viewportVisibleTextRect,
+            lastVisibleTextRect: layoutSnapshot.lastVisibleTextRect,
+            visibleTextRectCount: layoutSnapshot.visibleTextRectCount,
+            viewportVisibleTextRectCount: layoutSnapshot.viewportVisibleTextRectCount,
+            toolbarGapPx: layoutSnapshot.toolbarGapPx,
+            toolbarGapLastRectPx: layoutSnapshot.toolbarGapLastRectPx,
+            toolbarGapViewportTextPx: layoutSnapshot.toolbarGapViewportTextPx,
+            stageGapPx: layoutSnapshot.stageGapPx,
+            frameBottomToLastTextBottomPx: layoutSnapshot.frameBottomToLastTextBottomPx,
+            viewportFrameBottomToTextBottomPx: layoutSnapshot.viewportFrameBottomToTextBottomPx,
+            iframeWritingMode: layoutSnapshot.iframeWritingMode,
+            iframeBodyClientBox: layoutSnapshot.iframeBodyClientBox,
+            iframeBodyScrollBox: layoutSnapshot.iframeBodyScrollBox,
+            iframeMargins: layoutSnapshot.iframeMargins,
+            iframePadding: layoutSnapshot.iframePadding,
+            pagesLeftLabelRect: layoutSnapshot.pagesLeftLabelRect,
+            pagesLeftLabelHidden: layoutSnapshot.pagesLeftLabelHidden,
+            pagesLeftLabelVisibleAttr: layoutSnapshot.pagesLeftLabelVisibleAttr,
+            pagesLeftLabelText: layoutSnapshot.pagesLeftLabelText,
+        });
         if (shouldLogLayout) {
             postEPUBLog('ebook.layout.diagnostics', layoutSnapshot);
         }
     }
+    refreshPageTrackingVisibility(reason = 'settings-changed') {
+        this.#renderPageTrackingButtons(reason);
+        requestAnimationFrame(async () => {
+            const renderer = this.view?.renderer;
+            if (renderer && typeof renderer.renderIfContainerSizeChanged === 'function') {
+                try {
+                    await renderer.renderIfContainerSizeChanged(`page-tracking-visibility.${reason}`);
+                } catch (error) {
+                    console.error(error);
+                }
+            }
+            this.#updatePageReadMarker(`page-tracking-visibility.${reason}`);
+            this.#queueLayoutDiagnostics(`page-tracking-visibility.${reason}`);
+        });
+    }
+
     #renderPageTrackingButtons(reason = 'unspecified') {
         const container = document.getElementById('page-tracking-container');
         const buttonHost = document.getElementById('page-tracking-buttons');
@@ -5280,13 +5409,15 @@ class Reader {
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
-        const shouldShowPageTracking = !!completionAction || hasStates;
+        const markReadButtonsVisible = document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
+        const shouldShowPageTracking = markReadButtonsVisible && (!!completionAction || hasStates);
         const renderStartedAt = performance.now();
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const buttonBefore = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
         this.#logMarkRead('pageTracking.render.beforeDOM', {
             reason,
             shouldShowPageTracking,
+            markReadButtonsVisible,
             stateCount: pageTrackingStates.length,
             visibleScreenIsRead: visibleState?.isRead ?? null,
             existingButtonReadAttr: buttonBefore?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
@@ -5298,6 +5429,7 @@ class Reader {
         postMay4Log('pageTracking.render.beforeDOM', {
             reason,
             shouldShowPageTracking,
+            markReadButtonsVisible,
             stateCount: pageTrackingStates.length,
             visibleScreenIsRead: visibleState?.isRead ?? null,
             visibleSegmentCount: visibleState?.visibleSegmentCount ?? null,
@@ -5327,6 +5459,7 @@ class Reader {
         this.#logMarkRead('pageTracking.render', {
             reason,
             shouldShowPageTracking,
+            markReadButtonsVisible,
             stateCount: pageTrackingStates.length,
             hasCompletionAction: !!completionAction,
             completionActionType: completionAction?.type ?? null,
@@ -5402,6 +5535,7 @@ class Reader {
                     data-page-tracking-id="${state.id}"
                     data-read-state="${readState}"
                     data-mnb-tracking-section-read="${state.isRead ? 'true' : 'false'}"
+                    data-mnb-has-any-marked-read="${state.hasAnyMarkedReadContent ? 'true' : 'false'}"
                     aria-label="${state.fullLabel}"
                     ${state.isRead || isBusy ? 'disabled' : ''}
                 >
@@ -5580,6 +5714,8 @@ class Reader {
             startX: touch.screenX,
             startY: touch.screenY,
             triggered: false,
+            chevronActive: false,
+            lastLoggedProgressBucket: null,
         };
         if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.mainTouch.start.accept', JSON.stringify({
             startX: touch.screenX,
@@ -5604,15 +5740,47 @@ class Reader {
         const dy = touch.screenY - state.startY;
         const minSwipe = 36;
         if (Math.abs(dx) <= Math.abs(dy) || Math.abs(dx) <= 8) {
+            if (state.chevronActive) {
+                this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail: { leftOpacity: '', rightOpacity: '' },
+                }));
+                state.chevronActive = false;
+            }
             return;
         }
         event.preventDefault();
-        if (Math.abs(dx) <= minSwipe) {
-            return;
-        }
-        state.triggered = true;
+        const progress = Math.min(1, Math.abs(dx) / minSwipe);
         const swipedLeft = dx < 0;
         const goForward = swipedLeft;
+        const leftOpacity = goForward
+            ? (this.isRTL ? progress : 0)
+            : (this.isRTL ? 0 : progress);
+        const rightOpacity = goForward
+            ? (this.isRTL ? 0 : progress)
+            : (this.isRTL ? progress : 0);
+        this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
+            bubbles: true,
+            composed: true,
+            detail: { leftOpacity, rightOpacity },
+        }));
+        state.chevronActive = progress > 0;
+        const progressBucket = Math.floor(progress * 4);
+        if (state.lastLoggedProgressBucket !== progressBucket || progress >= 1) {
+            state.lastLoggedProgressBucket = progressBucket;
+            postMay5Log('mainDocument.swipe.progress', {
+                dx: safeRound(dx, 2),
+                dy: safeRound(dy, 2),
+                progress: safeRound(progress, 3),
+                leftOpacity: safeRound(leftOpacity, 3),
+                rightOpacity: safeRound(rightOpacity, 3),
+                reachedThreshold: Math.abs(dx) > minSwipe,
+                isRTL: !!this.isRTL,
+            });
+        }
+        if (Math.abs(dx) <= minSwipe) return;
+        state.triggered = true;
         this.#flashSideNavChevron(goForward
             ? (this.isRTL ? 'left' : 'right')
             : (this.isRTL ? 'right' : 'left'));
@@ -5642,6 +5810,17 @@ class Reader {
             innerHeight: window.innerHeight,
             visualViewportHeight: window.visualViewport?.height ?? null,
         }));
+        if (this.#mainDocumentSwipeState?.chevronActive) {
+            this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
+                bubbles: true,
+                composed: true,
+                detail: { leftOpacity: '', rightOpacity: '' },
+            }));
+            postMay5Log('mainDocument.swipe.reset', {
+                reason: 'touchend',
+                triggered: this.#mainDocumentSwipeState?.triggered ?? null,
+            });
+        }
         this.#mainDocumentSwipeState = null;
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
@@ -6537,6 +6716,12 @@ class Reader {
         this.view.addEventListener('sideNavChevronOpacity', e => {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
+            postMay5Log('swipe.chevron.opacity.received', {
+                leftOpacity: e.detail?.leftOpacity ?? null,
+                rightOpacity: e.detail?.rightOpacity ?? null,
+                leftExists: !!l,
+                rightExists: !!r,
+            });
             
             const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
@@ -6548,7 +6733,14 @@ class Reader {
                 // Show chevron at full opacity
                 if (Number(value) >= 1) {
                     elem.style.removeProperty('opacity');
+                    elem.style.removeProperty('visibility');
                     elem.classList.add('chevron-visible');
+                    postMay5Log('swipe.chevron.opacity.applied', {
+                        key,
+                        mode: 'full',
+                        value,
+                        className: elem.className || null,
+                    });
                     return;
                 }
                 
@@ -6556,6 +6748,13 @@ class Reader {
                 if (Number(value) > 0) {
                     elem.classList.remove('chevron-visible');
                     elem.style.opacity = value;
+                    elem.style.visibility = 'visible';
+                    postMay5Log('swipe.chevron.opacity.applied', {
+                        key,
+                        mode: 'partial',
+                        value,
+                        className: elem.className || null,
+                    });
                     return;
                 }
                 
@@ -6564,12 +6763,26 @@ class Reader {
                     this.#chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
                         elem.style.removeProperty('opacity');
+                        elem.style.removeProperty('visibility');
                         this.#chevronFadeTimers[key] = null;
+                        postMay5Log('swipe.chevron.opacity.applied', {
+                            key,
+                            mode: 'delayed-hide',
+                            value,
+                            className: elem.className || null,
+                        });
                     }, FADER_DELAY);
                 } else {
                     // Already hidden: do nothing
                     elem.style.removeProperty('opacity');
+                    elem.style.removeProperty('visibility');
                     elem.classList.remove('chevron-visible');
+                    postMay5Log('swipe.chevron.opacity.applied', {
+                        key,
+                        mode: 'hide',
+                        value,
+                        className: elem.className || null,
+                    });
                 }
             };
             
@@ -7036,6 +7249,10 @@ class Reader {
         willLoadNewIndex
     }) {
         this.#clearVisiblePageReadChrome('goTo');
+        requestLookupCloseForPageMotion('renderer.goTo', {
+            willLoadNewIndex: !!willLoadNewIndex,
+            intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+        });
         postEPUBFlashLog('js.renderer.goTo', {
             willLoadNewIndex: !!willLoadNewIndex,
             intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
@@ -7351,6 +7568,12 @@ class Reader {
             cfi,
             reason
         } = detail
+        requestLookupCloseForPageMotion('renderer.relocate', {
+            reason: reason ?? null,
+            fraction: safeRound(fraction),
+            currentLocation: location?.current ?? null,
+            totalLocation: location?.total ?? null,
+        });
         await this.navHUD?.handleRelocate(detail);
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({

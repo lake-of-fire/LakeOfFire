@@ -1,5 +1,4 @@
 import Foundation
-import LakeOfFireCore
 import WebKit
 #if os(macOS)
 import AppKit
@@ -7,8 +6,10 @@ import AppKit
 import UIKit
 #endif
 import SwiftUIWebView
+import LakeOfFireCore
+import LakeOfFireAdblock
 
-public struct ReadabilityImagesUserScript {
+public struct ReadabilityImagesUserScript: Sendable {
     public static let shared = ReadabilityImagesUserScript()
     
     public let userScriptSource: String
@@ -17,7 +18,7 @@ public struct ReadabilityImagesUserScript {
         var readabilityImagesJS: String
         
         do {
-            readabilityImagesJS = try loadFile(name: "readability_images", type: "js")
+            readabilityImagesJS = try loadModuleFile(name: "readability_images", type: "js", subdirectory: "User Scripts", in: Bundle.module)
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }

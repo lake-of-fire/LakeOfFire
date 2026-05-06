@@ -279,12 +279,14 @@ final class FeedStateIndicatorTests: XCTestCase {
             let olderRecord = HistoryRecord()
             olderRecord.url = targetURL
             olderRecord.updateCompoundKey()
+            olderRecord.compoundKey += "-older"
             olderRecord.lastVisitedAt = Date(timeIntervalSince1970: 1_700_000_100)
             realm.add(olderRecord)
 
             let deletedNewerRecord = HistoryRecord()
             deletedNewerRecord.url = targetURL
             deletedNewerRecord.updateCompoundKey()
+            deletedNewerRecord.compoundKey += "-deleted-newer"
             deletedNewerRecord.lastVisitedAt = Date(timeIntervalSince1970: 1_700_000_300)
             deletedNewerRecord.isDeleted = true
             realm.add(deletedNewerRecord)
@@ -292,6 +294,7 @@ final class FeedStateIndicatorTests: XCTestCase {
             let liveNewerRecord = HistoryRecord()
             liveNewerRecord.url = targetURL
             liveNewerRecord.updateCompoundKey()
+            liveNewerRecord.compoundKey += "-live-newer"
             liveNewerRecord.lastVisitedAt = newerDate
             realm.add(liveNewerRecord)
         }

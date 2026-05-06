@@ -68,7 +68,9 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --mnb-nav-bar-height: 64px;
+                    --mnb-nav-bar-height-expanded: 64px;
+                    --mnb-nav-bar-height-compact: 54px;
+                    --mnb-nav-bar-height: var(--mnb-nav-bar-height-expanded);
                     --mnb-obscured-top-inset: 0px;
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-obscured-bottom-inset: 0px;
@@ -85,7 +87,7 @@
                     --nav-primary-hidden-shift-y: 14px;
                     --mnb-reader-stage-bottom-inset: calc(
                         var(--mnb-nav-bar-height)
-                        + var(--mnb-toolbar-physical-bottom-inset, 0px)
+                        + var(--mnb-toolbar-visual-bottom-inset, 0px)
                     );
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
@@ -388,6 +390,10 @@
                     box-sizing: border-box;
                     flex: 0 1 auto;
                     transform: translate(-50%, 0);
+                    transition: color 240ms ease, opacity 240ms ease, transform 240ms ease;
+                }
+                #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
+                    color: color-mix(in srgb, var(--secondary-color) 62%, transparent);
                 }
                 .nav-action-link {
                     display: inline-block;
@@ -420,6 +426,7 @@
                 .nav-primary-layer {
                     grid-area: 1 / 1;
                     display: block;
+                    color: inherit;
                     width: 100%;
                     min-width: 0;
                     max-width: 100%;
@@ -428,7 +435,7 @@
                     white-space: nowrap;
                     opacity: 0;
                     transform: translateY(0);
-                    transition: opacity 240ms ease, transform 240ms ease;
+                    transition: color 240ms ease, opacity 240ms ease, transform 240ms ease;
                     text-align: center;
                 }
                 #nav-primary-text {
@@ -679,6 +686,11 @@
                     overflow-x: hidden;
                     overflow-y: visible;
                     text-overflow: ellipsis;
+                    opacity: 0;
+                    transition: opacity 375ms ease-out, transform 375ms ease-out;
+                }
+                #nav-section-progress-center[data-pages-left-visible="true"] {
+                    opacity: 1;
                 }
                 #nav-section-progress-center {
                     pointer-events: auto;
@@ -701,6 +713,12 @@
                     z-index: 7;
                     pointer-events: auto;
                     padding-block: 5px;
+                }
+                body[data-mnb-mark-read-buttons-visible="false"] #page-tracking-container {
+                    display: none !important;
+                }
+                body[data-mnb-mark-read-buttons-visible="false"] {
+                    --mnb-nav-bar-height: var(--mnb-nav-bar-height-compact);
                 }
                 #page-tracking-buttons {
                     display: flex;
@@ -821,7 +839,7 @@
                     border-top: var(--word-tracking-checkmark-thickness) solid var(--theme-tracking-unread-color);
                     content: '';
                     left: var(--word-tracking-checkmark-left);
-                    top: calc(var(--word-tracking-checkmark-height) - 1px);
+                    top: var(--word-tracking-checkmark-height);
                     position: absolute;
                     transform: scaleX(-1) rotate(135deg);
                     transition: none;
@@ -863,6 +881,23 @@
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .mnb-tracking-button-label {
                     max-width: 96px;
                     opacity: 1;
+                }
+                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) {
+                    width: calc(var(--page-read-button-height) * 0.85);
+                    height: calc(var(--page-read-button-height) * 0.85);
+                    min-width: calc(var(--page-read-button-height) * 0.85);
+                    min-height: calc(var(--page-read-button-height) * 0.85);
+                    padding-inline: 0;
+                    gap: 0;
+                    justify-content: center;
+                }
+                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
+                    max-width: 0;
+                    opacity: 0;
+                }
+                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
+                    opacity: 1;
+                    transition-delay: 140ms;
                 }
                 #page-tracking-container .page-read-button[data-completion-action] {
                     width: fit-content;
@@ -908,10 +943,10 @@
                     background-color: var(--theme-tracking-read-color);
                     color: white;
                     box-shadow: none;
-                    width: var(--page-read-button-height);
-                    height: var(--page-read-button-height);
-                    min-width: var(--page-read-button-height);
-                    min-height: var(--page-read-button-height);
+                    width: calc(var(--page-read-button-height) * 0.85);
+                    height: calc(var(--page-read-button-height) * 0.85);
+                    min-width: calc(var(--page-read-button-height) * 0.85);
+                    min-height: calc(var(--page-read-button-height) * 0.85);
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;

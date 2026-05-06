@@ -91,7 +91,8 @@ let package = Package(
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ],
             resources: [
-                .copy("Resources/"),
+                .copy("Resources/CSS/"),
+                .copy("Resources/User Scripts/"),
             ]
         ),
         .target(

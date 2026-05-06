@@ -1,5 +1,4 @@
 import Foundation
-import LakeOfFireCore
 import WebKit
 #if os(macOS)
 import AppKit
@@ -7,8 +6,10 @@ import AppKit
 import UIKit
 #endif
 import SwiftUIWebView
+import LakeOfFireCore
+import LakeOfFireAdblock
 
-public struct Readability {
+public struct Readability: Sendable {
     public static let shared = Readability()
     
     public let userScriptSource: String
@@ -19,20 +20,19 @@ public struct Readability {
         var readabilityJS: String
         var readabilityInitializationJS: String
         var domPurifyJS: String
-        var readabilityImagesJS: String
         var readabilityOriginalJS: String
         
         var mozillaCSS: String
         var swiftReadabilityCSS: String
         
         do {
-            mozillaCSS = try loadFile(name: "Reader", type: "css")
-            swiftReadabilityCSS = try loadFile(name: "SwiftReadability", type: "css")
+            mozillaCSS = try loadModuleFile(name: "Reader", type: "css", subdirectory: "CSS", in: Bundle.module)
+            swiftReadabilityCSS = try loadModuleFile(name: "SwiftReadability", type: "css", subdirectory: "CSS", in: Bundle.module)
             
-            readabilityJS = try loadFile(name: "Readability", type: "js")
-            domPurifyJS = try loadFile(name: "dompurify.min", type: "js")
-            readabilityInitializationJS = try loadFile(name: "readability_initialization.template", type: "js")
-            readabilityOriginalJS = try loadFile(name: "readability_view_original", type: "js")
+            readabilityJS = try loadModuleFile(name: "Readability", type: "js", subdirectory: "User Scripts", in: Bundle.module)
+            domPurifyJS = try loadModuleFile(name: "dompurify.min", type: "js", subdirectory: "User Scripts", in: Bundle.module)
+            readabilityInitializationJS = try loadModuleFile(name: "readability_initialization.template", type: "js", subdirectory: "User Scripts", in: Bundle.module)
+            readabilityOriginalJS = try loadModuleFile(name: "readability_view_original", type: "js", subdirectory: "User Scripts", in: Bundle.module)
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }

@@ -1405,12 +1405,39 @@ export class NavigationHUD {
             display: center ? getComputedStyle(center).display : null,
             opacity: center ? getComputedStyle(center).opacity : null,
         };
+        const setCenterPagesLeftVisible = (visible, label = '') => {
+            if (!center) return;
+            if (center.__pagesLeftFadeTimer) {
+                clearTimeout(center.__pagesLeftFadeTimer);
+                center.__pagesLeftFadeTimer = null;
+            }
+            if (visible) {
+                center.hidden = false;
+                center.textContent = label;
+                if (center.dataset.pagesLeftVisible !== 'true') {
+                    center.dataset.pagesLeftVisible = 'false';
+                    void center.offsetWidth;
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            if (center.textContent === label) {
+                                center.dataset.pagesLeftVisible = 'true';
+                            }
+                        });
+                    });
+                }
+                return;
+            }
+            center.dataset.pagesLeftVisible = 'false';
+            center.__pagesLeftFadeTimer = setTimeout(() => {
+                if (center.dataset.pagesLeftVisible === 'false') {
+                    center.textContent = '';
+                    center.hidden = true;
+                }
+                center.__pagesLeftFadeTimer = null;
+            }, 390);
+        };
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
-        if (center) {
-            center.hidden = true;
-            center.textContent = '';
-        }
         try {
             const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
             const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
@@ -1420,18 +1447,17 @@ export class NavigationHUD {
             }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) {
+                setCenterPagesLeftVisible(false);
                 return;
             }
             if (sectionResolution.index == null) {
+                setCenterPagesLeftVisible(false);
                 return;
             }
             if (!pagesLeft || pagesLeft <= 0) {
                 this.lastTerminalPagesLeftSection = sectionResolution.index;
                 this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
-                if (center) {
-                    center.textContent = '';
-                    center.hidden = true;
-                }
+                setCenterPagesLeftVisible(false);
                 return;
             }
             const isExplicitBackwardRelocate =
@@ -1463,8 +1489,7 @@ export class NavigationHUD {
             const label = pagesLeft === 1
                 ? `1 page left in ${progressScope}`
                 : `${pagesLeft} pages left in ${progressScope}`;
-            center.textContent = label;
-            center.hidden = false;
+            setCenterPagesLeftVisible(true, label);
         } catch (error) {
             console.error('Failed to update section progress', error);
         }
