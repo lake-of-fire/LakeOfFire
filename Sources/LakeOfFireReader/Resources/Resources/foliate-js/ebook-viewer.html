@@ -70,6 +70,7 @@
                     --nav-compact-percent-min-width: 72px;
                     --mnb-nav-bar-height-expanded: 64px;
                     --mnb-nav-bar-height-compact: 54px;
+                    --mnb-nav-bar-height-mark-read-hidden: 39px;
                     --mnb-nav-bar-height: var(--mnb-nav-bar-height-expanded);
                     --mnb-obscured-top-inset: 0px;
                     --mnb-toolbar-bottom-offset: 0px;
@@ -393,7 +394,7 @@
                     transition: color 240ms ease, opacity 240ms ease, transform 240ms ease;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
-                    color: color-mix(in srgb, var(--secondary-color) 62%, transparent);
+                    color: color-mix(in srgb, var(--secondary-color) 76%, transparent);
                 }
                 .nav-action-link {
                     display: inline-block;
@@ -718,7 +719,8 @@
                     display: none !important;
                 }
                 body[data-mnb-mark-read-buttons-visible="false"] {
-                    --mnb-nav-bar-height: var(--mnb-nav-bar-height-compact);
+                    --mnb-nav-bar-height: var(--mnb-nav-bar-height-mark-read-hidden);
+                    --nav-page-read-clearance: 0px;
                 }
                 #page-tracking-buttons {
                     display: flex;
@@ -801,7 +803,7 @@
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button {
                     box-shadow: none;
-                    opacity: 1;
+                    opacity: 0.68;
                     width: calc(var(--page-read-button-height) * 0.85);
                     height: calc(var(--page-read-button-height) * 0.85);
                     min-width: calc(var(--page-read-button-height) * 0.85);
@@ -809,6 +811,9 @@
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
+                }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button:not([data-mnb-tracking-section-read="true"]):not([data-completion-action]) {
+                    opacity: 0.56;
                 }
                 .page-read-button .mnb-tracking-button-status {
                     padding: var(--word-tracking-status-outline-offset);

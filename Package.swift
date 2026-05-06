@@ -54,7 +54,12 @@ let package = Package(
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
     ],
     targets: [
-        .target(name: "LakeOfFireShareSupport"),
+        .target(
+            name: "LakeOfFireShareSupport",
+            dependencies: [
+                .product(name: "SwiftUtilities", package: "SwiftUtilities"),
+            ]
+        ),
         .target(
             name: "LakeOfFireCore",
             dependencies: [
@@ -154,6 +159,7 @@ let package = Package(
             dependencies: [
                 "LakeOfFireOPDS",
                 "LakeOfFireContent",
+                "LakeOfFireContentUI",
                 "LakeOfFireFiles",
                 "LakeOfFireWeb",
                 "LakeOfFireCore",

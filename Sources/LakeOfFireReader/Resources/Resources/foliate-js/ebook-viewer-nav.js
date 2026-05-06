@@ -100,6 +100,18 @@ const logNavHide = (event, detail = {}) => {
     }
 };
 
+const logHideNavTrace = (event, detail = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# HIDENAV ${JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            ...detail,
+        })}`);
+    } catch (_err) {
+        try { console.log('# HIDENAV', event, detail); } catch (_) {}
+    }
+};
+
 const logEPUBNav = (event, detail = {}) => {
     const payload = { event, ...detail };
     if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
@@ -428,9 +440,66 @@ export class NavigationHUD {
     
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         const previous = this.hideNavigationDueToScroll;
-        this.hideNavigationDueToScroll = !!shouldHide;
+        const next = !!shouldHide;
+        const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        const printHideNav = (event, details = {}) => {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# HIDENAV ' + JSON.stringify({
+                    event,
+                    timestamp: Date.now(),
+                    source,
+                    requestedHide: next,
+                    previous,
+                    previousClass,
+                    navHidden: this.navHidden,
+                    navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                    navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+                    labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                    ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
+                    ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
+                    context,
+                    ...details,
+                }));
+            } catch {}
+        };
+        printHideNav('navHUD.set.begin');
+        if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            printHideNav('navHUD.set.ignored', {
+                reason: 'preserve-hidden-through-next-display',
+                preserveHiddenThroughNextDisplay: true,
+            });
+            return this.hideNavigationDueToScroll;
+        }
+        if (previous === next && previousClass === next) {
+            printHideNav('navHUD.set.noop');
+            logEPUBNav('nav.visibility.scroll-toggle-noop', {
+                source,
+                shouldHide: next,
+                navHidden: this.navHidden,
+                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                navHiddenScrollClass: previousClass,
+                context,
+            });
+            logNavHide('hud:set-hide-noop', {
+                shouldHide: next,
+                source,
+                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                navHiddenScrollClass: previousClass,
+                context,
+            });
+            return this.hideNavigationDueToScroll;
+        }
+        this.hideNavigationDueToScroll = next;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
+        printHideNav('navHUD.set.finish', {
+            appliedHide: this.hideNavigationDueToScroll,
+            afterClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            afterLabelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+        });
         if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.navHUD.set', JSON.stringify({
             source,
             previous,
@@ -507,6 +576,21 @@ export class NavigationHUD {
             source,
             shouldHide: this.hideNavigationDueToScroll,
         });
+    }
+
+    _captureHideNavState() {
+        return {
+            bodyNavHiddenClass: document.body?.classList?.contains?.('nav-hidden') ?? null,
+            bodyNavHiddenScrollClass: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            hudHideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+            ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
+            ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
+        };
     }
 
     // External toggle for full nav hide (not the scroll HUD hide).
@@ -785,7 +869,27 @@ export class NavigationHUD {
             pageNumber: this.rendererPageSnapshot?.current ?? null,
             pageCount: this.rendererPageSnapshot?.total ?? null,
         });
+        if (!shouldHide && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            logHideNavTrace('nativePost.ignored', {
+                source: 'relocate.page-turn',
+                requestedHide: shouldHide,
+                reason: 'preserve-hidden-through-next-display',
+                direction,
+                pageNumber: this.rendererPageSnapshot?.current ?? null,
+                pageCount: this.rendererPageSnapshot?.total ?? null,
+                state: this._captureHideNavState(),
+            });
+            return;
+        }
         try {
+            logHideNavTrace('nativePost.send', {
+                source: 'relocate.page-turn',
+                requestedHide: shouldHide,
+                direction,
+                pageNumber: this.rendererPageSnapshot?.current ?? null,
+                pageCount: this.rendererPageSnapshot?.total ?? null,
+                state: this._captureHideNavState(),
+            });
             window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
                 hideNavigationDueToScroll: shouldHide,
                 source: 'relocate.page-turn',

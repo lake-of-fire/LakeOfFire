@@ -1003,6 +1003,58 @@ const postMay5Log = (event, details = {}) => {
     } catch {}
 };
 
+const postHideNavLog = (event, details = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# HIDENAV ' + JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            ...details,
+        }));
+    } catch {}
+};
+
+const ignoreNextIncomingHideNavigation = (source) => {
+    globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 1;
+    postHideNavLog('ignoreNextIncomingHideNavigation', {
+        source,
+        count: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
+    });
+};
+
+const ignoreNextIncomingRevealNavigation = (source) => {
+    globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 1;
+    postHideNavLog('ignoreNextIncomingRevealNavigation', {
+        source,
+        count: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
+    });
+};
+
+const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
+    const requestedHide = !!shouldHide;
+    try {
+        window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+            hideNavigationDueToScroll: requestedHide,
+            source,
+            ...details,
+        });
+        postHideNavLog('nativePost.send', {
+            source,
+            requestedHide,
+            details,
+            state: captureNavVisibilityState(),
+        });
+        return true;
+    } catch (error) {
+        postHideNavLog('nativePost.error', {
+            source,
+            requestedHide,
+            details,
+            message: error?.message || String(error),
+        });
+        return false;
+    }
+};
+
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
     postMay5Log('lookup.close.request', {
         reason,
@@ -1820,15 +1872,21 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 0) => {
     void maybeOpenDeferredCacheWarmer();
 };
 
-const postOpenReaderGoToSheetRequest = (source, targetID = null) => {
+const postOpenReaderGoToSheetRequest = (source, targetID = null, options = {}) => {
+    const preserveHiddenNavigation = !!options.preserveHiddenNavigation;
+    const preserveVisibleNavigation = !!options.preserveVisibleNavigation;
     postEPUBLog('ebook.goToSheet.request', {
         source,
         targetID,
+        preserveHiddenNavigation,
+        preserveVisibleNavigation,
     });
     try {
         window.webkit?.messageHandlers?.openReaderGoToSheet?.postMessage?.({
             source,
             targetID,
+            preserveHiddenNavigation,
+            preserveVisibleNavigation,
         });
     } catch (error) {
         postEPUBLog('ebook.goToSheet.request.error', {
@@ -2011,6 +2069,11 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
     const before = captureNavVisibilityState();
+    postHideNavLog('js.bridge.begin', {
+        source,
+        requestedHide: normalized,
+        before,
+    });
     if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.bridge.begin', JSON.stringify({
         source,
         requestedHide: normalized,
@@ -2060,6 +2123,11 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         visualViewportHeight: window.visualViewport?.height ?? null,
         visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
     }));
+    postHideNavLog('js.bridge.finish', {
+        source,
+        requestedHide: normalized,
+        after: captureNavVisibilityState(),
+    });
     globalThis.reader?.queueLayoutDiagnostics?.('native-hide-bridge', {
         source,
         shouldHide: normalized,
@@ -2068,7 +2136,42 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
 };
 
 window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
-    return setNativeHideNavigationState(shouldHide, 'window.manabiSetHideNavigationDueToScroll');
+    const requestedHide = !!shouldHide;
+    if (requestedHide) {
+        const ignoreCount = Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0);
+        if (ignoreCount > 0) {
+            globalThis.__manabiIgnoreNextIncomingHideNavigationCount = ignoreCount - 1;
+            postHideNavLog('js.bridge.ignored', {
+                source: 'window.manabiSetHideNavigationDueToScroll',
+                requestedHide: true,
+                remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
+                currentState: captureNavVisibilityState(),
+            });
+            return false;
+        }
+    } else {
+        if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            postHideNavLog('js.bridge.ignored', {
+                source: 'window.manabiSetHideNavigationDueToScroll',
+                requestedHide: false,
+                reason: 'preserve-hidden-through-next-display',
+                currentState: captureNavVisibilityState(),
+            });
+            return true;
+        }
+        const ignoreCount = Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0);
+        if (ignoreCount > 0) {
+            globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = ignoreCount - 1;
+            postHideNavLog('js.bridge.ignored', {
+                source: 'window.manabiSetHideNavigationDueToScroll',
+                requestedHide: false,
+                remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
+                currentState: captureNavVisibilityState(),
+            });
+            return true;
+        }
+    }
+    return setNativeHideNavigationState(requestedHide, 'window.manabiSetHideNavigationDueToScroll');
 };
 
 const normalizeChromeInsetCSSValue = (value) => {
@@ -4609,22 +4712,125 @@ class Reader {
                 });
         }, 250);
         document.getElementById('nav-primary-text')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
-            postOpenReaderGoToSheetRequest('nav-primary-text', 'nav-primary-text');
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-primary-text',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-primary-text.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-primary-text.click.preserve-hidden', {
+                    control: 'nav-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-primary-text.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-primary-text.click.preserve-visible', {
+                    control: 'nav-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-primary-text', 'nav-primary-text', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
         });
         document.getElementById('nav-hidden-primary-text')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
-            postOpenReaderGoToSheetRequest('nav-hidden-primary-text', 'nav-hidden-primary-text');
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-hidden-primary-text',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-hidden-primary-text.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-hidden-primary-text.click.preserve-hidden', {
+                    control: 'nav-hidden-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-hidden-primary-text.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-hidden-primary-text.click.preserve-visible', {
+                    control: 'nav-hidden-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-hidden-primary-text', 'nav-hidden-primary-text', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
         });
         document.getElementById('nav-section-progress-center')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
-            postOpenReaderGoToSheetRequest('nav-section-progress-center', 'nav-section-progress-center');
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-section-progress-center',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-section-progress-center.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-section-progress-center.click.preserve-hidden', {
+                    control: 'nav-section-progress-center',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-section-progress-center.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-section-progress-center.click.preserve-visible', {
+                    control: 'nav-section-progress-center',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-section-progress-center', 'nav-section-progress-center', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
         });
         $('#side-bar-close-button').addEventListener('click', () => {
             this.closeSideBar()
         })
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
+        const pageTrackingButtonSelector = 'button[data-page-tracking-id], button[data-completion-action]';
+        const absorbPageTrackingButtonEvent = (event) => {
+            const button = event.target?.closest?.(pageTrackingButtonSelector);
+            if (!button) {
+                return false;
+            }
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            postHideNavLog('pageTrackingButton.absorb', {
+                type: event.type,
+                eventPhase: event.eventPhase,
+                wasHidden,
+                target: event.target?.tagName || null,
+                targetID: event.target?.id || null,
+                stateID: button.dataset?.pageTrackingId ?? null,
+                completionAction: button.dataset?.completionAction ?? null,
+            });
+            if (wasHidden) {
+                globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
+                ignoreNextIncomingRevealNavigation(`page-tracking-button.${event.type}`);
+                postEbookNavigationVisibilityToNative(true, `page-tracking-button.${event.type}.preserve-hidden`, {
+                    stateID: button.dataset?.pageTrackingId ?? null,
+                    completionAction: button.dataset?.completionAction ?? null,
+                });
+            }
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            return true;
+        };
         const revealNavigationFromPageTracking = (event, source) => {
+            if (event.target?.closest?.(pageTrackingButtonSelector)) {
+                return false;
+            }
             if (!this.navHUD?.hideNavigationDueToScroll) {
                 return false;
             }
@@ -4635,25 +4841,66 @@ class Reader {
         };
         const pageTrackingButtons = document.getElementById('page-tracking-buttons');
         pageTrackingButtons?.addEventListener('touchstart', (event) => {
+            if (absorbPageTrackingButtonEvent(event)) {
+                return;
+            }
             revealNavigationFromPageTracking(event, 'page-tracking-buttons.touchstart.reveal');
         }, { capture: true, passive: false });
         pageTrackingButtons?.addEventListener('pointerdown', (event) => {
+            if (absorbPageTrackingButtonEvent(event)) {
+                return;
+            }
             revealNavigationFromPageTracking(event, 'page-tracking-buttons.pointerdown.reveal');
         }, { capture: true });
         pageTrackingButtons?.addEventListener('click', (event) => {
-            const button = event.target?.closest?.('button[data-page-tracking-id], button[data-completion-action]');
+            const button = event.target?.closest?.(pageTrackingButtonSelector);
             if (!button) {
                 return;
+            }
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            const completionAction = button.dataset?.completionAction;
+            const stateID = button?.dataset?.pageTrackingId;
+            postHideNavLog('pageTrackingButton.click', {
+                wasHidden,
+                completionAction: completionAction ?? null,
+                stateID: stateID ?? null,
+                readState: button.dataset?.readState ?? null,
+                trackingSectionRead: button.dataset?.mnbTrackingSectionRead ?? null,
+            });
+            if (wasHidden) {
+                globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
+                postHideNavLog('pageTrackingButton.preserveHiddenThroughNextDisplay', {
+                    source: 'page-tracking-button.click',
+                    stateID: stateID ?? null,
+                    completionAction: completionAction ?? null,
+                });
+                postEbookNavigationVisibilityToNative(true, 'page-tracking-button.click.preserve-hidden', {
+                    stateID: stateID ?? null,
+                    completionAction: completionAction ?? null,
+                });
+                ignoreNextIncomingRevealNavigation('page-tracking-button.click');
+            } else {
+                if (!completionAction && stateID) {
+                    globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = true;
+                    postHideNavLog('pageTrackingButton.deferHideUntilAdvance', {
+                        source: 'page-tracking-button.click',
+                        stateID,
+                        completionAction: null,
+                        state: captureNavVisibilityState(),
+                    });
+                }
+                ignoreNextIncomingHideNavigation('page-tracking-button.click');
             }
             if (revealNavigationFromPageTracking(event, 'page-tracking-buttons.click.reveal')) {
                 return;
             }
-            const completionAction = button.dataset?.completionAction;
             if (completionAction) {
                 this.#handleCompletionAction(completionAction).catch((error) => console.error(error));
                 return;
             }
-            const stateID = button?.dataset?.pageTrackingId;
             if (!stateID) {
                 return;
             }
@@ -5624,20 +5871,117 @@ class Reader {
                 this.#logPageTracking('ebook.pageTracking.markRead.advance', {
                     mode: 'next-section',
                 });
+                globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 0;
+                postHideNavLog('pageTrackingButton.clearHideIgnoreForAdvance', {
+                    mode: 'next-section',
+                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                    state: captureNavVisibilityState(),
+                });
+                this.#applyDeferredHideNavigationForMarkReadAdvance('next-section');
+                postHideNavLog('pageTrackingButton.advance.beforeMove', {
+                    method: 'nextButton.click',
+                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                    state: captureNavVisibilityState(),
+                });
                 this.buttons.next.click();
+                postHideNavLog('pageTrackingButton.advance.afterMove', {
+                    method: 'nextButton.click',
+                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                    state: captureNavVisibilityState(),
+                });
+                this.#completeMarkReadAdvancePreserveHidden('next-section');
                 return;
             }
         }
         this.#logPageTracking('ebook.pageTracking.markRead.advance', {
             mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
         });
+        globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 0;
+        postHideNavLog('pageTrackingButton.clearHideIgnoreForAdvance', {
+            mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
+            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+            state: captureNavVisibilityState(),
+        });
+        this.#applyDeferredHideNavigationForMarkReadAdvance(this.isRTL ? 'previous-visual-page' : 'next-visual-page');
         this.#flashForwardSideNavChevron();
         this.#clearVisiblePageReadChrome('page-turn-start');
         if (this.isRTL) {
+            postHideNavLog('pageTrackingButton.advance.beforeMove', {
+                method: 'goLeft',
+                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                state: captureNavVisibilityState(),
+            });
             await this.view.goLeft();
+            postHideNavLog('pageTrackingButton.advance.afterMove', {
+                method: 'goLeft',
+                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                state: captureNavVisibilityState(),
+            });
         } else {
+            postHideNavLog('pageTrackingButton.advance.beforeMove', {
+                method: 'goRight',
+                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                state: captureNavVisibilityState(),
+            });
             await this.view.goRight();
+            postHideNavLog('pageTrackingButton.advance.afterMove', {
+                method: 'goRight',
+                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+                state: captureNavVisibilityState(),
+            });
         }
+        this.#completeMarkReadAdvancePreserveHidden('visual-page');
+    }
+    #applyDeferredHideNavigationForMarkReadAdvance(mode) {
+        if (globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance !== true) {
+            postHideNavLog('pageTrackingButton.deferredHide.skip', {
+                mode,
+                reason: 'not-deferred',
+                state: captureNavVisibilityState(),
+            });
+            return;
+        }
+        globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = false;
+        postHideNavLog('pageTrackingButton.deferredHide.apply.begin', {
+            mode,
+            state: captureNavVisibilityState(),
+        });
+        this.navHUD?.setHideNavigationDueToScroll?.(true, 'page-tracking-button.advance.deferred-hide', {
+            mode,
+        });
+        postEbookNavigationVisibilityToNative(true, 'page-tracking-button.advance.deferred-hide', {
+            mode,
+        });
+        postHideNavLog('pageTrackingButton.deferredHide.apply.finish', {
+            mode,
+            state: captureNavVisibilityState(),
+        });
+    }
+    #completeMarkReadAdvancePreserveHidden(mode) {
+        if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay !== true) {
+            postHideNavLog('pageTrackingButton.preserveHidden.complete.skip', {
+                mode,
+                reason: 'not-preserving',
+                state: captureNavVisibilityState(),
+            });
+            return;
+        }
+        postHideNavLog('pageTrackingButton.preserveHidden.complete.begin', {
+            mode,
+            state: captureNavVisibilityState(),
+        });
+        this.navHUD?.setHideNavigationDueToScroll?.(true, 'page-tracking-button.advance.complete', {
+            mode,
+        });
+        postEbookNavigationVisibilityToNative(true, 'page-tracking-button.advance.complete', {
+            mode,
+        });
+        globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
+        globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
+        postHideNavLog('pageTrackingButton.preserveHidden.complete.finish', {
+            mode,
+            state: captureNavVisibilityState(),
+        });
     }
     #flashForwardSideNavChevron() {
         this.#flashSideNavChevron(this.isRTL ? 'left' : 'right');
@@ -7268,6 +7612,12 @@ class Reader {
     }
     async #onDidDisplay({}) {
         const navVisibilityBefore = captureNavVisibilityState();
+        postHideNavLog('didDisplay.begin', {
+            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+            ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
+            ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
+            before: navVisibilityBefore,
+        });
         postEPUBLoadLog('renderer.didDisplay.begin', collectEPUBLoadDiagnostics('renderer.didDisplay.begin', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -7302,12 +7652,30 @@ class Reader {
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
             visual: captureEPUBFlashVisualState(this.view),
         });
+        if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            postHideNavLog('didDisplay.preserveHidden.apply', {
+                before: captureNavVisibilityState(),
+            });
+            this.navHUD?.setHideNavigationDueToScroll?.(true, 'mark-read.didDisplay.preserve-hidden', {
+                stage: 'before-raf',
+            });
+            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
+            globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
+            postHideNavLog('didDisplay.preserveHidden.finish', {
+                after: captureNavVisibilityState(),
+            });
+        }
         if (this.navHUD?.hideNavigationDueToScroll) {
             this.navHUD.setHideNavigationDueToScroll(true, 'reader.didDisplay.reapply', {
                 stage: 'before-raf',
             });
         }
         postPageNumLog('nav.visibility.did-display', {
+            before: navVisibilityBefore,
+            after: captureNavVisibilityState(),
+        });
+        postHideNavLog('didDisplay.end', {
+            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
             before: navVisibilityBefore,
             after: captureNavVisibilityState(),
         });
