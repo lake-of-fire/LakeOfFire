@@ -409,7 +409,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
-            ("readerConsoleLog", { [weak self] message in
+            ("readerConsoleLog", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = ConsoleLogMessage(fromMessage: message) else {
                     return
@@ -541,7 +541,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint("# EPUB  paginationBookKey.set", "key=\(bookKey.prefix(72))…")
                 }
             }),
-            ("trackingSizeCache", { [weak self] message in
+            ("trackingSizeCache", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let body = message.body as? [String: Any],
                       let command = body["command"] as? String,
@@ -590,13 +590,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             let data = try JSONEncoder().encode(cached)
                             if let json = String(data: data, encoding: .utf8) {
                                 let js = "window.manabiResolveTrackingSizeCache(requestId, \(json))"
-                                Task { @MainActor in
-                                    try? await self.scriptCaller.evaluateJavaScript(
-                                        js,
-                                        arguments: ["requestId": requestId],
-                                        in: message.frameInfo
-                                    )
-                                }
+                                try? await self.scriptCaller.evaluateJavaScript(
+                                    js,
+                                    arguments: ["requestId": requestId],
+                                    in: message.frameInfo
+                                )
                             }
                             debugPrint(
                                 "# EPUB  trackingSizeCache hit",
@@ -609,13 +607,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             // Ignore encoding errors.
                         }
                     } else {
-                        Task { @MainActor in
-                            try? await self.scriptCaller.evaluateJavaScript(
-                                "window.manabiResolveTrackingSizeCache(requestId, null)",
-                                arguments: ["requestId": requestId],
-                                in: message.frameInfo
-                            )
-                        }
+                        try? await self.scriptCaller.evaluateJavaScript(
+                            "window.manabiResolveTrackingSizeCache(requestId, null)",
+                            arguments: ["requestId": requestId],
+                            in: message.frameInfo
+                        )
                         debugPrint("# EPUB  trackingSizeCache miss", "key=\(key.prefix(72))…")
                     }
                 default:
@@ -1019,9 +1015,19 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
                 handleNavigationVisibility(for: result)
             }),
-            ("videoStatus", { @RealmBackgroundActor [weak self] message in
-                guard let self else { return }
-                _ = VideoStatusMessage(fromMessage: message)
+            (ReaderWebMediaBridge.messageHandlerName, { @MainActor message in
+                guard let event = ReaderWebMediaBridge.decode(message: message) else { return }
+                switch event {
+                case .readyState:
+                    break
+                case .media(let info):
+                    ReaderWebMediaBridge.postCandidateUpdate(info)
+                case .playback(let event):
+                    ReaderWebMediaBridge.postPlaybackUpdate(event)
+                }
+            }),
+            ("videoStatus", { @MainActor message in
+                ReaderWebMediaBridge.postExternalSubtitlesUpdate(from: message)
             })
         ])
     }()

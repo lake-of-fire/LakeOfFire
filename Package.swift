@@ -271,6 +271,14 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "LakeOfFireReaderWebMediaTests",
+            dependencies: [
+                "LakeOfFireContent",
+                "LakeOfFireReader",
+            ],
+            path: "Tests/LakeOfFireReaderWebMediaTests"
+        ),
+        .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
                 .product(name: "RealmSwift", package: "realm-swift"),

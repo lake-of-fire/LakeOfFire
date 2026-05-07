@@ -192,18 +192,18 @@ actor EBookProcessTextRequestDeduper {
 }
 
 actor EBookProcessingActor {
-    let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
+    let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
     let ebookTextProcessor: EbookTextProcessor?
-    let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
-    let processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?
-    let processHTML: ((String, Bool) async -> String)?
+    let processReadabilityContent: EbookReadabilityContentProcessor?
+    let processHTMLBytes: EbookHTMLBytesProcessor?
+    let processHTML: EbookHTMLProcessor?
 
     init(
-        ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?,
+        ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
         ebookTextProcessor: EbookTextProcessor?,
-        processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
-        processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
-        processHTML: ((String, Bool) async -> String)?
+        processReadabilityContent: EbookReadabilityContentProcessor?,
+        processHTMLBytes: EbookHTMLBytesProcessor?,
+        processHTML: EbookHTMLProcessor?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookTextProcessor = ebookTextProcessor
@@ -269,7 +269,7 @@ fileprivate actor EBookLoadingActor {
         at viewerHtmlPath: String,
         originalURL: URL,
         sharedFontCSSBase64: String?,
-        sharedFontCSSBase64Provider: (() async -> String?)?
+        sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
     ) async throws -> (HTTPURLResponse, Data) {
         var html = try String(contentsOfFile: viewerHtmlPath)
         let shouldEnablePageTurnInteractionDiagnostic =
@@ -344,13 +344,13 @@ public actor EbookURLSchemeActor {
     public init() { }
 }
 
-typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
-typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
-typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
-typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
-typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
-typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
+public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
+public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
+public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
+public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
+public typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
+public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
+public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?

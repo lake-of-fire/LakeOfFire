@@ -173,9 +173,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
         try await { @MainActor [weak self] in
             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             guard let libraryConfiguration = realm.resolve(ref) else { return }
-            let webViewSystemScripts = baseSystemScripts + libraryConfiguration.systemScripts
             guard let scripts = libraryConfiguration.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
+            let webViewSystemScripts = self.baseSystemScripts + libraryConfiguration.systemScripts
             if self.webViewSystemScripts != webViewSystemScripts {
                 self.webViewSystemScripts = webViewSystemScripts
             }

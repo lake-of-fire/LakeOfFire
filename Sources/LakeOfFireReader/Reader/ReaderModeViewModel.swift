@@ -1217,16 +1217,16 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 }
 
 @MainActor
-public class ReaderModeViewModel: ObservableObject {
+public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     public var readerFileManager: ReaderFileManager?
-    @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
-    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
-    @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
-    @Published public var processHTML: ((String, Bool) async -> String)? = nil
+    @Published public var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler? = nil
+    @Published public var processReadabilityContent: EbookReadabilityContentProcessor? = nil
+    @Published public var processHTMLBytes: EbookHTMLBytesProcessor? = nil
+    @Published public var processHTML: EbookHTMLProcessor? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
     @Published public var sharedFontCSSBase64: String?
-    @Published public var sharedFontCSSBase64Provider: (() async -> String?)?
+    @Published public var sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     public var willEnterReaderMode: ((ReaderContent) async -> Void)?
@@ -2979,6 +2979,8 @@ public class ReaderModeViewModel: ObservableObject {
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
+        let defaultFontSize = defaultFontSize
+        let frameIsMainFrame = frameInfo?.isMainFrame ?? true
 
         try await { @ReaderViewModelActor [weak self] in
             let transformStart = CFAbsoluteTimeGetCurrent()
@@ -3113,7 +3115,7 @@ public class ReaderModeViewModel: ObservableObject {
                 ] as [String: Any]
             )
 
-            if await shouldUseDeferredSharedReaderFontGate(for: url) {
+            if await self?.shouldUseDeferredSharedReaderFontGate(for: url) == true {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
 
@@ -3187,7 +3189,7 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
             let transformedStyleTextForFrameInjection: String?
-            if let frameInfo, !frameInfo.isMainFrame {
+            if frameInfo != nil, !frameIsMainFrame {
                 let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
                 transformedContentForFrameInjection = transformedContent
                 if processHTML == nil {
@@ -3225,7 +3227,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "renderBaseURL=\(renderBaseURL.absoluteString)",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - frameInjectionPrepStartedAt))s",
                 "hasFrameInfo=\(frameInfo != nil)",
-                "isMainFrame=\(frameInfo?.isMainFrame ?? true)"
+                "isMainFrame=\(frameIsMainFrame)"
             )
             let dataBuildStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedHTMLData = Data(transformedHTMLBytes)
@@ -3236,7 +3238,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - dataBuildStartedAt))s"
             )
             let mainActorHandoffStartedAt = CFAbsoluteTimeGetCurrent()
-        try await { @MainActor in
+            try await { @MainActor [weak self] in
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.mainActorHandoff",
                     "renderBaseURL=\(renderBaseURL.absoluteString)",
@@ -3252,7 +3254,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "renderBaseURL": renderBaseURL.absoluteString
                         ] as [String: Any]
                     )
-                    cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
+                    self?.cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
@@ -3319,7 +3321,7 @@ public class ReaderModeViewModel: ObservableObject {
                         "renderBaseURL=\(renderBaseURL.absoluteString)",
                         "bytes=\(transformedHTMLData.count)"
                     )
-                    navigator?.load(
+                    self?.navigator?.load(
                         transformedHTMLData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",

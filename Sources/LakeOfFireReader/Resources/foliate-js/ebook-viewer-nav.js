@@ -63,20 +63,6 @@ const logPagesLeft = (event, detail = {}) => {
     } catch {}
 };
 
-const logMarkReadNav = (event, detail = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...detail,
-    };
-    const line = `# MARKREAD ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
-};
-
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
 // We only need a no-op logger for nav diagnostics.
 const logFix = (event, detail = {}) => {
@@ -439,16 +425,6 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
-        logMarkReadNav('hideNavigation.navHUD.set', {
-            source,
-            previous,
-            requestedHide: !!shouldHide,
-            appliedHide: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            context,
-        });
         logEPUBNav('nav.visibility.scroll-toggle', {
             source,
             previous,
@@ -767,14 +743,19 @@ export class NavigationHUD {
     }
 
     _applyPageTurnNavigationVisibility(detail) {
-        const direction = typeof detail?.pageTurnDirection === 'string'
+        const reportedDirection = typeof detail?.pageTurnDirection === 'string'
             ? detail.pageTurnDirection.toLowerCase()
             : null;
-        if (direction !== 'forward' && direction !== 'backward') return;
+        if (reportedDirection !== 'forward' && reportedDirection !== 'backward') return;
 
+        const direction = this.isRTL
+            ? (reportedDirection === 'forward' ? 'backward' : 'forward')
+            : reportedDirection;
         const shouldHide = direction === 'forward';
         this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
             direction,
+            reportedDirection,
+            isRTL: this.isRTL,
             reason: detail?.reason ?? null,
             sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
             pageNumber: this.rendererPageSnapshot?.current ?? null,
@@ -785,6 +766,8 @@ export class NavigationHUD {
                 hideNavigationDueToScroll: shouldHide,
                 source: 'relocate.page-turn',
                 direction,
+                reportedDirection,
+                isRTL: this.isRTL,
             });
         } catch (_error) {}
     }

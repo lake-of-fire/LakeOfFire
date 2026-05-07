@@ -62,7 +62,7 @@ private extension View {
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
-private var ebookChromeInsetRevision: Int = 0
+@MainActor private var ebookChromeInsetRevision: Int = 0
 
 @MainActor
 func readerPaginationTrackingSettingsKey(

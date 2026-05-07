@@ -271,11 +271,16 @@
                 }
                 #page-read-marker-top {
                     display: block;
-                    grid-row: 1;
-                    width: var(--mnb-ebook-read-marker-top-width, 100%);
-                    margin-inline-start: var(--mnb-ebook-read-marker-top-left, 0px);
+                    position: absolute;
+                    top: 0;
+                    left: var(--mnb-ebook-read-marker-top-left, var(--side-nav-width, 32px));
+                    right: var(--mnb-ebook-read-marker-top-right, var(--side-nav-width, 32px));
+                    width: auto;
+                    margin-left: 0;
+                    margin-right: 0;
                     height: var(--mnb-tracking-section-border-size);
-                    align-self: start;
+                    transform: none;
+                    max-width: none;
                     border-radius: var(--mnb-tracking-section-border-size);
                     background: var(--theme-tracking-read-color);
                     opacity: 0;
@@ -308,6 +313,10 @@
                     opacity: 1;
                     visibility: visible;
                     transition-delay: 0s;
+                }
+                body[data-page-read-marker-transition="instant"] #page-read-marker-top,
+                body[data-page-read-marker-transition="instant"] #page-read-marker-side {
+                    transition: none;
                 }
                 .nav-relocate-button,
                 .nav-section-progress,
@@ -779,6 +788,7 @@
                     background-color: var(--theme-background-color);
                     color: var(--secondary-color);
                     -webkit-tap-highlight-color: transparent;
+                    touch-action: manipulation;
                     -webkit-appearance: none;
                     appearance: none;
                     -webkit-user-select: none;
@@ -796,6 +806,9 @@
                         border-radius 240ms ease;
                     overflow: hidden;
                     white-space: nowrap;
+                }
+                .page-read-button:active {
+                    background-color: var(--theme-background-color);
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .page-read-button:hover:not(:disabled) {
@@ -827,7 +840,11 @@
                     justify-content: center;
                     border-radius: 50%;
                     contain: content;
-                    transition: background-color 500ms ease-in-out, opacity 200ms ease-in-out;
+                    transition:
+                        background-color 180ms ease,
+                        border-color 180ms ease,
+                        opacity 200ms ease-in-out,
+                        transform 180ms cubic-bezier(0.19, 1, 0.22, 1);
                     flex: 0 0 auto;
                 }
                 .page-read-button .mnb-tracking-status-checkmark {
@@ -836,7 +853,10 @@
                     width: var(--word-tracking-status-size);
                     height: var(--word-tracking-status-size);
                     opacity: 1;
-                    transition: opacity 160ms ease-in-out 0ms;
+                    transform: scale(1);
+                    transition:
+                        opacity 160ms ease-in-out 0ms,
+                        transform 180ms cubic-bezier(0.19, 1, 0.22, 1);
                 }
                 .page-read-button .mnb-tracking-status-checkmark::after {
                     opacity: 1;
@@ -850,7 +870,18 @@
                     top: var(--word-tracking-checkmark-height);
                     position: absolute;
                     transform: scaleX(-1) rotate(135deg);
-                    transition: border-color 500ms ease-in-out;
+                    transition: border-color 180ms ease;
+                }
+                @keyframes mnb-ebook-mark-read-pop {
+                    0% {
+                        transform: scale(0.72);
+                    }
+                    58% {
+                        transform: scale(1.14);
+                    }
+                    100% {
+                        transform: scale(1);
+                    }
                 }
                 .page-read-button .mnb-tracking-button-label {
                     display: inline-block;
@@ -949,6 +980,17 @@
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
+                    transform: scale(0.68);
+                    transform-origin: center;
+                }
+                .page-read-button[data-mnb-animate-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
+                    animation: mnb-ebook-mark-read-pop 280ms cubic-bezier(0.19, 1, 0.22, 1);
+                }
+                .page-read-button[data-mnb-animate-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
+                    animation: mnb-ebook-mark-read-pop 280ms cubic-bezier(0.19, 1, 0.22, 1);
+                }
+                .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]):active {
+                    background-color: var(--theme-tracking-read-color);
                 }
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
                     background-color: transparent;
