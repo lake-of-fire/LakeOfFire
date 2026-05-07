@@ -1,5 +1,6 @@
 import XCTest
 import RealmSwift
+import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireCore
 
@@ -10,9 +11,10 @@ final class LakeOfFireTests: XCTestCase {
 
     @MainActor
     func testTranscriptPageRegistryProducesEphemeralReaderContent() async throws {
+        await ReaderContentLoader.resetTransientCachesForTesting()
         let contentURL = try XCTUnwrap(URL(string: "https://example.com/watch?v=1#fragment"))
         let asset = TranscriptPageAsset(
-            key: "episode-1",
+            key: "episode-\(UUID().uuidString)",
             canonicalContentURL: contentURL,
             title: "Episode 1 Transcript",
             html: "<html><body><div id='reader-content'>Transcript</div></body></html>",
@@ -120,40 +122,14 @@ final class LakeOfFireTests: XCTestCase {
     }
 
     func testSoftDeleteTranscriptsWhenLastOwnerIsDeleted() async throws {
+        await ReaderContentLoader.resetTransientCachesForTesting()
         let url = try XCTUnwrap(URL(string: "https://example.com/watch?v=cleanup"))
         let (configuration, restoreConfiguration) = try makeReaderContentConfiguration()
         defer { restoreConfiguration() }
-        let transcriptCompoundKey = try await MainActor.run { () throws -> String in
-            let realm = try Realm(configuration: configuration)
-            let bookmark = Bookmark()
-            bookmark.url = url
-            bookmark.updateCompoundKey()
-
-            let transcript = MediaTranscript()
-            transcript.contentURL = MediaTranscript.canonicalContentURL(from: url)
-            transcript.stableMediaIdentity = MediaTranscript.stableMediaIdentity(
-                url: try XCTUnwrap(URL(string: "https://cdn.example.com/watch.m3u8"))
-            )
-            transcript.languageCode = "en"
-            transcript.updateCompoundKey()
-            try transcript.setWebVTT(
-                "WEBVTT\n\n00:00.000 --> 00:01.000\nHello world",
-                isGenerated: true,
-                transcriptLocale: "en",
-                sourceDuration: 15
-            )
-
-            try realm.write {
-                realm.add(bookmark)
-                realm.add(transcript)
-            }
-
-            try realm.write {
-                bookmark.isDeleted = true
-            }
-
-            return transcript.compoundKey
-        }
+        let transcriptCompoundKey = try await Self.createDeletedOwnerTranscript(
+            configuration: configuration,
+            url: url
+        )
 
         try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
         let transcriptWasDeleted = try await MainActor.run { () throws -> Bool in
@@ -168,46 +144,14 @@ final class LakeOfFireTests: XCTestCase {
     }
 
     func testSoftDeleteTranscriptsKeepsSharedContentWithRemainingOwner() async throws {
+        await ReaderContentLoader.resetTransientCachesForTesting()
         let url = try XCTUnwrap(URL(string: "https://example.com/watch?v=keep"))
         let (configuration, restoreConfiguration) = try makeReaderContentConfiguration()
         defer { restoreConfiguration() }
-        let transcriptCompoundKey = try await MainActor.run { () throws -> String in
-            let realm = try Realm(configuration: configuration)
-
-            let bookmark = Bookmark()
-            bookmark.url = url
-            bookmark.updateCompoundKey()
-
-            let historyRecord = HistoryRecord()
-            historyRecord.url = url
-            historyRecord.updateCompoundKey()
-
-            let transcript = MediaTranscript()
-            transcript.contentURL = MediaTranscript.canonicalContentURL(from: url)
-            transcript.stableMediaIdentity = MediaTranscript.stableMediaIdentity(
-                url: try XCTUnwrap(URL(string: "https://cdn.example.com/watch.mp4"))
-            )
-            transcript.languageCode = "en"
-            transcript.updateCompoundKey()
-            try transcript.setWebVTT(
-                "WEBVTT\n\n00:00.000 --> 00:01.000\nStill here",
-                isGenerated: false,
-                transcriptLocale: "en",
-                sourceDuration: 20
-            )
-
-            try realm.write {
-                realm.add(bookmark)
-                realm.add(historyRecord)
-                realm.add(transcript)
-            }
-
-            try realm.write {
-                bookmark.isDeleted = true
-            }
-
-            return transcript.compoundKey
-        }
+        let transcriptCompoundKey = try await Self.createSharedOwnerTranscript(
+            configuration: configuration,
+            url: url
+        )
 
         try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
         let transcriptWasDeleted = try await MainActor.run { () throws -> Bool in
@@ -236,6 +180,7 @@ final class LakeOfFireTests: XCTestCase {
         configuration.deleteRealmIfMigrationNeeded = true
         configuration.objectTypes = [
             Bookmark.self,
+            ContentFile.self,
             HistoryRecord.self,
             FeedEntry.self,
             MediaTranscript.self,
@@ -252,5 +197,82 @@ final class LakeOfFireTests: XCTestCase {
                 try? FileManager.default.removeItem(at: directoryURL)
             }
         )
+    }
+
+    @RealmBackgroundActor
+    private static func createDeletedOwnerTranscript(
+        configuration: Realm.Configuration,
+        url: URL
+    ) async throws -> String {
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        let bookmark = Bookmark()
+        bookmark.url = url
+        bookmark.updateCompoundKey()
+
+        let transcript = MediaTranscript()
+        transcript.contentURL = MediaTranscript.canonicalContentURL(from: url)
+        transcript.stableMediaIdentity = MediaTranscript.stableMediaIdentity(
+            url: try XCTUnwrap(URL(string: "https://cdn.example.com/watch.m3u8"))
+        )
+        transcript.languageCode = "en"
+        transcript.updateCompoundKey()
+        try transcript.setWebVTT(
+            "WEBVTT\n\n00:00.000 --> 00:01.000\nHello world",
+            isGenerated: true,
+            transcriptLocale: "en",
+            sourceDuration: 15
+        )
+
+        try realm.write {
+            realm.add(bookmark)
+            realm.add(transcript)
+        }
+
+        try realm.write {
+            bookmark.isDeleted = true
+        }
+
+        return transcript.compoundKey
+    }
+
+    @RealmBackgroundActor
+    private static func createSharedOwnerTranscript(
+        configuration: Realm.Configuration,
+        url: URL
+    ) async throws -> String {
+        let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+        let bookmark = Bookmark()
+        bookmark.url = url
+        bookmark.updateCompoundKey()
+
+        let historyRecord = HistoryRecord()
+        historyRecord.url = url
+        historyRecord.updateCompoundKey()
+
+        let transcript = MediaTranscript()
+        transcript.contentURL = MediaTranscript.canonicalContentURL(from: url)
+        transcript.stableMediaIdentity = MediaTranscript.stableMediaIdentity(
+            url: try XCTUnwrap(URL(string: "https://cdn.example.com/watch.mp4"))
+        )
+        transcript.languageCode = "en"
+        transcript.updateCompoundKey()
+        try transcript.setWebVTT(
+            "WEBVTT\n\n00:00.000 --> 00:01.000\nStill here",
+            isGenerated: false,
+            transcriptLocale: "en",
+            sourceDuration: 20
+        )
+
+        try realm.write {
+            realm.add(bookmark)
+            realm.add(historyRecord)
+            realm.add(transcript)
+        }
+
+        try realm.write {
+            bookmark.isDeleted = true
+        }
+
+        return transcript.compoundKey
     }
 }

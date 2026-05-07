@@ -287,6 +287,8 @@ let package = Package(
                 "LakeOfFireCore",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
+                .product(name: "SwiftReadability", package: "swift-readability"),
+                .product(name: "WebMedia", package: "swift-brave"),
             ],
             path: "Tests/LakeOfFireTests",
             resources: [

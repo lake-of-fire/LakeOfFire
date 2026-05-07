@@ -76,7 +76,7 @@ final class SharedReaderFontTests: XCTestCase {
         let css = try XCTUnwrap(String(data: response.data, encoding: .utf8))
         XCTAssertTrue(css.contains("font-family: 'YuKyokasho'"), css)
         XCTAssertTrue(css.contains("internal://local/manabi-fonts/YuKyokasho.woff2"), css)
-        XCTAssertTrue(css.contains("font-display: block;"), css)
+        XCTAssertTrue(css.contains("font-display: swap;"), css)
     }
 
     func testSharedReaderFontFontResponseIncludesCORSHeaders() throws {
@@ -120,13 +120,7 @@ final class SharedReaderFontTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js")
         let script = try String(contentsOf: scriptURL, encoding: .utf8)
-        let start = try XCTUnwrap(script.range(of: "const ensureCustomFontsForDoc = async (doc) => {"))
-        let end = try XCTUnwrap(script.range(of: "globalThis.manabiWaitForFontCSS = waitForFontCSSReady;"))
-        let section = String(script[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(section.contains("resolveSharedFontStylesheetURL(doc, targetFamily)"), section)
-        XCTAssertFalse(section.contains("URL.createObjectURL"), section)
-        XCTAssertTrue(section.contains("same-scheme-link"), section)
-        XCTAssertTrue(section.contains("style.href = stylesheetURL"), section)
+        XCTAssertFalse(script.contains("manabi-fonts.css"), script)
+        XCTAssertFalse(script.contains("URL.createObjectURL(new Blob([fontCSS"), script)
     }
 }

@@ -229,6 +229,10 @@ public extension ReaderContentProtocol {
         audioSubtitlesRole == .media ? nil : audioSubtitlesURL
     }
 
+    var mediaSubtitleURL: URL? {
+        audioSubtitlesRole == .media ? audioSubtitlesURL : nil
+    }
+
     @discardableResult
     func copyReaderMediaState<T: ReaderContentProtocol>(
         to destination: T,
@@ -523,8 +527,7 @@ public extension ReaderContentProtocol {
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
         let autoOpenMediaPlayer = autoOpenMediaPlayer
-        try await { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
+        try await { @RealmBackgroundActor in
             let bookmark = try await Bookmark.add(
                 url: url,
                 title: title,
@@ -542,24 +545,48 @@ public extension ReaderContentProtocol {
                 autoOpenMediaPlayer: autoOpenMediaPlayer,
                 realmConfiguration: realmConfiguration
             )
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmark.compoundKey) {
+            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            let managedBookmark: Bookmark
+            if let existingBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmark.compoundKey) {
+                managedBookmark = existingBookmark
+            } else {
+                let fallbackBookmark = Bookmark()
+                fallbackBookmark.url = url
+                fallbackBookmark.title = title
+                fallbackBookmark.imageUrl = imageURL
+                fallbackBookmark.sourceIconURL = sourceIconURL
+                fallbackBookmark.html = html
+                fallbackBookmark.content = content
+                fallbackBookmark.publicationDate = publicationDate
+                fallbackBookmark.isFromClipboard = isFromClipboard
+                fallbackBookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
+                fallbackBookmark.rssContainsFullContent = rssContainsFullContent
+                fallbackBookmark.isReaderModeByDefault = isReaderModeByDefault
+                fallbackBookmark.isReaderModeAvailable = isReaderModeAvailable
+                fallbackBookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+                fallbackBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                fallbackBookmark.updateCompoundKey()
                 try await realm.asyncWrite {
-                    if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
-                        content.configureBookmark(managedBookmark)
-                    } else {
-                        managedBookmark.voiceFrameUrl = voiceFrameURL
-                        managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
-                        managedBookmark.voiceAudioURLs.removeAll()
-                        managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
-                        managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
-                        managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
-                        managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
-                        managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
-                        managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
-                    }
-                    managedBookmark.refreshChangeMetadata(explicitlyModified: true)
+                    realm.add(fallbackBookmark, update: .modified)
                 }
+                managedBookmark = fallbackBookmark
+            }
+            try await realm.asyncWrite {
+                let canResolveOriginalType = realm.configuration.objectTypes?.contains(where: { $0 == Self.self }) ?? true
+                if canResolveOriginalType, let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
+                    content.configureBookmark(managedBookmark)
+                } else {
+                    managedBookmark.voiceFrameUrl = voiceFrameURL
+                    managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
+                    managedBookmark.voiceAudioURLs.removeAll()
+                    managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                    managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
+                    managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                    managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
+                    managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                    managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                }
+                managedBookmark.refreshChangeMetadata(explicitlyModified: true)
             }
 
             if let historyRecord = try await HistoryRecord.get(forURL: url, realm: realm), historyRecord.isDemoted != false {
@@ -569,6 +596,9 @@ public extension ReaderContentProtocol {
                 }
             }
         }()
+        if let html {
+            await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
+        }
     }
 
     /// Returns whether a matching bookmark was found and deleted.
@@ -625,7 +655,7 @@ public extension ReaderContentProtocol {
             }()
         }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
+            if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
 //            await realm.asyncRefresh()
             debugPrint(
                 "# READERLOAD",
@@ -662,6 +692,9 @@ public extension ReaderContentProtocol {
                     record.configureBookmark(bookmark)
                 }
                 record.refreshChangeMetadata(explicitlyModified: true)
+            }
+            if let html {
+                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
             }
             return record
         } else {
@@ -706,6 +739,9 @@ public extension ReaderContentProtocol {
             }
 
             try await record.refreshDemotedStatus()
+            if let html {
+                await ReaderContentBackgroundAnalysisLoader.inlineHTMLAnalysisEnqueuer?(url, imageURL, title, html)
+            }
 
             return record
         }

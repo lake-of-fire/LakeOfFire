@@ -245,12 +245,6 @@ final class FeedStateIndicatorTests: XCTestCase {
         let targetURL = try XCTUnwrap(URL(string: "https://example.com/articles/target"))
 
         try realm.write {
-            let deletedRecord = HistoryRecord()
-            deletedRecord.url = targetURL
-            deletedRecord.updateCompoundKey()
-            deletedRecord.isDeleted = true
-            realm.add(deletedRecord)
-
             let liveRecord = HistoryRecord()
             liveRecord.url = targetURL
             liveRecord.updateCompoundKey()
@@ -269,6 +263,18 @@ final class FeedStateIndicatorTests: XCTestCase {
                 in: realm
             )
         )
+
+        try realm.write {
+            let lookupRecord = HistoryRecord()
+            lookupRecord.url = targetURL
+            lookupRecord.updateCompoundKey()
+            let liveRecord = realm.object(
+                ofType: HistoryRecord.self,
+                forPrimaryKey: lookupRecord.compoundKey
+            )!
+            liveRecord.isDeleted = true
+        }
+        XCTAssertFalse(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
     }
 
     func testHistoryRecordLatestLastVisitedAtReturnsNewestLiveRecord() throws {
@@ -277,19 +283,6 @@ final class FeedStateIndicatorTests: XCTestCase {
         let newerDate = Date(timeIntervalSince1970: 1_700_000_200)
 
         try realm.write {
-            let olderRecord = HistoryRecord()
-            olderRecord.url = targetURL
-            olderRecord.updateCompoundKey()
-            olderRecord.lastVisitedAt = Date(timeIntervalSince1970: 1_700_000_100)
-            realm.add(olderRecord)
-
-            let deletedNewerRecord = HistoryRecord()
-            deletedNewerRecord.url = targetURL
-            deletedNewerRecord.updateCompoundKey()
-            deletedNewerRecord.lastVisitedAt = Date(timeIntervalSince1970: 1_700_000_300)
-            deletedNewerRecord.isDeleted = true
-            realm.add(deletedNewerRecord)
-
             let liveNewerRecord = HistoryRecord()
             liveNewerRecord.url = targetURL
             liveNewerRecord.updateCompoundKey()
@@ -298,5 +291,11 @@ final class FeedStateIndicatorTests: XCTestCase {
         }
 
         XCTAssertEqual(HistoryRecord.latestLastVisitedAt(for: targetURL, in: realm), newerDate)
+
+        try realm.write {
+            let liveRecord = realm.objects(HistoryRecord.self).first!
+            liveRecord.isDeleted = true
+        }
+        XCTAssertNil(HistoryRecord.latestLastVisitedAt(for: targetURL, in: realm))
     }
 }

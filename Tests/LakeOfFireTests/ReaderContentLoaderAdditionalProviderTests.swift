@@ -1,8 +1,10 @@
 import XCTest
 import RealmSwift
+import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireCore
 
+@objc(LakeOfFireTestsExternalBookContent)
 private final class ExternalBookContent: Bookmark {
     @Persisted var externalHTML: String?
 
@@ -24,6 +26,14 @@ private final class ExternalBookContent: Bookmark {
 }
 
 final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
+    @RealmBackgroundActor
+    private static func updateProviderBookTitle(contentURL: URL) async throws {
+        try await ReaderContentLoader.updateContent(url: contentURL) { object in
+            object.title = "Updated Provider Book"
+            return true
+        }
+    }
+
     private func makeConfiguration() throws -> (Realm.Configuration, () -> Void) {
         let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
@@ -41,6 +51,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         configuration.deleteRealmIfMigrationNeeded = true
         configuration.objectTypes = [
             Bookmark.self,
+            ContentFile.self,
             HistoryRecord.self,
             FeedEntry.self,
             MediaTranscript.self,
@@ -88,7 +99,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/provider-test"))
         let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: contentURL))
 
-        let realm = try Realm(configuration: configuration)
+        let realm = try await Realm(configuration: configuration)
         try realm.write {
             let content = ExternalBookContent()
             content.url = contentURL
@@ -100,13 +111,14 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
         ReaderContentLoader.registerAdditionalContentProvider(
             .init(id: "external-book-test") { url in
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                await realm.asyncRefresh()
-                guard let content = ExternalBookContent.get(forURL: url, realm: realm),
-                      let reference = ReaderContentLoader.ContentReference(content: content) else {
-                    return []
+                try await MainActor.run {
+                    let realm = try Realm(configuration: configuration)
+                    guard let content = ExternalBookContent.get(forURL: url, realm: realm),
+                          let reference = ReaderContentLoader.ContentReference(content: content) else {
+                        return []
+                    }
+                    return [reference]
                 }
-                return [reference]
             }
         )
 
@@ -122,14 +134,9 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
             content: try XCTUnwrap(lookedUp),
             readerFileManager: .shared
         )
-        XCTAssertEqual(navigationURL, loaderURL)
+        XCTAssertEqual(navigationURL, contentURL)
 
-        try await { @RealmBackgroundActor in
-            try await ReaderContentLoader.updateContent(url: contentURL) { object in
-                object.title = "Updated Provider Book"
-                return true
-            }
-        }()
+        try await Self.updateProviderBookTitle(contentURL: contentURL)
 
         let updated = try await ReaderContentLoader.lookupStoredContent(url: contentURL) as? ExternalBookContent
         XCTAssertEqual(updated?.title, "Updated Provider Book")
@@ -142,7 +149,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         await ReaderContentLoader.resetTransientCachesForTesting()
 
         let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/lightweight"))
-        let realm = try Realm(configuration: configuration)
+        let realm = try await Realm(configuration: configuration)
         let content = ExternalBookContent()
         content.url = contentURL
         content.title = "Lightweight"
@@ -154,13 +161,17 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         }
 
         let managedContent = try XCTUnwrap(realm.object(ofType: ExternalBookContent.self, forPrimaryKey: content.compoundKey))
-        try await managedContent.addBookmark(realmConfiguration: configuration)
-        let history = try await managedContent.addHistoryRecord(realmConfiguration: configuration, pageURL: contentURL)
+        let threadSafeContent = managedContent.freeze()
+        try await threadSafeContent.addBookmark(realmConfiguration: configuration)
+        _ = try await threadSafeContent.addHistoryRecord(realmConfiguration: configuration, pageURL: contentURL)
 
-        let bookmark = try XCTUnwrap(Bookmark.get(forURL: contentURL, realm: realm))
+        let verificationRealm = try await Realm(configuration: configuration)
+        verificationRealm.refresh()
+        let bookmark = try XCTUnwrap(Bookmark.get(forURL: contentURL, realm: verificationRealm))
         XCTAssertNil(bookmark.html)
         XCTAssertNil(bookmark.content)
-        XCTAssertNil(history.content)
+        let historyContentIsNil = try await Self.historyRecordContentIsNil(configuration: configuration, url: contentURL)
+        XCTAssertTrue(historyContentIsNil)
     }
 
     @MainActor
@@ -177,7 +188,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         let contentURL = try XCTUnwrap(URL(string: "https://example.com/article"))
         let imageURL = try XCTUnwrap(URL(string: "https://example.com/image.jpg"))
         let html = "<html><body><mnb-seg>本文</mnb-seg></body></html>"
-        let realm = try Realm(configuration: configuration)
+        let realm = try await Realm(configuration: configuration)
         let content = Bookmark()
         content.url = contentURL
         content.title = "Inline Analysis"
@@ -191,8 +202,9 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         }
 
         let managedContent = try XCTUnwrap(realm.object(ofType: Bookmark.self, forPrimaryKey: content.compoundKey))
-        try await managedContent.addBookmark(realmConfiguration: configuration)
-        _ = try await managedContent.addHistoryRecord(realmConfiguration: configuration, pageURL: contentURL)
+        let threadSafeContent = managedContent.freeze()
+        try await threadSafeContent.addBookmark(realmConfiguration: configuration)
+        _ = try await threadSafeContent.addHistoryRecord(realmConfiguration: configuration, pageURL: contentURL)
 
         let events = await recorder.events
         XCTAssertEqual(events.count, 2)
@@ -200,5 +212,14 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
         XCTAssertEqual(events.map(\.imageURL), [imageURL, imageURL])
         XCTAssertEqual(events.map(\.title), ["Inline Analysis", "Inline Analysis"])
         XCTAssertTrue(events.allSatisfy { $0.html == html })
+    }
+
+    @RealmBackgroundActor
+    private static func historyRecordContentIsNil(configuration: Realm.Configuration, url: URL) async throws -> Bool {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        guard let history = HistoryRecord.get(forURL: url, realm: realm) else {
+            return false
+        }
+        return history.content == nil
     }
 }

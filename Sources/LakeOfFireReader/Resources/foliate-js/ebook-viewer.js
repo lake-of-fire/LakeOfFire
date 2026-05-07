@@ -3165,7 +3165,14 @@ const getCSSForBookContent = ({
     spacing,
     justify,
     hyphenate
-}) => `
+}) => {
+    const parsedSpacing = Number.parseFloat(spacing)
+    const rubyReservedSpacing = Number.isFinite(parsedSpacing)
+        ? Math.max(parsedSpacing, 1.8)
+        : 1.8
+    const rubyReservedSegmentPaddingEm = Math.max(rubyReservedSpacing - 1.05, 0)
+
+    return `
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
         color-scheme: light dark;
@@ -3202,6 +3209,21 @@ const getCSSForBookContent = ({
         -webkit-hyphenate-limit-lines: 2;
         hanging-punctuation: allow-end last;
         widows: 2;
+    }
+    html:lang(ja) :is(p, li, blockquote, dd),
+    body:lang(ja) :is(p, li, blockquote, dd),
+    :lang(ja):is(p, li, blockquote, dd),
+    body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
+    body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
+    body[data-mnb-has-sentences="true"] mnb-sen,
+    body[data-mnb-has-segments="true"] mnb-seg {
+        /*
+           Reserve ruby annotation space even on lines without <rt>. WebKit's
+           ruby layout otherwise lets mixed ruby/non-ruby Japanese text fall
+           off a consistent line grid.
+        */
+        --mnb-ruby-reserved-line-height: ${rubyReservedSpacing};
+        line-height: ${rubyReservedSpacing} !important;
     }
     /*
        Neutralize book-provided body/p justification as well. Some EPUBs ship
@@ -3243,6 +3265,71 @@ const getCSSForBookContent = ({
         page-break-inside: avoid !important;
         -webkit-column-break-inside: avoid !important;
     }
+    body.reader-vertical-writing mnb-seg {
+        /*
+           Let vertical text segments participate in normal inline layout
+           instead of forcing every segment to become its own inline block.
+        */
+        display: inline !important;
+        break-inside: auto !important;
+        break-before: auto !important;
+        break-after: auto !important;
+        page-break-inside: auto !important;
+        -webkit-column-break-inside: auto !important;
+    }
+    body.reader-vertical-writing mnb-seg:not(:has(rt)) {
+        /*
+           In vertical WebKit layout, line-height fixes the paragraph grid, but
+           an inline no-ruby segment's own rect still only covers the base glyph.
+           Reserve the missing rt lane, but clip tracking backgrounds to the
+           base glyph content so learning-status highlights do not fill it.
+        */
+        padding-right: ${rubyReservedSegmentPaddingEm}em !important;
+        background-clip: content-box !important;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
+        background: transparent !important;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known),
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
+        background: transparent !important;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
+        border-radius: var(--segment-match-border-radius);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+        border-radius: var(--segment-match-border-radius);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
+    }
+
+    mnb-sen ruby.mnb-gen > rt,
+    mnb-sen ruby.mbn-src > rt {
+        /*
+           Keep Manabi-owned ruby annotations in the historical Japanese sans stack.
+           Reader-selected surface fonts such as YuKyokasho should apply to the
+           sentence surface text, not to the compact annotation text.
+        */
+        font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
+    }
 
     body *:not(.mnb-tracking-container *):not(mnb-seg *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
@@ -3278,6 +3365,7 @@ reader-sentinel {
          break-inside: avoid !important;
     }
 `
+}
 
 const $ = document.querySelector.bind(document)
 
@@ -3344,6 +3432,7 @@ class Reader {
     lastCFIPersistenceObservation = null;
     initialPaginatorSettleHandle = null;
     hasSettledInitialPaginatorLayout = false;
+    sameIndexGoToDidDisplaySkips = 0;
     unstableCFIs = new Set();
     style = {
         spacing: 1.4,
@@ -5855,6 +5944,7 @@ class Reader {
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
+        this.#installVisibleRendererGoToGuard();
         this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
         this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
@@ -6463,30 +6553,132 @@ class Reader {
             }
         }
     }
+    #installVisibleRendererGoToGuard() {
+        const renderer = this.view?.renderer;
+        if (!renderer || renderer.__manabiVisibleGoToGuardInstalled) return;
+        const originalGoTo = renderer.goTo;
+        if (typeof originalGoTo !== 'function') return;
+        const reader = this;
+        renderer.goTo = function guardedVisibleRendererGoTo(target, ...args) {
+            const callStartedAt = Date.now();
+            const targetIndex = typeof target?.index === 'number' ? Math.max(0, Math.round(target.index)) : null;
+            const currentIndex = getPrimaryRendererContentIndex(renderer);
+            const currentPage = reader.navHUD?.rendererPageSnapshot?.current ?? null;
+            const totalPages = reader.navHUD?.rendererPageSnapshot?.total ?? null;
+            const targetAnchor = typeof target?.anchor === 'number' && Number.isFinite(target.anchor)
+                ? Math.max(0, Math.min(1, target.anchor))
+                : null;
+            const targetPage = typeof targetAnchor === 'number'
+                && typeof totalPages === 'number'
+                && totalPages > 1
+                ? Math.max(1, Math.min(totalPages, Math.round(targetAnchor * (totalPages - 1)) + 1))
+                : null;
+            const sameIndex = typeof targetIndex === 'number'
+                && typeof currentIndex === 'number'
+                && targetIndex === currentIndex;
+            const sameVisiblePage = sameIndex
+                && (
+                    targetAnchor === null
+                    || (
+                        typeof targetPage === 'number'
+                        && typeof currentPage === 'number'
+                        && targetPage === currentPage
+                    )
+                );
+            const diagnostics = {
+                targetIndex,
+                currentIndex,
+                targetAnchor,
+                targetPage,
+                currentPage,
+                totalPages,
+                sameIndex,
+                sameVisiblePage,
+                argsCount: args.length,
+                targetKeys: target && typeof target === 'object' ? Object.keys(target).slice(0, 8) : null,
+                intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+                beforeNav: captureNavVisibilityState(),
+                visual: captureEPUBFlashVisualState(reader.view),
+            };
+            postEPUBFlashLog('js.renderer.goTo.guard.call', diagnostics);
+            if (sameVisiblePage) {
+                postEPUBFlashLog('js.renderer.goTo.guard.skip', {
+                    reason: targetAnchor === null ? 'same-index-no-anchor' : 'same-visible-page',
+                    ...diagnostics,
+                });
+                return Promise.resolve();
+            }
+            postEPUBFlashLog('js.renderer.goTo.guard.pass', diagnostics);
+            const result = originalGoTo.call(this, target, ...args);
+            Promise.resolve(result)
+                .then(() => {
+                    postEPUBFlashLog('js.renderer.goTo.guard.resolved', {
+                        elapsedMs: Date.now() - callStartedAt,
+                        ...diagnostics,
+                        afterNav: captureNavVisibilityState(),
+                        visual: captureEPUBFlashVisualState(reader.view),
+                    });
+                })
+                .catch((error) => {
+                    postEPUBFlashLog('js.renderer.goTo.guard.rejected', {
+                        elapsedMs: Date.now() - callStartedAt,
+                        message: error?.message ?? String(error),
+                        ...diagnostics,
+                        afterNav: captureNavVisibilityState(),
+                    });
+                });
+            return result;
+        };
+        renderer.__manabiVisibleGoToGuardInstalled = true;
+    }
     #onGoTo({
         willLoadNewIndex
     }) {
-        this.#clearVisiblePageReadChrome('goTo');
         postEPUBFlashLog('js.renderer.goTo', {
             willLoadNewIndex: !!willLoadNewIndex,
             intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
         });
         if (!willLoadNewIndex) {
+            const intent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
+            const intentAgeMs = typeof intent?.timestamp === 'number'
+                ? Date.now() - intent.timestamp
+                : null;
+            const isFreshCacheWarmerIntent =
+                (intent?.source === 'cache-warmer.open' || intent?.source === 'cache-warmer.advance')
+                && (intentAgeMs === null || intentAgeMs < 1000);
+            this.sameIndexGoToDidDisplaySkips = Math.max(1, this.sameIndexGoToDidDisplaySkips || 0);
             postEPUBFlashLog('js.renderer.goTo.skipLoading', {
                 reason: 'same-index',
-                intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+                skippedChromeClear: true,
+                intentAgeMs,
+                isFreshCacheWarmerIntent,
+                skipNextDidDisplay: this.sameIndexGoToDidDisplaySkips > 0,
+                intent,
             });
             return;
         }
+        this.#clearVisiblePageReadChrome('goTo');
         this.setLoadingIndicator(true);
     }
     #onDidDisplay({}) {
         const navVisibilityBefore = captureNavVisibilityState();
+        const shouldSkipSameIndexDidDisplay =
+            (this.sameIndexGoToDidDisplaySkips || 0) > 0
+            && !document.body?.classList?.contains?.('loading');
         postEPUBFlashLog('js.renderer.didDisplay.beforeLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+            skippedSameIndexGoTo: shouldSkipSameIndexDidDisplay,
             visual: captureEPUBFlashVisualState(this.view),
         });
+        if (shouldSkipSameIndexDidDisplay) {
+            this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
+            postEPUBFlashLog('js.renderer.didDisplay.skipSameIndexGoTo', {
+                remainingSkipCount: this.sameIndexGoToDidDisplaySkips,
+                visual: captureEPUBFlashVisualState(this.view),
+            });
+            return;
+        }
         this.setLoadingIndicator(false);
         postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
@@ -7172,11 +7364,7 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        await runWithEPUBFlashNavigationIntent({
-            source: 'cache-warmer.open',
-            target: 'renderer.goTo',
-            sectionIndex: firstUnsettledIndex,
-        }, () => this.view.renderer.goTo({ index: firstUnsettledIndex }))
+        await this.view.renderer.goTo({ index: firstUnsettledIndex })
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
@@ -7256,11 +7444,7 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        await runWithEPUBFlashNavigationIntent({
-            source: 'cache-warmer.advance',
-            target: 'renderer.goTo',
-            sectionIndex: targetIndex,
-        }, () => this.view.renderer.goTo({ index: targetIndex }))
+        await this.view.renderer.goTo({ index: targetIndex })
     }
     destroy() {
         if (this.view) {

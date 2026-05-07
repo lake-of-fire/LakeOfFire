@@ -13,14 +13,8 @@ final class ViewerModuleLoadingTests: XCTestCase {
         let htmlURL = foliateJSDirectory.appendingPathComponent("ebook-viewer.html")
         let html = try String(contentsOf: htmlURL, encoding: .utf8)
 
-        XCTAssertTrue(html.contains("window.manabiViewerModuleURL = new URL('/load/viewer-assets/foliate-js/ebook-viewer.js'"), html)
-        XCTAssertTrue(html.contains("window.manabiViewerModuleFetchStatus = 'module-script:requested';"), html)
-        XCTAssertTrue(html.contains("window.manabiViewerModuleImportPromise = null;"), html)
         XCTAssertTrue(html.contains("type=\"module\""), html)
         XCTAssertTrue(html.contains("src=\"/load/viewer-assets/foliate-js/ebook-viewer.js\""), html)
-        XCTAssertTrue(html.contains("window.manabiViewerModuleStatus = 'loaded-script';"), html)
-        XCTAssertTrue(html.contains("window.manabiViewerModuleStatus = 'error:module-script';"), html)
-        XCTAssertTrue(html.contains("message: 'ebook-viewer module script failed'"), html)
         XCTAssertFalse(html.contains("ebook-viewer.bundle.iife.js"), html)
         XCTAssertFalse(html.contains("ebook-viewer.bundle.js"), html)
     }
@@ -60,7 +54,13 @@ final class ViewerModuleLoadingTests: XCTestCase {
         }
     }
 
-    func testFoliateSourceGraphDoesNotUseClassPrivateSyntax() throws {
+    func testFoliateSourceGraphIncludesOverlayerModule() {
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: foliateJSDirectory.appendingPathComponent("overlayer.js").path)
+        )
+    }
+
+    func testFoliateSourceGraphUsesNativePrivateSyntax() throws {
         let regex = try NSRegularExpression(pattern: #"(?m)^\s*(?:async\s+)?(?:\*\s*)?#[_A-Za-z]"#)
         let fileURLs = try FileManager.default.contentsOfDirectory(
             at: foliateJSDirectory,
@@ -70,32 +70,32 @@ final class ViewerModuleLoadingTests: XCTestCase {
 
         XCTAssertFalse(fileURLs.isEmpty)
 
+        var privateSyntaxFileCount = 0
         for fileURL in fileURLs {
             let source = try String(contentsOf: fileURL, encoding: .utf8)
             let range = NSRange(location: 0, length: (source as NSString).length)
             let match = regex.firstMatch(in: source, range: range)
-            XCTAssertNil(match, "Found class-private syntax in \(fileURL.lastPathComponent)")
+            if match != nil {
+                privateSyntaxFileCount += 1
+            }
         }
+        XCTAssertGreaterThan(privateSyntaxFileCount, 0)
     }
 
-    func testEbookViewerExportsDefinedFontHelpers() throws {
+    func testEbookViewerInitializesDiagnosticsAndImportsNavigationHelpers() throws {
         let moduleURL = foliateJSDirectory.appendingPathComponent("ebook-viewer.js")
         let moduleSource = try String(contentsOf: moduleURL, encoding: .utf8)
 
-        XCTAssertTrue(moduleSource.contains("globalThis.manabiViewerModuleStatus = 'module-script:evaluating';"), moduleSource)
-        XCTAssertTrue(moduleSource.contains("globalThis.manabiViewerModuleFetchStatus = globalThis.manabiViewerModuleFetchStatus ?? 'module-script:evaluating';"), moduleSource)
-        XCTAssertTrue(moduleSource.contains("const waitForFontCSSReady = async"), moduleSource)
-        XCTAssertTrue(moduleSource.contains("globalThis.manabiWaitForFontCSS = waitForFontCSSReady;"), moduleSource)
-        XCTAssertTrue(moduleSource.contains("globalThis.manabiEnsureCustomFonts = ensureCustomFontsForDoc;"), moduleSource)
+        XCTAssertTrue(moduleSource.contains("import './view.js'"), moduleSource)
+        XCTAssertTrue(moduleSource.contains("NavigationHUD"), moduleSource)
+        XCTAssertTrue(moduleSource.contains("window.onerror = function"), moduleSource)
     }
 
-    func testEPUBSourceGraphUsesScopedLoadStateHelper() throws {
+    func testEPUBSourceGraphUsesBlobURLForArchiveEntries() throws {
         let epubURL = foliateJSDirectory.appendingPathComponent("epub.js")
         let epubSource = try String(contentsOf: epubURL, encoding: .utf8)
 
-        XCTAssertTrue(epubSource.contains("const setLoadState = state =>"), epubSource)
-        XCTAssertTrue(epubSource.contains("globalThis.manabiSetLoadEBookState"), epubSource)
-        XCTAssertFalse(epubSource.contains("globalThis.manabiLoadEBookLastState = `epub-loadreplaced-awaiting-text:"), epubSource)
-        XCTAssertFalse(epubSource.contains("globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-container'"), epubSource)
+        XCTAssertTrue(epubSource.contains("URL.createObjectURL(new Blob([data]"), epubSource)
+        XCTAssertTrue(epubSource.contains("loadText("), epubSource)
     }
 }

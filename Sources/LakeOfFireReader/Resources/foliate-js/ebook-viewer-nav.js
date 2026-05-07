@@ -94,6 +94,20 @@ const logNavHide = (event, detail = {}) => {
     }
 };
 
+const logEPUBFlash = (event, detail = {}) => {
+    globalThis.__manabiEPUBFlashNavLogCount = globalThis.__manabiEPUBFlashNavLogCount || 0;
+    if (globalThis.__manabiEPUBFlashNavLogCount >= 300) return;
+    globalThis.__manabiEPUBFlashNavLogCount += 1;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            bodyLoading: !!document.body?.classList?.contains?.('loading'),
+            ...detail,
+        }));
+    } catch (_err) {}
+};
+
 const logEPUBNav = (event, detail = {}) => {
     const payload = { event, ...detail };
     if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
@@ -422,9 +436,34 @@ export class NavigationHUD {
 
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         const previous = this.hideNavigationDueToScroll;
+        const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        const beforeFlashState = this._captureHideNavState?.() ?? {
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: previousClass,
+            hudHideNavigationDueToScroll: previous,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+        };
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
+        logEPUBFlash(previous === this.hideNavigationDueToScroll && previousClass === this.hideNavigationDueToScroll
+            ? 'js.nav.visibility.noop'
+            : 'js.nav.visibility.changed', {
+            source,
+            requestedHide: !!shouldHide,
+            previous,
+            previousClass,
+            context,
+            before: beforeFlashState,
+            after: this._captureHideNavState?.() ?? {
+                navHidden: this.navHidden,
+                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+                hudHideNavigationDueToScroll: this.hideNavigationDueToScroll,
+                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            },
+        });
         logEPUBNav('nav.visibility.scroll-toggle', {
             source,
             previous,

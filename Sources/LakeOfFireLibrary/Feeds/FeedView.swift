@@ -162,7 +162,7 @@ public struct FeedView: View {
             try? await markFeedAsViewed()
         }
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .automatic) {
                 if showsToolbar {
                     Menu {
                         if showsMarkAllAsSeenAction {

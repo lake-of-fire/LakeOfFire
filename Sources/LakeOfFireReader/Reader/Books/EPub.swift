@@ -1,10 +1,5 @@
 import Foundation
 import ZIPFoundation
-import UniformTypeIdentifiers
-
-public extension UTType {
-    static let epubZip = UTType(mimeType: "application/epub+zip")!
-}
 
 struct EPub {
     // Forked from https://github.com/hbowie/NotenikLib/blob/master/Sources/NotenikLib/transform/WebBookMaker.swift#L934

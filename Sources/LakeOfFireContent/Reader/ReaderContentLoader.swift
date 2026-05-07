@@ -84,7 +84,13 @@ public struct ReaderContentLoader {
         public let realmConfiguration: Realm.Configuration
 
         public init?(content: any ReaderContentProtocol) {
-            guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type, let config = content.realm?.configuration else { return nil }
+            guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type,
+                  var config = content.realm?.configuration else { return nil }
+            if var objectTypes = config.objectTypes,
+               !objectTypes.contains(where: { $0 == contentType }) {
+                objectTypes.append(contentType)
+                config.objectTypes = objectTypes
+            }
             self.contentType = contentType
             contentKey = content.compoundKey
             realmConfiguration = config
@@ -92,7 +98,7 @@ public struct ReaderContentLoader {
 
         @RealmBackgroundActor
         public func resolveOnBackgroundActor() async throws -> (any ReaderContentProtocol)? {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
             try await realm.asyncRefresh()
             return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
         }
@@ -220,6 +226,7 @@ public struct ReaderContentLoader {
             }
             try Task.checkCancellation()
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+            await realm.asyncRefresh()
 
             var contentFile: ContentFile?
             if !skipContentFiles {
@@ -253,6 +260,7 @@ public struct ReaderContentLoader {
             if !skipFeedEntries {
                 let feedStartedAt = Date()
                 let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
+                await feedRealm.asyncRefresh()
                 let feeds = feedRealm.objects(FeedEntry.self)
                     .where { !$0.isDeleted }
                     .sorted(by: \.createdAt, ascending: false)
@@ -311,11 +319,20 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     public static func softDeleteTranscriptsIfNoRemainingOwners(contentURL: URL) async throws {
         let canonicalContentURL = MediaTranscript.canonicalContentURL(from: contentURL)
-        let remainingOwners = try await loadAll(url: canonicalContentURL)
-            .filter { !$0.isDeleted }
-        guard remainingOwners.isEmpty else { return }
+        recentLoadAllCache.removeAll()
+        let ownerURLs = relatedURLStrings(for: canonicalContentURL)
+        let ownerRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        await ownerRealm.asyncRefresh()
+        let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+        await feedRealm.asyncRefresh()
+        guard !hasLiveOwner(in: ownerRealm, type: Bookmark.self, ownerURLs: ownerURLs),
+              !hasLiveOwner(in: ownerRealm, type: HistoryRecord.self, ownerURLs: ownerURLs),
+              !hasLiveOwner(in: ownerRealm, type: ContentFile.self, ownerURLs: ownerURLs),
+              !hasLiveOwner(in: feedRealm, type: FeedEntry.self, ownerURLs: ownerURLs)
+        else { return }
 
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+        let realm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        await realm.asyncRefresh()
         let transcripts = realm.objects(MediaTranscript.self)
             .where { $0.isDeleted == false }
             .filter(NSPredicate(format: "contentURL == %@", canonicalContentURL.absoluteString))
@@ -326,6 +343,31 @@ public struct ReaderContentLoader {
                 transcript.refreshChangeMetadata(explicitlyModified: true)
             }
         }
+    }
+
+    private static func relatedURLStrings(for url: URL) -> [String] {
+        var urls = [url.absoluteString]
+        if url.scheme == "https" {
+            urls.append(url.settingScheme("http").absoluteString)
+        } else if url.scheme == "http" {
+            urls.append(url.settingScheme("https").absoluteString)
+        }
+        return Array(Set(urls))
+    }
+
+    private static func hasLiveOwner<T: Object & ReaderContentProtocol>(
+        in realm: Realm,
+        type: T.Type,
+        ownerURLs: [String]
+    ) -> Bool {
+        if let objectTypes = realm.configuration.objectTypes,
+           !objectTypes.contains(where: { $0 == type }) {
+            return false
+        }
+        return realm.objects(type)
+            .where { $0.isDeleted == false }
+            .filter(NSPredicate(format: "url IN %@", ownerURLs))
+            .isEmpty == false
     }
 
     @RealmBackgroundActor
@@ -472,6 +514,13 @@ public struct ReaderContentLoader {
         logReaderLoad(
             "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
         )
+        if url.isTranscriptPageURL,
+           let transcriptContent = await TranscriptPageRegistry.shared.makeReaderContent(for: url) {
+            logReaderLoad(
+                "stage=contentLoader.load.transcriptPage url=\(url.absoluteString) key=\(transcriptContent.compoundKey) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+            )
+            return transcriptContent
+        }
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
 

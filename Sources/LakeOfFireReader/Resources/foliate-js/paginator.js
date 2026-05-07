@@ -2254,9 +2254,38 @@ export class Paginator extends HTMLElement {
     }) {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const willLoadNewIndex = index !== this.#index;
+        const anchorKind = typeof anchor === 'function'
+            ? 'function'
+            : (anchor instanceof Range ? 'range' : typeof anchor);
+        if (!willLoadNewIndex && anchor == null && !select) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                    event: 'js.paginator.goTo.noop-same-index',
+                    timestamp: Date.now(),
+                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                    index,
+                    currentIndex: this.#index,
+                    anchorKind,
+                    select: !!select,
+                }));
+            } catch (_error) {}
+            return
+        }
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
         }))
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                event: 'js.paginator.goTo.dispatch',
+                timestamp: Date.now(),
+                bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                index,
+                currentIndex: this.#index,
+                willLoadNewIndex,
+                anchorKind,
+                select: !!select,
+            }));
+        } catch (_error) {}
         if (!willLoadNewIndex) {
             await this.#display({
                 index,

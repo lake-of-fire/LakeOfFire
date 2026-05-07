@@ -7,6 +7,7 @@ import SwiftUIDownloads
 import Combine
 import UniformTypeIdentifiers
 import LakeKit
+import LakeOfFireCore
 import LakeOfFireContent
 import LakeOfFireContentUI
 

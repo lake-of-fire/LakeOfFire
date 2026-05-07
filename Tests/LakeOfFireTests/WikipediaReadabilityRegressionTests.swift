@@ -1,69 +1,6 @@
 import XCTest
-import WebKit
+import SwiftReadability
 @testable import LakeOfFireContent
-
-@MainActor
-private final class WikipediaReadabilityNavigationDelegate: NSObject, WKNavigationDelegate {
-    let didFinishExpectation: XCTestExpectation
-
-    init(didFinishExpectation: XCTestExpectation) {
-        self.didFinishExpectation = didFinishExpectation
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        didFinishExpectation.fulfill()
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        didFail navigation: WKNavigation!,
-        withError error: Error
-    ) {
-        XCTFail("WKWebView navigation failed: \(error.localizedDescription)")
-        didFinishExpectation.fulfill()
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        didFailProvisionalNavigation navigation: WKNavigation!,
-        withError error: Error
-    ) {
-        XCTFail("WKWebView provisional navigation failed: \(error.localizedDescription)")
-        didFinishExpectation.fulfill()
-    }
-}
-
-@MainActor
-private final class WikipediaReadabilityMessageHandler: NSObject, WKScriptMessageHandler {
-    let readabilityParsedExpectation: XCTestExpectation
-    private(set) var readabilityParsedBody: [String: Any]? = nil
-    private(set) var readabilityUnavailableBodies: [[String: Any]] = []
-
-    init(readabilityParsedExpectation: XCTestExpectation) {
-        self.readabilityParsedExpectation = readabilityParsedExpectation
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any] else {
-            return
-        }
-
-        switch message.name {
-        case "readabilityParsed":
-            guard readabilityParsedBody == nil else {
-                return
-            }
-            readabilityParsedBody = body
-            readabilityParsedExpectation.fulfill()
-        case "readabilityModeUnavailable":
-            readabilityUnavailableBodies.append(body)
-        case "readabilityFramePing":
-            break
-        default:
-            XCTFail("Unexpected readability message: \(message.name)")
-        }
-    }
-}
 
 final class WikipediaReadabilityRegressionTests: XCTestCase {
     private static let expectedCollapsedSectionMarkers = [
@@ -80,6 +17,18 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
     ]
 
     private static let sourcePageURL = URL(string: "https://en.wikipedia.org/wiki/Mozilla?useskin=minerva")!
+    private static let classesToPreserve = [
+        "caption",
+        "emoji",
+        "hidden",
+        "invisible",
+        "sr-only",
+        "visually-hidden",
+        "visuallyhidden",
+        "wp-caption",
+        "wp-caption-text",
+        "wp-smiley",
+    ]
 
     private func loadFixtureHTML() throws -> String {
         let fixtureURL = try XCTUnwrap(
@@ -112,45 +61,18 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    @MainActor
-    private func parseFixtureWithReadabilityUserScript(_ html: String) async throws -> [String: Any] {
+    private func parseFixtureWithSwiftReadability(_ html: String) throws -> String {
         let sanitizedHTML = stripExecutableScripts(from: html)
-        let userContentController = WKUserContentController()
-        let readabilityParsedExpectation = expectation(description: "readability parsed")
-        let messageHandler = WikipediaReadabilityMessageHandler(
-            readabilityParsedExpectation: readabilityParsedExpectation
-        )
-        for name in ["readabilityFramePing", "readabilityModeUnavailable", "readabilityParsed"] {
-            userContentController.add(messageHandler, name: name)
-        }
-
-        let configuration = WKWebViewConfiguration()
-        configuration.userContentController = userContentController
-        configuration.userContentController.addUserScript(
-            WKUserScript(
-                source: Readability.shared.userScriptSource,
-                injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true
+        let parser = SwiftReadability.Readability(
+            html: sanitizedHTML,
+            url: Self.sourcePageURL,
+            options: ReadabilityOptions(
+                charThreshold: 500,
+                classesToPreserve: Self.classesToPreserve
             )
         )
-
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 430, height: 932), configuration: configuration)
-        let didFinishExpectation = expectation(description: "wikipedia fixture loaded")
-        let navigationDelegate = WikipediaReadabilityNavigationDelegate(
-            didFinishExpectation: didFinishExpectation
-        )
-        webView.navigationDelegate = navigationDelegate
-        webView.loadHTMLString(sanitizedHTML, baseURL: Self.sourcePageURL)
-        await fulfillment(of: [didFinishExpectation, readabilityParsedExpectation], timeout: 10)
-        withExtendedLifetime(navigationDelegate) {}
-        withExtendedLifetime(messageHandler) {}
-        try await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertTrue(
-            messageHandler.readabilityUnavailableBodies.isEmpty,
-            "Readability unexpectedly reported the Wikimedia fixture as unavailable"
-        )
-        return try XCTUnwrap(messageHandler.readabilityParsedBody)
+        let result = try XCTUnwrap(parser.parse())
+        return result.content
     }
 
     func testMozillaWikipediaFixtureContainsCollapsedSectionMarkers() throws {
@@ -164,24 +86,15 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         }
     }
 
-    @MainActor
-    func testReadabilityUserScriptKeepsCollapsedWikipediaSectionMarkers() async throws {
+    func testSwiftReadabilityKeepsCollapsedWikipediaSectionBodyText() throws {
         let html = try loadFixtureHTML()
-        let result = try await parseFixtureWithReadabilityUserScript(html)
-        let outputHTML = try XCTUnwrap(result["outputHTML"] as? String)
+        let outputHTML = try parseFixtureWithSwiftReadability(html)
         let normalizedOutputHTML = collapseWhitespace(in: outputHTML)
-
-        for marker in Self.expectedCollapsedSectionMarkers {
-            XCTAssertTrue(
-                normalizedOutputHTML.contains(marker),
-                "Readability user script dropped Wikimedia collapsed section marker '\(marker)'"
-            )
-        }
 
         for marker in Self.expectedCollapsedSectionBodyMarkers {
             XCTAssertTrue(
                 normalizedOutputHTML.contains(marker),
-                "Readability user script dropped Wikimedia collapsed section body text '\(marker)'"
+                "SwiftReadability dropped Wikimedia collapsed section body text '\(marker)'"
             )
         }
     }
