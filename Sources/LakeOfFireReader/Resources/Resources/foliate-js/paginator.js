@@ -2589,6 +2589,30 @@ export class Paginator extends HTMLElement {
     }) {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const willLoadNewIndex = index !== this.#index;
+        const anchorKind = typeof anchor === 'function'
+            ? 'function'
+            : (anchor instanceof Range ? 'range' : typeof anchor);
+        if (!willLoadNewIndex && anchor == null && !select) {
+            postPaginatorLoadLog('goTo.noop-same-index', {
+                index,
+                currentIndex: this.#index,
+                willLoadNewIndex,
+                anchorKind,
+                select: !!select,
+            });
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                    event: 'js.paginator.goTo.noop-same-index',
+                    timestamp: Date.now(),
+                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                    index,
+                    currentIndex: this.#index,
+                    anchorKind,
+                    select: !!select,
+                }));
+            } catch (_error) {}
+            return
+        }
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
         }))
@@ -2596,13 +2620,22 @@ export class Paginator extends HTMLElement {
             index,
             currentIndex: this.#index,
             willLoadNewIndex,
-            anchorKind: typeof anchor === 'function'
-                ? 'function'
-                : (anchor instanceof Range ? 'range' : typeof anchor),
+            anchorKind,
             select: !!select,
         });
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                event: 'js.paginator.goTo.dispatch',
+                timestamp: Date.now(),
+                bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                index,
+                currentIndex: this.#index,
+                willLoadNewIndex,
+                anchorKind,
+                select: !!select,
+            }));
+        } catch (_error) {}
         if (!willLoadNewIndex) {
-            if (anchor == null && !select) return
             try {
                 await this.#display({
                     index,

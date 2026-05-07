@@ -4224,7 +4224,7 @@ class Reader {
             loadingIndicator?.removeAttribute?.('hidden');
         }
         body.classList.toggle('loading', nextVisible);
-        if (!nextVisible) {
+        if (previousVisible && !nextVisible) {
             setTimeout(() => {
                 if (!document.body?.classList?.contains?.('loading')) {
                     loadingIndicator?.setAttribute?.('hidden', '');
@@ -4246,7 +4246,7 @@ class Reader {
                 visual: captureEPUBFlashVisualState(this.view),
             });
         }
-        if (!nextVisible) {
+        if (previousVisible && !nextVisible) {
             requestAnimationFrame(() => {
                 auditEPUBAnimations('loading-off.raf');
                 auditEPUBCompositing('loading-off.raf');
@@ -4290,6 +4290,7 @@ class Reader {
     layoutDiagnosticsHandle = null;
     initialPaginatorSettleHandle = null;
     hasSettledInitialPaginatorLayout = false;
+    sameIndexGoToDidDisplaySkips = 0;
     lastLayoutDiagnosticsKey = null;
     lastLayoutSnapshot = null;
     lastCFIPersistenceObservation = null;
@@ -7241,6 +7242,7 @@ class Reader {
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
+        this.#installVisibleRendererGoToGuard();
         this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
         this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
@@ -7908,29 +7910,122 @@ class Reader {
             }
         }
     }
+    #installVisibleRendererGoToGuard() {
+        const renderer = this.view?.renderer;
+        if (!renderer || renderer.__manabiVisibleGoToGuardInstalled) return;
+        const originalGoTo = renderer.goTo;
+        if (typeof originalGoTo !== 'function') return;
+        const reader = this;
+        renderer.goTo = function guardedVisibleRendererGoTo(target, ...args) {
+            const callStartedAt = Date.now();
+            const targetIndex = typeof target?.index === 'number' ? Math.max(0, Math.round(target.index)) : null;
+            const currentIndex = getPrimaryRendererContentIndex(renderer);
+            const currentPage = reader.navHUD?.rendererPageSnapshot?.current ?? null;
+            const totalPages = reader.navHUD?.rendererPageSnapshot?.total ?? null;
+            const targetAnchor = typeof target?.anchor === 'number' && Number.isFinite(target.anchor)
+                ? Math.max(0, Math.min(1, target.anchor))
+                : null;
+            const targetPage = typeof targetAnchor === 'number'
+                && typeof totalPages === 'number'
+                && totalPages > 1
+                ? Math.max(1, Math.min(totalPages, Math.round(targetAnchor * (totalPages - 1)) + 1))
+                : null;
+            const sameIndex = typeof targetIndex === 'number'
+                && typeof currentIndex === 'number'
+                && targetIndex === currentIndex;
+            const sameVisiblePage = sameIndex
+                && (
+                    targetAnchor === null
+                    || (
+                        typeof targetPage === 'number'
+                        && typeof currentPage === 'number'
+                        && targetPage === currentPage
+                    )
+                );
+            const diagnostics = {
+                targetIndex,
+                currentIndex,
+                targetAnchor,
+                targetPage,
+                currentPage,
+                totalPages,
+                sameIndex,
+                sameVisiblePage,
+                argsCount: args.length,
+                targetKeys: target && typeof target === 'object' ? Object.keys(target).slice(0, 8) : null,
+                intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+                beforeNav: captureNavVisibilityState(),
+                visual: captureEPUBFlashVisualState(reader.view),
+            };
+            postEPUBFlashLog('js.renderer.goTo.guard.call', diagnostics);
+            if (sameVisiblePage) {
+                postEPUBFlashLog('js.renderer.goTo.guard.skip', {
+                    reason: targetAnchor === null ? 'same-index-no-anchor' : 'same-visible-page',
+                    ...diagnostics,
+                });
+                return Promise.resolve();
+            }
+            postEPUBFlashLog('js.renderer.goTo.guard.pass', diagnostics);
+            const result = originalGoTo.call(this, target, ...args);
+            Promise.resolve(result)
+                .then(() => {
+                    postEPUBFlashLog('js.renderer.goTo.guard.resolved', {
+                        elapsedMs: Date.now() - callStartedAt,
+                        ...diagnostics,
+                        afterNav: captureNavVisibilityState(),
+                        visual: captureEPUBFlashVisualState(reader.view),
+                    });
+                })
+                .catch((error) => {
+                    postEPUBFlashLog('js.renderer.goTo.guard.rejected', {
+                        elapsedMs: Date.now() - callStartedAt,
+                        message: error?.message ?? String(error),
+                        ...diagnostics,
+                        afterNav: captureNavVisibilityState(),
+                    });
+                });
+            return result;
+        };
+        renderer.__manabiVisibleGoToGuardInstalled = true;
+    }
     #onGoTo({
         willLoadNewIndex
     }) {
-        this.#clearVisiblePageReadChrome('goTo');
-        requestLookupCloseForPageMotion('renderer.goTo', {
-            willLoadNewIndex: !!willLoadNewIndex,
-            intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
-        });
         postEPUBFlashLog('js.renderer.goTo', {
             willLoadNewIndex: !!willLoadNewIndex,
             intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
         });
         if (!willLoadNewIndex) {
+            const intent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
+            const intentAgeMs = typeof intent?.timestamp === 'number'
+                ? Date.now() - intent.timestamp
+                : null;
+            const isFreshCacheWarmerIntent =
+                (intent?.source === 'cache-warmer.open' || intent?.source === 'cache-warmer.advance')
+                && (intentAgeMs === null || intentAgeMs < 1000);
+            this.sameIndexGoToDidDisplaySkips = Math.max(1, this.sameIndexGoToDidDisplaySkips || 0);
             postEPUBFlashLog('js.renderer.goTo.skipLoading', {
                 reason: 'same-index',
-                intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+                skippedChromeClear: true,
+                intentAgeMs,
+                isFreshCacheWarmerIntent,
+                skipNextDidDisplay: this.sameIndexGoToDidDisplaySkips > 0,
+                intent,
             });
             return;
         }
+        this.#clearVisiblePageReadChrome('goTo');
+        requestLookupCloseForPageMotion('renderer.goTo', {
+            willLoadNewIndex: true,
+            intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
+        });
         this.setLoadingIndicator(true);
     }
     async #onDidDisplay({}) {
         const navVisibilityBefore = captureNavVisibilityState();
+        const shouldSkipSameIndexDidDisplay =
+            (this.sameIndexGoToDidDisplaySkips || 0) > 0
+            && !document.body?.classList?.contains?.('loading');
         postHideNavLog('didDisplay.begin', {
             preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
             ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
@@ -7944,8 +8039,17 @@ class Reader {
         postEPUBFlashLog('js.renderer.didDisplay.beforeLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+            skippedSameIndexGoTo: shouldSkipSameIndexDidDisplay,
             visual: captureEPUBFlashVisualState(this.view),
         });
+        if (shouldSkipSameIndexDidDisplay) {
+            this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
+            postEPUBFlashLog('js.renderer.didDisplay.skipSameIndexGoTo', {
+                remainingSkipCount: this.sameIndexGoToDidDisplaySkips,
+                visual: captureEPUBFlashVisualState(this.view),
+            });
+            return;
+        }
         applyStoredChromeInsets('reader.didDisplay');
         const initialSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear', {
             allowWhileLoading: true,
@@ -8751,11 +8855,7 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        await runWithEPUBFlashNavigationIntent({
-            source: 'cache-warmer.open',
-            target: 'renderer.goTo',
-            sectionIndex: firstUnsettledIndex,
-        }, () => this.view.renderer.goTo({ index: firstUnsettledIndex }))
+        await this.view.renderer.goTo({ index: firstUnsettledIndex })
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
@@ -8835,11 +8935,7 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        await runWithEPUBFlashNavigationIntent({
-            source: 'cache-warmer.advance',
-            target: 'renderer.goTo',
-            sectionIndex: targetIndex,
-        }, () => this.view.renderer.goTo({ index: targetIndex }))
+        await this.view.renderer.goTo({ index: targetIndex })
     }
     destroy() {
         if (this.view) {
