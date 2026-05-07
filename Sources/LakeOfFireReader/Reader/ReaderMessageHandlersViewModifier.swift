@@ -690,22 +690,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 guard let payload = message.body as? [String: Any],
                       let shouldHide = payload["hideNavigationDueToScroll"] as? Bool else {
-#if DEBUG
-                    debugPrint("# HIDENAV native.message.skip", "reason=invalid-payload", "body=\(String(describing: message.body))")
-#endif
                     return
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
-                debugPrint(
-                    "# HIDENAV native.message",
-                    "shouldHide=\(shouldHide)",
-                    "oldValue=\(hideNavigationDueToScroll.wrappedValue)",
-                    "source=\(source ?? "nil")",
-                    "direction=\(direction ?? "nil")",
-                    "pageURL=\(readerContent.pageURL.absoluteString)",
-                    "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
-                )
                 setHideNavigationDueToScroll(
                     shouldHide,
                     reason: nil,
@@ -1237,25 +1225,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         guard previousValue != shouldHide else {
-            debugPrint(
-                "# HIDENAV native.binding.noop",
-                "value=\(shouldHide)",
-                "reason=\(reason ?? "nil")",
-                "source=\(source ?? "nil")",
-                "direction=\(direction ?? "nil")",
-                "pageURL=\(readerContent.pageURL.absoluteString)"
-            )
             return
         }
-        debugPrint(
-            "# HIDENAV native.binding.write",
-            "oldValue=\(previousValue)",
-            "newValue=\(shouldHide)",
-            "reason=\(reason ?? "nil")",
-            "source=\(source ?? "nil")",
-            "direction=\(direction ?? "nil")",
-            "pageURL=\(readerContent.pageURL.absoluteString)"
-        )
         withAnimation(.easeInOut(duration: 0.2)) {
             hideNavigationDueToScroll.wrappedValue = shouldHide
         }

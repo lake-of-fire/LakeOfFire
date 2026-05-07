@@ -55,20 +55,6 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     }
 };
 
-const logMarkReadNav = (event, detail = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...detail,
-    };
-    const line = `# MARKREAD ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
-};
-
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
 // We only need a no-op logger for nav diagnostics.
 const logFix = (event, detail = {}) => {
@@ -101,15 +87,16 @@ const logNavHide = (event, detail = {}) => {
 };
 
 const logHideNavTrace = (event, detail = {}) => {
+    globalThis.__manabiHideNavTraceLogCount = globalThis.__manabiHideNavTraceLogCount || 0;
+    if (globalThis.__manabiHideNavTraceLogCount >= 240) return;
+    globalThis.__manabiHideNavTraceLogCount += 1;
     try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# HIDENAV ${JSON.stringify({
+        window.webkit?.messageHandlers?.print?.postMessage?.('# HIDENAV ' + JSON.stringify({
             event,
             timestamp: Date.now(),
             ...detail,
-        })}`);
-    } catch (_err) {
-        try { console.log('# HIDENAV', event, detail); } catch (_) {}
-    }
+        }));
+    } catch (_err) {}
 };
 
 const logEPUBNav = (event, detail = {}) => {
@@ -442,37 +429,10 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
-        const printHideNav = (event, details = {}) => {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.('# HIDENAV ' + JSON.stringify({
-                    event,
-                    timestamp: Date.now(),
-                    source,
-                    requestedHide: next,
-                    previous,
-                    previousClass,
-                    navHidden: this.navHidden,
-                    navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                    navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-                    labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                    ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
-                    ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
-                    context,
-                    ...details,
-                }));
-            } catch {}
-        };
-        printHideNav('navHUD.set.begin');
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
-            printHideNav('navHUD.set.ignored', {
-                reason: 'preserve-hidden-through-next-display',
-                preserveHiddenThroughNextDisplay: true,
-            });
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
-            printHideNav('navHUD.set.noop');
             logEPUBNav('nav.visibility.scroll-toggle-noop', {
                 source,
                 shouldHide: next,
@@ -495,34 +455,6 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = next;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
-        printHideNav('navHUD.set.finish', {
-            appliedHide: this.hideNavigationDueToScroll,
-            afterClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            afterLabelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-        });
-        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.navHUD.set', JSON.stringify({
-            source,
-            previous,
-            requestedHide: !!shouldHide,
-            appliedHide: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            context,
-            innerHeight: window.innerHeight,
-            visualViewportHeight: window.visualViewport?.height ?? null,
-            visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
-        }));
-        logMarkReadNav('hideNavigation.navHUD.set', {
-            source,
-            previous,
-            requestedHide: !!shouldHide,
-            appliedHide: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            context,
-        });
         logEPUBNav('nav.visibility.scroll-toggle', {
             source,
             previous,
@@ -856,14 +788,19 @@ export class NavigationHUD {
     }
 
     _applyPageTurnNavigationVisibility(detail) {
-        const direction = typeof detail?.pageTurnDirection === 'string'
+        const reportedDirection = typeof detail?.pageTurnDirection === 'string'
             ? detail.pageTurnDirection.toLowerCase()
             : null;
-        if (direction !== 'forward' && direction !== 'backward') return;
+        if (reportedDirection !== 'forward' && reportedDirection !== 'backward') return;
 
+        const direction = this.isRTL
+            ? (reportedDirection === 'forward' ? 'backward' : 'forward')
+            : reportedDirection;
         const shouldHide = direction === 'forward';
         this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
             direction,
+            reportedDirection,
+            isRTL: this.isRTL,
             reason: detail?.reason ?? null,
             sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
             pageNumber: this.rendererPageSnapshot?.current ?? null,
@@ -875,6 +812,8 @@ export class NavigationHUD {
                 requestedHide: shouldHide,
                 reason: 'preserve-hidden-through-next-display',
                 direction,
+                reportedDirection,
+                isRTL: this.isRTL,
                 pageNumber: this.rendererPageSnapshot?.current ?? null,
                 pageCount: this.rendererPageSnapshot?.total ?? null,
                 state: this._captureHideNavState(),
@@ -886,6 +825,8 @@ export class NavigationHUD {
                 source: 'relocate.page-turn',
                 requestedHide: shouldHide,
                 direction,
+                reportedDirection,
+                isRTL: this.isRTL,
                 pageNumber: this.rendererPageSnapshot?.current ?? null,
                 pageCount: this.rendererPageSnapshot?.total ?? null,
                 state: this._captureHideNavState(),
@@ -894,6 +835,8 @@ export class NavigationHUD {
                 hideNavigationDueToScroll: shouldHide,
                 source: 'relocate.page-turn',
                 direction,
+                reportedDirection,
+                isRTL: this.isRTL,
             });
         } catch (_error) {}
     }
