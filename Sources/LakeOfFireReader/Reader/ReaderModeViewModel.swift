@@ -268,23 +268,23 @@ private func readerWritingDirectionBootstrapStyleHTML() -> String {
     guard currentReaderWritingDirectionSetting().isVertical else {
         return ""
     }
-    return "<style id=\"manabi-writing-direction-bootstrap\">body { writing-mode: vertical-rl; }</style>"
+    return "<style id=\"mnb-writing-direction-bootstrap\">body { writing-mode: vertical-rl; }</style>"
 }
 
 private func upsertReaderWritingDirectionBootstrapStyle(in doc: SwiftSoup.Document) throws {
     guard currentReaderWritingDirectionSetting().isVertical else {
-        try doc.getElementById("manabi-writing-direction-bootstrap")?.remove()
+        try doc.getElementById("mnb-writing-direction-bootstrap")?.remove()
         return
     }
 
     let styleCSS = "body { writing-mode: vertical-rl; }"
-    if let existingStyle = try doc.getElementById("manabi-writing-direction-bootstrap") {
+    if let existingStyle = try doc.getElementById("mnb-writing-direction-bootstrap") {
         try existingStyle.text(styleCSS)
         return
     }
 
     let styleElement = try doc.createElement("style")
-    try styleElement.attr("id", "manabi-writing-direction-bootstrap")
+    try styleElement.attr("id", "mnb-writing-direction-bootstrap")
     try styleElement.text(styleCSS)
 
     if let head = doc.head() {
@@ -387,7 +387,7 @@ internal func buildCanonicalReadabilityHTML(
             \(writingDirectionBootstrapStyle)
             <title>\(resolvedTitle)</title>
         </head>
-        <body class="\(bodyClass)" data-manabi-writing-direction="\(readerWritingDirectionBodyAttributeValue())" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
+        <body class="\(bodyClass)" data-mnb-writing-direction="\(readerWritingDirectionBodyAttributeValue())" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(resolvedTitle)</h1>
                 <div id="reader-byline-container">
@@ -1309,11 +1309,11 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             const snapshot = (timedOut) => {
                 const root = document.documentElement;
                 const fontSet = document.fonts;
-                const readyFlag = root?.dataset?.manabiFontReady === '1';
-                const pendingFlag = root?.dataset?.manabiFontPending === '1';
+                const readyFlag = root?.dataset?.mnbFontReady === '1';
+                const pendingFlag = root?.dataset?.mnbFontPending === '1';
                 const fontStatus = fontSet?.status || 'unsupported';
                 const fontsLoaded = !fontSet || fontStatus === 'loaded';
-                const hasInjectedStyle = !!document.getElementById('manabi-custom-fonts-inline');
+                const hasInjectedStyle = !!document.getElementById('mnb-custom-fonts-inline');
                 return {
                     ready: readyFlag && fontsLoaded,
                     readyFlag,
@@ -3984,7 +3984,7 @@ nonisolated public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-mnb-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-mnb-dark-theme", darkModeTheme.rawValue)
-            _ = try? bodyTag.attr("data-manabi-writing-direction", readerWritingDirectionBodyAttributeValue())
+            _ = try? bodyTag.attr("data-mnb-writing-direction", readerWritingDirectionBodyAttributeValue())
 
             var bodyClassNames = ((try? bodyTag.className()) ?? "")
                 .split(separator: " ")

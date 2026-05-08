@@ -180,8 +180,8 @@
     
     function nextManabiUniqueIdentifier() {
         let body = window.top.document.body
-        let next = (body?.dataset.manabiLatestUniqueIdentifierCounter || 1) + 1
-        body.dataset.manabiLatestUniqueIdentifierCounter = next
+        let next = (body?.dataset.mnbLatestUniqueIdentifierCounter || 1) + 1
+        body.dataset.mnbLatestUniqueIdentifierCounter = next
         return next.toString(10)
     }
     
@@ -446,8 +446,8 @@
                         inputBytes: inputHTML ? inputHTML.length : 0,
                     })
                     if (document.body) {
-                        document.body.dataset.manabiReaderModeAvailable = 'false';
-                        delete document.body.dataset.manabiReaderModeAvailableFor;
+                        document.body.dataset.mnbReaderModeAvailable = 'false';
+                        delete document.body.dataset.mnbReaderModeAvailableFor;
                     }
                     window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
                         pageURL: loc.href,
@@ -477,8 +477,8 @@
 
                     if (document.body) {
                         if (content) {
-                            document.body.dataset.manabiReaderModeAvailable = 'true';
-                            document.body.dataset.manabiReaderModeAvailableFor = windowURL;
+                            document.body.dataset.mnbReaderModeAvailable = 'true';
+                            document.body.dataset.mnbReaderModeAvailableFor = windowURL;
                             readerLog("outputPrepared", {
                                 contentBytes: content.length,
                                 titleBytes: title.length,
@@ -506,8 +506,8 @@
                                 contentBytes: sanitizedContentBytes
                             })
                         } else {
-                            document.body.dataset.manabiReaderModeAvailable = 'false';
-                            delete document.body.dataset.manabiReaderModeAvailableFor;
+                            document.body.dataset.mnbReaderModeAvailable = 'false';
+                            delete document.body.dataset.mnbReaderModeAvailableFor;
 
                             window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
                                 pageURL: loc.href,
@@ -549,7 +549,7 @@
     }
 
     let manabi_debouncedReadability = manabi_debounce(function () {
-        if (document.body?.dataset?.manabiReaderModeAvailableFor !== window.location.href) {
+        if (document.body?.dataset?.mnbReaderModeAvailableFor !== window.location.href) {
             manabi_requestAutomaticReadability('mutation')
         }
     } , 3 * 1000)
@@ -575,7 +575,7 @@
                         }
                     }
                 }
-                if (mutation.type === 'attributes' && mutation.attributeName.startsWith('data-manabi-')) {
+                if (mutation.type === 'attributes' && mutation.attributeName.startsWith('data-mnb-')) {
                     return
                 }
                 try {

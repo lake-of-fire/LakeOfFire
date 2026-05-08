@@ -38,22 +38,6 @@ const postPaginatorPageNumLog = (event, details = {}) => {
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
-const postChevronPaginatorLog = (event, details = {}) => {
-    globalThis.__manabiChevronPaginatorLogCount = globalThis.__manabiChevronPaginatorLogCount || 0;
-    if (globalThis.__manabiChevronPaginatorLogCount >= 500) return;
-    globalThis.__manabiChevronPaginatorLogCount += 1;
-    const payload = {
-        event: `paginator.${event}`,
-        source: 'paginator',
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# CHEVRON ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# CHEVRON', payload); } catch (_) {}
-    }
-};
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
@@ -1611,14 +1595,6 @@ export class Paginator extends HTMLElement {
             } else {
                 (this.bookDir === 'rtl') ? await this.next() : await this.prev();
             }
-            postChevronPaginatorLog('swipe.postPaginationReplay.suppressed', {
-                dx: manabiRound(dx, 2),
-                minSwipe,
-                bookDir: this.bookDir ?? null,
-                vertical: this.#vertical,
-                scrolled: this.scrolled,
-                index: this.#index,
-            });
         }
     }
     #onTouchEnd(e) {
@@ -2103,17 +2079,6 @@ export class Paginator extends HTMLElement {
             rightOpacity = 0;
         if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
         else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
-        postChevronPaginatorLog('swipe.opacityProgress.dispatch', {
-            dx: manabiRound(dx, 2),
-            minSwipe,
-            leftOpacity: manabiRound(leftOpacity, 3),
-            rightOpacity: manabiRound(rightOpacity, 3),
-            reachedThreshold: Math.abs(dx) > minSwipe,
-            bookDir: this.bookDir ?? null,
-            vertical: this.#vertical,
-            scrolled: this.scrolled,
-            index: this.#index,
-        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2126,12 +2091,6 @@ export class Paginator extends HTMLElement {
         }));
         if (Math.abs(dx) > minSwipe) {
             // Enqueue the reset after meeting threshold
-            postChevronPaginatorLog('swipe.opacityReset.dispatch', {
-                reason: 'threshold',
-                dx: manabiRound(dx, 2),
-                minSwipe,
-                index: this.#index,
-            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,

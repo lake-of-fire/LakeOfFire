@@ -4551,11 +4551,9 @@ class Reader {
         for (const doc of docs) {
             const body = doc.body;
             if (!body) continue;
-            const isSubscribed = body.getAttribute('data-mnb-subscription-is-active') === 'true'
-                || body.getAttribute('data-manabi-subscription-is-active') === 'true';
+            const isSubscribed = body.getAttribute('data-mnb-subscription-is-active') === 'true';
             const shouldShowPreviewHighlights = !isSubscribed && isFirstPageInSection;
             body.setAttribute('data-mnb-ebook-subscription-preview-page', shouldShowPreviewHighlights ? 'true' : 'false');
-            body.setAttribute('data-manabi-ebook-subscription-preview-page', shouldShowPreviewHighlights ? 'true' : 'false');
         }
     }
     #pageTurnDirectionForMove(method) {

@@ -107,7 +107,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
                 }
             </style>
         </head>
-        <body data-manabi-transcript-page="true">
+        <body data-mnb-transcript-page="true">
             <main id="reader-content" class="reader-transcript-content">
                 <p class="reader-transcript-eyebrow">Transcript</p>
                 <h1 class="reader-transcript-title">\(escapeHTML(title))</h1>

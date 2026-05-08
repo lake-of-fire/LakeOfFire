@@ -69,7 +69,7 @@ final class LakeOfFireTests: XCTestCase {
             """
         )
 
-        XCTAssertTrue(asset.html.contains(#"data-manabi-transcript-page="true""#))
+        XCTAssertTrue(asset.html.contains(#"data-mnb-transcript-page="true""#))
         XCTAssertTrue(asset.html.contains(#"id="reader-content""#))
         XCTAssertTrue(asset.html.contains("Hello world"))
         XCTAssertTrue(asset.html.contains(#"data-transcript-start="00:00.000""#))

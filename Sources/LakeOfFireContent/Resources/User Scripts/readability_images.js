@@ -16,7 +16,7 @@
     }
     const MANAGED_APPLIED_DATASET_KEY = "manabiManagedReaderImageSizing";
     const LEGACY_SIGNATURE_DATASET_KEY = "manabiLastCss";
-    const WRAPPER_INLINE_FLOW_CLASS = "manabi-vertical-inline-image-wrapper";
+    const WRAPPER_INLINE_FLOW_CLASS = "mnb-vertical-inline-image-wrapper";
     const MANAGED_DATASET_FLAG = "1";
 
     function hasDatasetKey(element, key) {
@@ -152,7 +152,7 @@
         if (!document.body?.classList.contains('readability-mode')) {
             return;
         }
-        const writingDirectionOverride = document.body?.dataset?.manabiWritingDirection || "automatic";
+        const writingDirectionOverride = document.body?.dataset?.mnbWritingDirection || "automatic";
         const isVertical = writingDirectionOverride === "vertical"
             || (
                 writingDirectionOverride !== "horizontal"
