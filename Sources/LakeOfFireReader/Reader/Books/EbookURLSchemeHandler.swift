@@ -930,13 +930,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetName = url.deletingPathExtension().lastPathComponent
         let assetExtension = url.lakePathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
-        let candidateDirectories = [
-            assetDirectory,
-            "Resources/\(assetDirectory)",
-        ]
-        let resolvedURL = candidateDirectories.lazy.compactMap {
-            Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: $0)
-        }.first
+        let resolvedURL = Bundle.module.url(
+            forResource: assetName,
+            withExtension: assetExtension,
+            subdirectory: "Resources/\(assetDirectory)"
+        )
         if resolvedURL == nil, ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
             logEbookAsset("# EBOOKASSET resolveMiss url=\(url.absoluteString) assetName=\(assetName) ext=\(assetExtension) dir=\(assetDirectory)")
         }
@@ -944,12 +942,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     nonisolated private static func viewerHTMLPath() -> String? {
-        [
-            "foliate-js",
-            "Resources/foliate-js",
-        ].lazy.compactMap {
-            Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: $0)
-        }.first
+        Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "Resources/foliate-js")
     }
 
     @EbookURLSchemeActor

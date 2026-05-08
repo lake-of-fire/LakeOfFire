@@ -1007,17 +1007,6 @@ const postFontLog = (event, details = {}) => {
     } catch {}
 };
 
-const postEPUBFlashLog = (event, details = {}) => {
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            ...details,
-        }));
-    } catch {}
-};
-
 const postMay4Log = (event, details = {}) => {
     if (!globalThis.manabiDebugMay4PageTrackingEnabled) return;
     try {
@@ -1037,6 +1026,20 @@ const postMay5Log = (event, details = {}) => {
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.('# MAY5 ' + JSON.stringify({
             event,
+            timestamp: Date.now(),
+            ...details,
+        }));
+    } catch {}
+};
+
+const postChevronLog = (event, details = {}) => {
+    globalThis.__manabiChevronEbookViewerLogCount = globalThis.__manabiChevronEbookViewerLogCount || 0;
+    if (globalThis.__manabiChevronEbookViewerLogCount >= 500) return;
+    globalThis.__manabiChevronEbookViewerLogCount += 1;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# CHEVRON ' + JSON.stringify({
+            event,
+            source: 'ebook-viewer',
             timestamp: Date.now(),
             ...details,
         }));
@@ -1224,281 +1227,16 @@ const collectMay4ButtonSummary = () => {
     };
 };
 
-const captureEPUBFlashVisualState = (view = null) => {
-    const safeRect = (el) => {
-        if (!el || typeof el.getBoundingClientRect !== 'function') return null;
-        const rect = el.getBoundingClientRect();
-        return {
-            left: Number.isFinite(rect.left) ? Number(rect.left.toFixed(1)) : null,
-            top: Number.isFinite(rect.top) ? Number(rect.top.toFixed(1)) : null,
-            right: Number.isFinite(rect.right) ? Number(rect.right.toFixed(1)) : null,
-            bottom: Number.isFinite(rect.bottom) ? Number(rect.bottom.toFixed(1)) : null,
-            width: Number.isFinite(rect.width) ? Number(rect.width.toFixed(1)) : null,
-            height: Number.isFinite(rect.height) ? Number(rect.height.toFixed(1)) : null,
-        };
-    };
-    const safeStyle = (el) => {
-        if (!el || typeof getComputedStyle !== 'function') return null;
-        const style = getComputedStyle(el);
-        return {
-            display: style.display,
-            visibility: style.visibility,
-            opacity: style.opacity,
-            overflow: style.overflow,
-            color: style.color,
-            backgroundColor: style.backgroundColor,
-        };
-    };
-    const navBar = document.getElementById('nav-bar');
-    const readerStage = document.getElementById('reader-stage');
-    const resolvedView = view || globalThis.reader?.view || null;
-    const renderer = resolvedView?.renderer || null;
-    const paginator = resolveFoliatePaginator(resolvedView);
-    const paginatorTop = paginator?.shadowRoot?.getElementById?.('top') || null;
-    const paginatorContainer = paginator?.shadowRoot?.getElementById?.('container') || null;
-    const frames = Array.from(paginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []);
-    const visibleFrame = frames.find((frame) => {
-        const rect = frame?.getBoundingClientRect?.();
-        return rect && rect.width > 0 && rect.height > 0;
-    }) || frames[0] || null;
-    const visibleFrameDoc = visibleFrame?.contentDocument || null;
-    const visibleFrameBody = visibleFrameDoc?.body || null;
-    const rootStyle = getComputedStyle(document.documentElement);
-    const currentIntent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
-    return {
-        viewport: `${window.innerWidth}x${window.innerHeight}`,
-        visualViewport: globalThis.visualViewport
-            ? `${Math.round(globalThis.visualViewport.width)}x${Math.round(globalThis.visualViewport.height)}`
-            : null,
-        cssObscuredTopInset: rootStyle.getPropertyValue('--mnb-obscured-top-inset')?.trim() || null,
-        cssObscuredBottomInset: rootStyle.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
-        cssToolbarBottomOffset: rootStyle.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
-        navHiddenDueToScrollClass: !!navBar?.classList?.contains?.('nav-hidden-due-to-scroll'),
-        navBarRect: safeRect(navBar),
-        readerStageRect: safeRect(readerStage),
-        foliateViewRect: safeRect(resolvedView),
-        rendererLocalName: renderer?.localName ?? null,
-        rendererRect: safeRect(renderer),
-        paginatorRect: safeRect(paginator),
-        paginatorStyle: safeStyle(paginator),
-        paginatorTopClass: paginatorTop?.className || null,
-        paginatorTopStyle: safeStyle(paginatorTop),
-        loadingIndicatorHidden: document.getElementById('loading-indicator')?.hasAttribute?.('hidden') ?? null,
-        loadingVisualClass: !!document.body?.classList?.contains?.('loading-visual'),
-        paginatorContainer: paginatorContainer
-            ? `${paginatorContainer.clientWidth}x${paginatorContainer.clientHeight}`
-            : null,
-        paginatorContainerRect: safeRect(paginatorContainer),
-        paginatorContainerScroll: paginatorContainer
-            ? `${paginatorContainer.scrollWidth}x${paginatorContainer.scrollHeight}`
-            : null,
-        iframeCount: frames.length,
-        visibleFrameRect: safeRect(visibleFrame),
-        visibleFrameSrc: visibleFrame?.src || null,
-        visibleFrameReadyState: visibleFrameDoc?.readyState || null,
-        visibleFrameBodyTextLength: visibleFrameBody?.innerText?.length ?? null,
-        visibleFrameBodyScroll: visibleFrameBody
-            ? `${visibleFrameBody.scrollWidth}x${visibleFrameBody.scrollHeight}`
-            : null,
-        visibleFrameBodyStyle: safeStyle(visibleFrameBody),
-        rendererPageCurrent: globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null,
-        rendererPageTotal: globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null,
-        intentSource: currentIntent?.source ?? null,
-        intentReason: currentIntent?.reason ?? null,
-    };
-};
-
-const captureEPUBFlashCompactState = (view = null) => {
-    const safeRect = (el) => {
-        if (!el || typeof el.getBoundingClientRect !== 'function') return null;
-        const rect = el.getBoundingClientRect();
-        return `${Number(rect.width.toFixed(1))}x${Number(rect.height.toFixed(1))}@${Number(rect.left.toFixed(1))},${Number(rect.top.toFixed(1))}`;
-    };
-    const safeStyle = (el) => {
-        if (!el || typeof getComputedStyle !== 'function') return null;
-        const style = getComputedStyle(el);
-        return `${style.display}/${style.visibility}/${style.opacity}`;
-    };
-    const resolvedView = view || globalThis.reader?.view || null;
-    const paginator = resolveFoliatePaginator(resolvedView);
-    const paginatorTop = paginator?.shadowRoot?.getElementById?.('top') || null;
-    const loadingIndicator = document.getElementById('loading-indicator');
-    const frames = Array.from(paginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []);
-    const visibleFrame = frames.find((frame) => {
-        const rect = frame?.getBoundingClientRect?.();
-        return rect && rect.width > 0 && rect.height > 0;
-    }) || frames[0] || null;
-    const frameBody = visibleFrame?.contentDocument?.body || null;
-    return {
-        bodyClasses: document.body?.className || '',
-        paginator: safeStyle(paginator),
-        paginatorRect: safeRect(paginator),
-        topClass: paginatorTop?.className || '',
-        top: safeStyle(paginatorTop),
-        loadingHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
-        loading: safeStyle(loadingIndicator),
-        frameCount: frames.length,
-        frameRect: safeRect(visibleFrame),
-        frameReady: visibleFrame?.contentDocument?.readyState || null,
-        frameTextLength: frameBody?.innerText?.length ?? null,
-    };
-};
-
-const auditEPUBAnimations = (reason = 'unknown') => {
-    try {
-        const animations = typeof document.getAnimations === 'function'
-            ? document.getAnimations({ subtree: true })
-            : [];
-        postEPUBFlashLog('js.animation.audit', {
-            reason,
-            animationCount: animations.length,
-            runningAnimationCount: animations.filter((animation) => animation.playState === 'running').length,
-            animations: animations.slice(0, 12).map((animation) => {
-                const target = animation.effect?.target ?? null;
-                return {
-                    playState: animation.playState,
-                    currentTime: typeof animation.currentTime === 'number' ? Math.round(animation.currentTime) : null,
-                    targetTag: target?.tagName ?? null,
-                    targetID: target?.id ?? null,
-                    targetClass: typeof target?.className === 'string' ? target.className : null,
-                    animationName: target ? getComputedStyle(target).animationName : null,
-                };
-            }),
-        });
-    } catch (error) {
-        postEPUBFlashLog('js.animation.audit.error', {
-            reason,
-            message: error?.message ?? String(error),
-        });
-    }
-};
-
-const auditEPUBCompositing = (reason = 'unknown') => {
-    try {
-        const viewportUnitRegex = /\b\d+(?:\.\d+)?d[vwhib]/i;
-        const cssRuleSuspects = [];
-        for (const sheet of Array.from(document.styleSheets)) {
-            let rules = [];
-            try {
-                rules = Array.from(sheet.cssRules || []);
-            } catch {
-                continue;
-            }
-            for (const rule of rules) {
-                const cssText = rule.cssText || '';
-                if (
-                    cssText.includes('backdrop-filter')
-                    || cssText.includes('-webkit-backdrop-filter')
-                    || cssText.includes('filter:')
-                    || cssText.includes('box-shadow')
-                    || viewportUnitRegex.test(cssText)
-                ) {
-                    cssRuleSuspects.push(cssText.slice(0, 220));
-                }
-            }
-        }
-        const collectComposedElements = (root, depth = 0, output = []) => {
-            if (!root || depth > 8) return output;
-            const elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
-            for (const element of elements) {
-                output.push({ element, shadowDepth: depth });
-                if (element.shadowRoot) {
-                    collectComposedElements(element.shadowRoot, depth + 1, output);
-                }
-            }
-            return output;
-        };
-        const nodeEntries = collectComposedElements(document);
-        const nodes = nodeEntries.map(entry => entry.element);
-        const fixed = [];
-        const filtered = [];
-        const transitions = [];
-        const shadows = [];
-        const dynamicViewport = [];
-        for (const node of nodes) {
-            const style = getComputedStyle(node);
-            const rect = node.getBoundingClientRect?.();
-            const visible = style.display !== 'none'
-                && style.visibility !== 'hidden'
-                && Number.parseFloat(style.opacity || '1') > 0
-                && rect
-                && rect.width > 0
-                && rect.height > 0;
-            const summary = {
-                tag: node.tagName,
-                id: node.id || null,
-                className: typeof node.className === 'string' ? node.className : null,
-                visible,
-                rect: rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : null,
-            };
-            if (style.position === 'fixed') fixed.push(summary);
-            const backdropFilter = style.backdropFilter || style.webkitBackdropFilter || 'none';
-            if (style.filter !== 'none' || backdropFilter !== 'none') {
-                filtered.push({
-                    ...summary,
-                    filter: style.filter,
-                    backdropFilter,
-                });
-            }
-            if (style.transitionProperty !== 'none') {
-                const transitionProperties = style.transitionProperty
-                    .split(',')
-                    .map((property) => property.trim());
-                const expensive = transitionProperties.includes('all')
-                    ? ['all']
-                    : transitionProperties.filter((property) => ['filter', 'backdrop-filter', '-webkit-backdrop-filter', 'box-shadow', 'transform', 'opacity'].includes(property));
-                if (expensive.length > 0) {
-                    transitions.push({
-                        ...summary,
-                        transitionProperty: style.transitionProperty,
-                        transitionDuration: style.transitionDuration,
-                    transitionDelay: style.transitionDelay,
-                    });
-                }
-            }
-            if (style.boxShadow !== 'none') {
-                shadows.push({
-                    ...summary,
-                    boxShadow: style.boxShadow.slice(0, 120),
-                });
-            }
-            const inlineStyle = node.getAttribute?.('style') || '';
-            if (viewportUnitRegex.test(inlineStyle)) dynamicViewport.push(summary);
-        }
-        postEPUBFlashLog('js.compositing.audit', {
-            reason,
-            fixedCount: fixed.length,
-            visibleFixedCount: fixed.filter((entry) => entry.visible).length,
-            filteredCount: filtered.length,
-            transitionSuspectCount: transitions.length,
-            shadowCount: shadows.length,
-            dynamicViewportInlineStyleCount: dynamicViewport.length,
-            cssRuleSuspectCount: cssRuleSuspects.length,
-            fixed: fixed.slice(0, 16),
-            filtered: filtered.slice(0, 12),
-            transitions: transitions.slice(0, 12),
-            shadows: shadows.slice(0, 12),
-            dynamicViewport: dynamicViewport.slice(0, 12),
-            cssRuleSuspects: cssRuleSuspects.slice(0, 20),
-        });
-    } catch (error) {
-        postEPUBFlashLog('js.compositing.audit.error', {
-            reason,
-            message: error?.message ?? String(error),
-        });
-    }
-};
-
-const runWithEPUBFlashNavigationIntent = async (intent, operation) => {
-    const previousIntent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
-    globalThis.__manabiEPUBFlashNavigationIntent = {
+const runWithNavigationIntent = async (intent, operation) => {
+    const previousIntent = globalThis.__manabiNavigationIntent ?? null;
+    globalThis.__manabiNavigationIntent = {
         timestamp: Date.now(),
         ...intent,
     };
     try {
         return await operation();
     } finally {
-        globalThis.__manabiEPUBFlashNavigationIntent = previousIntent;
+        globalThis.__manabiNavigationIntent = previousIntent;
     }
 };
 
@@ -4062,39 +3800,52 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known),
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known),
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-learning > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-learning > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-known > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-known > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected {
+        background: transparent !important;
+        background-color: transparent !important;
+        background-image: none !important;
+    }
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected > mnb-sur {
+        background: var(--theme-selection-color) !important;
+        background-color: var(--theme-selection-color) !important;
+        background-image: none !important;
+        border-radius: var(--segment-match-border-radius);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
     }
 
     mnb-sen ruby.mnb-gen > rt,
@@ -4267,10 +4018,6 @@ class Reader {
             this.loadingVisualTimer = setTimeout(() => {
                 if (document.body?.classList?.contains?.('loading')) {
                     document.body.classList.add('loading-visual');
-                    postEPUBFlashLog('js.loadingVisual.shown', {
-                        delayMs: 400,
-                        compact: captureEPUBFlashCompactState(this.view),
-                    });
                 }
             }, 400);
         }
@@ -4286,31 +4033,6 @@ class Reader {
                 previous: previousVisible,
                 next: nextVisible,
             }));
-            postEPUBFlashLog('js.loadingClass.changed', {
-                previous: previousVisible,
-                next: nextVisible,
-                hasReader: !!this.view,
-                hasRenderer: !!this.view?.renderer,
-                rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-                rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                compact: captureEPUBFlashCompactState(this.view),
-            });
-        }
-        if (previousVisible && !nextVisible) {
-            requestAnimationFrame(() => {
-                postEPUBFlashLog('js.loadingClass.raf', {
-                    reason: 'loading-off.raf',
-                    compact: captureEPUBFlashCompactState(this.view),
-                });
-            });
-            setTimeout(() => {
-                postEPUBFlashLog('js.loadingClass.hiddenSettle', {
-                    reason: 'loading-off.750ms',
-                    hasReader: !!this.view,
-                    hasRenderer: !!this.view?.renderer,
-                    compact: captureEPUBFlashCompactState(this.view),
-                });
-            }, 750);
         }
     }
     #tocView
@@ -4340,6 +4062,7 @@ class Reader {
     layoutDiagnosticsHandle = null;
     initialPaginatorSettleHandle = null;
     hasSettledInitialPaginatorLayout = false;
+    hasFlashedInitialForwardSideNavChevron = false;
     sameIndexGoToDidDisplaySkips = 0;
     lastLayoutDiagnosticsKey = null;
     lastLayoutSnapshot = null;
@@ -4402,7 +4125,7 @@ class Reader {
                 fractionInSection: safeRound(fractionInSection, 6),
                 pageItemKey: descriptor.pageItemKey ?? null,
             });
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'goToDescriptor',
                 target: 'renderer.goTo',
                 sectionIndex: descriptor.sectionIndex,
@@ -4426,7 +4149,7 @@ class Reader {
                 rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
                 pageItemKey: descriptor.pageItemKey ?? null,
             });
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'goToDescriptor',
                 target: 'view.goTo',
                 cfiLength: descriptor.cfi.length,
@@ -4444,7 +4167,7 @@ class Reader {
                 rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
                 pageItemKey: descriptor.pageItemKey ?? null,
             });
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'goToDescriptor',
                 target: 'view.goToFraction',
                 fraction: descriptor.fraction,
@@ -4461,7 +4184,7 @@ class Reader {
             source,
             href,
         });
-        await runWithEPUBFlashNavigationIntent({
+        await runWithNavigationIntent({
             source: 'goToHref',
             target: 'view.goTo',
             href,
@@ -4485,7 +4208,7 @@ class Reader {
             percent: clampedPercent,
             fraction,
         });
-        await runWithEPUBFlashNavigationIntent({
+        await runWithNavigationIntent({
             source: 'goToPercent',
             target: 'view.goToFraction',
             percent: clampedPercent,
@@ -4521,7 +4244,7 @@ class Reader {
             fraction: safeRound(fraction, 6),
             isRTL: !!this.isRTL,
         });
-        await runWithEPUBFlashNavigationIntent({
+        await runWithNavigationIntent({
             source: 'goToLocationNumber',
             target: 'view.goToFraction',
             locationNumber: clampedLocationNumber,
@@ -4768,7 +4491,7 @@ class Reader {
                 });
                 return;
             }
-            runWithEPUBFlashNavigationIntent({
+            runWithNavigationIntent({
                 source: 'live-schedule',
                 target: 'view.goToFraction',
                 fraction: clampedFraction,
@@ -6315,6 +6038,10 @@ class Reader {
             state: captureNavVisibilityState(),
         });
         this.#applyDeferredHideNavigationForMarkReadAdvance(this.isRTL ? 'previous-visual-page' : 'next-visual-page');
+        postChevronLog('markReadAdvance.flashForward.request', {
+            isRTL: !!this.isRTL,
+            mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
+        });
         this.#flashForwardSideNavChevron();
         this.#clearVisiblePageReadChrome('page-turn-start');
         if (this.isRTL) {
@@ -6396,11 +6123,88 @@ class Reader {
         });
     }
     #flashForwardSideNavChevron() {
-        this.#flashSideNavChevron(this.isRTL ? 'left' : 'right');
+        const direction = this.isRTL ? 'left' : 'right';
+        postChevronLog('flashForward.request', {
+            direction,
+            isRTL: !!this.isRTL,
+        });
+        this.#flashSideNavChevron(direction);
+    }
+    maybeFlashInitialForwardSideNavChevron(restoreState = null) {
+        postChevronLog('initialFlash.evaluate', {
+            alreadyFlashed: !!this.hasFlashedInitialForwardSideNavChevron,
+            hasRestoreState: !!restoreState,
+        });
+        if (this.hasFlashedInitialForwardSideNavChevron) {
+            postMay5Log('swipe.chevron.initial.skip', {
+                reason: 'already-flashed',
+            });
+            postChevronLog('initialFlash.skip', {
+                reason: 'already-flashed',
+            });
+            return;
+        }
+        const sectionIndex = typeof restoreState?.sectionIndex === 'number'
+            ? restoreState.sectionIndex
+            : null;
+        const locationCurrent = typeof restoreState?.locationCurrent === 'number'
+            ? restoreState.locationCurrent
+            : null;
+        const currentFraction = typeof restoreState?.currentFraction === 'number'
+            ? restoreState.currentFraction
+            : null;
+        const rendererPageCurrent = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+            ? this.navHUD.rendererPageSnapshot.current
+            : null;
+        const onFirstSection = sectionIndex == null || sectionIndex === 0;
+        const onFirstPage = (locationCurrent == null || locationCurrent <= 1)
+            && (rendererPageCurrent == null || rendererPageCurrent <= 1)
+            && (currentFraction == null || currentFraction <= 0.003);
+        if (!onFirstSection || !onFirstPage) {
+            postMay5Log('swipe.chevron.initial.skip', {
+                reason: 'not-first-page',
+                sectionIndex,
+                locationCurrent,
+                rendererPageCurrent,
+                currentFraction: safeRound(currentFraction, 6),
+            });
+            postChevronLog('initialFlash.skip', {
+                reason: 'not-first-page',
+                sectionIndex,
+                locationCurrent,
+                rendererPageCurrent,
+                currentFraction: safeRound(currentFraction, 6),
+                onFirstSection,
+                onFirstPage,
+            });
+            return;
+        }
+        this.hasFlashedInitialForwardSideNavChevron = true;
+        postMay5Log('swipe.chevron.initial.flash', {
+            sectionIndex,
+            locationCurrent,
+            rendererPageCurrent,
+            currentFraction: safeRound(currentFraction, 6),
+        });
+        postChevronLog('initialFlash.flash', {
+            sectionIndex,
+            locationCurrent,
+            rendererPageCurrent,
+            currentFraction: safeRound(currentFraction, 6),
+        });
+        this.#flashForwardSideNavChevron();
     }
     #flashSideNavChevron(direction) {
         const key = direction === 'left' ? 'l' : 'r';
         const icon = document.querySelector(`#btn-scroll-${direction} .icon`);
+        postChevronLog('flashSide.request', {
+            direction,
+            key,
+            iconExists: !!icon,
+            existingClassName: icon?.className || null,
+            existingOpacity: icon?.style?.opacity || null,
+            existingVisibility: icon?.style?.visibility || null,
+        });
         if (!icon) {
             return;
         }
@@ -6408,10 +6212,24 @@ class Reader {
         this.#chevronFadeTimers[key] = null;
         icon.style.removeProperty('opacity');
         icon.classList.add('chevron-visible');
+        postChevronLog('flashSide.visible', {
+            direction,
+            key,
+            className: icon.className || null,
+            opacity: icon.style.opacity || null,
+            visibility: icon.style.visibility || null,
+        });
         this.#chevronFadeTimers[key] = setTimeout(() => {
             icon.classList.remove('chevron-visible');
             icon.style.removeProperty('opacity');
             this.#chevronFadeTimers[key] = null;
+            postChevronLog('flashSide.hide', {
+                direction,
+                key,
+                className: icon.className || null,
+                opacity: icon.style.opacity || null,
+                visibility: icon.style.visibility || null,
+            });
         }, 180);
     }
     #onMainDocumentTouchStart(event) {
@@ -6453,10 +6271,20 @@ class Reader {
         const minSwipe = 36;
         if (Math.abs(dx) <= Math.abs(dy) || Math.abs(dx) <= 8) {
             if (state.chevronActive) {
+                postChevronLog('mainDocumentSwipe.opacityReset.dispatch', {
+                    reason: 'move-axis-or-min-dx',
+                    dx: safeRound(dx, 2),
+                    dy: safeRound(dy, 2),
+                });
                 this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
                     bubbles: true,
                     composed: true,
-                    detail: { leftOpacity: '', rightOpacity: '' },
+                    detail: {
+                        leftOpacity: '',
+                        rightOpacity: '',
+                        source: 'ebook-viewer',
+                        reason: 'mainDocumentSwipe.move-axis-or-min-dx',
+                    },
                 }));
                 state.chevronActive = false;
             }
@@ -6475,7 +6303,12 @@ class Reader {
         this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
-            detail: { leftOpacity, rightOpacity },
+            detail: {
+                leftOpacity,
+                rightOpacity,
+                source: 'ebook-viewer',
+                reason: 'mainDocumentSwipe.progress',
+            },
         }));
         state.chevronActive = progress > 0;
         const progressBucket = Math.floor(progress * 4);
@@ -6490,9 +6323,24 @@ class Reader {
                 reachedThreshold: Math.abs(dx) > minSwipe,
                 isRTL: !!this.isRTL,
             });
+            postChevronLog('mainDocumentSwipe.opacityProgress.dispatch', {
+                dx: safeRound(dx, 2),
+                dy: safeRound(dy, 2),
+                progress: safeRound(progress, 3),
+                leftOpacity: safeRound(leftOpacity, 3),
+                rightOpacity: safeRound(rightOpacity, 3),
+                reachedThreshold: Math.abs(dx) > minSwipe,
+                isRTL: !!this.isRTL,
+            });
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
+        postChevronLog('mainDocumentSwipe.thresholdFlash.request', {
+            dx: safeRound(dx, 2),
+            dy: safeRound(dy, 2),
+            goForward,
+            isRTL: !!this.isRTL,
+        });
         this.#flashSideNavChevron(goForward
             ? (this.isRTL ? 'left' : 'right')
             : (this.isRTL ? 'right' : 'left'));
@@ -6520,10 +6368,19 @@ class Reader {
     }
     #onMainDocumentTouchEnd() {
         if (this.#mainDocumentSwipeState?.chevronActive) {
+            postChevronLog('mainDocumentSwipe.opacityReset.dispatch', {
+                reason: 'touchend',
+                triggered: this.#mainDocumentSwipeState?.triggered ?? null,
+            });
             this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
-                detail: { leftOpacity: '', rightOpacity: '' },
+                detail: {
+                    leftOpacity: '',
+                    rightOpacity: '',
+                    source: 'ebook-viewer',
+                    reason: 'mainDocumentSwipe.touchend',
+                },
             }));
             postMay5Log('mainDocument.swipe.reset', {
                 reason: 'touchend',
@@ -7254,9 +7111,6 @@ class Reader {
             fileKind: file?.kind || 'nil',
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
         }));
-        postEPUBFlashLog('js.reader.open.beforeLoading', {
-            fileKind: file?.kind || 'nil',
-        });
         this.setLoadingIndicator(true);
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
@@ -7435,10 +7289,33 @@ class Reader {
                 leftExists: !!l,
                 rightExists: !!r,
             });
+            postChevronLog('opacity.received', {
+                leftOpacity: e.detail?.leftOpacity ?? null,
+                rightOpacity: e.detail?.rightOpacity ?? null,
+                reason: e.detail?.reason ?? null,
+                eventSource: e.detail?.source ?? null,
+                leftExists: !!l,
+                rightExists: !!r,
+                leftClassName: l?.className || null,
+                rightClassName: r?.className || null,
+                leftOpacityStyle: l?.style?.opacity || null,
+                rightOpacityStyle: r?.style?.opacity || null,
+                leftVisibilityStyle: l?.style?.visibility || null,
+                rightVisibilityStyle: r?.style?.visibility || null,
+            });
             
             const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
-                if (!elem) return;
+                if (!elem) {
+                    postChevronLog('opacity.apply', {
+                        key,
+                        mode: 'missing-element',
+                        value,
+                        reason: e.detail?.reason ?? null,
+                        eventSource: e.detail?.source ?? null,
+                    });
+                    return;
+                }
                 
                 clearTimeout(this.#chevronFadeTimers[key]);
                 this.#chevronFadeTimers[key] = null;
@@ -7454,6 +7331,16 @@ class Reader {
                         value,
                         className: elem.className || null,
                     });
+                    postChevronLog('opacity.apply', {
+                        key,
+                        mode: 'full',
+                        value,
+                        reason: e.detail?.reason ?? null,
+                        eventSource: e.detail?.source ?? null,
+                        className: elem.className || null,
+                        opacity: elem.style.opacity || null,
+                        visibility: elem.style.visibility || null,
+                    });
                     return;
                 }
                 
@@ -7468,11 +7355,31 @@ class Reader {
                         value,
                         className: elem.className || null,
                     });
+                    postChevronLog('opacity.apply', {
+                        key,
+                        mode: 'partial',
+                        value,
+                        reason: e.detail?.reason ?? null,
+                        eventSource: e.detail?.source ?? null,
+                        className: elem.className || null,
+                        opacity: elem.style.opacity || null,
+                        visibility: elem.style.visibility || null,
+                    });
                     return;
                 }
                 
                 // Hide chevron, but only after a delay and only if currently visible
                 if (elem.classList.contains('chevron-visible')) {
+                    postChevronLog('opacity.apply', {
+                        key,
+                        mode: 'delayed-hide-scheduled',
+                        value,
+                        reason: e.detail?.reason ?? null,
+                        eventSource: e.detail?.source ?? null,
+                        className: elem.className || null,
+                        opacity: elem.style.opacity || null,
+                        visibility: elem.style.visibility || null,
+                    });
                     this.#chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
                         elem.style.removeProperty('opacity');
@@ -7483,6 +7390,16 @@ class Reader {
                             mode: 'delayed-hide',
                             value,
                             className: elem.className || null,
+                        });
+                        postChevronLog('opacity.apply', {
+                            key,
+                            mode: 'delayed-hide-fired',
+                            value,
+                            reason: e.detail?.reason ?? null,
+                            eventSource: e.detail?.source ?? null,
+                            className: elem.className || null,
+                            opacity: elem.style.opacity || null,
+                            visibility: elem.style.visibility || null,
                         });
                     }, FADER_DELAY);
                 } else {
@@ -7496,6 +7413,16 @@ class Reader {
                         value,
                         className: elem.className || null,
                     });
+                    postChevronLog('opacity.apply', {
+                        key,
+                        mode: 'hide',
+                        value,
+                        reason: e.detail?.reason ?? null,
+                        eventSource: e.detail?.source ?? null,
+                        className: elem.className || null,
+                        opacity: elem.style.opacity || null,
+                        visibility: elem.style.visibility || null,
+                    });
                 }
             };
             
@@ -7503,7 +7430,13 @@ class Reader {
             fadeWithHold(r, e.detail.rightOpacity, 'r');
         });
         // Listen for resetSideNavChevrons custom event to reset chevrons
-        document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
+        document.addEventListener('resetSideNavChevrons', e => {
+            postChevronLog('reset.event.received', {
+                reason: e.detail?.reason ?? null,
+                eventSource: e.detail?.source ?? null,
+            });
+            this.#resetSideNavChevrons();
+        });
         
         // Section ticks
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
@@ -7638,7 +7571,7 @@ class Reader {
         });
         if (toc) {
             this.#tocView = createTOCView(toc, async (href) => {
-                await runWithEPUBFlashNavigationIntent({
+                await runWithNavigationIntent({
                     source: 'toc',
                     target: 'view.goTo',
                     href,
@@ -7840,7 +7773,7 @@ class Reader {
                 ? null
                 : {
                     type: 'restart',
-                    label: 'Start Over',
+                    label: 'Start Over Chapter',
                     tone: 'restart',
                 })
             : (atSectionEnd && !hasNextSection
@@ -7967,7 +7900,6 @@ class Reader {
         if (typeof originalGoTo !== 'function') return;
         const reader = this;
         renderer.goTo = function guardedVisibleRendererGoTo(target, ...args) {
-            const callStartedAt = Date.now();
             const targetIndex = typeof target?.index === 'number' ? Math.max(0, Math.round(target.index)) : null;
             const currentIndex = getPrimaryRendererContentIndex(renderer);
             const currentPage = reader.navHUD?.rendererPageSnapshot?.current ?? null;
@@ -7992,84 +7924,23 @@ class Reader {
                         && targetPage === currentPage
                     )
                 );
-            const diagnostics = {
-                targetIndex,
-                currentIndex,
-                targetAnchor,
-                targetPage,
-                currentPage,
-                totalPages,
-                sameIndex,
-                sameVisiblePage,
-                argsCount: args.length,
-                targetKeys: target && typeof target === 'object' ? Object.keys(target).slice(0, 8) : null,
-                intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
-                beforeNav: captureNavVisibilityState(),
-                visual: captureEPUBFlashVisualState(reader.view),
-            };
-            postEPUBFlashLog('js.renderer.goTo.guard.call', diagnostics);
             if (sameVisiblePage) {
-                postEPUBFlashLog('js.renderer.goTo.guard.skip', {
-                    reason: targetAnchor === null ? 'same-index-no-anchor' : 'same-visible-page',
-                    ...diagnostics,
-                });
                 return Promise.resolve();
             }
-            postEPUBFlashLog('js.renderer.goTo.guard.pass', diagnostics);
-            const result = originalGoTo.call(this, target, ...args);
-            Promise.resolve(result)
-                .then(() => {
-                    postEPUBFlashLog('js.renderer.goTo.guard.resolved', {
-                        elapsedMs: Date.now() - callStartedAt,
-                        ...diagnostics,
-                        afterNav: captureNavVisibilityState(),
-                        visual: captureEPUBFlashVisualState(reader.view),
-                    });
-                })
-                .catch((error) => {
-                    postEPUBFlashLog('js.renderer.goTo.guard.rejected', {
-                        elapsedMs: Date.now() - callStartedAt,
-                        message: error?.message ?? String(error),
-                        ...diagnostics,
-                        afterNav: captureNavVisibilityState(),
-                    });
-                });
-            return result;
+            return originalGoTo.call(this, target, ...args);
         };
         renderer.__manabiVisibleGoToGuardInstalled = true;
     }
     #onGoTo(event = {}) {
         const goToDetail = event?.detail ?? event ?? {};
         const willLoadNewIndex = goToDetail.willLoadNewIndex === true;
-        postEPUBFlashLog('js.renderer.goTo', {
-            willLoadNewIndex,
-            detail: goToDetail,
-            intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
-        });
         if (!willLoadNewIndex) {
-            const intent = globalThis.__manabiEPUBFlashNavigationIntent ?? null;
-            const intentAgeMs = typeof intent?.timestamp === 'number'
-                ? Date.now() - intent.timestamp
-                : null;
-            const isFreshCacheWarmerIntent =
-                (intent?.source === 'cache-warmer.open' || intent?.source === 'cache-warmer.advance')
-                && (intentAgeMs === null || intentAgeMs < 1000);
             this.sameIndexGoToDidDisplaySkips = Math.max(1, this.sameIndexGoToDidDisplaySkips || 0);
-            postEPUBFlashLog('js.renderer.goTo.skipLoading', {
-                reason: 'same-index',
-                skippedChromeClear: true,
-                intentAgeMs,
-                isFreshCacheWarmerIntent,
-                skipNextDidDisplay: this.sameIndexGoToDidDisplaySkips > 0,
-                detail: goToDetail,
-                intent,
-            });
             return;
         }
         this.#clearVisiblePageReadChrome('goTo');
         requestLookupCloseForPageMotion('renderer.goTo', {
             willLoadNewIndex: true,
-            intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
         });
         this.setLoadingIndicator(true);
     }
@@ -8088,32 +7959,14 @@ class Reader {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
         }));
-        postEPUBFlashLog('js.renderer.didDisplay.beforeLoadingClear', {
-            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-            skippedSameIndexGoTo: shouldSkipSameIndexDidDisplay,
-            compact: captureEPUBFlashCompactState(this.view),
-        });
         if (shouldSkipSameIndexDidDisplay) {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
-            postEPUBFlashLog('js.renderer.didDisplay.skipSameIndexGoTo', {
-                remainingSkipCount: this.sameIndexGoToDidDisplaySkips,
-                compact: captureEPUBFlashCompactState(this.view),
-            });
             return;
         }
         applyStoredChromeInsets('reader.didDisplay');
         const initialSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear', {
             allowWhileLoading: true,
         });
-        if (initialSettleResult?.rendered || initialSettleResult?.forcedRender) {
-            postEPUBFlashLog('js.renderer.didDisplay.preClearSettle', {
-                result: initialSettleResult,
-                rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-                rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                compact: captureEPUBFlashCompactState(this.view),
-            });
-        }
         this.setLoadingIndicator(false);
         try {
             globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
@@ -8122,11 +7975,6 @@ class Reader {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
         }));
-        postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
-            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-            compact: captureEPUBFlashCompactState(this.view),
-        });
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             postHideNavLog('didDisplay.preserveHidden.apply', {
                 before: captureNavVisibilityState(),
@@ -8164,11 +8012,6 @@ class Reader {
         requestAnimationFrame(() => {
             const livePaginator = resolveFoliatePaginator(this.view);
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
-            postEPUBFlashLog('js.renderer.didDisplay.raf', {
-                rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-                rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                compact: captureEPUBFlashCompactState(this.view),
-            });
             markEPUBPerf('did-display.raf.first', {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
                 paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
@@ -8199,11 +8042,6 @@ class Reader {
                         }),
                     });
                 }
-                postEPUBFlashLog('js.renderer.didDisplay.750ms', {
-                    rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-                    rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                    compact: captureEPUBFlashCompactState(this.view),
-                });
             }, 750);
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
@@ -8373,10 +8211,37 @@ class Reader {
         // Remove visible class & reset opacity immediately
         const leftIcon = document.querySelector('#btn-scroll-left .icon');
         const rightIcon = document.querySelector('#btn-scroll-right .icon');
-        [leftIcon, rightIcon].forEach(icon => {
-            if (!icon) return;
+        postChevronLog('reset.begin', {
+            leftExists: !!leftIcon,
+            rightExists: !!rightIcon,
+            leftClassName: leftIcon?.className || null,
+            rightClassName: rightIcon?.className || null,
+            leftOpacity: leftIcon?.style?.opacity || null,
+            rightOpacity: rightIcon?.style?.opacity || null,
+            leftVisibility: leftIcon?.style?.visibility || null,
+            rightVisibility: rightIcon?.style?.visibility || null,
+        });
+        [
+            { icon: leftIcon, key: 'l' },
+            { icon: rightIcon, key: 'r' },
+        ].forEach(({ icon, key }) => {
+            if (!icon) {
+                postChevronLog('reset.icon', {
+                    key,
+                    mode: 'missing-element',
+                });
+                return;
+            }
             icon.classList.remove('chevron-visible');
             icon.style.opacity = '';
+            icon.style.visibility = '';
+            postChevronLog('reset.icon', {
+                key,
+                mode: 'reset',
+                className: icon.className || null,
+                opacity: icon.style.opacity || null,
+                visibility: icon.style.visibility || null,
+            });
         });
     }
     
@@ -9701,13 +9566,6 @@ window.loadLastPosition = async ({
             && typeof targetRendererPage === 'number'
             && rendererPageCurrent === targetRendererPage
         ) {
-            postEPUBFlashLog('js.restore.reconcile.skipGoTo', {
-                reason: 'same-renderer-page',
-                reconcileReason: reason,
-                rendererPageCurrent,
-                rendererPageTotal,
-                targetRendererPage,
-            });
             postMarkReadLog('restore.reconcile.skip', {
                 reason: 'same-renderer-page',
                 reconcileReason: reason,
@@ -9720,7 +9578,7 @@ window.loadLastPosition = async ({
             });
             return;
         }
-        await runWithEPUBFlashNavigationIntent({
+        await runWithNavigationIntent({
             source: 'restore.reconcile',
             reason,
             target: 'view.goToFraction',
@@ -9763,7 +9621,7 @@ window.loadLastPosition = async ({
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
             });
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'restore.synthetic-fraction',
                 target: 'view.goToFraction',
                 fraction: fractionalCompletion,
@@ -9810,7 +9668,7 @@ window.loadLastPosition = async ({
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
             });
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'restore.synthetic-locator',
                 target: 'renderer.goTo',
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
@@ -9851,7 +9709,7 @@ window.loadLastPosition = async ({
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'cfi',
             });
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'restore.cfi',
                 target: 'view.goTo',
                 cfiLength: cfi.length,
@@ -9878,7 +9736,7 @@ window.loadLastPosition = async ({
                     postReaderLog('ebook.viewer.loadLastPosition.path', {
                         mode: 'fraction-fallback',
                     });
-                    await runWithEPUBFlashNavigationIntent({
+                    await runWithNavigationIntent({
                         source: 'restore.cfi-fallback',
                         target: 'view.goToFraction',
                         fraction: fractionalCompletion,
@@ -9908,7 +9766,7 @@ window.loadLastPosition = async ({
                 mode: 'fraction',
             });
             try {
-                await runWithEPUBFlashNavigationIntent({
+                await runWithNavigationIntent({
                     source: 'restore.fraction',
                     target: 'view.goToFraction',
                     fraction: fractionalCompletion,
@@ -9982,6 +9840,7 @@ window.loadLastPosition = async ({
         }
         globalThis.reader.hasLoadedLastPosition = true
         const doneState = captureRestoreState('done');
+        globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
         postLandscapeInsetRestoreProbe('done', doneState, {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
             requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
@@ -10225,7 +10084,7 @@ window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
         });
         try {
             navHUD?.requestExplicitRelocateHistoryMutation?.('scrub-release');
-            await runWithEPUBFlashNavigationIntent({
+            await runWithNavigationIntent({
                 source: 'scrub-release',
                 target: 'view.goToFraction',
                 fraction: clampedFraction,

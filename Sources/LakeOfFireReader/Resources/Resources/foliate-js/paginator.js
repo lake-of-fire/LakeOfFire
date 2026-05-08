@@ -66,6 +66,22 @@ const postMay5PaginatorLog = (event, details = {}) => {
         try { console.log('# MAY5', `paginator.${event}`, details); } catch (_) {}
     }
 };
+const postChevronPaginatorLog = (event, details = {}) => {
+    globalThis.__manabiChevronPaginatorLogCount = globalThis.__manabiChevronPaginatorLogCount || 0;
+    if (globalThis.__manabiChevronPaginatorLogCount >= 500) return;
+    globalThis.__manabiChevronPaginatorLogCount += 1;
+    const payload = {
+        event: `paginator.${event}`,
+        source: 'paginator',
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# CHEVRON ${JSON.stringify(payload)}`);
+    } catch (_error) {
+        try { console.log('# CHEVRON', payload); } catch (_) {}
+    }
+};
 const rectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
     const rect = element.getBoundingClientRect();
@@ -1143,49 +1159,15 @@ export class Paginator extends HTMLElement {
         const previousView = view?.__manabiPreviousView || null
         if (!previousView) return
         view.__manabiPreviousView = null
-        try {
-            previousView.destroy()
-            previousView.element?.remove?.()
-            if (!this.#isCacheWarmer) {
-                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-                    event: 'js.paginator.previousView.removed',
-                    timestamp: Date.now(),
-                    reason,
-                    index: this.#index,
-                    newViewTextLength: view?.document?.body?.innerText?.length ?? null,
-                }));
-            }
-        } catch (error) {
-            if (!this.#isCacheWarmer) {
-                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-                    event: 'js.paginator.previousView.remove.error',
-                    timestamp: Date.now(),
-                    reason,
-                    message: error?.message || String(error),
-                }));
-            }
-        }
+        previousView.destroy()
+        previousView.element?.remove?.()
     }
     #setLoading(isLoading) {
-        const previousLoading = this.#isLoading;
         this.#isLoading = isLoading;
         if (isLoading) {
             this.#top.classList.add('reader-loading');
         } else {
             this.#top.classList.remove('reader-loading');
-        }
-        if (!this.#isCacheWarmer && previousLoading !== isLoading) {
-            try {
-                const viewTextLength = this.#view?.document?.body?.innerText?.length ?? null;
-                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-                    event: 'js.paginator.readerLoading.changed',
-                    timestamp: Date.now(),
-                    loading: !!isLoading,
-                    index: this.#index,
-                    topClass: this.#top?.className || '',
-                    viewTextLength,
-                }));
-            } catch (_error) {}
         }
     }
     async #onBeforeExpand() {
@@ -1855,14 +1837,22 @@ export class Paginator extends HTMLElement {
             } else {
                 (this.bookDir === 'rtl') ? await this.next() : await this.prev();
             }
-            this.#updateSwipeChevron(dx, minSwipe)
+            postChevronPaginatorLog('swipe.postPaginationReplay.suppressed', {
+                dx: manabiRound(dx, 2),
+                minSwipe,
+                bookDir: this.bookDir ?? null,
+                vertical: this.#vertical,
+                scrolled: this.scrolled,
+                index: this.#index,
+            });
         }
     }
     #onTouchEnd(e) {
         const touch = e.changedTouches?.[0] ?? null;
+        const touchState = this.#touchState;
         if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchEnd', JSON.stringify({
-            hadTouchState: !!this.#touchState,
-            triggered: this.#touchState?.triggered ?? null,
+            hadTouchState: !!touchState,
+            triggered: touchState?.triggered ?? null,
             clientX: touch?.clientX ?? null,
             clientY: touch?.clientY ?? null,
             containerHeight: this.#container?.clientHeight ?? null,
@@ -1874,15 +1864,33 @@ export class Paginator extends HTMLElement {
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
         if (this.#skipTouchEndOpacity) {
+            postChevronPaginatorLog('touchEnd.opacityReset.skip', {
+                reason: 'skip-after-section-load',
+                triggered: touchState?.triggered ?? null,
+                hadTouchState: !!touchState,
+                clientX: touch?.clientX ?? null,
+                clientY: touch?.clientY ?? null,
+                index: this.#index,
+            });
             this.#skipTouchEndOpacity = false
             return
         }
+        postChevronPaginatorLog('touchEnd.opacityReset.dispatch', {
+            reason: 'touchend',
+            triggered: touchState?.triggered ?? null,
+            hadTouchState: !!touchState,
+            clientX: touch?.clientX ?? null,
+            clientY: touch?.clientY ?? null,
+            index: this.#index,
+        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
             detail: {
                 leftOpacity: '',
-                rightOpacity: ''
+                rightOpacity: '',
+                source: 'paginator',
+                reason: 'paginator.touchEnd',
             }
         }))
     }
@@ -1947,12 +1955,20 @@ export class Paginator extends HTMLElement {
             Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
             Math.abs(e.deltaX) < TRIGGER_THRESHOLD
         ) {
+            postChevronPaginatorLog('wheel.opacityReset.dispatch', {
+                reason: 'momentum-falling',
+                deltaX: manabiRound(e.deltaX, 2),
+                lastWheelDeltaX: manabiRound(this.#lastWheelDeltaX, 2),
+                index: this.#index,
+            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
                 detail: {
                     leftOpacity: '',
-                    rightOpacity: ''
+                    rightOpacity: '',
+                    source: 'paginator',
+                    reason: 'paginator.wheel.momentum-falling',
                 }
             }));
             this.#lastWheelDeltaX = e.deltaX;
@@ -2381,18 +2397,6 @@ export class Paginator extends HTMLElement {
             detail
         }))
 
-        // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
-        if (await this.isAtSectionStart()) {
-            this.#skipTouchEndOpacity = true
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
-                    rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
-                }
-            }));
-        }
     }
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
@@ -2409,12 +2413,25 @@ export class Paginator extends HTMLElement {
             vertical: this.#vertical,
             scrolled: this.scrolled,
         });
+        postChevronPaginatorLog('swipe.opacityProgress.dispatch', {
+            dx: manabiRound(dx, 2),
+            minSwipe,
+            leftOpacity: manabiRound(leftOpacity, 3),
+            rightOpacity: manabiRound(rightOpacity, 3),
+            reachedThreshold: Math.abs(dx) > minSwipe,
+            bookDir: this.bookDir ?? null,
+            vertical: this.#vertical,
+            scrolled: this.scrolled,
+            index: this.#index,
+        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
             detail: {
                 leftOpacity,
-                rightOpacity
+                rightOpacity,
+                source: 'paginator',
+                reason: 'paginator.swipe.progress',
             }
         }));
         if (Math.abs(dx) > minSwipe) {
@@ -2423,12 +2440,20 @@ export class Paginator extends HTMLElement {
                 dx: manabiRound(dx, 2),
                 minSwipe,
             });
+            postChevronPaginatorLog('swipe.opacityReset.dispatch', {
+                reason: 'threshold',
+                dx: manabiRound(dx, 2),
+                minSwipe,
+                index: this.#index,
+            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
                 detail: {
                     leftOpacity: '',
-                    rightOpacity: ''
+                    rightOpacity: '',
+                    source: 'paginator',
+                    reason: 'paginator.swipe.threshold',
                 }
             }))
         }
@@ -2515,6 +2540,12 @@ export class Paginator extends HTMLElement {
                 await afterLoad(doc)
             } else {
                 this.#skipTouchEndOpacity = true
+                postChevronPaginatorLog('touchEnd.opacityReset.armSkip', {
+                    reason: 'display-new-section',
+                    targetIndex: index,
+                    currentIndex: this.#index,
+                    src,
+                });
                 const view = this.#createView()
                 const beforeRender = this.#beforeRender.bind(this)
 
@@ -2555,7 +2586,17 @@ export class Paginator extends HTMLElement {
                 this.#view = view
 
                 // Reset chevrons when loading new section
-                document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
+                postChevronPaginatorLog('resetSideNavChevrons.dispatch', {
+                    reason: 'display-new-section',
+                    targetIndex: index,
+                    src,
+                });
+                document.dispatchEvent(new CustomEvent('resetSideNavChevrons', {
+                    detail: {
+                        source: 'paginator',
+                        reason: 'paginator.display-new-section',
+                    },
+                }));
                 //            this.dispatchEvent(new CustomEvent('create-overlayer', {
                 //            this.dispatchEvent(new CustomEvent('create-overlayer', {
                 //                detail: {
@@ -2639,17 +2680,6 @@ export class Paginator extends HTMLElement {
                 anchorKind,
                 select: !!select,
             });
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-                    event: 'js.paginator.goTo.noop-same-index',
-                    timestamp: Date.now(),
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    index,
-                    currentIndex: this.#index,
-                    anchorKind,
-                    select: !!select,
-                }));
-            } catch (_error) {}
             return
         }
         this.dispatchEvent(new CustomEvent('goTo', {
@@ -2668,18 +2698,6 @@ export class Paginator extends HTMLElement {
             anchorKind,
             select: !!select,
         });
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-                event: 'js.paginator.goTo.dispatch',
-                timestamp: Date.now(),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                index,
-                currentIndex: this.#index,
-                willLoadNewIndex,
-                anchorKind,
-                select: !!select,
-            }));
-        } catch (_error) {}
         if (!willLoadNewIndex) {
             try {
                 await this.#display({

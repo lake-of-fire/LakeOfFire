@@ -99,20 +99,6 @@ const logHideNavTrace = (event, detail = {}) => {
     } catch (_err) {}
 };
 
-const logEPUBFlash = (event, detail = {}) => {
-    globalThis.__manabiEPUBFlashNavLogCount = globalThis.__manabiEPUBFlashNavLogCount || 0;
-    if (globalThis.__manabiEPUBFlashNavLogCount >= 300) return;
-    globalThis.__manabiEPUBFlashNavLogCount += 1;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            ...detail,
-        }));
-    } catch (_err) {}
-};
-
 const logEPUBNav = (event, detail = {}) => {
     const payload = { event, ...detail };
     if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
@@ -443,27 +429,10 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
-        const beforeFlashState = this._captureHideNavState();
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
-            logEPUBFlash('js.nav.visibility.preserve-skip', {
-                source,
-                requestedHide: next,
-                previous,
-                previousClass,
-                context,
-                before: beforeFlashState,
-            });
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
-            logEPUBFlash('js.nav.visibility.noop', {
-                source,
-                requestedHide: next,
-                previous,
-                previousClass,
-                context,
-                before: beforeFlashState,
-            });
             logEPUBNav('nav.visibility.scroll-toggle-noop', {
                 source,
                 shouldHide: next,
@@ -486,15 +455,6 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = next;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
-        logEPUBFlash('js.nav.visibility.changed', {
-            source,
-            requestedHide: next,
-            previous,
-            previousClass,
-            context,
-            before: beforeFlashState,
-            after: this._captureHideNavState(),
-        });
         logEPUBNav('nav.visibility.scroll-toggle', {
             source,
             previous,
