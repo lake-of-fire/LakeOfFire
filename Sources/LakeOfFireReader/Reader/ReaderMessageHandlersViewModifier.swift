@@ -1021,9 +1021,21 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 case .readyState:
                     break
                 case .media(let info):
-                    ReaderWebMediaBridge.postCandidateUpdate(info)
+                    let pageURL = URL(string: info.pageSrc) ?? message.frameInfo.request.mainDocumentURL ?? message.frameInfo.request.url
+                    ReaderWebMediaBridge.postCandidateUpdate(
+                        info,
+                        requestHeaders: pageURL.map {
+                            ReaderWebMediaBridge.mediaRequestHeaders(from: message, pageURL: $0)
+                        } ?? [:]
+                    )
                 case .playback(let event):
-                    ReaderWebMediaBridge.postPlaybackUpdate(event)
+                    let pageURL = URL(string: event.snapshot.pageSrc) ?? message.frameInfo.request.mainDocumentURL ?? message.frameInfo.request.url
+                    ReaderWebMediaBridge.postPlaybackUpdate(
+                        event,
+                        requestHeaders: pageURL.map {
+                            ReaderWebMediaBridge.mediaRequestHeaders(from: message, pageURL: $0)
+                        } ?? [:]
+                    )
                 }
             }),
             ("videoStatus", { @MainActor message in

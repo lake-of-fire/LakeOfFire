@@ -201,6 +201,7 @@ public struct ReaderWebMediaCandidateUpdate: Sendable {
     public let duration: TimeInterval
     public let isInvisible: Bool
     public let playbackKindRawValue: String
+    public let requestHeaders: [String: String]
 
     public init(
         canonicalContentURL: URL,
@@ -211,7 +212,8 @@ public struct ReaderWebMediaCandidateUpdate: Sendable {
         mimeType: String,
         duration: TimeInterval,
         isInvisible: Bool,
-        playbackKindRawValue: String
+        playbackKindRawValue: String,
+        requestHeaders: [String: String] = [:]
     ) {
         self.canonicalContentURL = canonicalContentURL
         self.pageURL = pageURL
@@ -222,6 +224,7 @@ public struct ReaderWebMediaCandidateUpdate: Sendable {
         self.duration = duration
         self.isInvisible = isInvisible
         self.playbackKindRawValue = playbackKindRawValue
+        self.requestHeaders = requestHeaders
     }
 }
 
@@ -236,6 +239,7 @@ public struct ReaderWebMediaPlaybackUpdate: Sendable {
     public let duration: TimeInterval
     public let isPlaying: Bool
     public let ended: Bool
+    public let requestHeaders: [String: String]
 
     public init(
         canonicalContentURL: URL,
@@ -247,7 +251,8 @@ public struct ReaderWebMediaPlaybackUpdate: Sendable {
         currentTime: TimeInterval,
         duration: TimeInterval,
         isPlaying: Bool,
-        ended: Bool
+        ended: Bool,
+        requestHeaders: [String: String] = [:]
     ) {
         self.canonicalContentURL = canonicalContentURL
         self.pageURL = pageURL
@@ -259,6 +264,7 @@ public struct ReaderWebMediaPlaybackUpdate: Sendable {
         self.duration = duration
         self.isPlaying = isPlaying
         self.ended = ended
+        self.requestHeaders = requestHeaders
     }
 }
 
@@ -331,7 +337,7 @@ public enum ReaderWebMediaBridge {
         return decode(ReaderWebMediaInfo.self, from: payload).map(ReaderWebMediaBridgeMessage.media)
     }
 
-    static func postCandidateUpdate(_ info: ReaderWebMediaInfo) {
+    static func postCandidateUpdate(_ info: ReaderWebMediaInfo, requestHeaders: [String: String] = [:]) {
         guard let pageURL = URL(string: info.pageSrc) else { return }
 
         let canonicalContentURL = MediaTranscript.canonicalContentURL(from: pageURL)
@@ -344,7 +350,8 @@ public enum ReaderWebMediaBridge {
             mimeType: info.mimeType,
             duration: info.duration,
             isInvisible: info.isInvisible,
-            playbackKindRawValue: info.playbackKind.rawValue
+            playbackKindRawValue: info.playbackKind.rawValue,
+            requestHeaders: requestHeaders
         )
 
         NotificationCenter.default.post(
@@ -354,7 +361,7 @@ public enum ReaderWebMediaBridge {
         )
     }
 
-    static func postPlaybackUpdate(_ event: ReaderWebPlaybackEvent) {
+    static func postPlaybackUpdate(_ event: ReaderWebPlaybackEvent, requestHeaders: [String: String] = [:]) {
         guard let pageURL = URL(string: event.snapshot.pageSrc) else { return }
 
         let canonicalContentURL = MediaTranscript.canonicalContentURL(from: pageURL)
@@ -368,7 +375,8 @@ public enum ReaderWebMediaBridge {
             currentTime: event.snapshot.currentTime,
             duration: event.snapshot.duration,
             isPlaying: !event.snapshot.paused && !event.snapshot.ended,
-            ended: event.snapshot.ended
+            ended: event.snapshot.ended,
+            requestHeaders: requestHeaders
         )
 
         NotificationCenter.default.post(
@@ -458,9 +466,17 @@ public enum ReaderWebMediaBridge {
         if headers["Referer"] == nil, headers["referer"] == nil {
             headers["Referer"] = pageURL.absoluteString
         }
-        if headers["Accept"] == nil, headers["accept"] == nil {
-            headers["Accept"] = "text/vtt,text/plain,*/*"
+        headers["Accept"] = "text/vtt,text/plain,*/*"
+        return headers
+    }
+
+    @MainActor
+    static func mediaRequestHeaders(from message: WebViewMessage, pageURL: URL) -> [String: String] {
+        var headers = message.frameInfo.request.allHTTPHeaderFields ?? [:]
+        if headers["Referer"] == nil, headers["referer"] == nil {
+            headers["Referer"] = pageURL.absoluteString
         }
+        headers["Accept"] = "video/*,audio/*,*/*"
         return headers
     }
 
