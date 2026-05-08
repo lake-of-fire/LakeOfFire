@@ -970,7 +970,6 @@ export class Paginator extends HTMLElement {
                 grid-template-rows: 0 minmax(0, 1fr) 0;
             }
             #top.reader-loading {
-                opacity: 0;
                 pointer-events: none;
             }
             /*#background {
@@ -1127,10 +1126,7 @@ export class Paginator extends HTMLElement {
         this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
     #createView() {
-        if (this.#view) {
-            this.#view.destroy()
-            this.#container.removeChild(this.#view.element)
-        }
+        const previousView = this.#view
         this.#invalidateVisibleRangeCache()
         this.#view = new View({
             container: this,
@@ -1139,15 +1135,57 @@ export class Paginator extends HTMLElement {
             isCacheWarmer: this.#isCacheWarmer,
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
+        this.#view.__manabiPreviousView = previousView || null
         this.#container.append(this.#view.element)
         return this.#view
     }
+    #destroyPreviousView(view, reason) {
+        const previousView = view?.__manabiPreviousView || null
+        if (!previousView) return
+        view.__manabiPreviousView = null
+        try {
+            previousView.destroy()
+            previousView.element?.remove?.()
+            if (!this.#isCacheWarmer) {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                    event: 'js.paginator.previousView.removed',
+                    timestamp: Date.now(),
+                    reason,
+                    index: this.#index,
+                    newViewTextLength: view?.document?.body?.innerText?.length ?? null,
+                }));
+            }
+        } catch (error) {
+            if (!this.#isCacheWarmer) {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                    event: 'js.paginator.previousView.remove.error',
+                    timestamp: Date.now(),
+                    reason,
+                    message: error?.message || String(error),
+                }));
+            }
+        }
+    }
     #setLoading(isLoading) {
+        const previousLoading = this.#isLoading;
         this.#isLoading = isLoading;
         if (isLoading) {
             this.#top.classList.add('reader-loading');
         } else {
             this.#top.classList.remove('reader-loading');
+        }
+        if (!this.#isCacheWarmer && previousLoading !== isLoading) {
+            try {
+                const viewTextLength = this.#view?.document?.body?.innerText?.length ?? null;
+                window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
+                    event: 'js.paginator.readerLoading.changed',
+                    timestamp: Date.now(),
+                    loading: !!isLoading,
+                    index: this.#index,
+                    topClass: this.#top?.className || '',
+                    viewTextLength,
+                }));
+            } catch (_error) {}
         }
     }
     async #onBeforeExpand() {
@@ -2501,6 +2539,7 @@ export class Paginator extends HTMLElement {
                 });
                 await view.load(src, afterLoad, beforeRender)
                 //                console.log("#display... awaited load")
+                this.#destroyPreviousView(view, 'after-new-view-load')
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
                         targetIndex: index,
@@ -2614,7 +2653,13 @@ export class Paginator extends HTMLElement {
             return
         }
         this.dispatchEvent(new CustomEvent('goTo', {
-            willLoadNewIndex: willLoadNewIndex
+            detail: {
+                willLoadNewIndex: willLoadNewIndex,
+                index,
+                currentIndex: this.#index,
+                anchorKind,
+                select: !!select,
+            },
         }))
         postPaginatorLoadLog('goTo.request', {
             index,

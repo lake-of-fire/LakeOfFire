@@ -1114,6 +1114,7 @@
                 }
                 #loading-indicator {
                     background: rgba(255, 255, 255, 1);
+                    transition: none;
                 }
                 @media (prefers-color-scheme: dark) {
                     #loading-indicator {
@@ -1199,18 +1200,16 @@
                     display: none;
                 }
                 
-                body.loading #loading-indicator {
+                body.loading.loading-visual #loading-indicator {
                     visibility: visible !important;
                     opacity: 1 !important;
-                    transition-delay: 0s !important;
                     pointer-events: auto !important;
                 }
-                body.loading foliate-view,
-                body.loading .side-nav,
-                body.loading #btn-prev-chapter,
-                body.loading #btn-next-chapter,
-                body.loading #page-tracking-container {
-                    visibility: hidden !important;
+                body.loading.loading-visual foliate-view,
+                body.loading.loading-visual .side-nav,
+                body.loading.loading-visual #btn-prev-chapter,
+                body.loading.loading-visual #btn-next-chapter,
+                body.loading.loading-visual #page-tracking-container {
                     pointer-events: none !important;
                 }
                 

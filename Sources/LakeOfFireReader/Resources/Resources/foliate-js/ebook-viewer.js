@@ -1254,6 +1254,7 @@ const captureEPUBFlashVisualState = (view = null) => {
     const resolvedView = view || globalThis.reader?.view || null;
     const renderer = resolvedView?.renderer || null;
     const paginator = resolveFoliatePaginator(resolvedView);
+    const paginatorTop = paginator?.shadowRoot?.getElementById?.('top') || null;
     const paginatorContainer = paginator?.shadowRoot?.getElementById?.('container') || null;
     const frames = Array.from(paginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []);
     const visibleFrame = frames.find((frame) => {
@@ -1280,6 +1281,10 @@ const captureEPUBFlashVisualState = (view = null) => {
         rendererRect: safeRect(renderer),
         paginatorRect: safeRect(paginator),
         paginatorStyle: safeStyle(paginator),
+        paginatorTopClass: paginatorTop?.className || null,
+        paginatorTopStyle: safeStyle(paginatorTop),
+        loadingIndicatorHidden: document.getElementById('loading-indicator')?.hasAttribute?.('hidden') ?? null,
+        loadingVisualClass: !!document.body?.classList?.contains?.('loading-visual'),
         paginatorContainer: paginatorContainer
             ? `${paginatorContainer.clientWidth}x${paginatorContainer.clientHeight}`
             : null,
@@ -1300,6 +1305,42 @@ const captureEPUBFlashVisualState = (view = null) => {
         rendererPageTotal: globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null,
         intentSource: currentIntent?.source ?? null,
         intentReason: currentIntent?.reason ?? null,
+    };
+};
+
+const captureEPUBFlashCompactState = (view = null) => {
+    const safeRect = (el) => {
+        if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+        const rect = el.getBoundingClientRect();
+        return `${Number(rect.width.toFixed(1))}x${Number(rect.height.toFixed(1))}@${Number(rect.left.toFixed(1))},${Number(rect.top.toFixed(1))}`;
+    };
+    const safeStyle = (el) => {
+        if (!el || typeof getComputedStyle !== 'function') return null;
+        const style = getComputedStyle(el);
+        return `${style.display}/${style.visibility}/${style.opacity}`;
+    };
+    const resolvedView = view || globalThis.reader?.view || null;
+    const paginator = resolveFoliatePaginator(resolvedView);
+    const paginatorTop = paginator?.shadowRoot?.getElementById?.('top') || null;
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const frames = Array.from(paginator?.shadowRoot?.querySelectorAll?.('iframe') ?? []);
+    const visibleFrame = frames.find((frame) => {
+        const rect = frame?.getBoundingClientRect?.();
+        return rect && rect.width > 0 && rect.height > 0;
+    }) || frames[0] || null;
+    const frameBody = visibleFrame?.contentDocument?.body || null;
+    return {
+        bodyClasses: document.body?.className || '',
+        paginator: safeStyle(paginator),
+        paginatorRect: safeRect(paginator),
+        topClass: paginatorTop?.className || '',
+        top: safeStyle(paginatorTop),
+        loadingHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
+        loading: safeStyle(loadingIndicator),
+        frameCount: frames.length,
+        frameRect: safeRect(visibleFrame),
+        frameReady: visibleFrame?.contentDocument?.readyState || null,
+        frameTextLength: frameBody?.innerText?.length ?? null,
     };
 };
 
@@ -4222,14 +4263,23 @@ class Reader {
         const nextVisible = !!visible;
         if (nextVisible) {
             loadingIndicator?.removeAttribute?.('hidden');
+            clearTimeout(this.loadingVisualTimer);
+            this.loadingVisualTimer = setTimeout(() => {
+                if (document.body?.classList?.contains?.('loading')) {
+                    document.body.classList.add('loading-visual');
+                    postEPUBFlashLog('js.loadingVisual.shown', {
+                        delayMs: 400,
+                        compact: captureEPUBFlashCompactState(this.view),
+                    });
+                }
+            }, 400);
         }
         body.classList.toggle('loading', nextVisible);
         if (previousVisible && !nextVisible) {
-            setTimeout(() => {
-                if (!document.body?.classList?.contains?.('loading')) {
-                    loadingIndicator?.setAttribute?.('hidden', '');
-                }
-            }, 360);
+            clearTimeout(this.loadingVisualTimer);
+            this.loadingVisualTimer = null;
+            body.classList.remove('loading-visual');
+            loadingIndicator?.setAttribute?.('hidden', '');
         }
         if (previousVisible !== nextVisible) {
             postEPUBLoadLog('loading.class.changed', collectEPUBLoadDiagnostics('loading.class.changed', {
@@ -4243,22 +4293,22 @@ class Reader {
                 hasRenderer: !!this.view?.renderer,
                 rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
                 rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                visual: captureEPUBFlashVisualState(this.view),
+                compact: captureEPUBFlashCompactState(this.view),
             });
         }
         if (previousVisible && !nextVisible) {
             requestAnimationFrame(() => {
-                auditEPUBAnimations('loading-off.raf');
-                auditEPUBCompositing('loading-off.raf');
+                postEPUBFlashLog('js.loadingClass.raf', {
+                    reason: 'loading-off.raf',
+                    compact: captureEPUBFlashCompactState(this.view),
+                });
             });
             setTimeout(() => {
-                auditEPUBAnimations('loading-off.750ms');
-                auditEPUBCompositing('loading-off.750ms');
                 postEPUBFlashLog('js.loadingClass.hiddenSettle', {
                     reason: 'loading-off.750ms',
                     hasReader: !!this.view,
                     hasRenderer: !!this.view?.renderer,
-                    visual: captureEPUBFlashVisualState(this.view),
+                    compact: captureEPUBFlashCompactState(this.view),
                 });
             }, 750);
         }
@@ -7988,11 +8038,12 @@ class Reader {
         };
         renderer.__manabiVisibleGoToGuardInstalled = true;
     }
-    #onGoTo({
-        willLoadNewIndex
-    }) {
+    #onGoTo(event = {}) {
+        const goToDetail = event?.detail ?? event ?? {};
+        const willLoadNewIndex = goToDetail.willLoadNewIndex === true;
         postEPUBFlashLog('js.renderer.goTo', {
-            willLoadNewIndex: !!willLoadNewIndex,
+            willLoadNewIndex,
+            detail: goToDetail,
             intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
         });
         if (!willLoadNewIndex) {
@@ -8010,6 +8061,7 @@ class Reader {
                 intentAgeMs,
                 isFreshCacheWarmerIntent,
                 skipNextDidDisplay: this.sameIndexGoToDidDisplaySkips > 0,
+                detail: goToDetail,
                 intent,
             });
             return;
@@ -8040,13 +8092,13 @@ class Reader {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
             skippedSameIndexGoTo: shouldSkipSameIndexDidDisplay,
-            visual: captureEPUBFlashVisualState(this.view),
+            compact: captureEPUBFlashCompactState(this.view),
         });
         if (shouldSkipSameIndexDidDisplay) {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
             postEPUBFlashLog('js.renderer.didDisplay.skipSameIndexGoTo', {
                 remainingSkipCount: this.sameIndexGoToDidDisplaySkips,
-                visual: captureEPUBFlashVisualState(this.view),
+                compact: captureEPUBFlashCompactState(this.view),
             });
             return;
         }
@@ -8059,7 +8111,7 @@ class Reader {
                 result: initialSettleResult,
                 rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
                 rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                visual: captureEPUBFlashVisualState(this.view),
+                compact: captureEPUBFlashCompactState(this.view),
             });
         }
         this.setLoadingIndicator(false);
@@ -8073,7 +8125,7 @@ class Reader {
         postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-            visual: captureEPUBFlashVisualState(this.view),
+            compact: captureEPUBFlashCompactState(this.view),
         });
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             postHideNavLog('didDisplay.preserveHidden.apply', {
@@ -8115,7 +8167,7 @@ class Reader {
             postEPUBFlashLog('js.renderer.didDisplay.raf', {
                 rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
                 rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                visual: captureEPUBFlashVisualState(this.view),
+                compact: captureEPUBFlashCompactState(this.view),
             });
             markEPUBPerf('did-display.raf.first', {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
@@ -8150,7 +8202,7 @@ class Reader {
                 postEPUBFlashLog('js.renderer.didDisplay.750ms', {
                     rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
                     rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-                    visual: captureEPUBFlashVisualState(this.view),
+                    compact: captureEPUBFlashCompactState(this.view),
                 });
             }, 750);
         });
