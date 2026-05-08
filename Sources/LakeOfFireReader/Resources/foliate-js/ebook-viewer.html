@@ -6,6 +6,9 @@
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
             <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; font-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src blob: data:; object-src blob: data:; form-action 'none';" />
             <style>
+                :root {
+                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+                }
                 body {
                     --active-bg: rgba(0, 0, 0, .05);
                     --side-nav-width: 28px;
@@ -67,26 +70,29 @@
                     --nav-compact-percent-min-width: 72px;
                     --mnb-nav-bar-height-expanded: 64px;
                     --mnb-nav-bar-height-compact: 54px;
+                    --mnb-nav-bar-height-mark-read-hidden: 39px;
                     --mnb-nav-bar-height: var(--mnb-nav-bar-height-expanded);
                     --mnb-obscured-top-inset: 0px;
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-obscured-bottom-inset: 0px;
                     --mnb-system-bottom-inset: env(safe-area-inset-bottom, 0px);
                     --mnb-toolbar-visual-drop: 6px;
+                    --mnb-toolbar-visual-bottom-inset: max(
+                        0px,
+                        calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px))
+                    );
                     --mnb-toolbar-physical-bottom-inset: max(
-                        calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px)),
+                        var(--mnb-toolbar-visual-bottom-inset, 0px),
                         calc(var(--mnb-obscured-bottom-inset, 0px) + var(--mnb-system-bottom-inset, 0px))
                     );
                     --nav-primary-hidden-shift-y: 14px;
                     --mnb-reader-stage-bottom-inset: calc(
                         var(--mnb-nav-bar-height)
-                        + var(--mnb-toolbar-physical-bottom-inset, 0px)
+                        + var(--mnb-toolbar-visual-bottom-inset, 0px)
                     );
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
-                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
-
                     margin: 0 auto;
                     height: 100%;
                     /*height: 100dvh;*/
@@ -246,12 +252,11 @@
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
+                    bottom: var(--mnb-toolbar-visual-bottom-inset, 0px);
                     height: var(--mnb-nav-bar-height) !important;
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);
                     flex: 0 0 var(--mnb-nav-bar-height);
-                    -webkit-backdrop-filter: blur(30px);
                     contain: layout size style;
                     padding: 0;
                 }
@@ -265,9 +270,6 @@
                     z-index: 1;
                     display: grid;
                     grid-template-rows: 0 minmax(0, 1fr);
-                }
-                body[data-page-read-marker-axis="block"] #reader-stage {
-                    grid-template-rows: calc(var(--mnb-tracking-section-border-size) + var(--mnb-ebook-read-marker-padding)) minmax(0, 1fr);
                 }
                 #page-read-marker-top {
                     display: block;
@@ -401,7 +403,7 @@
                     transition: color 240ms ease, opacity 240ms ease, transform 240ms ease;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
-                    color: color-mix(in srgb, var(--secondary-color) 62%, transparent);
+                    color: color-mix(in srgb, var(--secondary-color) 76%, transparent);
                 }
                 .nav-action-link {
                     display: inline-block;
@@ -501,10 +503,6 @@
                     visibility: visible !important;
                     pointer-events: auto !important;
                 }
-                #nav-bar.nav-hidden-due-to-scroll {
-                    -webkit-backdrop-filter: none;
-                    backdrop-filter: none;
-                }
                 .nav-section-progress {
                     font-size: 10px !important;
                     font-weight: 600;
@@ -540,7 +538,7 @@
                     position: absolute;
                     top: auto;
                     bottom: calc(
-                        var(--mnb-toolbar-physical-bottom-inset, 0px)
+                        var(--mnb-toolbar-visual-bottom-inset, 0px)
                         + 8px
                         + ((var(--page-read-button-height) - 26px) / 2)
                     );
@@ -714,7 +712,7 @@
                 }
                 #page-tracking-container {
                     position: fixed;
-                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
+                    bottom: calc(var(--mnb-toolbar-visual-bottom-inset, 0px) + 7px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -724,12 +722,14 @@
                     min-width: 0;
                     z-index: 7;
                     pointer-events: auto;
+                    padding-block: 5px;
                 }
                 body[data-mnb-mark-read-buttons-visible="false"] #page-tracking-container {
                     display: none !important;
                 }
                 body[data-mnb-mark-read-buttons-visible="false"] {
-                    --mnb-nav-bar-height: var(--mnb-nav-bar-height-compact);
+                    --mnb-nav-bar-height: var(--mnb-nav-bar-height-mark-read-hidden);
+                    --nav-page-read-clearance: 0px;
                 }
                 #page-tracking-buttons {
                     display: flex;
@@ -776,9 +776,7 @@
                     box-sizing: content-box;
                     border-radius: 9999px;
                     border: 1px solid var(--theme-tracking-unread-color);
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 22%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 17%, transparent);
+                    box-shadow: none;
                     margin: 0;
                     padding: 0;
                     gap: 0;
@@ -794,12 +792,10 @@
                     -webkit-user-select: none;
                     user-select: none;
                     transition:
-                        background-color 500ms ease-in-out,
                         border-color 240ms ease,
                         color 240ms ease,
                         opacity 240ms ease-in-out,
                         transform 240ms ease,
-                        box-shadow 240ms ease,
                         width 240ms ease,
                         padding 240ms ease,
                         gap 240ms ease,
@@ -819,10 +815,8 @@
                     outline: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button {
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 18%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
-                    opacity: 1;
+                    box-shadow: none;
+                    opacity: 0.68;
                     width: calc(var(--page-read-button-height) * 0.85);
                     height: calc(var(--page-read-button-height) * 0.85);
                     min-width: calc(var(--page-read-button-height) * 0.85);
@@ -830,6 +824,9 @@
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
+                }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button:not([data-mnb-tracking-section-read="true"]):not([data-completion-action]) {
+                    opacity: 0.56;
                 }
                 .page-read-button .mnb-tracking-button-status {
                     padding: var(--word-tracking-status-outline-offset);
@@ -870,7 +867,7 @@
                     top: var(--word-tracking-checkmark-height);
                     position: absolute;
                     transform: scaleX(-1) rotate(135deg);
-                    transition: border-color 180ms ease;
+                    transition: none;
                 }
                 @keyframes mnb-ebook-mark-read-pop {
                     0% {
@@ -896,11 +893,22 @@
                     color: currentColor;
                     transition: max-width 240ms ease, opacity 180ms ease;
                 }
+                body #page-tracking-container .page-read-button,
+                body #page-tracking-container .page-read-button *,
+                body #nav-hidden-buttons button,
+                body #nav-hidden-buttons button *,
+                body #nav-bar,
+                body #nav-bar * {
+                    font-family: var(--mnb-ui-font-family) !important;
+                }
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button {
                     width: fit-content;
                     height: var(--page-read-button-height);
                     min-width: var(--page-read-button-height);
                     min-height: var(--page-read-button-height);
+                    box-shadow:
+                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 18%, transparent),
+                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
                     justify-content: flex-start;
                     padding-inline-start: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 3px);
                     padding-inline-end: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px);
@@ -970,9 +978,7 @@
                     border: none;
                     background-color: var(--theme-tracking-read-color);
                     color: white;
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-read-color) 24%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    box-shadow: none;
                     width: calc(var(--page-read-button-height) * 0.85);
                     height: calc(var(--page-read-button-height) * 0.85);
                     min-width: calc(var(--page-read-button-height) * 0.85);
@@ -992,6 +998,9 @@
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]):active {
                     background-color: var(--theme-tracking-read-color);
                 }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
+                    box-shadow: none;
+                }
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
                     background-color: transparent;
                 }
@@ -1005,9 +1014,10 @@
                 }
                 .page-read-button[data-read-state="pending"] {
                     border-color: var(--mnb-red);
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--mnb-red) 15%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
+                    box-shadow: none;
+                }
+                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-read-state="pending"] {
+                    box-shadow: none;
                 }
                 .page-read-button[data-read-state="pending"] .mnb-tracking-button-status {
                     background-color: var(--mnb-red);
@@ -1036,9 +1046,7 @@
                     padding-inline: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px) !important;
                     gap: 0;
                     justify-content: center;
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 22%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 17%, transparent);
+                    box-shadow: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-label {
                     max-width: 180px;
@@ -1062,9 +1070,8 @@
                     transform: translateX(-320px);
                     display: flex;
                     flex-direction: column;
-                    /*background: Canvas;*/
-                    background-color: rgba(0, 0, 0, .05);
-                    backdrop-filter: blur(20px);
+                    background-color: Canvas;
+                    background-color: -apple-system-secondary-background;
                     color: CanvasText;
                     box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
                     transition: visibility 0s linear 300ms, transform 300ms ease;
@@ -1100,8 +1107,14 @@
                     transition: visibility 0s linear 300ms, opacity 300ms ease;
                     contain: strict;
                 }
+                #loading-indicator[hidden],
+                #dimming-overlay[hidden],
+                #side-bar[hidden] {
+                    display: none !important;
+                }
                 #loading-indicator {
                     background: rgba(255, 255, 255, 1);
+                    transition: none;
                 }
                 @media (prefers-color-scheme: dark) {
                     #loading-indicator {
@@ -1187,18 +1200,16 @@
                     display: none;
                 }
 
-                body.loading #loading-indicator {
+                body.loading.loading-visual #loading-indicator {
                     visibility: visible !important;
                     opacity: 1 !important;
-                    transition-delay: 0s !important;
                     pointer-events: auto !important;
                 }
-                body.loading foliate-view,
-                body.loading .side-nav,
-                body.loading #btn-prev-chapter,
-                body.loading #btn-next-chapter,
-                body.loading #page-tracking-container {
-                    visibility: hidden !important;
+                body.loading.loading-visual foliate-view,
+                body.loading.loading-visual .side-nav,
+                body.loading.loading-visual #btn-prev-chapter,
+                body.loading.loading-visual #btn-next-chapter,
+                body.loading.loading-visual #page-tracking-container {
                     pointer-events: none !important;
                 }
 
@@ -1206,7 +1217,8 @@
                 .ispinner {
                     position: relative;
                     width: 20px;
-                    height: 20px; }
+                    height: 20px;
+                    contain: strict; }
                 .ispinner .ispinner-blade {
                     position: absolute;
                     top: 6.5px;
@@ -1215,7 +1227,13 @@
                     height: 6.5px;
                     background-color: #8e8e93;
                     border-radius: 1.25px;
-                    animation: iSpinnerBlade 1s linear infinite;
+                    animation: none; }
+                body.loading.loading-visual #loading-indicator .ispinner-blade,
+                .ispinner.nav-spinner .ispinner-blade {
+                    animation-name: iSpinnerBlade;
+                    animation-duration: 1s;
+                    animation-timing-function: linear;
+                    animation-iteration-count: infinite;
                     will-change: opacity; }
                 .ispinner .ispinner-blade:nth-child(1) {
                     transform: rotate(45deg) translateY(-6.5px);
@@ -1323,6 +1341,8 @@
                     height: auto;
                     padding: 0;
                     background: none;
+                    contain: strict;
+                    box-shadow: none;
                     border: none;
                     cursor: pointer;
                     z-index: 5;
@@ -1330,12 +1350,14 @@
                     border-radius: 6px;
                 }
                 .side-nav.show-next .icon {
+                    visibility: visible;
                     opacity: 1 !important;
                     -webkit-user-select: none;
                     /*pointer-events: auto;*/
                 }
                 .side-nav .icon {
                     opacity: 0;
+                    visibility: hidden;
                     transition: opacity 0.25s ease-out;
                     /*pointer-events: none;*/
 
@@ -1346,24 +1368,28 @@
                 }
                 .side-nav .icon {
                     opacity: 0;
+                    visibility: hidden;
                 }
                 .side-nav .icon.chevron-visible {
-                    transition: opacity 0.08s ease-in, filter 0.2s ease-in 0.1s;
+                    transition: opacity 0.08s ease-in;
                 }
                 .side-nav:active .icon,
                 .side-nav.pressed .icon,
                 .side-nav:active .icon.chevron-visible,
                 .side-nav.pressed .icon.chevron-visible {
-                    transition: opacity 0.02s ease-in, filter ease-in 0.03s;
+                    visibility: visible;
+                    transition: opacity 0.02s ease-in;
                 }
                 .side-nav:active .icon,
                 .side-nav.pressed .icon,
                 .side-nav .icon.chevron-visible {
+                    visibility: visible;
                     opacity: 1 !important;
                     stroke: CanvasText;
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .side-nav:hover .icon {
+                        visibility: visible;
                         opacity: 1;
                         stroke: CanvasText;
                         /*pointer-events: auto;*/
@@ -1371,6 +1397,7 @@
                 }
                 @media (hover: hover) and (pointer: fine) {
                     #nav-bar:hover ~ .side-nav .icon {
+                        visibility: visible;
                         opacity: 1;
                         stroke: CanvasText;
                     }
@@ -1475,8 +1502,9 @@
                     transform: none;
                 }
                 #reader-stage > foliate-view {
-                    position: absolute;
-                    inset: 0;
+                    position: relative;
+                    inset: auto;
+                    grid-row: 2;
                     display: block;
                     width: 100%;
                     height: 100%;
@@ -1519,7 +1547,7 @@
             </style>
     </head>
     <body class="ebook-viewer">
-        <div id="loading-indicator" aria-hidden="true">
+        <div id="loading-indicator" aria-hidden="true" hidden>
             <div class="ispinner">
                 <div class="ispinner-blade"></div>
                 <div class="ispinner-blade"></div>
@@ -1532,8 +1560,8 @@
             </div>
         </div>
 
-        <div id="dimming-overlay" aria-hidden="true"></div>
-        <div id="side-bar">
+        <div id="dimming-overlay" aria-hidden="true" hidden></div>
+        <div id="side-bar" hidden>
             <div id="side-bar-header">
                 <img id="side-bar-cover">
                     <div>

@@ -436,7 +436,31 @@ export class NavigationHUD {
 
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         const previous = this.hideNavigationDueToScroll;
+        const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            return this.hideNavigationDueToScroll;
+        }
+        if (previous === next && previousClass === next) {
+            logEPUBNav('nav.visibility.scroll-toggle-noop', {
+                source,
+                shouldHide: next,
+                navHidden: this.navHidden,
+                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                navHiddenScrollClass: previousClass,
+                context,
+            });
+            logNavHide('hud:set-hide-noop', {
+                shouldHide: next,
+                source,
+                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+                navHiddenScrollClass: previousClass,
+                context,
+            });
+            return this.hideNavigationDueToScroll;
+        }
         const beforeFlashState = this._captureHideNavState?.() ?? {
             navHidden: this.navHidden,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
@@ -444,7 +468,7 @@ export class NavigationHUD {
             hudHideNavigationDueToScroll: previous,
             labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
         };
-        this.hideNavigationDueToScroll = !!shouldHide;
+        this.hideNavigationDueToScroll = next;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this._applyLabelVariant();
         logEPUBFlash(previous === this.hideNavigationDueToScroll && previousClass === this.hideNavigationDueToScroll
@@ -800,6 +824,9 @@ export class NavigationHUD {
             pageNumber: this.rendererPageSnapshot?.current ?? null,
             pageCount: this.rendererPageSnapshot?.total ?? null,
         });
+        if (!shouldHide && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            return;
+        }
         try {
             window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
                 hideNavigationDueToScroll: shouldHide,

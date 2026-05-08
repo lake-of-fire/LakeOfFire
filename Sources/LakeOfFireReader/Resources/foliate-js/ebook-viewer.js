@@ -370,6 +370,24 @@ const postHideNavLog = (event, details = {}) => {
     } catch {}
 };
 
+const postEbookTapLog = (event, details = {}) => {
+    globalThis.__manabiEbookTapLogCount = globalThis.__manabiEbookTapLogCount || 0;
+    if (globalThis.__manabiEbookTapLogCount >= 300) return;
+    globalThis.__manabiEbookTapLogCount += 1;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# EBOOKTAP ' + JSON.stringify({
+            event,
+            timestamp: Date.now(),
+            pageURL: location.href,
+            ...details,
+        }));
+    } catch (_error) {
+        try {
+            console.log('# EBOOKTAP ' + JSON.stringify({ event, ...details }));
+        } catch (_) {}
+    }
+};
+
 const eventClientPoint = (event) => {
     const touch = event?.changedTouches?.[0] || event?.touches?.[0] || null;
     const clientX = Number(touch?.clientX ?? event?.clientX);
@@ -431,6 +449,27 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
             message: error?.message || String(error),
         });
         return false;
+    }
+};
+
+const requestLookupCloseForPageMotion = (reason, details = {}) => {
+    try {
+        postEbookTapLog('outer.lookupClose.post', {
+            reason,
+            details,
+        });
+        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+            touchedEntryWithElementId: null,
+            wasAlreadySelected: false,
+            lookupCloseReason: reason,
+            touchstartAtMs: Date.now(),
+            ...details,
+        });
+    } catch (error) {
+        postEbookTapLog('outer.lookupClose.error', {
+            reason,
+            message: error?.message || String(error),
+        });
     }
 };
 
@@ -915,6 +954,14 @@ const postEPUBFlashLog = (event, details = {}) => {
     } catch {}
 };
 
+const resolveFoliatePaginator = (view = null) => {
+    const renderer = view?.renderer || null;
+    if (renderer?.localName === 'foliate-paginator') return renderer;
+    return renderer?.querySelector?.('foliate-paginator')
+        || view?.shadowRoot?.querySelector?.('foliate-paginator')
+        || null;
+};
+
 const captureEPUBFlashVisualState = (view = null) => {
     const safeRect = (el) => {
         if (!el || typeof el.getBoundingClientRect !== 'function') return null;
@@ -1086,6 +1133,29 @@ const firstLiveSectionHref = () => {
 
 const sectionHref = (section) => normalizeSpineHref(section?.href ?? section?.id ?? null);
 
+const sectionIndexForHref = (href) => {
+    const normalizedHref = normalizeSpineHref(href);
+    if (!normalizedHref) return null;
+    const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
+        ? globalThis.reader.view.book.sections
+        : [];
+    const index = sections.findIndex((section) => sectionHref(section) === normalizedHref);
+    return index >= 0 ? index : null;
+};
+
+const nextLinearSectionIndexAfterHref = (href) => {
+    const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
+        ? globalThis.reader.view.book.sections
+        : [];
+    const sourceIndex = sectionIndexForHref(href);
+    if (!Number.isInteger(sourceIndex)) return null;
+    for (let index = sourceIndex + 1; index < sections.length; index += 1) {
+        if (sections[index]?.linear === 'no') continue;
+        if (sectionHref(sections[index])) return index;
+    }
+    return null;
+};
+
 const activeForegroundSectionHref = () => {
     const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
         ? globalThis.reader.view.book.sections
@@ -1100,6 +1170,15 @@ const activeForegroundSectionHref = () => {
 const activeForegroundSectionHrefSet = () => {
     const href = activeForegroundSectionHref();
     return href ? new Set([href]) : new Set();
+};
+
+const foregroundWarmedSectionHrefSet = () => {
+    const hrefs = new Set([
+        ...activeForegroundSectionHrefSet(),
+        ...liveProcessedSectionHrefSet(),
+        ...liveSettledSectionHrefSet(),
+    ]);
+    return hrefs;
 };
 
 window.manabi_recordLiveProcessedSection = (href) => {
@@ -1117,6 +1196,12 @@ window.manabi_recordLiveProcessedSection = (href) => {
             isFirstLiveSection: normalizedHref === firstLiveHref,
             ...captureEPUBOverlapState(),
         });
+    }
+    if (globalThis.__manabiInitialForegroundNextSectionPending && processedSet.size >= 2) {
+        globalThis.__manabiInitialForegroundNextSectionPending = false;
+    }
+    if (globalThis.__manabiCacheWarmerOpenRequested) {
+        void maybeOpenDeferredCacheWarmer();
     }
 };
 
@@ -1193,7 +1278,22 @@ const isForegroundReaderIdle = () => {
         && !globalThis.__manabiCacheWarmerReady;
 };
 
-const cacheWarmerSectionScan = ({ startIndex = 0, warmedSectionHrefs = activeForegroundSectionHrefSet() } = {}) => {
+const shouldDeferInitialCacheWarmerTarget = (preflightScan) => {
+    if (!globalThis.__manabiInitialForegroundNextSectionPending) return false;
+    const firstHref = firstLiveSectionHref();
+    const processedCount = liveProcessedSectionHrefSet().size;
+    const expectedForegroundIndex = nextLinearSectionIndexAfterHref(firstHref);
+    const shouldDefer =
+        processedCount < 2
+        && Number.isInteger(expectedForegroundIndex)
+        && preflightScan?.targetIndex === expectedForegroundIndex;
+    if (!shouldDefer && processedCount >= 2) {
+        globalThis.__manabiInitialForegroundNextSectionPending = false;
+    }
+    return shouldDefer;
+};
+
+const cacheWarmerSectionScan = ({ startIndex = 0, warmedSectionHrefs = foregroundWarmedSectionHrefSet() } = {}) => {
     const sections = Array.isArray(globalThis.reader?.view?.book?.sections)
         ? globalThis.reader.view.book.sections
         : [];
@@ -1278,6 +1378,18 @@ const maybeOpenDeferredCacheWarmer = async () => {
     }
     const preflightScan = cacheWarmerSectionScan();
     const nextUsefulIndex = preflightScan.targetIndex;
+    if (shouldDeferInitialCacheWarmerTarget(preflightScan)) {
+        postReplaceTextPerfLog('cache-warmer.deferred', {
+            reason: 'initial-foreground-next-section',
+            firstLiveHref: firstLiveSectionHref(),
+            expectedForegroundSectionIndex: nextUsefulIndex,
+            expectedForegroundSectionHref: preflightScan.targetHref,
+            processedSectionCount: liveProcessedSectionHrefSet().size,
+            settledSectionCount: liveSettledSectionHrefSet().size,
+            ...captureEPUBOverlapState(),
+        });
+        return;
+    }
     postReplaceTextPerfLog('cache-warmer.preflight.scan', {
         firstLiveHref: firstLiveSectionHref(),
         processedSectionCount: liveProcessedSectionHrefSet().size,
@@ -1338,6 +1450,9 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 600) => {
         return;
     }
     globalThis.__manabiCacheWarmerOpenRequested = true;
+    if (reason === 'load-last-position-done' && liveProcessedSectionHrefSet().size < 2) {
+        globalThis.__manabiInitialForegroundNextSectionPending = true;
+    }
     globalThis.__manabiDeferredCacheWarmerLogged = false;
     postEPUBLog('ebook.perf.cache-warmer.schedule', {
         reason,
@@ -1350,15 +1465,21 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 600) => {
     void maybeOpenDeferredCacheWarmer();
 };
 
-const postOpenReaderGoToSheetRequest = (source, targetID = null) => {
+const postOpenReaderGoToSheetRequest = (source, targetID = null, options = {}) => {
+    const preserveHiddenNavigation = !!options.preserveHiddenNavigation;
+    const preserveVisibleNavigation = !!options.preserveVisibleNavigation;
     postEPUBLog('ebook.goToSheet.request', {
         source,
         targetID,
+        preserveHiddenNavigation,
+        preserveVisibleNavigation,
     });
     try {
         window.webkit?.messageHandlers?.openReaderGoToSheet?.postMessage?.({
             source,
             targetID,
+            preserveHiddenNavigation,
+            preserveVisibleNavigation,
         });
     } catch (error) {
         postEPUBLog('ebook.goToSheet.request.error', {
@@ -3121,7 +3242,7 @@ const getView = async (source, isCacheWarmer) => {
     });
 
     // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
-    const paginator = view.shadowRoot?.querySelector('foliate-paginator');
+    const paginator = resolveFoliatePaginator(view);
     if (paginator?.shadowRoot) {
         const style = document.createElement('style');
         style.textContent = `
@@ -3289,36 +3410,49 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known),
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known),
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)).mnb-tracking-learning > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-learning > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-learning > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)).mnb-tracking-known > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-known > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-known > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected {
+        background: transparent !important;
+        background-color: transparent !important;
+        background-image: none !important;
+    }
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected > mnb-sur {
+        background: var(--theme-selection-color) !important;
+        background-color: var(--theme-selection-color) !important;
+        background-image: none !important;
+        border-radius: var(--segment-match-border-radius);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
     }
 
     mnb-sen ruby.mnb-gen > rt,
@@ -3387,9 +3521,25 @@ class Reader {
     setLoadingIndicator(visible) {
         const body = document.body;
         if (!body) return;
+        const loadingIndicator = document.getElementById('loading-indicator');
         const previousVisible = body.classList.contains('loading');
         const nextVisible = !!visible;
+        if (nextVisible) {
+            loadingIndicator?.removeAttribute?.('hidden');
+            clearTimeout(this.loadingVisualTimer);
+            this.loadingVisualTimer = setTimeout(() => {
+                if (document.body?.classList?.contains?.('loading')) {
+                    document.body.classList.add('loading-visual');
+                }
+            }, 400);
+        }
         body.classList.toggle('loading', nextVisible);
+        if (previousVisible && !nextVisible) {
+            clearTimeout(this.loadingVisualTimer);
+            this.loadingVisualTimer = null;
+            body.classList.remove('loading-visual');
+            loadingIndicator?.setAttribute?.('hidden', '');
+        }
         if (previousVisible !== nextVisible) {
             postEPUBFlashLog('js.loadingClass.changed', {
                 previous: previousVisible,
@@ -3442,6 +3592,8 @@ class Reader {
     annotations = new Map()
     annotationsByValue = new Map()
     openSideBar() {
+        $('#dimming-overlay').removeAttribute('hidden')
+        $('#side-bar').removeAttribute('hidden')
         $('#dimming-overlay').classList.add('show')
         $('#side-bar').classList.add('show')
         if (this.#tocView?.setCurrentHref && this.view?.renderer?.tocItem?.href) {
@@ -3451,6 +3603,12 @@ class Reader {
     closeSideBar() {
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
+        setTimeout(() => {
+            if (!$('#side-bar').classList.contains('show')) {
+                $('#dimming-overlay').setAttribute('hidden', '')
+                $('#side-bar').setAttribute('hidden', '')
+            }
+        }, 360)
     }
     toggleTableOfContents() {
         if ($('#side-bar').classList.contains('show')) {
@@ -3862,16 +4020,88 @@ class Reader {
                 });
         }, 250);
         document.getElementById('nav-primary-text')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
-            postOpenReaderGoToSheetRequest('nav-primary-text', 'nav-primary-text');
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-primary-text',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-primary-text.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-primary-text.click.preserve-hidden', {
+                    control: 'nav-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-primary-text.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-primary-text.click.preserve-visible', {
+                    control: 'nav-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-primary-text', 'nav-primary-text', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
         });
         document.getElementById('nav-hidden-primary-text')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
-            postOpenReaderGoToSheetRequest('nav-hidden-primary-text', 'nav-hidden-primary-text');
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-hidden-primary-text',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-hidden-primary-text.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-hidden-primary-text.click.preserve-hidden', {
+                    control: 'nav-hidden-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-hidden-primary-text.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-hidden-primary-text.click.preserve-visible', {
+                    control: 'nav-hidden-primary-text',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-hidden-primary-text', 'nav-hidden-primary-text', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
         });
         document.getElementById('nav-section-progress-center')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
-            postOpenReaderGoToSheetRequest('nav-section-progress-center', 'nav-section-progress-center');
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-section-progress-center',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-section-progress-center.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-section-progress-center.click.preserve-hidden', {
+                    control: 'nav-section-progress-center',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-section-progress-center.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-section-progress-center.click.preserve-visible', {
+                    control: 'nav-section-progress-center',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-section-progress-center', 'nav-section-progress-center', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
         });
         $('#side-bar-close-button').addEventListener('click', () => {
             this.closeSideBar()
@@ -4457,6 +4687,58 @@ class Reader {
             this.#logLayoutDiagnostics(reason, extra);
         });
     }
+    async #settleInitialPaginatorLayout(reason = 'unknown', { allowWhileLoading = false } = {}) {
+        if (this.hasSettledInitialPaginatorLayout) {
+            return { rendered: false, reason: 'already-settled' };
+        }
+        const renderer = this.view?.renderer;
+        if (!renderer || typeof renderer.renderIfContainerSizeChanged !== 'function') {
+            return { rendered: false, reason: 'unavailable' };
+        }
+        try {
+            applyStoredChromeInsets(`initial-paginator-settle.${reason}`);
+            const result = await renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`);
+            const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
+                previousSize: result?.previousSize ?? null,
+                currentSize: result?.currentSize ?? null,
+                rendered: result?.rendered ?? false,
+                resultReason: result?.reason ?? null,
+            });
+            const hasGap = [
+                snapshot.toolbarGapPx,
+                snapshot.stageGapPx,
+            ].some((value) => typeof value === 'number' && Math.abs(value) > 2);
+            const isReady = (allowWhileLoading || !snapshot.bodyLoading)
+                && typeof snapshot.currentPercent === 'number'
+                && snapshot.livePaginatorBox != null;
+            if (!isReady) {
+                return result;
+            }
+            if (hasGap && typeof renderer.render === 'function') {
+                await renderer.render();
+                this.#updatePageReadMarker('initial-paginator-settle.forced-render');
+                this.hasSettledInitialPaginatorLayout = true;
+                this.#queueLayoutDiagnostics('initial-paginator-settle.forced-render', {
+                    reason,
+                    previousSize: result?.previousSize ?? null,
+                    currentSize: result?.currentSize ?? null,
+                    renderedBeforeForce: result?.rendered ?? false,
+                    toolbarGapPx: snapshot.toolbarGapPx,
+                    stageGapPx: snapshot.stageGapPx,
+                });
+                return { ...result, forcedRender: true };
+            }
+            if (result?.rendered) {
+                this.#updatePageReadMarker('initial-paginator-settle.rendered');
+            }
+            this.hasSettledInitialPaginatorLayout = true;
+            return result;
+        } catch (error) {
+            console.error(error);
+            this.hasSettledInitialPaginatorLayout = false;
+            return { rendered: false, reason: 'error', message: error?.message ?? String(error) };
+        }
+    }
     #scheduleInitialPaginatorSettle(reason = 'unknown') {
         if (
             this.hasSettledInitialPaginatorLayout ||
@@ -4470,47 +4752,7 @@ class Reader {
         }
         this.initialPaginatorSettleHandle = requestAnimationFrame(async () => {
             this.initialPaginatorSettleHandle = null;
-            try {
-                applyStoredChromeInsets(`initial-paginator-settle.${reason}`);
-                const result = await renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`);
-                const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
-                    previousSize: result?.previousSize ?? null,
-                    currentSize: result?.currentSize ?? null,
-                    rendered: result?.rendered ?? false,
-                    resultReason: result?.reason ?? null,
-                });
-                const hasGap = [
-                    snapshot.toolbarGapPx,
-                    snapshot.stageGapPx,
-                ].some((value) => typeof value === 'number' && Math.abs(value) > 2);
-                const isReady = !snapshot.bodyLoading
-                    && typeof snapshot.currentPercent === 'number'
-                    && snapshot.livePaginatorBox != null;
-                if (!isReady) {
-                    return;
-                }
-                if (hasGap && typeof renderer.render === 'function') {
-                    await renderer.render();
-                    this.#updatePageReadMarker('initial-paginator-settle.forced-render');
-                    this.hasSettledInitialPaginatorLayout = true;
-                    this.#queueLayoutDiagnostics('initial-paginator-settle.forced-render', {
-                        reason,
-                        previousSize: result?.previousSize ?? null,
-                        currentSize: result?.currentSize ?? null,
-                        renderedBeforeForce: result?.rendered ?? false,
-                        toolbarGapPx: snapshot.toolbarGapPx,
-                        stageGapPx: snapshot.stageGapPx,
-                    });
-                    return;
-                }
-                if (result?.rendered) {
-                    this.#updatePageReadMarker('initial-paginator-settle.rendered');
-                }
-                this.hasSettledInitialPaginatorLayout = true;
-            } catch (error) {
-                console.error(error);
-                this.hasSettledInitialPaginatorLayout = false;
-            }
+            await this.#settleInitialPaginatorLayout(reason);
         });
     }
     #formatTransition(before, after) {
@@ -6631,9 +6873,9 @@ class Reader {
         };
         renderer.__manabiVisibleGoToGuardInstalled = true;
     }
-    #onGoTo({
-        willLoadNewIndex
-    }) {
+    #onGoTo(event = {}) {
+        const goToDetail = event?.detail ?? event ?? {};
+        const willLoadNewIndex = goToDetail.willLoadNewIndex === true;
         postEPUBFlashLog('js.renderer.goTo', {
             willLoadNewIndex: !!willLoadNewIndex,
             intent: globalThis.__manabiEPUBFlashNavigationIntent ?? null,
@@ -6658,9 +6900,12 @@ class Reader {
             return;
         }
         this.#clearVisiblePageReadChrome('goTo');
+        requestLookupCloseForPageMotion('renderer.goTo', {
+            willLoadNewIndex: true,
+        });
         this.setLoadingIndicator(true);
     }
-    #onDidDisplay({}) {
+    async #onDidDisplay({}) {
         const navVisibilityBefore = captureNavVisibilityState();
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
@@ -6679,13 +6924,23 @@ class Reader {
             });
             return;
         }
+        applyStoredChromeInsets('reader.didDisplay');
+        await this.#settleInitialPaginatorLayout('did-display.pre-clear', {
+            allowWhileLoading: true,
+        });
         this.setLoadingIndicator(false);
         postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
             visual: captureEPUBFlashVisualState(this.view),
         });
-        applyStoredChromeInsets('reader.didDisplay');
+        if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            this.navHUD?.setHideNavigationDueToScroll?.(true, 'mark-read.didDisplay.preserve-hidden', {
+                stage: 'before-raf',
+            });
+            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
+            globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
+        }
         if (this.navHUD?.hideNavigationDueToScroll) {
             this.navHUD.setHideNavigationDueToScroll(true, 'reader.didDisplay.reapply', {
                 stage: 'before-raf',
@@ -6703,7 +6958,7 @@ class Reader {
         });
         this.#scheduleInitialPaginatorSettle('did-display');
         requestAnimationFrame(() => {
-            const livePaginator = this.view?.renderer?.querySelector?.('foliate-paginator');
+            const livePaginator = resolveFoliatePaginator(this.view);
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
             postEPUBFlashLog('js.renderer.didDisplay.raf', {
                 rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
@@ -6870,6 +7125,8 @@ class Reader {
             }
         });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        installEbookTapProbe(doc, 'reader-document');
+        installRestorePositionSaveUserInputTracking(doc, 'reader-document');
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
@@ -6928,6 +7185,12 @@ class Reader {
             cfi,
             reason
         } = detail
+        requestLookupCloseForPageMotion('renderer.relocate', {
+            reason: reason ?? null,
+            fraction: safeRound(fraction),
+            currentLocation: location?.current ?? null,
+            totalLocation: location?.total ?? null,
+        });
         await this.navHUD?.handleRelocate(detail);
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({
@@ -7852,6 +8115,9 @@ window.loadEBook = ({
             })
         })
         .catch((error) => {
+            try {
+                reader?.setLoadingIndicator?.(false);
+            } catch (_error) {}
             markEPUBPerf('load.error', {
                 message: error?.message || String(error),
             }, {
@@ -7888,6 +8154,102 @@ const ensureRestorePositionSaveUserInputTracking = () => {
     globalThis.__manabiRestoreUserInputTrackingInstalled = true;
     for (const eventName of ['pointerdown', 'touchstart', 'wheel', 'keydown', 'click']) {
         window.addEventListener(eventName, markRestorePositionSaveUserInput, {
+            capture: true,
+            passive: true,
+        });
+    }
+};
+
+const describeEbookTapElement = (element) => {
+    if (!element) {
+        return null;
+    }
+    const tagName = element.tagName?.toLowerCase?.() || null;
+    return {
+        tagName,
+        id: element.id || null,
+        className: typeof element.className === 'string'
+            ? element.className.split(/\s+/).filter(Boolean).slice(0, 6).join(' ')
+            : null,
+        text: (element.textContent || '').trim().slice(0, 80),
+    };
+};
+
+const describeEbookTapPath = (element, limit = 6) => {
+    const path = [];
+    let current = element?.nodeType === Node.ELEMENT_NODE ? element : element?.parentElement || null;
+    while (current && current.tagName && path.length < limit) {
+        const className = typeof current.className === 'string'
+            ? current.className.split(/\s+/).filter(Boolean).slice(0, 2).join('.')
+            : '';
+        path.push(`${current.tagName.toLowerCase()}${current.id ? '#' + current.id : ''}${className ? '.' + className : ''}`);
+        current = current.parentElement;
+    }
+    return path.join('>');
+};
+
+const installEbookTapProbe = (targetDocument, source) => {
+    if (!targetDocument?.addEventListener || targetDocument.__manabiEbookTapProbeInstalled === true) {
+        return;
+    }
+    targetDocument.__manabiEbookTapProbeInstalled = true;
+    const eventNames = ['pointerdown', 'touchstart', 'mousedown', 'click'];
+    const probe = (event) => {
+        const point = eventClientPoint(event);
+        const elementFromPoint = point
+            ? targetDocument.elementFromPoint?.(point.clientX, point.clientY) || null
+            : null;
+        const rawElement = event.target?.nodeType === Node.ELEMENT_NODE
+            ? event.target
+            : event.target?.parentElement || null;
+        const segment = rawElement?.closest?.('mnb-seg') || elementFromPoint?.closest?.('mnb-seg') || null;
+        let searchString = null;
+        try {
+            searchString = targetDocument.defaultView?.manabi_segmentSearchString?.(segment) || null;
+        } catch (_error) {}
+        postEbookTapLog('outer.documentEvent', {
+            source,
+            type: event?.type ?? null,
+            documentURL: targetDocument.location?.href || null,
+            target: describeEbookTapElement(rawElement),
+            targetPath: describeEbookTapPath(rawElement),
+            elementFromPoint: describeEbookTapElement(elementFromPoint),
+            elementFromPointPath: describeEbookTapPath(elementFromPoint),
+            point,
+            segment: describeEbookTapElement(segment),
+            segmentId: segment?.id || null,
+            segmentSearchString: searchString,
+            segmentCount: targetDocument.getElementsByTagName?.('mnb-seg')?.length ?? null,
+            lookupListenersInstalled: targetDocument.defaultView?.manabi_lookupTouchListenersInstalled === true,
+            defaultPrevented: event?.defaultPrevented === true,
+            cancelBubble: event?.cancelBubble === true,
+            bodyPointerEvents: targetDocument.defaultView?.getComputedStyle?.(targetDocument.body)?.pointerEvents ?? null,
+        });
+    };
+    for (const eventName of eventNames) {
+        targetDocument.addEventListener(eventName, probe, {
+            capture: true,
+            passive: true,
+        });
+    }
+    postEbookTapLog('outer.probeInstalled', {
+        source,
+        documentURL: targetDocument.location?.href || null,
+        segmentCount: targetDocument.getElementsByTagName?.('mnb-seg')?.length ?? null,
+        lookupListenersInstalled: targetDocument.defaultView?.manabi_lookupTouchListenersInstalled === true,
+    });
+};
+
+const installRestorePositionSaveUserInputTracking = (target, source) => {
+    if (!target?.addEventListener) {
+        return;
+    }
+    for (const eventName of ['pointerdown', 'touchstart', 'wheel', 'keydown', 'click']) {
+        target.addEventListener(eventName, (event) => {
+            markRestorePositionSaveUserInput({
+                type: `${source}.${event?.type ?? eventName}`,
+            });
+        }, {
             capture: true,
             passive: true,
         });

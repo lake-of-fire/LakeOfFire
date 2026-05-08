@@ -668,11 +668,15 @@ public struct Reader: View {
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
         let ebookChromeBottomInset = max(0, ebookChromeBottomSafeAreaInset ?? additionalBottomInset)
+        let ebookChromeExtraBottomInset = max(0, ebookChromeBottomInset - sampledBottomInset)
         let effectiveBottomInset = pageURL.isEBookURL
-            ? ebookChromeBottomInset
+            ? ebookChromeExtraBottomInset
             : max(sampledBottomInset, additionalBottomInset)
+        let toolbarReferenceBottomInset = pageURL.isEBookURL
+            ? ebookChromeBottomInset
+            : effectiveBottomInset
         let effectiveToolbarBottomOffset = ebookToolbarBottomOffset(
-            obscuredBottomInset: effectiveBottomInset,
+            obscuredBottomInset: toolbarReferenceBottomInset,
             additionalBottomSafeAreaInset: additionalBottomInset
         )
         let viewerLoadedProbeSummary = readerViewModel.ebookViewerLoadedProbeSummary ?? "nil"

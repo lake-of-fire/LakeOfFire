@@ -38,6 +38,22 @@ const postPaginatorPageNumLog = (event, details = {}) => {
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
+const postChevronPaginatorLog = (event, details = {}) => {
+    globalThis.__manabiChevronPaginatorLogCount = globalThis.__manabiChevronPaginatorLogCount || 0;
+    if (globalThis.__manabiChevronPaginatorLogCount >= 500) return;
+    globalThis.__manabiChevronPaginatorLogCount += 1;
+    const payload = {
+        event: `paginator.${event}`,
+        source: 'paginator',
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# CHEVRON ${JSON.stringify(payload)}`);
+    } catch (_error) {
+        try { console.log('# CHEVRON', payload); } catch (_) {}
+    }
+};
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
@@ -533,7 +549,14 @@ class View {
                     // which seem to be supported only by WebKit and only for horizontal writing
                     const contentStart = this.#vertical ? 0
                         : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                    const contentSize = contentStart + contentRect[side]
+                    const measuredContentSize = contentStart + contentRect[side]
+                    const scrollContentSize = Math.max(
+                        documentElement?.[scrollProp] ?? 0,
+                        this.document?.body?.[scrollProp] ?? 0
+                    )
+                    const contentSize = this.#vertical && scrollContentSize > 0
+                        ? scrollContentSize
+                        : measuredContentSize
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * this.#size
 
@@ -784,7 +807,6 @@ export class Paginator extends HTMLElement {
                 grid-template-rows: 0 minmax(0, 1fr) 0;
             }
             #top.reader-loading {
-                opacity: 0;
                 pointer-events: none;
             }
             /*#background {
@@ -943,10 +965,8 @@ export class Paginator extends HTMLElement {
         this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
     #createView() {
-        if (this.#view) {
-            this.#view.destroy()
-            this.#container.removeChild(this.#view.element)
-        }
+        const previousView = this.#view
+        this.#invalidateVisibleRangeCache()
         this.#view = new View({
             container: this,
             onBeforeExpand: this.#onBeforeExpand.bind(this),
@@ -954,8 +974,16 @@ export class Paginator extends HTMLElement {
             isCacheWarmer: this.#isCacheWarmer,
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
+        this.#view.__manabiPreviousView = previousView || null
         this.#container.append(this.#view.element)
         return this.#view
+    }
+    #destroyPreviousView(view, reason) {
+        const previousView = view?.__manabiPreviousView || null
+        if (!previousView) return
+        view.__manabiPreviousView = null
+        previousView.destroy()
+        previousView.element?.remove?.()
     }
     #setLoading(isLoading) {
         this.#isLoading = isLoading;
@@ -1583,7 +1611,14 @@ export class Paginator extends HTMLElement {
             } else {
                 (this.bookDir === 'rtl') ? await this.next() : await this.prev();
             }
-            this.#updateSwipeChevron(dx, minSwipe)
+            postChevronPaginatorLog('swipe.postPaginationReplay.suppressed', {
+                dx: manabiRound(dx, 2),
+                minSwipe,
+                bookDir: this.bookDir ?? null,
+                vertical: this.#vertical,
+                scrolled: this.scrolled,
+                index: this.#index,
+            });
         }
     }
     #onTouchEnd(e) {
@@ -2062,41 +2097,49 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
-
-        // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
-        if (await this.isAtSectionStart()) {
-            this.#skipTouchEndOpacity = true
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
-                    rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
-                }
-            }));
-        }
     }
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
             rightOpacity = 0;
         if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
         else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
+        postChevronPaginatorLog('swipe.opacityProgress.dispatch', {
+            dx: manabiRound(dx, 2),
+            minSwipe,
+            leftOpacity: manabiRound(leftOpacity, 3),
+            rightOpacity: manabiRound(rightOpacity, 3),
+            reachedThreshold: Math.abs(dx) > minSwipe,
+            bookDir: this.bookDir ?? null,
+            vertical: this.#vertical,
+            scrolled: this.scrolled,
+            index: this.#index,
+        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
             detail: {
                 leftOpacity,
-                rightOpacity
+                rightOpacity,
+                source: 'paginator',
+                reason: 'paginator.swipe.progress',
             }
         }));
         if (Math.abs(dx) > minSwipe) {
             // Enqueue the reset after meeting threshold
+            postChevronPaginatorLog('swipe.opacityReset.dispatch', {
+                reason: 'threshold',
+                dx: manabiRound(dx, 2),
+                minSwipe,
+                index: this.#index,
+            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
                 detail: {
                     leftOpacity: '',
-                    rightOpacity: ''
+                    rightOpacity: '',
+                    source: 'paginator',
+                    reason: 'paginator.swipe.threshold',
                 }
             }))
         }
@@ -2175,6 +2218,7 @@ export class Paginator extends HTMLElement {
 
                 this.#cachedSizes = null
                 this.#cachedStart = null
+                this.#invalidateVisibleRangeCache()
                 //                console.log("#display... scrolledToAnchorOnLoad = false")
                 this.#scrolledToAnchorOnLoad = false
 
@@ -2188,6 +2232,7 @@ export class Paginator extends HTMLElement {
                 }
                 await view.load(src, afterLoad, beforeRender)
                 //                console.log("#display... awaited load")
+                this.#destroyPreviousView(view, 'after-new-view-load')
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
                         targetIndex: index,
@@ -2272,7 +2317,13 @@ export class Paginator extends HTMLElement {
             return
         }
         this.dispatchEvent(new CustomEvent('goTo', {
-            willLoadNewIndex: willLoadNewIndex
+            detail: {
+                willLoadNewIndex,
+                index,
+                currentIndex: this.#index,
+                anchorKind,
+                select: !!select,
+            },
         }))
         try {
             window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({

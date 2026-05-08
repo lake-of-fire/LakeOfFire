@@ -245,11 +245,15 @@ public struct FractionalCompletionMessage: Sendable {
 public struct OpenReaderGoToSheetMessage {
     public let source: String?
     public let targetID: String?
+    public let preserveHiddenNavigation: Bool
+    public let preserveVisibleNavigation: Bool
 
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any] else { return nil }
         source = body["source"] as? String
         targetID = body["targetID"] as? String
+        preserveHiddenNavigation = body["preserveHiddenNavigation"] as? Bool ?? false
+        preserveVisibleNavigation = body["preserveVisibleNavigation"] as? Bool ?? false
     }
 }
 
