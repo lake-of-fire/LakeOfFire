@@ -1032,19 +1032,6 @@ const postMay5Log = (event, details = {}) => {
     } catch {}
 };
 
-const postChevronLog = (event, details = {}) => {
-    globalThis.__manabiChevronEbookViewerLogCount = globalThis.__manabiChevronEbookViewerLogCount || 0;
-    if (globalThis.__manabiChevronEbookViewerLogCount >= 500) return;
-    globalThis.__manabiChevronEbookViewerLogCount += 1;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# CHEVRON ' + JSON.stringify({
-            event,
-            source: 'ebook-viewer',
-            timestamp: Date.now(),
-            ...details,
-        }));
-    } catch {}
-};
 
 const postHideNavLog = (event, details = {}) => {
     globalThis.__manabiHideNavLogCount = globalThis.__manabiHideNavLogCount || 0;
@@ -6038,10 +6025,6 @@ class Reader {
             state: captureNavVisibilityState(),
         });
         this.#applyDeferredHideNavigationForMarkReadAdvance(this.isRTL ? 'previous-visual-page' : 'next-visual-page');
-        postChevronLog('markReadAdvance.flashForward.request', {
-            isRTL: !!this.isRTL,
-            mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
-        });
         this.#flashForwardSideNavChevron();
         this.#clearVisiblePageReadChrome('page-turn-start');
         if (this.isRTL) {
@@ -6124,22 +6107,11 @@ class Reader {
     }
     #flashForwardSideNavChevron() {
         const direction = this.isRTL ? 'left' : 'right';
-        postChevronLog('flashForward.request', {
-            direction,
-            isRTL: !!this.isRTL,
-        });
         this.#flashSideNavChevron(direction);
     }
     maybeFlashInitialForwardSideNavChevron(restoreState = null) {
-        postChevronLog('initialFlash.evaluate', {
-            alreadyFlashed: !!this.hasFlashedInitialForwardSideNavChevron,
-            hasRestoreState: !!restoreState,
-        });
         if (this.hasFlashedInitialForwardSideNavChevron) {
             postMay5Log('swipe.chevron.initial.skip', {
-                reason: 'already-flashed',
-            });
-            postChevronLog('initialFlash.skip', {
                 reason: 'already-flashed',
             });
             return;
@@ -6168,25 +6140,10 @@ class Reader {
                 rendererPageCurrent,
                 currentFraction: safeRound(currentFraction, 6),
             });
-            postChevronLog('initialFlash.skip', {
-                reason: 'not-first-page',
-                sectionIndex,
-                locationCurrent,
-                rendererPageCurrent,
-                currentFraction: safeRound(currentFraction, 6),
-                onFirstSection,
-                onFirstPage,
-            });
             return;
         }
         this.hasFlashedInitialForwardSideNavChevron = true;
         postMay5Log('swipe.chevron.initial.flash', {
-            sectionIndex,
-            locationCurrent,
-            rendererPageCurrent,
-            currentFraction: safeRound(currentFraction, 6),
-        });
-        postChevronLog('initialFlash.flash', {
             sectionIndex,
             locationCurrent,
             rendererPageCurrent,
@@ -6197,14 +6154,6 @@ class Reader {
     #flashSideNavChevron(direction) {
         const key = direction === 'left' ? 'l' : 'r';
         const icon = document.querySelector(`#btn-scroll-${direction} .icon`);
-        postChevronLog('flashSide.request', {
-            direction,
-            key,
-            iconExists: !!icon,
-            existingClassName: icon?.className || null,
-            existingOpacity: icon?.style?.opacity || null,
-            existingVisibility: icon?.style?.visibility || null,
-        });
         if (!icon) {
             return;
         }
@@ -6212,24 +6161,10 @@ class Reader {
         this.#chevronFadeTimers[key] = null;
         icon.style.removeProperty('opacity');
         icon.classList.add('chevron-visible');
-        postChevronLog('flashSide.visible', {
-            direction,
-            key,
-            className: icon.className || null,
-            opacity: icon.style.opacity || null,
-            visibility: icon.style.visibility || null,
-        });
         this.#chevronFadeTimers[key] = setTimeout(() => {
             icon.classList.remove('chevron-visible');
             icon.style.removeProperty('opacity');
             this.#chevronFadeTimers[key] = null;
-            postChevronLog('flashSide.hide', {
-                direction,
-                key,
-                className: icon.className || null,
-                opacity: icon.style.opacity || null,
-                visibility: icon.style.visibility || null,
-            });
         }, 180);
     }
     #onMainDocumentTouchStart(event) {
@@ -6271,11 +6206,6 @@ class Reader {
         const minSwipe = 36;
         if (Math.abs(dx) <= Math.abs(dy) || Math.abs(dx) <= 8) {
             if (state.chevronActive) {
-                postChevronLog('mainDocumentSwipe.opacityReset.dispatch', {
-                    reason: 'move-axis-or-min-dx',
-                    dx: safeRound(dx, 2),
-                    dy: safeRound(dy, 2),
-                });
                 this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
                     bubbles: true,
                     composed: true,
@@ -6323,24 +6253,9 @@ class Reader {
                 reachedThreshold: Math.abs(dx) > minSwipe,
                 isRTL: !!this.isRTL,
             });
-            postChevronLog('mainDocumentSwipe.opacityProgress.dispatch', {
-                dx: safeRound(dx, 2),
-                dy: safeRound(dy, 2),
-                progress: safeRound(progress, 3),
-                leftOpacity: safeRound(leftOpacity, 3),
-                rightOpacity: safeRound(rightOpacity, 3),
-                reachedThreshold: Math.abs(dx) > minSwipe,
-                isRTL: !!this.isRTL,
-            });
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
-        postChevronLog('mainDocumentSwipe.thresholdFlash.request', {
-            dx: safeRound(dx, 2),
-            dy: safeRound(dy, 2),
-            goForward,
-            isRTL: !!this.isRTL,
-        });
         this.#flashSideNavChevron(goForward
             ? (this.isRTL ? 'left' : 'right')
             : (this.isRTL ? 'right' : 'left'));
@@ -6368,10 +6283,6 @@ class Reader {
     }
     #onMainDocumentTouchEnd() {
         if (this.#mainDocumentSwipeState?.chevronActive) {
-            postChevronLog('mainDocumentSwipe.opacityReset.dispatch', {
-                reason: 'touchend',
-                triggered: this.#mainDocumentSwipeState?.triggered ?? null,
-            });
             this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
@@ -7289,31 +7200,10 @@ class Reader {
                 leftExists: !!l,
                 rightExists: !!r,
             });
-            postChevronLog('opacity.received', {
-                leftOpacity: e.detail?.leftOpacity ?? null,
-                rightOpacity: e.detail?.rightOpacity ?? null,
-                reason: e.detail?.reason ?? null,
-                eventSource: e.detail?.source ?? null,
-                leftExists: !!l,
-                rightExists: !!r,
-                leftClassName: l?.className || null,
-                rightClassName: r?.className || null,
-                leftOpacityStyle: l?.style?.opacity || null,
-                rightOpacityStyle: r?.style?.opacity || null,
-                leftVisibilityStyle: l?.style?.visibility || null,
-                rightVisibilityStyle: r?.style?.visibility || null,
-            });
             
             const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
                 if (!elem) {
-                    postChevronLog('opacity.apply', {
-                        key,
-                        mode: 'missing-element',
-                        value,
-                        reason: e.detail?.reason ?? null,
-                        eventSource: e.detail?.source ?? null,
-                    });
                     return;
                 }
                 
@@ -7331,16 +7221,6 @@ class Reader {
                         value,
                         className: elem.className || null,
                     });
-                    postChevronLog('opacity.apply', {
-                        key,
-                        mode: 'full',
-                        value,
-                        reason: e.detail?.reason ?? null,
-                        eventSource: e.detail?.source ?? null,
-                        className: elem.className || null,
-                        opacity: elem.style.opacity || null,
-                        visibility: elem.style.visibility || null,
-                    });
                     return;
                 }
                 
@@ -7355,31 +7235,11 @@ class Reader {
                         value,
                         className: elem.className || null,
                     });
-                    postChevronLog('opacity.apply', {
-                        key,
-                        mode: 'partial',
-                        value,
-                        reason: e.detail?.reason ?? null,
-                        eventSource: e.detail?.source ?? null,
-                        className: elem.className || null,
-                        opacity: elem.style.opacity || null,
-                        visibility: elem.style.visibility || null,
-                    });
                     return;
                 }
                 
                 // Hide chevron, but only after a delay and only if currently visible
                 if (elem.classList.contains('chevron-visible')) {
-                    postChevronLog('opacity.apply', {
-                        key,
-                        mode: 'delayed-hide-scheduled',
-                        value,
-                        reason: e.detail?.reason ?? null,
-                        eventSource: e.detail?.source ?? null,
-                        className: elem.className || null,
-                        opacity: elem.style.opacity || null,
-                        visibility: elem.style.visibility || null,
-                    });
                     this.#chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
                         elem.style.removeProperty('opacity');
@@ -7390,16 +7250,6 @@ class Reader {
                             mode: 'delayed-hide',
                             value,
                             className: elem.className || null,
-                        });
-                        postChevronLog('opacity.apply', {
-                            key,
-                            mode: 'delayed-hide-fired',
-                            value,
-                            reason: e.detail?.reason ?? null,
-                            eventSource: e.detail?.source ?? null,
-                            className: elem.className || null,
-                            opacity: elem.style.opacity || null,
-                            visibility: elem.style.visibility || null,
                         });
                     }, FADER_DELAY);
                 } else {
@@ -7413,16 +7263,6 @@ class Reader {
                         value,
                         className: elem.className || null,
                     });
-                    postChevronLog('opacity.apply', {
-                        key,
-                        mode: 'hide',
-                        value,
-                        reason: e.detail?.reason ?? null,
-                        eventSource: e.detail?.source ?? null,
-                        className: elem.className || null,
-                        opacity: elem.style.opacity || null,
-                        visibility: elem.style.visibility || null,
-                    });
                 }
             };
             
@@ -7431,10 +7271,6 @@ class Reader {
         });
         // Listen for resetSideNavChevrons custom event to reset chevrons
         document.addEventListener('resetSideNavChevrons', e => {
-            postChevronLog('reset.event.received', {
-                reason: e.detail?.reason ?? null,
-                eventSource: e.detail?.source ?? null,
-            });
             this.#resetSideNavChevrons();
         });
         
@@ -8211,37 +8047,16 @@ class Reader {
         // Remove visible class & reset opacity immediately
         const leftIcon = document.querySelector('#btn-scroll-left .icon');
         const rightIcon = document.querySelector('#btn-scroll-right .icon');
-        postChevronLog('reset.begin', {
-            leftExists: !!leftIcon,
-            rightExists: !!rightIcon,
-            leftClassName: leftIcon?.className || null,
-            rightClassName: rightIcon?.className || null,
-            leftOpacity: leftIcon?.style?.opacity || null,
-            rightOpacity: rightIcon?.style?.opacity || null,
-            leftVisibility: leftIcon?.style?.visibility || null,
-            rightVisibility: rightIcon?.style?.visibility || null,
-        });
         [
             { icon: leftIcon, key: 'l' },
             { icon: rightIcon, key: 'r' },
         ].forEach(({ icon, key }) => {
             if (!icon) {
-                postChevronLog('reset.icon', {
-                    key,
-                    mode: 'missing-element',
-                });
                 return;
             }
             icon.classList.remove('chevron-visible');
             icon.style.opacity = '';
             icon.style.visibility = '';
-            postChevronLog('reset.icon', {
-                key,
-                mode: 'reset',
-                className: icon.className || null,
-                opacity: icon.style.opacity || null,
-                visibility: icon.style.visibility || null,
-            });
         });
     }
     

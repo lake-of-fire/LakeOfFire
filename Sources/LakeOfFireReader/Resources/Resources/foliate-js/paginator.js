@@ -66,22 +66,6 @@ const postMay5PaginatorLog = (event, details = {}) => {
         try { console.log('# MAY5', `paginator.${event}`, details); } catch (_) {}
     }
 };
-const postChevronPaginatorLog = (event, details = {}) => {
-    globalThis.__manabiChevronPaginatorLogCount = globalThis.__manabiChevronPaginatorLogCount || 0;
-    if (globalThis.__manabiChevronPaginatorLogCount >= 500) return;
-    globalThis.__manabiChevronPaginatorLogCount += 1;
-    const payload = {
-        event: `paginator.${event}`,
-        source: 'paginator',
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# CHEVRON ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# CHEVRON', payload); } catch (_) {}
-    }
-};
 const rectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
     const rect = element.getBoundingClientRect();
@@ -1837,14 +1821,6 @@ export class Paginator extends HTMLElement {
             } else {
                 (this.bookDir === 'rtl') ? await this.next() : await this.prev();
             }
-            postChevronPaginatorLog('swipe.postPaginationReplay.suppressed', {
-                dx: manabiRound(dx, 2),
-                minSwipe,
-                bookDir: this.bookDir ?? null,
-                vertical: this.#vertical,
-                scrolled: this.scrolled,
-                index: this.#index,
-            });
         }
     }
     #onTouchEnd(e) {
@@ -1864,25 +1840,9 @@ export class Paginator extends HTMLElement {
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
         if (this.#skipTouchEndOpacity) {
-            postChevronPaginatorLog('touchEnd.opacityReset.skip', {
-                reason: 'skip-after-section-load',
-                triggered: touchState?.triggered ?? null,
-                hadTouchState: !!touchState,
-                clientX: touch?.clientX ?? null,
-                clientY: touch?.clientY ?? null,
-                index: this.#index,
-            });
             this.#skipTouchEndOpacity = false
             return
         }
-        postChevronPaginatorLog('touchEnd.opacityReset.dispatch', {
-            reason: 'touchend',
-            triggered: touchState?.triggered ?? null,
-            hadTouchState: !!touchState,
-            clientX: touch?.clientX ?? null,
-            clientY: touch?.clientY ?? null,
-            index: this.#index,
-        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -1955,12 +1915,6 @@ export class Paginator extends HTMLElement {
             Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
             Math.abs(e.deltaX) < TRIGGER_THRESHOLD
         ) {
-            postChevronPaginatorLog('wheel.opacityReset.dispatch', {
-                reason: 'momentum-falling',
-                deltaX: manabiRound(e.deltaX, 2),
-                lastWheelDeltaX: manabiRound(this.#lastWheelDeltaX, 2),
-                index: this.#index,
-            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
@@ -2413,17 +2367,6 @@ export class Paginator extends HTMLElement {
             vertical: this.#vertical,
             scrolled: this.scrolled,
         });
-        postChevronPaginatorLog('swipe.opacityProgress.dispatch', {
-            dx: manabiRound(dx, 2),
-            minSwipe,
-            leftOpacity: manabiRound(leftOpacity, 3),
-            rightOpacity: manabiRound(rightOpacity, 3),
-            reachedThreshold: Math.abs(dx) > minSwipe,
-            bookDir: this.bookDir ?? null,
-            vertical: this.#vertical,
-            scrolled: this.scrolled,
-            index: this.#index,
-        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2439,12 +2382,6 @@ export class Paginator extends HTMLElement {
             postMay5PaginatorLog('swipe.chevron.resetAfterThreshold', {
                 dx: manabiRound(dx, 2),
                 minSwipe,
-            });
-            postChevronPaginatorLog('swipe.opacityReset.dispatch', {
-                reason: 'threshold',
-                dx: manabiRound(dx, 2),
-                minSwipe,
-                index: this.#index,
             });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
@@ -2540,12 +2477,6 @@ export class Paginator extends HTMLElement {
                 await afterLoad(doc)
             } else {
                 this.#skipTouchEndOpacity = true
-                postChevronPaginatorLog('touchEnd.opacityReset.armSkip', {
-                    reason: 'display-new-section',
-                    targetIndex: index,
-                    currentIndex: this.#index,
-                    src,
-                });
                 const view = this.#createView()
                 const beforeRender = this.#beforeRender.bind(this)
 
@@ -2586,11 +2517,6 @@ export class Paginator extends HTMLElement {
                 this.#view = view
 
                 // Reset chevrons when loading new section
-                postChevronPaginatorLog('resetSideNavChevrons.dispatch', {
-                    reason: 'display-new-section',
-                    targetIndex: index,
-                    src,
-                });
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons', {
                     detail: {
                         source: 'paginator',
