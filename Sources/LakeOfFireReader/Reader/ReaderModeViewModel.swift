@@ -292,8 +292,7 @@ internal func buildCanonicalReadabilityHTML(
     )
     let availabilityAttributes = "data-mnb-reader-mode-available=\"true\" data-mnb-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-mnb-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
-    let bodyStyle = ManabiSystemUIFontCSS.cssDeclarations(from: ManabiSystemUIFontCSS.fallbackSizeMap())
-        + readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
+    let bodyStyle = readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
     let titleSuppressionCSS = """
     body.\(suppressionBodyClass) #reader-title {
         display: none !important;
