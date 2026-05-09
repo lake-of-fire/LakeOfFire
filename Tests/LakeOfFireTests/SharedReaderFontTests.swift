@@ -77,6 +77,8 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertTrue(css.contains("font-family: 'YuKyokasho'"), css)
         XCTAssertTrue(css.contains("internal://local/manabi-fonts/YuKyokasho.woff2"), css)
         XCTAssertTrue(css.contains("font-display: swap;"), css)
+        XCTAssertTrue(css.contains(":not(rt)"), css)
+        XCTAssertTrue(css.contains("rt {\n  font-family: -apple-system"), css)
     }
 
     func testSharedReaderFontFontResponseIncludesCORSHeaders() throws {

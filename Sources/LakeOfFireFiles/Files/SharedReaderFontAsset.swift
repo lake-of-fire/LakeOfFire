@@ -294,10 +294,10 @@ public func sharedReaderFontResponse(
         }
         html,
         body,
-        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(mnb-sen rt) {
+        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(rt) {
           font-family: '\(familyName)' !important;
         }
-        mnb-sen rt {
+        rt {
           font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;
         }
         """
