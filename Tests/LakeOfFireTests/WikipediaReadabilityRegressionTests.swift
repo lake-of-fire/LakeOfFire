@@ -87,13 +87,13 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         .deletingLastPathComponent()
 
     private static let readabilityScriptURL = appRepositoryRootURL
-        .appendingPathComponent("ManabiPlatform/Resources/JS/Readability/Readability.js")
+        .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/Readability.js")
 
     private static let domPurifyScriptURL = appRepositoryRootURL
-        .appendingPathComponent("ManabiPlatform/Resources/JS/Readability/dompurify.min.js")
+        .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/dompurify.min.js")
 
     private static let readabilityInitializationTemplateURL = appRepositoryRootURL
-        .appendingPathComponent("ManabiPlatform/Resources/JS/Readability/readability_initialization.template.js")
+        .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/readability_initialization.template.js")
 
     private static let sourcePageURL = URL(string: "https://en.wikipedia.org/wiki/Mozilla?useskin=minerva")!
 
