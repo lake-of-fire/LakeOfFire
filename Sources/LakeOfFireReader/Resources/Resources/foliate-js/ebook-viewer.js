@@ -124,39 +124,8 @@ const PAGE_NUM_DEDUP_EVENTS = new Set([
 const lastPageNumLogSignatureByEvent = new Map();
 
 const postPageNumLog = (event, details = {}) => {
-    const payload = { event, ...details };
-    if (PAGE_NUM_DEDUP_EVENTS.has(event)) {
-        const signature = JSON.stringify(payload);
-        if (lastPageNumLogSignatureByEvent.get(event) === signature) {
-            return;
-        }
-        lastPageNumLogSignatureByEvent.set(event, signature);
-    }
-    const line = `# PAGENUM ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        try { console.log(line); } catch (_) {}
-    }
-};
-
-const postEbookRestoreLog = (event, details = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    const line = `# EBOOKRESTORE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        // optional native logger
-    }
-    try {
-        console.log(line);
-    } catch (_error) {
-        // optional console logger
-    }
+    void event;
+    void details;
 };
 
 const MARKREAD_ALLOWED_EVENTS = new Set([
@@ -237,55 +206,6 @@ const markReadLogSignatureDetails = (event, details = {}) => {
         ...signatureDetails
     } = details;
     return signatureDetails;
-};
-
-const postMarkReadLog = (event, details = {}) => {
-    if (!MARKREAD_ALLOWED_EVENTS.has(event)) {
-        return;
-    }
-    const compactDetails = compactMarkReadDetails(event, details);
-    if (MARKREAD_DEDUP_EVENTS.has(event)) {
-        const signature = JSON.stringify(markReadLogSignatureDetails(event, compactDetails));
-        if (lastMarkReadLogSignatureByEvent.get(event) === signature) {
-            return;
-        }
-        lastMarkReadLogSignatureByEvent.set(event, signature);
-    }
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...compactDetails,
-    };
-    const line = `# MARKREAD ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        // optional native logger
-    }
-    try {
-        console.log(line);
-    } catch (_error) {
-        // optional console logger
-    }
-};
-
-const postMay6Log = (event, details = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    const line = `# MAY6 ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        // optional native logger
-    }
-    try {
-        console.log(line);
-    } catch (_error) {
-        // optional console logger
-    }
 };
 
 const postMarkReadGoneLog = (event, details = {}) => {
@@ -1019,17 +939,8 @@ const postMay4Log = (event, details = {}) => {
 };
 
 const postMay5Log = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    globalThis.__manabiMay5EbookViewerLogCount = globalThis.__manabiMay5EbookViewerLogCount || 0;
-    if (globalThis.__manabiMay5EbookViewerLogCount >= 160) return;
-    globalThis.__manabiMay5EbookViewerLogCount += 1;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY5 ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            ...details,
-        }));
-    } catch {}
+    void event;
+    void details;
 };
 
 
@@ -2956,16 +2867,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const useVisibleRange = !!visibleRange && visibleRange.collapsed !== true;
     const useViewportFallback = !useVisibleRange;
     if (visibleRange?.collapsed === true) {
-        postMarkReadLog('visibleRange.collect.collapsedViewportFallback', {
-            documentURL: doc.URL || doc.location?.href || null,
-            reason: 'collapsed-range-viewport-fallback',
-            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
-            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
-            viewportWidth,
-            viewportHeight,
-            visibleLeft: safeRound(visibleBounds.left, 1),
-            visibleRight: safeRound(visibleBounds.right, 1),
-        });
         postVisibleRangeLog('collect.collapsedViewportFallback', {
             documentURL: doc.URL || doc.location?.href || null,
             reason: 'collapsed-range-viewport-fallback',
@@ -3008,35 +2909,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         : null;
     const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
         || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
-    postMarkReadLog('visibleRange.collect.start', {
-        documentURL: doc.URL || doc.location?.href || null,
-        hasVisibleRange: !!visibleRange,
-        usingVisibleRange: useVisibleRange,
-        segmentCandidateCount: allSegmentNodes.length,
-        segmentCandidateSource,
-        ancestorSegmentCandidateCount,
-        viewportWidth,
-        viewportHeight,
-        queryElapsedMs: safeRound(queryCompletedAt - startedAt, 2),
-        rangeStartContainer: visibleRange?.startContainer?.nodeName || null,
-        rangeEndContainer: visibleRange?.endContainer?.nodeName || null,
-        rangeStartOffset: typeof visibleRange?.startOffset === 'number' ? visibleRange.startOffset : null,
-        rangeEndOffset: typeof visibleRange?.endOffset === 'number' ? visibleRange.endOffset : null,
-        rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
-        rangeCommonAncestor: describeMarkReadNode(rangeCommonAncestor),
-        rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
-        rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
-        boundedSegmentCount: boundedSegmentNodes?.length ?? null,
-        orderedSegmentCount: expandedRangeResult?.orderedSegmentCount ?? null,
-        rangeAnchorStart: expandedRangeResult?.anchorStart ?? null,
-        rangeAnchorEnd: expandedRangeResult?.anchorEnd ?? null,
-        rangeWindowStart: expandedRangeResult?.windowStart ?? null,
-        rangeWindowEnd: expandedRangeResult?.windowEnd ?? null,
-        rangeWindowExpansionSize: expandedRangeResult?.expansionSize ?? null,
-        rangeWindowBounded: expandedRangeResult?.boundedByWindow ?? null,
-        rangeWindowFirstVisibleIndex: expandedRangeResult?.firstVisibleIndex ?? null,
-        rangeWindowLastVisibleIndex: expandedRangeResult?.lastVisibleIndex ?? null,
-    });
     postVisibleRangeLog('collect.start', {
         documentURL: doc.URL || doc.location?.href || null,
         hasVisibleRange: !!visibleRange,
@@ -3141,21 +3013,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
                 sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
             });
         }
-        postMarkReadLog('visibleRange.collect.fallback', {
-            documentURL: doc.URL || doc.location?.href || null,
-            reason: 'range-empty',
-            segmentCandidateCount: allSegmentNodes.length,
-            fallbackVisibleSegmentCount: fallbackSegments.length,
-            fallbackHiddenTooltipCount,
-            fallbackMissingIdentifierCount,
-            fallbackOutOfViewportCount,
-            fallbackRectMeasureCount,
-            fallbackRectMeasureElapsedMs: safeRound(fallbackRectMeasureElapsedMs, 2),
-            fallbackElapsedMs: safeRound(performance.now() - fallbackStartedAt, 2),
-            rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
-            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
-            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
-        });
         postVisibleRangeLog('collect.fallback', {
             documentURL: doc.URL || doc.location?.href || null,
             reason: 'range-empty',
@@ -3172,14 +3029,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         }
     }
     if (visibleRange?.collapsed === true) {
-        postMarkReadLog('visibleRange.collect.collapsedSkipped', {
-            documentURL: doc.URL || doc.location?.href || null,
-            reason: 'collapsed-range-viewport-fallback',
-            segmentCandidateCount: allSegmentNodes.length,
-            fallbackVisibleSegmentCount: visibleSegments.length,
-            rangeStartNode: describeMarkReadNode(visibleRange?.startContainer ?? null),
-            rangeEndNode: describeMarkReadNode(visibleRange?.endContainer ?? null),
-        });
         postVisibleRangeLog('collect.collapsedSkipped', {
             documentURL: doc.URL || doc.location?.href || null,
             reason: 'collapsed-range-viewport-fallback',
@@ -3190,36 +3039,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         });
     }
     const completedAt = performance.now();
-    postMarkReadLog('visibleRange.collect.end', {
-        documentURL: doc.URL || doc.location?.href || null,
-        hasVisibleRange: !!visibleRange,
-        usingVisibleRange: useVisibleRange,
-        segmentCandidateCount: allSegmentNodes.length,
-        totalSegmentCount,
-        visibleSegmentCount: visibleSegments.length,
-        hiddenTooltipCount,
-        missingIdentifierCount,
-        outOfViewportCount,
-        visibleRangeCheckCount,
-        visibleRangeErrorCount,
-        rectMeasureCount,
-        rectMeasureElapsedMs: safeRound(rectMeasureElapsedMs, 2),
-        rangeCheckElapsedMs: safeRound(rangeCheckElapsedMs, 2),
-        firstVisibleSegmentSample: visibleSegments[0]
-            ? {
-                segmentIdentifier: visibleSegments[0].segmentIdentifier,
-                sentenceIdentifier: visibleSegments[0].sentenceIdentifier,
-            }
-            : null,
-        lastVisibleSegmentSample: visibleSegments.length > 0
-            ? {
-                segmentIdentifier: visibleSegments[visibleSegments.length - 1].segmentIdentifier,
-                sentenceIdentifier: visibleSegments[visibleSegments.length - 1].sentenceIdentifier,
-            }
-            : null,
-        totalElapsedMs: safeRound(completedAt - startedAt, 2),
-        loopElapsedMs: safeRound(completedAt - queryCompletedAt, 2),
-    });
     postVisibleRangeLog('collect.end', {
         documentURL: doc.URL || doc.location?.href || null,
         hasVisibleRange: !!visibleRange,
@@ -4774,9 +4593,6 @@ class Reader {
     #logPageTracking(event, details = {}) {
         postReaderLog(event, details);
     }
-    #logMarkRead(event, details = {}) {
-        postMarkReadLog(event, details);
-    }
     #pageReadMarkerDiagnosticState(details = {}) {
         const readerStage = document.getElementById('reader-stage');
         const topMarker = document.getElementById('page-read-marker-top');
@@ -4812,9 +4628,6 @@ class Reader {
             sideMarkerHeight: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-height') || null,
         };
     }
-    #logMay6PageReadMarker(event, details = {}) {
-        postMay6Log(event, this.#pageReadMarkerDiagnosticState(details));
-    }
     #pageReadMarkerTransitionMode(reason = 'unspecified') {
         const value = String(reason || '');
         if (value === 'relocate' || value === 'page-turn-start' || value === 'goTo' || value === 'did-display.raf') {
@@ -4835,13 +4648,6 @@ class Reader {
             this.pageReadMarkerAwaitingPageState = false;
         } else if (this.pageReadMarkerAwaitingPageState && isRead) {
             isRead = false;
-            this.#logMay6PageReadMarker('pageReadMarker.update.suppressStaleRead', {
-                reason,
-                transitionMode,
-                rawIsRead,
-                stateID: state?.id ?? null,
-                resolvedStateIsRead: state?.isRead ?? null,
-            });
         }
         const doc = isDocumentLike(explicitDoc)
             ? explicitDoc
@@ -4850,21 +4656,6 @@ class Reader {
         const readerStage = document.getElementById('reader-stage');
         const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
             .find((element) => element?.isConnected && element.offsetParent !== null) || this.view || null;
-        this.#logMay6PageReadMarker('pageReadMarker.update.begin', {
-            reason,
-            transitionMode,
-            computedIsRead: isRead,
-            rawIsRead,
-            awaitingPageState: this.pageReadMarkerAwaitingPageState,
-            explicitStateIsRead: explicitState?.isRead ?? null,
-            hasExplicitState: hasExplicitPageState,
-            stateID: state?.id ?? null,
-            resolvedStateIsRead: state?.isRead ?? null,
-            docURL: doc?.URL ?? doc?.location?.href ?? null,
-            axis: isVertical ? 'block' : 'inline',
-            hasDoc: !!doc,
-            source: 'before-layout',
-        });
         if (readerStage instanceof HTMLElement) {
             readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
             readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
@@ -4910,14 +4701,6 @@ class Reader {
         document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
         document.body?.setAttribute?.('data-page-read-marker-read', isRead ? 'true' : 'false');
         document.body?.setAttribute?.('data-page-read-marker-axis', isVertical ? 'block' : 'inline');
-        this.#logMay6PageReadMarker('pageReadMarker.update.afterAttrs', {
-            reason,
-            transitionMode,
-            computedIsRead: isRead,
-            stateID: state?.id ?? null,
-            resolvedStateIsRead: state?.isRead ?? null,
-            axis: isVertical ? 'block' : 'inline',
-        });
         if (isRead) {
             const topMarker = document.getElementById('page-read-marker-top');
             const topStyle = topMarker instanceof Element ? getComputedStyle(topMarker) : null;
@@ -4971,42 +4754,12 @@ class Reader {
             ...collectMay4DocumentSummary(getActiveReaderDocument()),
             ...collectMay4ButtonSummary(),
         });
-        this.#logMarkRead('pageReadMarker.update', {
-            reason,
-            transitionMode,
-            isRead,
-            axis: isVertical ? 'block' : 'inline',
-            hasExplicitState: !!explicitState,
-            stateCount: this.pageTrackingStates.length,
-            bodyTransitionAttr: document.body?.getAttribute?.('data-page-read-marker-transition') ?? null,
-            bodyReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
-            bodyAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
-            topMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-left') || null,
-            topMarkerWidth: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-width') || null,
-            sideMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-left') || null,
-            sideMarkerTop: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-top') || null,
-            sideMarkerHeight: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-height') || null,
-            timestamp: Math.round(performance.now()),
-        });
-        this.#logMay6PageReadMarker('pageReadMarker.update.end', {
-            reason,
-            transitionMode,
-            computedIsRead: isRead,
-            stateID: state?.id ?? null,
-            resolvedStateIsRead: state?.isRead ?? null,
-            axis: isVertical ? 'block' : 'inline',
-        });
     }
     #clearVisiblePageReadChrome(reason = 'unspecified') {
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
         if (reason === 'page-turn-start') {
             this.pageReadMarkerAwaitingPageState = true;
         }
-        this.#logMay6PageReadMarker('pageReadMarker.clear.begin', {
-            reason,
-            transitionMode,
-            awaitingPageState: this.pageReadMarkerAwaitingPageState,
-        });
         document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
         document.body?.setAttribute?.('data-page-read-marker-read', 'false');
         document.querySelectorAll('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]').forEach((button) => {
@@ -5017,18 +4770,6 @@ class Reader {
             button.querySelectorAll('.mnb-tracking-button-label, .sr-only').forEach((label) => {
                 label.textContent = 'Mark Read';
             });
-        });
-        this.#logMarkRead('pageTracking.clearStaleReadChrome', {
-            reason,
-            transitionMode,
-            markerTransitionAttr: document.body?.getAttribute?.('data-page-read-marker-transition') ?? null,
-            markerReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
-            timestamp: Math.round(performance.now()),
-        });
-        this.#logMay6PageReadMarker('pageReadMarker.clear.end', {
-            reason,
-            transitionMode,
-            awaitingPageState: this.pageReadMarkerAwaitingPageState,
         });
     }
     #updateEbookSubscriptionPreviewPageState({
@@ -5125,12 +4866,6 @@ class Reader {
     }
     #clearOptimisticMarkReadState(reason) {
         if (this.optimisticReadSegmentIdentifiers.size > 0 || this.optimisticSentenceIdentifiersRead.size > 0) {
-            this.#logMarkRead('progress.optimisticCleared', {
-                reason,
-                sessionID: this.markReadSessionID,
-                optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
-                optimisticSentenceReadCount: this.optimisticSentenceIdentifiersRead.size,
-            });
         }
         this.optimisticReadSegmentIdentifiers.clear();
         this.optimisticSentenceIdentifiersRead.clear();
@@ -5142,21 +4877,9 @@ class Reader {
         if (this.pageTrackingRetryHandle) {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
         }
-        this.#logMarkRead('pageTracking.retry.queue', {
-            reason,
-            retryCount,
-            hasExplicitDoc: isDocumentLike(explicitDoc),
-            timestamp: Math.round(performance.now()),
-        });
         this.pageTrackingRetryHandle = requestAnimationFrame(() => {
             const retryStartedAt = performance.now();
             this.pageTrackingRetryHandle = null;
-            this.#logMarkRead('pageTracking.retry.fire', {
-                reason,
-                retryCount,
-                hasExplicitDoc: isDocumentLike(explicitDoc),
-                timestamp: Math.round(retryStartedAt),
-            });
             this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1).catch((error) => console.error(error));
         });
     }
@@ -5761,18 +5484,6 @@ class Reader {
         const renderStartedAt = performance.now();
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const buttonBefore = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
-        this.#logMarkRead('pageTracking.render.beforeDOM', {
-            reason,
-            shouldShowPageTracking,
-            markReadButtonsVisible,
-            stateCount: pageTrackingStates.length,
-            visibleScreenIsRead: visibleState?.isRead ?? null,
-            existingButtonReadAttr: buttonBefore?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
-            existingButtonReadState: buttonBefore?.getAttribute?.('data-read-state') ?? null,
-            containerHiddenBefore: container.hidden,
-            buttonHostHiddenBefore: buttonHost.hidden,
-            timestamp: Math.round(renderStartedAt),
-        });
         postMay4Log('pageTracking.render.beforeDOM', {
             reason,
             shouldShowPageTracking,
@@ -5803,18 +5514,6 @@ class Reader {
             });
         }
         this.lastPageTrackingVisibility = shouldShowPageTracking;
-        this.#logMarkRead('pageTracking.render', {
-            reason,
-            shouldShowPageTracking,
-            markReadButtonsVisible,
-            stateCount: pageTrackingStates.length,
-            hasCompletionAction: !!completionAction,
-            completionActionType: completionAction?.type ?? null,
-            containerHidden: container.hidden,
-            buttonHostHidden: buttonHost.hidden,
-            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
-            navHidden: this.navHUD?.navHidden ?? null,
-        });
         if (!shouldShowPageTracking) {
             buttonHost.innerHTML = '';
             this.#updatePageReadMarker(reason, null);
@@ -5824,13 +5523,6 @@ class Reader {
                 stateCount: pageTrackingStates.length,
                 hasCompletionAction: !!completionAction,
                 ...collectMay4ButtonSummary(),
-            });
-            this.#logMarkRead('pageTracking.render.timing', {
-                reason,
-                stateCount: pageTrackingStates.length,
-                hasCompletionAction: !!completionAction,
-                shouldShowPageTracking,
-                elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
             });
             return;
         }
@@ -5862,14 +5554,6 @@ class Reader {
             this.#queueLayoutDiagnostics('page-tracking-render', {
                 completionAction: completionAction.type,
                 stateCount: 0,
-            });
-            this.#logMarkRead('pageTracking.render.timing', {
-                reason,
-                stateCount: 0,
-                hasCompletionAction: true,
-                completionActionType: completionAction.type,
-                shouldShowPageTracking,
-                elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
             });
             return;
         }
@@ -5928,17 +5612,6 @@ class Reader {
             selectedSentenceCount: visibleState?.payload?.sentenceIdentifiers?.length ?? null,
             ...collectMay4ButtonSummary(),
         });
-        this.#logMarkRead('pageTracking.render.afterDOM', {
-            reason,
-            stateCount: pageTrackingStates.length,
-            visibleScreenIsRead: visibleState?.isRead ?? null,
-            buttonReadAttr: buttonAfter?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
-            buttonReadState: buttonAfter?.getAttribute?.('data-read-state') ?? null,
-            buttonDisabled: buttonAfter instanceof HTMLButtonElement ? buttonAfter.disabled : null,
-            markerReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
-            markerAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
-            elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
-        });
         requestAnimationFrame(() => {
             const buttonFrame = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
             const buttonStyle = buttonFrame instanceof Element ? getComputedStyle(buttonFrame) : null;
@@ -5946,20 +5619,6 @@ class Reader {
             const markerTop = document.getElementById('page-read-marker-top');
             const sideStyle = markerSide instanceof Element ? getComputedStyle(markerSide) : null;
             const topStyle = markerTop instanceof Element ? getComputedStyle(markerTop) : null;
-            this.#logMarkRead('pageTracking.render.raf', {
-                reason,
-                buttonReadAttr: buttonFrame?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
-                buttonReadState: buttonFrame?.getAttribute?.('data-read-state') ?? null,
-                buttonBackgroundColor: buttonStyle?.backgroundColor ?? null,
-                buttonTransitionDuration: buttonStyle?.transitionDuration ?? null,
-                markerReadAttr: document.body?.getAttribute?.('data-page-read-marker-read') ?? null,
-                markerAxisAttr: document.body?.getAttribute?.('data-page-read-marker-axis') ?? null,
-                sideMarkerVisibility: sideStyle?.visibility ?? null,
-                sideMarkerOpacity: sideStyle?.opacity ?? null,
-                topMarkerVisibility: topStyle?.visibility ?? null,
-                topMarkerOpacity: topStyle?.opacity ?? null,
-                elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
-            });
             postMay4Log('pageTracking.render.raf', {
                 reason,
                 stateCount: pageTrackingStates.length,
@@ -5971,13 +5630,6 @@ class Reader {
         this.#scheduleInitialPaginatorSettle('page-tracking-render');
         this.#queueLayoutDiagnostics('page-tracking-render', {
             stateCount: pageTrackingStates.length,
-        });
-        this.#logMarkRead('pageTracking.render.timing', {
-            reason,
-            stateCount: pageTrackingStates.length,
-            completedStateCount: pageTrackingStates.filter((state) => state.isRead).length,
-            shouldShowPageTracking,
-            elapsedMs: safeRound(performance.now() - renderStartedAt, 2),
         });
     }
     async #advanceAfterMarkRead() {
@@ -6302,24 +5954,11 @@ class Reader {
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
         const syncStartedAt = performance.now();
-        this.#logMarkRead('pageState.sync.timing.start', {
-            reason,
-            retryCount,
-            hasExplicitDoc: isDocumentLike(explicitDoc),
-            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition ?? null,
-            timestamp: Math.round(syncStartedAt),
-        });
         const isRestorePending =
             reason === 'document-load'
             && globalThis.reader
             && globalThis.reader.hasLoadedLastPosition !== true;
         if (isRestorePending) {
-            this.#logMarkRead('pageState.sync.timing.defer', {
-                reason,
-                retryCount,
-                deferReason: 'restore-pending',
-                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
-            });
             postMay4Log('pageState.sync.defer', {
                 reason,
                 retryCount,
@@ -6348,13 +5987,6 @@ class Reader {
         if (!isDocumentLike(doc)) {
             this.pageTrackingStates = [];
             this.#renderPageTrackingButtons(reason);
-            this.#logMarkRead('pageState.sync.timing.defer', {
-                reason,
-                retryCount,
-                deferReason: 'no-document',
-                contentsCount: contents.length,
-                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
-            });
             postMay4Log('pageState.sync.defer', {
                 reason,
                 retryCount,
@@ -6389,14 +6021,6 @@ class Reader {
             ? this.navHUD.lastRelocateDetail.range
             : null;
         if (visibleRange?.collapsed === true && retryCount > 0) {
-            this.#logMarkRead('pageState.sync.timing.defer', {
-                reason,
-                retryCount,
-                deferReason: 'collapsed-visible-range',
-                visibleRangeStartContainer: visibleRange.startContainer?.nodeName || null,
-                visibleRangeEndContainer: visibleRange.endContainer?.nodeName || null,
-                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
-            });
             postMay4Log('pageState.sync.defer', {
                 reason,
                 retryCount,
@@ -6407,47 +6031,11 @@ class Reader {
             this.#queuePageTrackingRetry(reason, doc, retryCount);
             return;
         }
-        this.#logMarkRead('pageState.sync.start', {
-            reason,
-            documentURL: doc.URL || doc.location?.href || null,
-            retryCount,
-            hasVisibleRange: !!visibleRange,
-            visibleRangeStartContainer: visibleRange?.startContainer?.nodeName || null,
-            visibleRangeEndContainer: visibleRange?.endContainer?.nodeName || null,
-        });
         const {
             states,
             diagnostics,
         } = await buildVisiblePageTrackingStates(doc, this.articleReadingProgress, visibleRange);
-        this.#logMarkRead('pageState.sync.end', {
-            reason,
-            documentURL: diagnostics.documentURL,
-            retryCount,
-            stateCount: diagnostics.stateCount,
-            visibleSegmentCount: diagnostics.visibleSegmentCount,
-            totalSegmentCount: diagnostics.totalSegmentCount,
-            usedFoliateRange: !!visibleRange,
-            elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
-        });
         const visibleScreenState = states.find((state) => state.id === 'visible-screen') ?? null;
-        this.#logMarkRead('pageState.result', {
-            reason,
-            documentURL: diagnostics.documentURL,
-            stateCount: diagnostics.stateCount,
-            visibleSegmentCount: diagnostics.visibleSegmentCount,
-            unreadVisibleSegmentCount: visibleScreenState?.unreadVisibleSegmentCount ?? 0,
-            selectedSegmentCount: visibleScreenState?.payload?.segments?.length ?? 0,
-            selectedSentenceCount: visibleScreenState?.payload?.sentenceIdentifiers?.length ?? 0,
-            readSegmentCount: diagnostics.readSegmentCount,
-            readSentenceCount: diagnostics.readSentenceCount,
-            recoveredTextSearchStringCount: diagnostics.recoveredTextSearchStringCount,
-            skippedMissingSearchStringCount: diagnostics.skippedMissingSearchStringCount,
-            segmentIdentifierSample: (visibleScreenState?.payload?.segments ?? [])
-                .map((segment) => segment.segmentIdentifier)
-                .slice(0, 3),
-            sentenceIdentifierSample: (visibleScreenState?.payload?.sentenceIdentifiers ?? []).slice(0, 3),
-            usedFoliateRange: !!visibleRange,
-        });
         postMay4Log('pageState.sync.result', {
             reason,
             documentURL: diagnostics.documentURL,
@@ -6477,12 +6065,6 @@ class Reader {
                 || diagnostics.viewportHeight <= 0
             );
         if (shouldRetryEmptyDocument) {
-            this.#logMarkRead('pageState.sync.timing.defer', {
-                reason,
-                retryCount,
-                deferReason: 'zero-viewport-empty-document',
-                elapsedMs: safeRound(performance.now() - syncStartedAt, 2),
-            });
             postMay4Log('pageState.sync.defer', {
                 reason,
                 retryCount,
@@ -6517,17 +6099,6 @@ class Reader {
         const beforeRenderAt = performance.now();
         this.#renderPageTrackingButtons(reason);
         this.#updatePageReadMarker(reason, visibleScreenState, doc);
-        this.#logMarkRead('pageState.sync.timing.end', {
-            reason,
-            retryCount,
-            stateCount: diagnostics.stateCount,
-            completedStateCount: diagnostics.completedStateCount,
-            visibleSegmentCount: diagnostics.visibleSegmentCount,
-            totalSegmentCount: diagnostics.totalSegmentCount,
-            buildElapsedMs: safeRound(beforeRenderAt - syncStartedAt, 2),
-            renderCallElapsedMs: safeRound(performance.now() - beforeRenderAt, 2),
-            totalElapsedMs: safeRound(performance.now() - syncStartedAt, 2),
-        });
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -6598,33 +6169,7 @@ class Reader {
         }
         incomingProgress.readSegmentIdentifiers = Array.from(incomingReadSegmentIdentifiers);
         incomingProgress.sentenceIdentifiersRead = Array.from(incomingSentenceIdentifiersRead);
-        this.#logMarkRead('progress.apply', {
-            reason,
-            sessionID: this.markReadSessionID,
-            documentURL: this.view?.renderer?.getContents?.()?.[0]?.doc?.URL || null,
-            incomingReadSegmentCount,
-            incomingSentenceReadCount,
-            optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
-            optimisticSentenceReadCount: this.optimisticSentenceIdentifiersRead.size,
-            mergedOptimisticSegmentCount,
-            mergedOptimisticSentenceCount,
-            mergedReadSegmentCount: incomingProgress.readSegmentIdentifiers.length,
-            mergedSentenceReadCount: incomingProgress.sentenceIdentifiersRead.length,
-        });
         if (mergedOptimisticSegmentCount > 0 || mergedOptimisticSentenceCount > 0) {
-            this.#logMarkRead('progress.mergeOptimistic', {
-                reason,
-                sessionID: this.markReadSessionID,
-                documentURL: this.view?.renderer?.getContents?.()?.[0]?.doc?.URL || null,
-                incomingReadSegmentCount,
-                incomingSentenceReadCount,
-                optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
-                optimisticSentenceReadCount: this.optimisticSentenceIdentifiersRead.size,
-                mergedOptimisticSegmentCount,
-                mergedOptimisticSentenceCount,
-                mergedReadSegmentCount: incomingProgress.readSegmentIdentifiers.length,
-                mergedSentenceReadCount: incomingProgress.sentenceIdentifiersRead.length,
-            });
         }
         this.articleReadingProgress = incomingProgress;
         this.markedAsFinished = !!this.articleReadingProgress.articleMarkedAsFinished;
@@ -6653,41 +6198,14 @@ class Reader {
     }
     async #handleCompletionAction(actionType) {
         if (this.completionActionBusy) {
-            this.#logMarkRead('completion.ignored', {
-                actionType,
-                reason: 'busy',
-                currentAction: this.completionAction?.type ?? null,
-            });
             return;
         }
-        this.#logMarkRead('completion.click', {
-            actionType,
-            label: this.completionAction?.label ?? null,
-            currentAction: this.completionAction?.type ?? null,
-            markedAsFinished: this.markedAsFinished,
-        });
         this.completionActionBusy = true;
         this.#renderPageTrackingButtons('completion-action-busy');
-        this.#logMarkRead('completion.busy', {
-            actionType,
-            label: this.completionAction?.label ?? null,
-        });
         try {
             switch (actionType) {
                 case 'finish':
                     const sectionReadState = this.#currentSectionReadState();
-                    this.#logMarkRead('completion.finish.readState', sectionReadState);
-                    this.#logMarkRead('completion.finish.dispatch', {
-                        actionType,
-                        label: this.completionAction?.label ?? null,
-                        allSectionsRead: sectionReadState.allSectionsRead,
-                        currentPageNumber: sectionReadState.currentPageNumber,
-                        totalPages: sectionReadState.totalPages,
-                        pagesLeft: sectionReadState.pagesLeft,
-                        segmentCount: sectionReadState.segmentCount,
-                        unreadSegmentCount: sectionReadState.unreadSegmentCount,
-                        optimisticReadSegmentCount: sectionReadState.optimisticReadSegmentCount,
-                    });
                     window.webkit.messageHandlers.finishedReadingBook.postMessage({
                         topWindowURL: window.top.location.href,
                         allSectionsRead: sectionReadState.allSectionsRead,
@@ -6699,30 +6217,17 @@ class Reader {
                     });
                     break;
                 case 'restart':
-                    this.#logMarkRead('completion.restart.dispatch', {
-                        actionType,
-                        label: this.completionAction?.label ?? null,
-                    });
                     this.#clearOptimisticMarkReadState('restart');
                     window.webkit.messageHandlers.startOver.postMessage({});
                     await this.view?.renderer?.firstSection?.();
-                    this.#logMarkRead('completion.restart.resetToFirstSection', {
-                        actionType,
-                    });
                     break;
                 default:
-                    this.#logMarkRead('completion.unknown', {
-                        actionType,
-                    });
                     break;
             }
         } finally {
             if (actionType !== 'finish') {
                 this.completionActionBusy = false;
                 this.#renderPageTrackingButtons('completion-action-finished');
-                this.#logMarkRead('completion.idle', {
-                    actionType,
-                });
             }
         }
     }
@@ -6910,10 +6415,6 @@ class Reader {
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
         if (!pageTrackingState) {
-            this.#logMarkRead('markRead.skip', {
-                reason: 'missing-state',
-                stateID,
-            });
             this.#logPageTracking('ebook.pageTracking.markRead.skip', {
                 reason: 'missing-state',
                 stateID,
@@ -6921,10 +6422,6 @@ class Reader {
             return;
         }
         if (pageTrackingState.payload.segments.length === 0) {
-            this.#logMarkRead('markRead.skip', {
-                reason: 'empty-payload',
-                stateID,
-            });
             this.#logPageTracking('ebook.pageTracking.markRead.skip', {
                 reason: 'empty-payload',
                 stateID,
@@ -6932,27 +6429,12 @@ class Reader {
             return;
         }
         if (pageTrackingState.isRead) {
-            this.#logMarkRead('markRead.skip', {
-                reason: 'already-read',
-                stateID,
-            });
             this.#logPageTracking('ebook.pageTracking.markRead.skip', {
                 reason: 'already-read',
                 stateID,
             });
             return;
         }
-        this.#logMarkRead('markRead.click', {
-            stateID,
-            fullLabel: pageTrackingState.fullLabel,
-            shortLabel: pageTrackingState.shortLabel,
-            visibleSegmentCount: pageTrackingState.visibleSegmentCount,
-            unreadVisibleSegmentCount: pageTrackingState.unreadVisibleSegmentCount,
-            ...this.#summarizeMarkReadIDs(
-                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
-                pageTrackingState.payload.sentenceIdentifiers,
-            ),
-        });
         this.#logPageTracking('ebook.pageTracking.markRead.start', {
             stateID,
             visibleSegmentCount: pageTrackingState.visibleSegmentCount,
@@ -6961,23 +6443,7 @@ class Reader {
             sentenceIdentifierCount: pageTrackingState.payload.sentenceIdentifiers.length,
         });
         this.pageTrackingBusyStateIDs.add(stateID);
-        this.#logMarkRead('markRead.busy', {
-            stateID,
-            payloadSegmentCount: pageTrackingState.payload.segments.length,
-            ...this.#summarizeMarkReadIDs(
-                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
-                pageTrackingState.payload.sentenceIdentifiers,
-            ),
-        });
         this.#renderPageTrackingButtons('mark-read-busy');
-        this.#logMarkRead('markRead.dispatch', {
-            stateID,
-            payloadSegmentCount: pageTrackingState.payload.segments.length,
-            ...this.#summarizeMarkReadIDs(
-                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
-                pageTrackingState.payload.sentenceIdentifiers,
-            ),
-        });
         window.webkit.messageHandlers.markSectionAsRead.postMessage(pageTrackingState.payload);
         const payloadSegmentIdentifiers = pageTrackingState.payload.segments
             .map((segment) => segment.segmentIdentifier)
@@ -7001,15 +6467,6 @@ class Reader {
         ]));
         this.pageTrackingAnimateReadStateIDs.add(stateID);
         this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-read');
-        this.#logMarkRead('markRead.optimisticApplied', {
-            stateID,
-            readSegmentIdentifiers: optimisticProgress.readSegmentIdentifiers.length,
-            sentenceIdentifiersRead: optimisticProgress.sentenceIdentifiersRead.length,
-            ...this.#summarizeMarkReadIDs(
-                pageTrackingState.payload.segments.map((segment) => segment.segmentIdentifier),
-                pageTrackingState.payload.sentenceIdentifiers,
-            ),
-        });
         this.#logPageTracking('ebook.pageTracking.markRead.optimisticApplied', {
             stateID,
             readSegmentIdentifiers: optimisticProgress.readSegmentIdentifiers.length,
@@ -8202,7 +7659,6 @@ class Reader {
                 : null,
             restoreRequestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
         };
-        postEbookRestoreLog('js.position.candidate', progressBridgePayload);
         postPageNumLog('bridge.updateReadingProgress.locator-decision', {
             reason: reason ?? null,
             effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
@@ -8260,61 +7716,7 @@ class Reader {
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
             if (!shouldPersistRelocatePosition) {
-                postEbookRestoreLog('js.position.save.skip', {
-                    ...progressBridgePayload,
-                    skipReason: normalizedRelocateReason === 'anchor'
-                        ? 'anchor-relocate'
-                        : (
-                            requiresUserInputBeforePositionSave
-                                ? 'restore-awaiting-user-input'
-                                : (shouldSuppressRestoreSettleSave ? 'restore-settle-relocate' : 'unknown')
-                        ),
-                });
-                postMarkReadLog('position.save.skip', {
-                    reason: reason ?? null,
-                    skipReason: normalizedRelocateReason === 'anchor'
-                        ? 'anchor-relocate'
-                        : (
-                            requiresUserInputBeforePositionSave
-                                ? 'restore-awaiting-user-input'
-                                : (shouldSuppressRestoreSettleSave ? 'restore-settle-relocate' : 'unknown')
-                        ),
-                    fraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
-                    rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
-                    displayPercent: roundedDisplayPercent(Number.isFinite(effectiveFraction) ? effectiveFraction : fraction),
-                    currentPercent,
-                    sectionIndex,
-                    localSectionIndex,
-                    rendererTotal,
-                    cfiMode: shouldPreferSyntheticRestoreLocator
-                        ? 'synthetic'
-                        : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
-                    hasLoadedLastPosition: this.hasLoadedLastPosition,
-                    restoreRequestedFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
-                        ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
-                        : null,
-                    restoreRequestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
-                    suppressNextRestoreRelocateSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
-                    requiresUserInputBeforePositionSave,
-                });
             } else {
-                postEbookRestoreLog('js.position.save.dispatch', progressBridgePayload);
-                postMarkReadLog('position.save.dispatch', {
-                    reason: reason ?? null,
-                    fraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
-                    rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
-                    displayPercent: roundedDisplayPercent(Number.isFinite(effectiveFraction) ? effectiveFraction : fraction),
-                    currentPercent,
-                    sectionIndex,
-                    localSectionIndex,
-                    rendererTotal,
-                    cfiMode: shouldPreferSyntheticRestoreLocator
-                        ? 'synthetic'
-                        : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
-                    cfiLooksSectionBase,
-                    cfiIsUnstableAcrossPages,
-                    hasLoadedLastPosition: this.hasLoadedLastPosition,
-                });
                 this.#postUpdateReadingProgressMessage({
                     fraction: Number.isFinite(effectiveFraction) ? effectiveFraction : fraction,
                     cfi: persistedLocator,
@@ -8355,16 +7757,6 @@ class Reader {
             totalLocation: detail?.location?.total ?? null,
             orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
             orientationType: screen.orientation?.type ?? null,
-        });
-        this.#logMarkRead('relocate.timing', {
-            reason: detail?.reason || null,
-            hasRange: !!detail?.range,
-            currentPercent,
-            currentLocation: detail?.location?.current ?? null,
-            totalLocation: detail?.location?.total ?? null,
-            pageTrackingStateCount: this.pageTrackingStates.length,
-            completedPageTrackingStateCount: this.pageTrackingStates.filter((state) => state.isRead).length,
-            timestamp: Math.round(performance.now()),
         });
         this.#queueLayoutDiagnostics('relocate', {
             reason: detail?.reason || null,
@@ -9144,22 +8536,8 @@ const markRestorePositionSaveUserInput = (eventOrSource) => {
     const eventType = typeof eventOrSource === 'string'
         ? eventOrSource
         : (eventOrSource?.type ?? null);
-    postEbookRestoreLog('js.restore.userInput', {
-        eventType,
-        requestedFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
-            ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
-            : null,
-        requestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
-    });
     globalThis.__manabiRequireUserInputBeforePositionSave = false;
     globalThis.__manabiSuppressNextRestoreRelocateSave = false;
-    postMarkReadLog('restore.userInput', {
-        eventType,
-        requestedFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
-            ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
-            : null,
-        requestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
-    });
 };
 
 const ensureRestorePositionSaveUserInputTracking = () => {
@@ -9229,20 +8607,6 @@ window.loadLastPosition = async ({
             landedCFI: detail?.cfi ?? null,
             ...extra,
         });
-        postEbookRestoreLog('js.restore.state', {
-            stage,
-            requestedHasCFI: typeof cfi === 'string' && cfi.length > 0,
-            requestedCFILength: typeof cfi === 'string' ? cfi.length : 0,
-            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-            requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-            landedFraction: typeof currentFraction === 'number' ? safeRound(currentFraction, 6) : null,
-            landedDisplayPercent: roundedDisplayPercent(currentFraction),
-            landedSectionIndex: sectionIndex,
-            landedLocationCurrent: locationCurrent,
-            landedLocationTotal: locationTotal,
-            landedCFILength: typeof detail?.cfi === 'string' ? detail.cfi.length : 0,
-            ...extra,
-        });
         return {
             detail,
             currentFraction,
@@ -9258,43 +8622,15 @@ window.loadLastPosition = async ({
         const landedFraction = typeof restoreState?.currentFraction === 'number'
             ? Math.max(0, Math.min(1, restoreState.currentFraction))
             : null;
-        postMarkReadLog('restore.result', {
-            stage,
-            requestedHasCFI: typeof cfi === 'string' && cfi.length > 0,
-            requestedFraction: requestedFraction != null ? safeRound(requestedFraction, 6) : null,
-            requestedDisplayPercent: roundedDisplayPercent(requestedFraction),
-            landedFraction: landedFraction != null ? safeRound(landedFraction, 6) : null,
-            landedDisplayPercent: roundedDisplayPercent(landedFraction),
-            landedSectionIndex: restoreState?.sectionIndex ?? null,
-            landedLocationCurrent: restoreState?.locationCurrent ?? null,
-            landedLocationTotal: restoreState?.locationTotal ?? null,
-            ...extra,
-        });
     };
     postReaderLog('ebook.viewer.loadLastPosition.start', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? fractionalCompletion : 'nil',
     });
-    postEbookRestoreLog('js.restore.start', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-        fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-        displayPercent: roundedDisplayPercent(fractionalCompletion),
-        currentHref: window.location.href,
-        hasReader: !!globalThis.reader,
-        hasView: !!globalThis.reader?.view,
-        hasRenderer: !!globalThis.reader?.view?.renderer,
-    });
     postPageNumLog('restore.request', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         cfiLength: typeof cfi === 'string' ? cfi.length : 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-    });
-    postMarkReadLog('restore.request', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-        requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-        requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
     });
     markEPUBPerf('restore.start', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
@@ -9305,32 +8641,6 @@ window.loadLastPosition = async ({
     const restoreLocatorKind = syntheticRestoreLocator
         ? 'synthetic'
         : (typeof cfi === 'string' && cfi.length > 0 ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none'));
-    postMarkReadLog('restore.plan', {
-        locatorKind: restoreLocatorKind,
-        hasFractionalCompletion,
-        requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-        requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-        syntheticSectionIndex: syntheticRestoreLocator?.sectionIndex ?? null,
-        syntheticLocalSectionIndex: syntheticRestoreLocator?.localSectionIndex ?? null,
-        syntheticRendererTotal: syntheticRestoreLocator?.rendererTotal ?? null,
-        syntheticFractionInSection: syntheticRestoreLocator
-            ? safeRound(syntheticRestoreLocator.fractionInSection, 6)
-            : null,
-    });
-    postEbookRestoreLog('js.restore.plan', {
-        locatorKind: restoreLocatorKind,
-        hasFractionalCompletion,
-        requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-        requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-        syntheticSectionIndex: syntheticRestoreLocator?.sectionIndex ?? null,
-        syntheticLocalSectionIndex: syntheticRestoreLocator?.localSectionIndex ?? null,
-        syntheticRendererTotal: syntheticRestoreLocator?.rendererTotal ?? null,
-        syntheticFractionInSection: syntheticRestoreLocator
-            ? safeRound(syntheticRestoreLocator.fractionInSection, 6)
-            : null,
-    });
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
         if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
             return;
@@ -9351,26 +8661,6 @@ window.loadLastPosition = async ({
             toFraction: safeRound(fractionalCompletion, 6),
             sectionIndex: restoreState.sectionIndex,
         });
-        postMarkReadLog('restore.reconcile', {
-            reason,
-            drift: safeRound(delta, 6),
-            fromFraction: safeRound(restoreState.currentFraction, 6),
-            toFraction: safeRound(fractionalCompletion, 6),
-            fromDisplayPercent: landedDisplayPercent,
-            toDisplayPercent: requestedDisplayPercent,
-            displayPercentChanged,
-            sectionIndex: restoreState.sectionIndex,
-        });
-        postEbookRestoreLog('js.restore.reconcile', {
-            reason,
-            drift: safeRound(delta, 6),
-            fromFraction: safeRound(restoreState.currentFraction, 6),
-            toFraction: safeRound(fractionalCompletion, 6),
-            fromDisplayPercent: landedDisplayPercent,
-            toDisplayPercent: requestedDisplayPercent,
-            displayPercentChanged,
-            sectionIndex: restoreState.sectionIndex,
-        });
         const rendererPageCurrent = globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null;
         const rendererPageTotal = globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null;
         const targetRendererPage = typeof rendererPageTotal === 'number' && rendererPageTotal > 1
@@ -9381,16 +8671,6 @@ window.loadLastPosition = async ({
             && typeof targetRendererPage === 'number'
             && rendererPageCurrent === targetRendererPage
         ) {
-            postMarkReadLog('restore.reconcile.skip', {
-                reason: 'same-renderer-page',
-                reconcileReason: reason,
-                drift: safeRound(delta, 6),
-                fromFraction: safeRound(restoreState.currentFraction, 6),
-                toFraction: safeRound(fractionalCompletion, 6),
-                rendererPageCurrent,
-                rendererPageTotal,
-                targetRendererPage,
-            });
             return;
         }
         await runWithNavigationIntent({
@@ -9411,24 +8691,6 @@ window.loadLastPosition = async ({
     };
     try {
         if (syntheticRestoreLocator && hasFractionalCompletion) {
-            postEbookRestoreLog('js.restore.path', {
-                mode: 'fraction-for-synthetic-locator',
-                requestedFraction: safeRound(fractionalCompletion, 6),
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-                syntheticFractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-            });
-            postMarkReadLog('restore.path', {
-                mode: 'fraction-for-synthetic-locator',
-                requestedFraction: safeRound(fractionalCompletion, 6),
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-                syntheticFractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-            });
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'fraction-for-synthetic-locator',
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
@@ -9452,24 +8714,6 @@ window.loadLastPosition = async ({
             });
             postRestoreMarkReadLog('after-synthetic-fraction', fractionState);
         } else if (syntheticRestoreLocator) {
-            postEbookRestoreLog('js.restore.path', {
-                mode: 'synthetic-locator',
-                requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-                syntheticFractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-            });
-            postMarkReadLog('restore.path', {
-                mode: 'synthetic-locator',
-                requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-                syntheticFractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-            });
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'synthetic-locator',
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
@@ -9501,26 +8745,7 @@ window.loadLastPosition = async ({
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
             });
             postRestoreMarkReadLog('after-synthetic-locator', syntheticState);
-            postMarkReadLog('restore.reconcile.skip', {
-                reason: 'synthetic-locator-is-page-authority',
-                requestedFraction: safeRound(fractionalCompletion, 6),
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                landedFraction: safeRound(syntheticState.fraction, 6),
-                landedDisplayPercent: roundedDisplayPercent(syntheticState.fraction),
-            });
         } else if (cfi.length > 0) {
-            postEbookRestoreLog('js.restore.path', {
-                mode: 'cfi',
-                requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                cfiLength: cfi.length,
-            });
-            postMarkReadLog('restore.path', {
-                mode: 'cfi',
-                requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                cfiLength: cfi.length,
-            });
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'cfi',
             });
@@ -9530,14 +8755,6 @@ window.loadLastPosition = async ({
                 cfiLength: cfi.length,
                 fraction: hasFractionalCompletion ? fractionalCompletion : null,
             }, () => globalThis.reader.view.goTo(cfi)).catch(async e => {
-                postEbookRestoreLog('js.restore.error', {
-                    mode: 'cfi',
-                    message: e?.message || String(e),
-                    fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
-                    requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-                    requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                    cfiLength: cfi.length,
-                });
                 postPageNumLog('restore.cfi.error', {
                     message: e?.message || String(e),
                     fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
@@ -9567,16 +8784,6 @@ window.loadLastPosition = async ({
                 'after-cfi-fraction-reconcile',
             );
         } else if (hasFractionalCompletion) {
-            postEbookRestoreLog('js.restore.path', {
-                mode: 'fraction',
-                requestedFraction: safeRound(fractionalCompletion, 6),
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-            });
-            postMarkReadLog('restore.path', {
-                mode: 'fraction',
-                requestedFraction: safeRound(fractionalCompletion, 6),
-                requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-            });
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'fraction',
             });
@@ -9590,13 +8797,6 @@ window.loadLastPosition = async ({
                 const fractionState = captureRestoreState('after-fraction');
                 postRestoreMarkReadLog('after-fraction', fractionState);
             } catch (error) {
-                postEbookRestoreLog('js.restore.error', {
-                    mode: 'fraction',
-                    message: error?.message || String(error),
-                    fallback: 'default-next',
-                    requestedFraction: safeRound(fractionalCompletion, 6),
-                    requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-                });
                 postPageNumLog('restore.fraction.error', {
                     message: error?.message || String(error),
                     fallback: 'default-next',
@@ -9626,12 +8826,6 @@ window.loadLastPosition = async ({
                 postRestoreMarkReadLog('after-default-next-fallback', fallbackState);
             }
         } else {
-            postEbookRestoreLog('js.restore.path', {
-                mode: 'default-next',
-                requestedFraction: null,
-                requestedDisplayPercent: null,
-                cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-            });
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'default-next',
             });
@@ -9661,17 +8855,6 @@ window.loadLastPosition = async ({
             requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
         });
         postRestoreMarkReadLog('done', doneState);
-        postEbookRestoreLog('js.restore.done', {
-            hasCFI: typeof cfi === 'string' && cfi.length > 0,
-            cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-            requestedDisplayPercent: roundedDisplayPercent(fractionalCompletion),
-            landedFraction: typeof doneState?.currentFraction === 'number' ? safeRound(doneState.currentFraction, 6) : null,
-            landedDisplayPercent: roundedDisplayPercent(doneState?.currentFraction),
-            landedSectionIndex: doneState?.sectionIndex ?? null,
-            landedLocationCurrent: doneState?.locationCurrent ?? null,
-            landedLocationTotal: doneState?.locationTotal ?? null,
-        });
         postReaderLog('ebook.viewer.loadLastPosition.done', {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
         });
@@ -9689,20 +8872,6 @@ window.loadLastPosition = async ({
         globalThis.__manabiRestoreInProgress = false;
         globalThis.__manabiSuppressNextRestoreRelocateSave = false;
         globalThis.__manabiRequireUserInputBeforePositionSave = true;
-        postMarkReadLog('restore.saveSuppression.arm', {
-            mode: 'until-user-input',
-            requestedFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
-                ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
-                : null,
-            requestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
-        });
-        postEbookRestoreLog('js.restore.saveSuppression.arm', {
-            mode: 'until-user-input',
-            requestedFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
-                ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
-                : null,
-            requestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
-        });
     }
 }
 

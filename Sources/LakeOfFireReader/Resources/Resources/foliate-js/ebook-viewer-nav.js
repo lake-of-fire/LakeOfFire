@@ -28,31 +28,8 @@ const NAV_PAGE_NUM_WHITELIST = new Set([
     'ui:section-progress',
 ]);
 const logEBookPageNumLimited = (event, detail = {}) => {
-    const verbose = !!globalThis.manabiPageNumVerbose;
-    const allow = verbose || NAV_PAGE_NUM_WHITELIST.has(event);
-    if (!allow) return;
-    if (event === 'ui:primary-label') {
-        const signature = JSON.stringify({
-            label: detail?.label ?? '',
-            compactLabel: detail?.compactLabel ?? '',
-            currentPercent: detail?.currentPercent ?? null,
-            source: detail?.source ?? null,
-            hideNavigationDueToScroll: detail?.hideNavigationDueToScroll ?? null,
-        });
-        if (globalThis.__manabiLastUIPrimaryLabelSignature === signature) {
-            return;
-        }
-        globalThis.__manabiLastUIPrimaryLabelSignature = signature;
-    }
-    if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return;
-    logEBookPageNumCounter += 1;
-    const payload = { event, count: logEBookPageNumCounter, ...detail };
-    const line = `# PAGENUM ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
@@ -77,13 +54,8 @@ const logBug = (event, detail = {}) => {
 };
 
 const logNavHide = (event, detail = {}) => {
-    const payload = { event, ...detail };
-    const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
 const logHideNavTrace = (event, detail = {}) => {
@@ -100,21 +72,8 @@ const logHideNavTrace = (event, detail = {}) => {
 };
 
 const logEPUBNav = (event, detail = {}) => {
-    const payload = { event, ...detail };
-    if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
-        const signature = JSON.stringify(payload);
-        const key = `__manabiLast${event.replace(/[^a-z0-9]/gi, '')}Signature`;
-        if (globalThis[key] === signature) {
-            return;
-        }
-        globalThis[key] = signature;
-    }
-    const line = `# PAGENUM ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
 const normalizeSpineHrefForPageNum = (href) => {
@@ -2097,18 +2056,7 @@ export class NavigationHUD {
             }
             this.lastRendererSnapshotLog = signature;
         }
-        const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
-        const line = `# PAGENUM ${JSON.stringify(cleaned)}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional native logger
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console logger
-        }
+        void base;
     }
 
     _logPageScrub(_event, _payload = {}) {}

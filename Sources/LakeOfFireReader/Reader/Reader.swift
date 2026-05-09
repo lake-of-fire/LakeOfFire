@@ -65,8 +65,12 @@ private extension View {
 }
 
 private func logSafeArea(_ message: @autoclosure () -> String) {
+    _ = message()
+}
+
+private func logMay8(_ message: @autoclosure () -> String) {
 #if DEBUG
-    debugPrint("# SAFEAREA \(message())")
+    debugPrint("# MAY8 \(message())")
 #endif
 }
 
@@ -333,14 +337,34 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
+    logMay8("native.lakeReader.syncChromeInsets.begin pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     do {
         try await evaluateJavaScript(
             """
             (function() {
+              const postMay8 = (stage, payload = {}) => {
+                try {
+                  window.webkit?.messageHandlers?.print?.postMessage(Object.assign({
+                    message: '# MAY8 chromeInset.nativeSync',
+                    stage,
+                    href: window.location.href,
+                    timestamp: Date.now(),
+                  }, payload));
+                } catch (_error) {}
+              };
+              try { window.manabiMay8EbookLayoutSnapshot?.('native-sync.before'); } catch (_error) {}
               const hasApplyFunction = typeof window.manabiApplyChromeInsets === 'function';
               const obscuredTopInset = '\(obscuredTopInsetCSS)';
               const toolbarBottomOffset = '\(toolbarBottomOffsetCSS)';
               const obscuredBottomInset = '\(obscuredBottomInsetCSS)';
+              postMay8('before', {
+                hasApplyFunction,
+                previousInsets: window.__manabiChromeInsets || null,
+                obscuredTopInset,
+                toolbarBottomOffset,
+                obscuredBottomInset,
+                revision: \(revision),
+              });
               const appliedInsets = {
                 obscuredTopInset,
                 toolbarBottomOffset,
@@ -351,6 +375,8 @@ func syncEbookViewerChromeInsets(
               window.__manabiChromeInsets = appliedInsets;
               if (hasApplyFunction) {
                 window.manabiApplyChromeInsets(appliedInsets, 'native-sync');
+                postMay8('after.applyFunction', { appliedInsets });
+                try { window.manabiMay8EbookLayoutSnapshot?.('native-sync.after.applyFunction'); } catch (_error) {}
                 return;
               }
               const targets = [document.documentElement, document.body].filter(Boolean);
@@ -359,16 +385,20 @@ func syncEbookViewerChromeInsets(
                 target.style.setProperty('--mnb-toolbar-bottom-offset', toolbarBottomOffset);
                 target.style.setProperty('--mnb-obscured-bottom-inset', obscuredBottomInset);
               }
+              postMay8('after.fallbackStyle', { appliedInsets });
+              try { window.manabiMay8EbookLayoutSnapshot?.('native-sync.after.fallbackStyle'); } catch (_error) {}
             })();
             """,
             true
         )
+        logMay8("native.lakeReader.syncChromeInsets.end pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     } catch {
         debugPrint(
             "# EPUB  ebook.viewer.insets.apply.error",
             "pageURL=\(pageURL.absoluteString)",
             "error=\(error.localizedDescription)"
         )
+        logMay8("native.lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
     }
 }
 
@@ -978,9 +1008,11 @@ public struct Reader: View {
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
+            logMay8("native.lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
         }
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
+            logMay8("native.lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) readerContentPageURL=\(readerContent.pageURL.absoluteString) chromeInsetsTaskID=\(chromeInsetsTaskID) sampledTopInset=\(sampledTopInset) explicitTopInset=\(explicitTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
             debugPrint(
                 "# EPUB  ebook.viewer.insets.task",
                 "pageURL=\(pageURL.absoluteString)",
@@ -1006,6 +1038,7 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
+                logMay8("native.lakeReader.chromeInsetsTask.attempt pageURL=\(pageURL.absoluteString) attempt=\(attempt) delayNs=\(delay) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset)")
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
                     obscuredTopInset: effectiveTopInset,

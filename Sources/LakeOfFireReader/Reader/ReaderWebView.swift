@@ -22,9 +22,7 @@ fileprivate let blockedHosts = Set([
 ])
 
 private func logSafeArea(_ message: @autoclosure () -> String) {
-#if DEBUG
-    debugPrint("# SAFEAREA \(message())")
-#endif
+    _ = message()
 }
 
 // To avoid redraws...

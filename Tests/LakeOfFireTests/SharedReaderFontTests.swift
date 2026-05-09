@@ -87,6 +87,8 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertEqual(response.response.value(forHTTPHeaderField: "Content-Type"), "text/css")
         let css = try XCTUnwrap(String(data: response.data, encoding: .utf8))
         XCTAssertTrue(css.contains("font-family: 'YuKyokasho'"), css)
+        XCTAssertTrue(css.contains(":not(rt)"), css)
+        XCTAssertTrue(css.contains("rt {\n  font-family: -apple-system"), css)
         XCTAssertTrue(css.contains("internal://local/manabi-fonts/YuKyokasho.woff2"), css)
     }
 

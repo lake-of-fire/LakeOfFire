@@ -28,13 +28,8 @@ const manabiRound = (value, digits = 1) =>
             ? Number(value.toFixed(digits))
             : null);
 const postPaginatorPageNumLog = (event, details = {}) => {
-    const payload = { event, ...details };
-    const line = `# PAGENUM ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
@@ -52,19 +47,8 @@ const postPaginatorLoadLog = (event, details = {}) => {
     }
 };
 const postMay5PaginatorLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    globalThis.__manabiMay5PaginatorLogCount = globalThis.__manabiMay5PaginatorLogCount || 0;
-    if (globalThis.__manabiMay5PaginatorLogCount >= 160) return;
-    globalThis.__manabiMay5PaginatorLogCount += 1;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY5 ${JSON.stringify({
-            event: `paginator.${event}`,
-            timestamp: Date.now(),
-            ...details,
-        })}`);
-    } catch (_error) {
-        try { console.log('# MAY5', `paginator.${event}`, details); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 const rectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
