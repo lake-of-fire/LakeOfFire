@@ -1,5 +1,5 @@
 {
-  "originHash" : "89f124a02d0f1cacfa6e1d414e70f1afc5e7e69389388fa59195d2a5c9032dc1",
+  "originHash" : "9ada261899f0f1f0814e36f7f784a6a43bcdc2e4ac410a2b528c47f9d9b8589a",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -220,8 +220,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/sqlite-data.git",
       "state" : {
-        "revision" : "da3a94ed49c7a30d82853de551c07a93196e8cab",
-        "version" : "1.6.1"
+        "revision" : "65502acdb033ec8025a0bcc443abf2f4ca0598f9",
+        "version" : "1.6.0"
       }
     },
     {

@@ -25,6 +25,9 @@ private func logSafeArea(_ message: @autoclosure () -> String) {
     _ = message()
 }
 
+private func logEPUBBack(_ message: @autoclosure () -> String) {
+}
+
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {
@@ -240,6 +243,7 @@ public struct ReaderWebView: View {
             scriptCaller: scriptCaller,
             userScripts: readerViewModel.allScripts,
             state: $readerViewModel.state,
+            readerContentPageURLString: readerContent.pageURL.absoluteString,
             ebookURLSchemeHandler: ebookURLSchemeHandler,
             readerFileURLSchemeHandler: readerFileURLSchemeHandler,
             sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
@@ -282,6 +286,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
     @Binding var state: WebViewState
+    let readerContentPageURLString: String
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     let sharedReaderFontAsset: SharedReaderFontAsset?
@@ -352,10 +357,14 @@ fileprivate struct ReaderWebViewInternal: View {
         let safeAreaBottomSignature = [
             "stage=readerWebView.resolveBottom",
             "stateURL=\(state.pageURL.absoluteString)",
+            "readerContentPageURL=\(readerContentPageURLString)",
             "usesEBookChromeInsets=\(usesEBookChromeInsets)",
+            "sampledTop=\(obscuredInsets?.top ?? 0)",
             "sampledBottom=\(obscuredInsets?.bottom ?? 0)",
+            "additionalTop=\(additionalTopSafeAreaInset ?? 0)",
             "additionalBottom=\(additionalBottomSafeAreaInset ?? 0)",
             "resolvedPolicy=sampledPlusAdditionalWhenNotEBook",
+            "resolvedTop=\(resolvedObscuredInsets.top)",
             "resolvedBottom=\(resolvedObscuredInsets.bottom)"
         ].joined(separator: " ")
 
@@ -398,6 +407,13 @@ fileprivate struct ReaderWebViewInternal: View {
         )
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
+            logEPUBBack(safeAreaBottomSignature)
+        }
+        .onAppear {
+            logEPUBBack("stage=readerWebView.appear \(safeAreaBottomSignature) navigatorAttached=\(navigator.hasAttachedWebView)")
+        }
+        .onDisappear {
+            logEPUBBack("stage=readerWebView.disappear \(safeAreaBottomSignature) navigatorAttached=\(navigator.hasAttachedWebView)")
         }
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
