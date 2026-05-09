@@ -87,7 +87,7 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         .deletingLastPathComponent()
 
     private static let readabilityScriptURL = appRepositoryRootURL
-        .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/Readability.js")
+        .appendingPathComponent("Vendor/swift-readability/Sources/SwiftReadability/Resources/Readability.js")
 
     private static let domPurifyScriptURL = appRepositoryRootURL
         .appendingPathComponent("Vendor/LakeOfFire/Sources/LakeOfFireContent/Resources/User Scripts/dompurify.min.js")

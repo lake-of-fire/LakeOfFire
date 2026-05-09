@@ -8,6 +8,7 @@ import UIKit
 import SwiftUIWebView
 import LakeOfFireCore
 import LakeOfFireAdblock
+import SwiftReadability
 
 public struct Readability: Sendable {
     public static let shared = Readability()
@@ -29,7 +30,7 @@ public struct Readability: Sendable {
             mozillaCSS = try loadModuleFile(name: "Reader", type: "css", subdirectory: "CSS", in: Bundle.module)
             swiftReadabilityCSS = try loadModuleFile(name: "SwiftReadability", type: "css", subdirectory: "CSS", in: Bundle.module)
             
-            readabilityJS = try loadModuleFile(name: "Readability", type: "js", subdirectory: "User Scripts", in: Bundle.module)
+            readabilityJS = try SwiftReadability.ReadabilityJavaScriptResource.source()
             domPurifyJS = try loadModuleFile(name: "dompurify.min", type: "js", subdirectory: "User Scripts", in: Bundle.module)
             readabilityInitializationJS = try loadModuleFile(name: "readability_initialization.template", type: "js", subdirectory: "User Scripts", in: Bundle.module)
             readabilityOriginalJS = try loadModuleFile(name: "readability_view_original", type: "js", subdirectory: "User Scripts", in: Bundle.module)

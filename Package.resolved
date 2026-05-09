@@ -1,5 +1,5 @@
 {
-  "originHash" : "9ada261899f0f1f0814e36f7f784a6a43bcdc2e4ac410a2b528c47f9d9b8589a",
+  "originHash" : "7beeb45a81b12cc0ccdb750f7b3fc265655deb80dbc07bb769d6b49b7454dc25",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -357,15 +357,6 @@
       "state" : {
         "revision" : "25ac73741c3436605d61eceb5207e896973918e7",
         "version" : "2.0.10"
-      }
-    },
-    {
-      "identity" : "swift-readability",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/swift-readability.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "d4f0824f5f4496791d01a83493ffccf3dd89c4cf"
       }
     },
     {
