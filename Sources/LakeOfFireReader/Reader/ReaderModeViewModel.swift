@@ -334,8 +334,7 @@ internal func buildCanonicalReadabilityHTML(
         """
     let availabilityAttributes = "data-mnb-reader-mode-available=\"true\" data-mnb-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-mnb-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
-    let bodyStyle = ManabiSystemUIFontCSS.cssDeclarations(from: ManabiSystemUIFontCSS.fallbackSizeMap())
-        + readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
+    let bodyStyle = readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
     let titleSuppressionCSS = """
     body.\(suppressionBodyClass) #reader-title {
         display: none !important;
@@ -343,8 +342,7 @@ internal func buildCanonicalReadabilityHTML(
     """
     let systemUICSS = """
     body.readability-mode #reader-byline-container {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: var(--mnb-system-font-size-footnote, 13px);
+        font: -apple-system-footnote;
         line-height: 20px;
     }
     body.readability-mode #reader-byline-line,
@@ -361,14 +359,12 @@ internal func buildCanonicalReadabilityHTML(
     body.readability-mode #mnb-tracking-footer button,
     body.readability-mode .mnb-start-over-book-button,
     body.readability-mode .mnb-start-over-button {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: var(--mnb-system-font-size-footnote, 13px);
+        font: -apple-system-footnote;
         font-weight: 500;
         height: 36px !important;
     }
     body.readability-mode .mnb-finished-reading-button-subtitle {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: var(--mnb-system-font-size-footnote, 13px);
+        font: -apple-system-footnote;
     }
     """
     let bodyClass = readerWritingDirectionBodyClassNames(

@@ -2333,12 +2333,18 @@ const segmentMetadataBootstrap = (doc) => {
             ? table[index]
             : fallback
     );
+    const expandSegmentIDToken = (token, version) => {
+        if (typeof token !== 'string' || token.length === 0) return null;
+        if (version === 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
+        return token;
+    };
     const expandSegmentMetadataPayload = (payload) => {
-        if (payload?.v === 2 && payload?.t && Array.isArray(payload.s)) {
+        const version = payload?.v ?? payload?.version;
+        if ((version === 2 || version === 3) && payload?.t && Array.isArray(payload.s)) {
             const tables = payload.t;
             return payload.s.map((segment) => ({
-                i: segment?.[0], // segment element ID
-                sid: segment?.[1], // stable selection ID when available
+                i: expandSegmentIDToken(segment?.[0], version), // segment element ID
+                sid: version === 3 ? tableValue(tables.h, segment?.[1], null) : segment?.[1], // stable selection ID when available
                 j: tableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
                 n: tableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
                 s: tableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
