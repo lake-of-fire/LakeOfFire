@@ -229,6 +229,17 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: ReaderFileManager.readerBackingStatusRefreshRequestedNotification)) { notification in
+            guard let contentFile = content as? ContentFile,
+                  let requestedURLString = notification.object as? String,
+                  let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url),
+                  readerBackingURL.absoluteString == requestedURLString else {
+                return
+            }
+            Task { @MainActor in
+                await cloudDriveSyncStatusModel.refreshAsync(item: contentFile)
+            }
+        }
         .onAppear {
             logBookHorizontal("onAppear")
         }

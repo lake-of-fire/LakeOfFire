@@ -239,6 +239,21 @@
         }
     }
 
+    function formatReadabilityPublishedTime(rawValue) {
+        if (!rawValue) {
+            return '';
+        }
+        let date = new Date(rawValue);
+        if (Number.isNaN(date.getTime())) {
+            return rawValue;
+        }
+        try {
+            return new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(date);
+        } catch (_error) {
+            return date.toLocaleDateString();
+        }
+    }
+
     const wikimediaHostSuffixes = [
         "mediawiki.org",
         "wikibooks.org",
@@ -428,7 +443,7 @@
                 const rawTitle = article && typeof article.title === "string" ? article.title : ""
                 const rawByline = article && typeof article.byline === "string" ? article.byline : ""
                 const rawContent = article && typeof article.content === "string" ? article.content : ""
-                const publishedTime = article && typeof article.publishedTime === "string" ? article.publishedTime : null
+                const publishedTime = article && typeof article.publishedTime === "string" ? formatReadabilityPublishedTime(article.publishedTime) : null
                 readerLog("rawContent", {
                     titleBytes: rawTitle.length,
                     bylineBytes: rawByline.length,
@@ -548,6 +563,59 @@
         }
     }
 
+    let manabi_observedReadabilityHref = window.location.href;
+    let manabi_requestReadabilityForLocationChange = function (reason) {
+        let previousHref = manabi_observedReadabilityHref;
+        let currentHref = window.location.href;
+        if (previousHref === currentHref) {
+            return;
+        }
+        manabi_observedReadabilityHref = currentHref;
+        if (document.body) {
+            document.body.dataset.mnbReaderModeAvailable = 'false';
+            document.body.dataset.isNextLoadInReaderMode = 'false';
+            delete document.body.dataset.mnbReaderModeAvailableFor;
+        }
+        manabi_requestAutomaticReadability(reason);
+        setTimeout(() => {
+            if (manabi_observedReadabilityHref === window.location.href) {
+                manabi_requestAutomaticReadability(reason + '-settled');
+            }
+        }, 500);
+        setTimeout(() => {
+            if (manabi_observedReadabilityHref === window.location.href) {
+                manabi_requestAutomaticReadability(reason + '-late');
+            }
+        }, 1500);
+    }
+
+    let manabi_installReadabilityLocationObserver = function () {
+        if (window.manabi_readabilityLocationObserverInstalled) {
+            return;
+        }
+        window.manabi_readabilityLocationObserverInstalled = true;
+        let wrapHistoryMethod = function (methodName) {
+            let original = history[methodName];
+            if (typeof original !== 'function') {
+                return;
+            }
+            history[methodName] = function () {
+                let result = original.apply(this, arguments);
+                setTimeout(() => {
+                    manabi_requestReadabilityForLocationChange(methodName);
+                }, 0);
+                return result;
+            }
+        }
+        wrapHistoryMethod('pushState');
+        wrapHistoryMethod('replaceState');
+        window.addEventListener('popstate', () => {
+            setTimeout(() => {
+                manabi_requestReadabilityForLocationChange('popstate');
+            }, 0);
+        });
+    }
+
     let manabi_debouncedReadability = manabi_debounce(function () {
         if (document.body?.dataset?.mnbReaderModeAvailableFor !== window.location.href) {
             manabi_requestAutomaticReadability('mutation')
@@ -558,6 +626,7 @@
         if (window.location.protocol === 'about:') {
             return
         }
+        manabi_installReadabilityLocationObserver()
         readerModeLog("init", {
             readyState: document.readyState || "unknown",
             hasBody: !!document.body,

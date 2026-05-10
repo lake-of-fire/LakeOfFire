@@ -329,16 +329,16 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
             return "File Missing"
-        case .notInUbiquityContainer:
+        case .localOnly:
             return "Local File"
+        case .cloudOnly:
+            return "In iCloud"
         case .downloading:
             return "Downloading from iCloud"
         case .uploading:
             return "Uploading to iCloud"
-        case .synced:
-            return "Synced with iCloud"
-        case .notSynced:
-            return "Not Synced with iCloud"
+        case .availableLocally:
+            return "Available Offline"
         case .loadingStatus:
             return nil
         }
@@ -348,16 +348,16 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
             return "exclamationmark.icloud"
-        case .notInUbiquityContainer:
+        case .localOnly:
             return "icloud.slash"
+        case .cloudOnly:
+            return "icloud"
         case .downloading:
             return "icloud.and.arrow.down"
         case .uploading:
             return "icloud.and.arrow.up"
-        case .synced:
-            return "checkmark.icloud.fill"
-        case .notSynced:
-            return "xmark.icloud"
+        case .availableLocally:
+            return "checkmark.icloud"
         case .loadingStatus:
             return nil
         }

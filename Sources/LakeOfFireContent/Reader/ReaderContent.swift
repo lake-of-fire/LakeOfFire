@@ -62,6 +62,13 @@ public class ReaderContent: ObservableObject {
     }
 
     @MainActor
+    public func refreshObservedContentState() {
+        syncLocationBarTitle()
+        syncContentTitle()
+        objectWillChange.send()
+    }
+
+    @MainActor
     public func beginMainFrameNavigationTask(to url: URL) -> UUID {
         let token = UUID()
         mainFrameNavigationTasks[token] = url

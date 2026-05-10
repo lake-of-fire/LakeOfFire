@@ -890,6 +890,19 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                         return didChange
                     }
+                    await readerContent.content?.realm?.asyncRefresh()
+                    if let observedObject = readerContent.content as? (Object & ReaderContentProtocol),
+                       observedObject.url.matchesReaderURL(url),
+                       !observedObject.isReaderModeAvailable,
+                       let observedRealm = observedObject.realm {
+                        try await observedRealm.asyncWrite {
+                            observedObject.isReaderModeAvailable = true
+                            if shouldPreserveFullContentOriginal && !observedObject.isReaderModeOfferHidden {
+                                observedObject.isReaderModeOfferHidden = true
+                            }
+                            observedObject.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    }
 
                     try await { @RealmBackgroundActor in
                         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
@@ -901,6 +914,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     print(error)
                 }
                 await readerContent.content?.realm?.asyncRefresh()
+                readerContent.refreshObservedContentState()
             }),
             ("showOriginal", { @MainActor [weak self] _ in
                 guard let self else { return }

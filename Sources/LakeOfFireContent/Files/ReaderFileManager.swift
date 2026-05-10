@@ -20,17 +20,41 @@ public enum ReaderFileManagerError: Swift.Error {
 //    static let documents = Self(path: "Documents")
 //}
 
-public enum CloudDriveSyncStatus {
+public enum CloudDriveSyncStatus: Sendable {
     case fileMissing
-    case notInUbiquityContainer
+    case localOnly
+    case cloudOnly
     case downloading
     case uploading
-    case synced
-    case notSynced
+    case availableLocally
     case loadingStatus
 }
 
 public class ReaderFileManager: ObservableObject, @unchecked Sendable {
+    public static let readerBackingStatusRefreshRequestedNotification = Notification.Name("ReaderFileManager.readerBackingStatusRefreshRequested")
+
+    private enum ReaderBackingStorageLocation: String {
+        case local
+        case icloud
+    }
+
+    private struct ReaderBackingPathContext {
+        let relativePath: RootRelativePath
+        let storageLocation: ReaderBackingStorageLocation
+        let canonicalURL: URL
+        let localRootURL: URL?
+        let cloudRootURL: URL?
+        let activeRootURL: URL?
+        let localRootExists: Bool
+        let cloudRootExists: Bool
+    }
+
+    private struct ReaderBackingAvailability {
+        let status: CloudDriveSyncStatus
+        let localURL: URL?
+        let requestedDownload: Bool
+    }
+
     private enum ContentFileIndexDecision {
         case skipArtifact
         case skipUnsupported(mimeType: String?)
@@ -126,15 +150,21 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
 
     public func resolveReadableLocalURL(forReaderBackingURL readerBackingURL: URL) async throws -> URL {
-        guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL) else {
-            throw ReaderFileManagerError.invalidFileURL
-        }
-        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: canonicalURL)
-        let localURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
-        if try await drive.fileExists(at: relativePath) {
+        let availability = try await evaluateAvailability(
+            forReaderBackingURL: readerBackingURL,
+            requestDownloadIfNeeded: true
+        )
+        switch availability.status {
+        case .localOnly, .availableLocally:
+            guard let localURL = availability.localURL else {
+                throw ReaderFileAccessError.notAvailableOffline
+            }
             return localURL
+        case .downloading:
+            throw ReaderFileAccessError.downloadInProgress
+        case .cloudOnly, .fileMissing, .loadingStatus, .uploading:
+            throw ReaderFileAccessError.notAvailableOffline
         }
-        throw ReaderFileManagerError.invalidFileURL
     }
     
     @MainActor
@@ -142,8 +172,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         hasInitializedUbiquityContainerIdentifier = true
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
+        cloudDrive?.observer = self
         //        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
+        localDrive?.observer = self
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
@@ -161,31 +193,30 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     @MainActor public func files(ofTypes types: [UTType]) -> [ContentFile]? {
-        return files?.filter { types.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
+        let allowedMimeTypes = Set(types.compactMap { $0.preferredMIMEType?.lowercased() })
+        return files?.filter {
+            !$0.isDeleted && (
+                allowedMimeTypes.contains($0.mimeType.lowercased())
+                || (allowedMimeTypes.contains("text/markdown") && ReaderContentLoader.detectFileFormat(mimeType: $0.mimeType, pathExtension: $0.url.lakePathExtension) == .markdown)
+            )
+        }
     }
     
     @MainActor
+    public func cloudDriveSyncStatus(forReaderBackingURL readerBackingURL: URL) async throws -> CloudDriveSyncStatus {
+        let availability = try await evaluateAvailability(
+            forReaderBackingURL: readerBackingURL,
+            requestDownloadIfNeeded: false
+        )
+        return availability.status
+    }
+
+    @MainActor
     public func cloudDriveSyncStatus(readerFileURL: URL) async throws -> CloudDriveSyncStatus {
-        //        try Self.validate(readerFileURL: readerFileURL)
-        let relativePath = try Self.extractRelativePath(fileURL: readerFileURL)
-        guard try await cloudDrive?.fileExists(at: relativePath) ?? false else {
-            guard try await localDrive?.fileExists(at: relativePath) ?? false else {
-                return .notInUbiquityContainer
-            }
-            return .notInUbiquityContainer
+        guard let readerBackingURL = canonicalReaderBackingURL(for: readerFileURL) else {
+            return .fileMissing
         }
-        
-        let localFileURL = try await localFileURL(forReaderFileURL: readerFileURL)
-        let values = try localFileURL.resourceValues(forKeys: [.ubiquitousItemIsUploadingKey, .ubiquitousItemIsUploadedKey, .ubiquitousItemIsDownloadingKey, .ubiquitousItemDownloadingStatusKey])
-        if let isDownloading = values.ubiquitousItemIsDownloading, isDownloading {
-            return .downloading
-        } else if let isUploading = values.ubiquitousItemIsUploading, isUploading {
-            return .uploading
-        } else if let isUploaded = values.ubiquitousItemIsUploaded, isUploaded, let downloadingStatus = values.ubiquitousItemDownloadingStatus, downloadingStatus == .current {
-            return .synced
-        } else {
-            return .notSynced
-        }
+        return try await cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL)
     }
 
     @MainActor
@@ -193,28 +224,58 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL) else {
             return .blockedLoadingStatus
         }
-        let status = (try? await cloudDriveSyncStatus(readerFileURL: canonicalURL)) ?? .loadingStatus
+        let status = (try? await cloudDriveSyncStatus(forReaderBackingURL: canonicalURL)) ?? .loadingStatus
         switch status {
-        case .loadingStatus, .downloading:
+        case .cloudOnly:
+            return .blockedCloudOnly
+        case .loadingStatus:
             return .blockedLoadingStatus
-        case .fileMissing, .notInUbiquityContainer, .uploading, .synced, .notSynced:
+        default:
             return .allowed
         }
     }
     
     @RealmBackgroundActor
-    public func delete(readerFileURL: URL) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-        //        try ReaderFileManager.validate(readerFileURL: readerFileURL)
-        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
-            await realm.asyncRefresh()
-            try await realm.asyncWrite {
-                existing.isDeleted = true
-                existing.refreshChangeMetadata(explicitlyModified: true)
-            }
+    public func delete(readerFileURL contentURL: URL) async throws {
+        guard let readerBackingURL = canonicalReaderBackingURL(for: contentURL) else {
+            throw ReaderFileDeleteError.removeFailed()
         }
-        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
-        try await drive.removeFile(at: relativePath)
+        let pathContext = try readerBackingPathContext(for: readerBackingURL)
+        let eligibility = await deleteEligibility(forReaderBackingURL: readerBackingURL)
+        switch eligibility {
+        case .blockedCloudOnly:
+            throw ReaderFileDeleteError.blockedCloudOnly
+        case .blockedLoadingStatus:
+            throw ReaderFileDeleteError.blockedLoadingStatus
+        case .allowed:
+            break
+        }
+
+        let status = try await cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL)
+        if status == .fileMissing {
+            try await markDeleted(contentURL: contentURL)
+            Task { @MainActor [weak self] in
+                try await self?.refreshAllFilesMetadata()
+            }
+            return
+        }
+
+        let drive: CloudDrive
+        if status == .localOnly, let localDrive {
+            drive = localDrive
+        } else {
+            drive = try extractCloudDrivePath(fromReaderFileURL: pathContext.canonicalURL).0
+        }
+        do {
+            if try await drive.directoryExists(at: pathContext.relativePath) {
+                try await drive.removeDirectory(at: pathContext.relativePath)
+            } else {
+                try await drive.removeFile(at: pathContext.relativePath)
+            }
+        } catch {
+            throw ReaderFileDeleteError.removeFailed(underlyingDescription: error.localizedDescription)
+        }
+        try await markDeleted(contentURL: contentURL)
         Task { @MainActor [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
@@ -276,7 +337,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     public func read(fileURL: URL) async throws -> Data? {
-        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: fileURL)
+        let readerBackingURL = canonicalReaderBackingURL(for: fileURL) ?? fileURL
+        let readableURL = try await resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
+        if readableURL.isFileURL, FileManager.default.fileExists(atPath: readableURL.path) {
+            let coordinatedFileManager = CoordinatedFileManager()
+            return try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: readableURL)
+        }
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerBackingURL)
         return try await drive.readFile(at: relativePath)
     }
     
@@ -529,18 +596,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
 
         if !filesToUpdate.isEmpty {
+            let pendingFilesToUpdate = filesToUpdate
             let updatedFiles = try await { @RealmBackgroundActor in
                 var updatedFiles = [ContentFile]()
                 var allFileRefs = [ThreadSafeReference<ContentFile>]()
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
 
                 try await realm.asyncWrite {
-                    for (readerFileURL, absoluteFileURL) in filesToUpdate {
+                    for (readerFileURL, absoluteFileURL) in pendingFilesToUpdate {
                         try Task.checkCancellation()
 
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             try Task.checkCancellation()
-                            if Self.setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
+                            if setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
                                 updatedFiles.append(existing)
                             }
                             allFileRefs.append(ThreadSafeReference(to: existing))
@@ -548,7 +616,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             let contentFile = ContentFile()
                             contentFile.url = readerFileURL
                             try Task.checkCancellation()
-                            if Self.setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
+                            if setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
                                 contentFile.updateCompoundKey()
                                 contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
                                     mimeType: contentFile.mimeType,
@@ -575,19 +643,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     /// Note that ReaderContentMetadataSynchronizer keeps associated records in sync
     @RealmBackgroundActor
-    private static func setMetadata(readerFileURL fileURL: URL, absoluteFileURL: URL, contentFile: ContentFile) -> Bool {
+    private func setMetadata(readerFileURL fileURL: URL, absoluteFileURL: URL, contentFile: ContentFile) -> Bool {
         var metadataUpdated = false
         let fileModifiedAt = Self.fileModificationDate(absoluteFileURL: absoluteFileURL)
-
-        if !contentFile.isPhysicalMedia, contentFile.publicationDate != fileModifiedAt ?? Date() {
-            contentFile.publicationDate = fileModifiedAt ?? Date()
-            metadataUpdated = true
-        }
         
         if contentFile.isDeleted {
             contentFile.isDeleted = false
             metadataUpdated = true
         }
+
+        let payloadAvailableLocally = isPayloadReadableLocallyForMetadata(readerBackingURL: fileURL)
         
         if metadataUpdated || contentFile.fileMetadataRefreshedAt ?? .distantPast <= fileModifiedAt ?? .distantPast {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -601,11 +666,18 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 pathExtension: pathExtension
             )
             
-            // contentFile.url replace with on-disk url (make a new computed var for that?)
-            if absoluteFileURL.lakePathExtension.lowercased() == "zip", let archive = try? Archive(url: absoluteFileURL, accessMode: .read) {
-                let filePaths = RealmSwift.MutableSet<String>()
-                filePaths.insert(objectsIn: archive.map { $0.path })
-                contentFile.packageFilePaths = filePaths
+            if payloadAvailableLocally {
+                if !contentFile.isPhysicalMedia, contentFile.publicationDate != fileModifiedAt ?? Date() {
+                    contentFile.publicationDate = fileModifiedAt ?? Date()
+                    metadataUpdated = true
+                }
+
+                if pathExtension.lowercased() == "zip",
+                   let archive = try? Archive(url: absoluteFileURL, accessMode: .read) {
+                    let filePaths = RealmSwift.MutableSet<String>()
+                    filePaths.insert(objectsIn: archive.map { $0.path })
+                    contentFile.packageFilePaths = filePaths
+                }
             }
             
             contentFile.fileMetadataRefreshedAt = Date()
@@ -624,11 +696,249 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
         return try relativePath.directoryURL(forRoot: drive.rootDirectory)
     }
+
+    @RealmBackgroundActor
+    private func markDeleted(contentURL: URL) async throws {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+        let contentURLString = contentURL.absoluteString
+        try await realm.asyncWrite {
+            if let existing = realm.objects(ContentFile.self)
+                .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), contentURLString as CVarArg))
+                .first {
+                existing.isDeleted = true
+                existing.refreshChangeMetadata(explicitlyModified: true)
+                let packageContentFiles = realm.objects(ContentPackageFile.self)
+                    .where { $0.packageContentFileID == existing.compoundKey && !$0.isDeleted }
+                for packageContentFile in packageContentFiles {
+                    packageContentFile.isDeleted = true
+                    packageContentFile.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        }
+    }
     
     private static func extractRelativePath(fileURL: URL) throws -> RootRelativePath {
         //        try ReaderFileManager.validate(readerFileURL: fileURL)
         let relativePath = RootRelativePath(path: String(fileURL.pathComponents.dropFirst(3).joined(separator: "/")))
         return relativePath
+    }
+
+    private func readerBackingPathContext(for readerBackingURL: URL) throws -> ReaderBackingPathContext {
+        guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let relativePath = try Self.extractRelativePath(fileURL: canonicalURL)
+        guard let driveLocation = canonicalURL.pathComponents.dropFirst(2).first,
+              let storageLocation = ReaderBackingStorageLocation(rawValue: driveLocation) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+
+        let localRootURL = try localDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
+        let cloudRootURL = try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
+        let activeRootURL: URL?
+        switch storageLocation {
+        case .local:
+            activeRootURL = localRootURL
+        case .icloud:
+            activeRootURL = cloudRootURL
+        }
+
+        return ReaderBackingPathContext(
+            relativePath: relativePath,
+            storageLocation: storageLocation,
+            canonicalURL: canonicalURL,
+            localRootURL: localRootURL,
+            cloudRootURL: cloudRootURL,
+            activeRootURL: activeRootURL,
+            localRootExists: localRootURL.map(Self.fileSystemEntryExists(at:)) ?? false,
+            cloudRootExists: cloudRootURL.map(Self.fileSystemEntryExists(at:)) ?? false
+        )
+    }
+
+    private func evaluateAvailability(
+        forReaderBackingURL readerBackingURL: URL,
+        requestDownloadIfNeeded: Bool
+    ) async throws -> ReaderBackingAvailability {
+        let context = try readerBackingPathContext(for: readerBackingURL)
+
+        switch context.storageLocation {
+        case .local:
+            if context.localRootExists {
+                return ReaderBackingAvailability(status: .localOnly, localURL: context.localRootURL, requestedDownload: false)
+            }
+            return ReaderBackingAvailability(status: .fileMissing, localURL: nil, requestedDownload: false)
+        case .icloud:
+            guard cloudDrive != nil else {
+                return ReaderBackingAvailability(status: .loadingStatus, localURL: nil, requestedDownload: false)
+            }
+            if !context.cloudRootExists {
+                if context.localRootExists {
+                    return ReaderBackingAvailability(status: .localOnly, localURL: context.localRootURL, requestedDownload: false)
+                }
+                return ReaderBackingAvailability(status: .fileMissing, localURL: nil, requestedDownload: false)
+            }
+        }
+
+        guard let activeRootURL = context.activeRootURL else {
+            return ReaderBackingAvailability(status: .loadingStatus, localURL: nil, requestedDownload: false)
+        }
+
+        let requiredPayloadURLs = try Self.requiredPayloadURLs(at: activeRootURL)
+        let payloadURLs = requiredPayloadURLs.isEmpty ? [activeRootURL] : requiredPayloadURLs
+        var hasUploadingPayload = false
+        var hasDownloadingPayload = false
+        var missingPayloadURLs = [URL]()
+
+        for payloadURL in payloadURLs {
+            switch Self.payloadState(at: payloadURL) {
+            case .current:
+                continue
+            case .downloading:
+                hasDownloadingPayload = true
+            case .uploading:
+                hasUploadingPayload = true
+            case .notLocal:
+                missingPayloadURLs.append(payloadURL)
+            }
+        }
+
+        if hasUploadingPayload {
+            return ReaderBackingAvailability(status: .uploading, localURL: activeRootURL, requestedDownload: false)
+        }
+        if hasDownloadingPayload {
+            return ReaderBackingAvailability(status: .downloading, localURL: activeRootURL, requestedDownload: false)
+        }
+
+        var requestedDownload = false
+        if requestDownloadIfNeeded, !missingPayloadURLs.isEmpty {
+            for payloadURL in missingPayloadURLs {
+                do {
+                    try FileManager.default.startDownloadingUbiquitousItem(at: payloadURL)
+                    requestedDownload = true
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        if requestedDownload {
+            Self.postReaderBackingStatusRefresh(for: context.canonicalURL)
+            return ReaderBackingAvailability(status: .downloading, localURL: activeRootURL, requestedDownload: true)
+        }
+
+        if !missingPayloadURLs.isEmpty {
+            return ReaderBackingAvailability(status: .cloudOnly, localURL: activeRootURL, requestedDownload: false)
+        }
+
+        guard try await Self.canCoordinateRead(rootURL: activeRootURL) else {
+            return ReaderBackingAvailability(status: .cloudOnly, localURL: activeRootURL, requestedDownload: false)
+        }
+
+        return ReaderBackingAvailability(status: .availableLocally, localURL: activeRootURL, requestedDownload: false)
+    }
+
+    private enum PayloadState: Equatable {
+        case current
+        case downloading
+        case uploading
+        case notLocal
+    }
+
+    private static func payloadState(at url: URL) -> PayloadState {
+        guard fileSystemEntryExists(at: url) else {
+            return .notLocal
+        }
+        let values = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemIsDownloadingKey,
+            .ubiquitousItemIsUploadingKey,
+            .ubiquitousItemDownloadingStatusKey,
+        ])
+        if values?.isUbiquitousItem == true {
+            if values?.ubiquitousItemIsUploading == true {
+                return .uploading
+            }
+            if values?.ubiquitousItemIsDownloading == true {
+                return .downloading
+            }
+            if values?.ubiquitousItemDownloadingStatus == .current {
+                return .current
+            }
+            return .notLocal
+        }
+        return .current
+    }
+
+    private static func requiredPayloadURLs(at rootURL: URL) throws -> [URL] {
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
+            return []
+        }
+        guard isDirectory.boolValue else {
+            return [rootURL]
+        }
+        var payloadURLs = [URL]()
+        if let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let fileURL as URL in enumerator {
+                if (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                    payloadURLs.append(fileURL)
+                }
+            }
+        }
+        return payloadURLs
+    }
+
+    private static func canCoordinateRead(rootURL: URL) async throws -> Bool {
+        let coordinatedFileManager = CoordinatedFileManager()
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        if isDirectory.boolValue {
+            _ = try await coordinatedFileManager.contentsOfDirectory(
+                coordinatingAccessAt: rootURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            return true
+        }
+        _ = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: rootURL)
+        return true
+    }
+
+    private func isPayloadReadableLocallyForMetadata(readerBackingURL: URL) -> Bool {
+        guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL),
+              let context = try? readerBackingPathContext(for: canonicalURL),
+              let activeRootURL = context.activeRootURL else {
+            return false
+        }
+
+        switch context.storageLocation {
+        case .local:
+            return context.localRootExists
+        case .icloud:
+            guard context.cloudRootExists else {
+                return false
+            }
+            let requiredPayloadURLs = (try? Self.requiredPayloadURLs(at: activeRootURL)) ?? []
+            let payloadURLs = requiredPayloadURLs.isEmpty ? [activeRootURL] : requiredPayloadURLs
+            return payloadURLs.allSatisfy { Self.payloadState(at: $0) == .current }
+        }
+    }
+
+    private static func fileSystemEntryExists(at url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private static func postReaderBackingStatusRefresh(for readerBackingURL: URL) {
+        NotificationCenter.default.post(
+            name: readerBackingStatusRefreshRequestedNotification,
+            object: readerBackingURL.absoluteString
+        )
     }
     
     private static func fileModificationDate(absoluteFileURL: URL) -> Date? {
