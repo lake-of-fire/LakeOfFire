@@ -887,6 +887,23 @@ const postEPUBLog = (event, details = {}) => {
     }
 };
 
+const postEPUBLoadLog = (stage, details = {}) => {
+    const payload = {
+        prefix: '# EPUBLOAD',
+        stage,
+        timestamp: Date.now(),
+    };
+    for (const [key, value] of Object.entries(details)) {
+        if (value === undefined || value === null) continue;
+        payload[key] = value;
+    }
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (error) {
+        try { console.log('# EPUBLOAD', stage, details, error); } catch (_) {}
+    }
+};
+
 const isCacheWarmerDocument = (doc) => doc?.body?.dataset?.isCacheWarmer === 'true';
 
 const captureEPUBOverlapState = () => ({
@@ -3173,12 +3190,34 @@ name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
 const getView = async (source, isCacheWarmer) => {
     let book
+    const startedAt = performanceNowMs();
+    postEPUBLoadLog('js.getView.start', {
+        sourceKind: source?.kind ?? null,
+        isCacheWarmer: !!isCacheWarmer,
+        sourceURL: source?.url ?? null,
+    });
     if (source?.kind === 'native' && source.url) {
         const {
             EPUB
         } = await import('./epub.js')
+        postEPUBLoadLog('js.getView.epubModuleReady', {
+            isCacheWarmer: !!isCacheWarmer,
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+            sourceURL: source.url,
+        });
         const loader = await makeNativeEpubLoader(source.url, isCacheWarmer)
+        postEPUBLoadLog('js.getView.loaderReady', {
+            isCacheWarmer: !!isCacheWarmer,
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+            sourceURL: source.url,
+        });
         book = await new EPUB(loader).init()
+        postEPUBLoadLog('js.getView.bookReady', {
+            isCacheWarmer: !!isCacheWarmer,
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+            sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
+            sourceURL: source.url,
+        });
     } else if (source?.kind === 'file' && source.file?.size) {
         const file = source.file
         if (await isZip(file)) {
@@ -3230,6 +3269,13 @@ const getView = async (source, isCacheWarmer) => {
         parentID: view.parentElement?.id ?? null,
         parentTag: view.parentElement?.tagName ?? null,
     });
+    postEPUBLoadLog('js.getView.appended', {
+        isCacheWarmer: !!isCacheWarmer,
+        elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        parentID: view.parentElement?.id ?? null,
+        parentTag: view.parentElement?.tagName ?? null,
+        sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
+    });
     forwardShadowErrors(view.shadowRoot);
     if (isCacheWarmer) {
         view.style.display = 'none'
@@ -3240,7 +3286,18 @@ const getView = async (source, isCacheWarmer) => {
         view.style.height = 0
         view.style.pointerEvents = 'none'
     }
+    postEPUBLoadLog('js.getView.viewOpen.start', {
+        isCacheWarmer: !!isCacheWarmer,
+        elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
+    });
     await view.open(book, isCacheWarmer)
+    postEPUBLoadLog('js.getView.viewOpen.end', {
+        isCacheWarmer: !!isCacheWarmer,
+        elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        hasRenderer: !!view?.renderer,
+        rendererName: view?.renderer?.localName ?? null,
+    });
     postReaderVisibilityProbe('getView:opened', view, {
         isCacheWarmer: !!isCacheWarmer,
         bookDir: book?.dir || null,
@@ -5180,51 +5237,6 @@ class Reader {
         }
         this.lastLayoutSnapshot = layoutSnapshot;
         this.lastLayoutDiagnosticsKey = key;
-        postMay5Log('layout.toolbarGap', {
-            reason,
-            currentPercent: layoutSnapshot.currentPercent,
-            navHiddenDueToScroll: document.getElementById('nav-bar')?.classList?.contains('nav-hidden-due-to-scroll') ?? null,
-            bodyClassName: document.body?.className ?? null,
-            cssInsets: layoutSnapshot.cssInsets,
-            htmlCssInsets: layoutSnapshot.htmlCssInsets,
-            visualViewportBox: layoutSnapshot.visualViewportBox,
-            readerStageRect: layoutSnapshot.readerStageRect,
-            navBarRect: layoutSnapshot.navBarRect,
-            pageTrackingRect: layoutSnapshot.pageTrackingRect,
-            pageReadButtonRect: layoutSnapshot.pageReadButtonRect,
-            liveFoliateViewRect: layoutSnapshot.liveFoliateViewRect,
-            livePaginatorRect: layoutSnapshot.livePaginatorRect,
-            rendererLocalName: layoutSnapshot.rendererLocalName,
-            rendererRect: layoutSnapshot.rendererRect,
-            paginatorShadowChildren: layoutSnapshot.paginatorShadowChildren,
-            paginatorContainerChildren: layoutSnapshot.paginatorContainerChildren,
-            foliateViewShadowChildren: layoutSnapshot.foliateViewShadowChildren,
-            iframeCount: layoutSnapshot.iframeCount,
-            iframeSearchSources: layoutSnapshot.iframeSearchSources,
-            iframeCandidateRects: layoutSnapshot.iframeCandidateRects,
-            iframeAccessError: layoutSnapshot.iframeAccessError,
-            visibleFrameRect: layoutSnapshot.visibleFrameRect,
-            visibleTextRect: layoutSnapshot.visibleTextRect,
-            viewportVisibleTextRect: layoutSnapshot.viewportVisibleTextRect,
-            lastVisibleTextRect: layoutSnapshot.lastVisibleTextRect,
-            visibleTextRectCount: layoutSnapshot.visibleTextRectCount,
-            viewportVisibleTextRectCount: layoutSnapshot.viewportVisibleTextRectCount,
-            toolbarGapPx: layoutSnapshot.toolbarGapPx,
-            toolbarGapLastRectPx: layoutSnapshot.toolbarGapLastRectPx,
-            toolbarGapViewportTextPx: layoutSnapshot.toolbarGapViewportTextPx,
-            stageGapPx: layoutSnapshot.stageGapPx,
-            frameBottomToLastTextBottomPx: layoutSnapshot.frameBottomToLastTextBottomPx,
-            viewportFrameBottomToTextBottomPx: layoutSnapshot.viewportFrameBottomToTextBottomPx,
-            iframeWritingMode: layoutSnapshot.iframeWritingMode,
-            iframeBodyClientBox: layoutSnapshot.iframeBodyClientBox,
-            iframeBodyScrollBox: layoutSnapshot.iframeBodyScrollBox,
-            iframeMargins: layoutSnapshot.iframeMargins,
-            iframePadding: layoutSnapshot.iframePadding,
-            pagesLeftLabelRect: layoutSnapshot.pagesLeftLabelRect,
-            pagesLeftLabelHidden: layoutSnapshot.pagesLeftLabelHidden,
-            pagesLeftLabelVisibleAttr: layoutSnapshot.pagesLeftLabelVisibleAttr,
-            pagesLeftLabelText: layoutSnapshot.pagesLeftLabelText,
-        });
         if (shouldLogLayout) {
             postEPUBLog('ebook.layout.diagnostics', layoutSnapshot);
         }
@@ -6171,6 +6183,10 @@ class Reader {
             fileKind: file?.kind || 'nil',
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
         });
+        postEPUBLoadLog('js.reader.open.begin', {
+            fileKind: file?.kind || 'nil',
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+        });
 
         this.hasLoadedLastPosition = false
         this.lastCFIPersistenceObservation = null;
@@ -6181,6 +6197,11 @@ class Reader {
         }
         this.hasSettledInitialPaginatorLayout = false;
         this.view = await getView(file, false)
+        postEPUBLoadLog('js.reader.open.viewAssigned', {
+            elapsedMs: safeRound(performanceNowMs() - readerOpenStartedAt, 1),
+            hasRenderer: !!this.view?.renderer,
+            hasBook: !!this.view?.book,
+        });
         markEPUBPerf('view.ready', {
             hasRenderer: !!this.view?.renderer,
             hasBook: !!this.view?.book,
@@ -6610,6 +6631,11 @@ class Reader {
             hasRenderer: !!this.view?.renderer,
             bodyClassName: document.body?.className || 'nil',
         });
+        postEPUBLoadLog('js.reader.open.end', {
+            elapsedMs: safeRound(performanceNowMs() - readerOpenStartedAt, 1),
+            hasRenderer: !!this.view?.renderer,
+            bodyClassName: document.body?.className || 'nil',
+        });
         markEPUBPerf('reader.open.end', {
             elapsedMs: safeRound(
                 (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -6910,6 +6936,12 @@ class Reader {
         this.setLoadingIndicator(true);
     }
     async #onDidDisplay({}) {
+        postEPUBLoadLog('js.reader.didDisplay.begin', {
+            bodyClassName: document.body?.className || 'nil',
+            hasRenderer: !!this.view?.renderer,
+            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+        });
         const navVisibilityBefore = captureNavVisibilityState();
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
@@ -6933,6 +6965,12 @@ class Reader {
             allowWhileLoading: true,
         });
         this.setLoadingIndicator(false);
+        postEPUBLoadLog('js.reader.didDisplay.loadingCleared', {
+            bodyClassName: document.body?.className || 'nil',
+            hasRenderer: !!this.view?.renderer,
+            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
+        });
         postEPUBFlashLog('js.renderer.didDisplay.afterLoadingClear', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -6990,6 +7028,14 @@ class Reader {
             doc
         }
     }) {
+        postEPUBLoadLog('js.reader.documentLoad', {
+            documentURL: doc?.location?.href || null,
+            readyState: doc?.readyState ?? null,
+            isCacheWarmerDocument: isCacheWarmerDocument(doc),
+            bodyTextLength: doc?.body?.innerText?.length ?? null,
+            bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+            bodyClassName: document.body?.className || 'nil',
+        });
         applyStoredChromeInsets('reader.documentLoad');
         markEPUBPerf('document.load.first', {
             documentURL: doc?.location?.href || null,

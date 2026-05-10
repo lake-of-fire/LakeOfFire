@@ -35,6 +35,19 @@ const postPaginatorPageNumLog = (event, details = {}) => {
         try { console.log(line); } catch (_) {}
     }
 };
+const postEPUBLoadLog = (stage, details = {}) => {
+    const payload = {
+        prefix: '# EPUBLOAD',
+        stage,
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (_error) {
+        try { console.log('# EPUBLOAD', stage, details); } catch (_) {}
+    }
+};
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
@@ -195,6 +208,37 @@ async function getDirection({ bodylessStyle, bodylessDoc }) {
     return { vertical, verticalRTL, rtl };
 }
 
+function getDirectionFromDocument(doc) {
+    const body = doc?.body;
+    const documentElement = doc?.documentElement;
+    if (!body || !documentElement) return null;
+    const explicitDirection = body.getAttribute('data-mnb-writing-direction')?.trim?.().toLowerCase?.() ?? null;
+    const classList = body.classList;
+    const styleText = [
+        body.getAttribute('style') ?? '',
+        documentElement.getAttribute('style') ?? '',
+        doc.getElementById?.('mnb-writing-direction-bootstrap')?.textContent ?? '',
+    ].join(';');
+    const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
+    const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
+    let writingMode = writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    if (!writingMode && (explicitDirection === 'vertical' || classList?.contains?.('reader-vertical-writing'))) {
+        writingMode = 'vertical-rl';
+    }
+    if (!writingMode && explicitDirection === 'horizontal') {
+        writingMode = 'horizontal-tb';
+    }
+    if (!writingMode) return null;
+    const direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+        body.dir === 'rtl' ||
+        documentElement.dir === 'rtl' ||
+        direction === 'rtl';
+    return { vertical, verticalRTL, rtl, writingMode, direction };
+}
+
 const makeMarginals = (length, part) => Array.from({
     length
 }, () => {
@@ -343,40 +387,103 @@ class View {
     }
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
+        const loadStartedAt = manabiPerfNow();
+        postEPUBLoadLog('js.paginator.view.load.start', {
+            src,
+            isCacheWarmer: !!this.#isCacheWarmer,
+        });
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
         return new Promise(async (resolve) => {
             if (this.#isCacheWarmer) {
                 console.log("Don't create View for cache warmers")
+                postEPUBLoadLog('js.paginator.view.load.cacheWarmerSkip', {
+                    elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                    src,
+                });
                 resolve()
             } else {
                 this.#iframe.addEventListener('load', async () => {
                     const doc = this.document
+                    postEPUBLoadLog('js.paginator.view.iframeLoad', {
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        src,
+                        documentURL: doc?.location?.href ?? null,
+                        readyState: doc?.readyState ?? null,
+                        bodyBytes: doc?.documentElement?.outerHTML?.length ?? null,
+                    });
 
+                    const afterLoadStartedAt = manabiPerfNow();
                     await afterLoad?.(doc)
+                    postEPUBLoadLog('js.paginator.view.afterLoad.end', {
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        phaseElapsedMs: manabiRound(manabiPerfNow() - afterLoadStartedAt, 1),
+                        src,
+                        documentURL: doc?.location?.href ?? null,
+                    });
 
-                    const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
-                    const direction = await getDirection({ bodylessStyle, bodylessDoc });
+                    const directionStartedAt = manabiPerfNow();
+                    let direction = getDirectionFromDocument(doc);
+                    let directionSource = 'document';
+                    if (!direction) {
+                        const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
+                        direction = await getDirection({ bodylessStyle, bodylessDoc });
+                        directionSource = 'bodyless-iframe';
+                    }
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
                     this.#directionReadyResolve?.();
+                    postEPUBLoadLog('js.paginator.view.directionReady', {
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        phaseElapsedMs: manabiRound(manabiPerfNow() - directionStartedAt, 1),
+                        src,
+                        vertical: !!this.#vertical,
+                        verticalRTL: !!this.#verticalRTL,
+                        rtl: !!this.#rtl,
+                        directionSource,
+                        writingMode: direction.writingMode ?? null,
+                    });
 
                     this.#contentRange.selectNodeContents(doc.body)
 
+                    const beforeRenderStartedAt = manabiPerfNow();
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
                     })
+                    postEPUBLoadLog('js.paginator.view.beforeRender.end', {
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        phaseElapsedMs: manabiRound(manabiPerfNow() - beforeRenderStartedAt, 1),
+                        src,
+                        hasLayout: !!layout,
+                        layoutFlow: layout?.flow ?? null,
+                    });
+                    const renderStartedAt = manabiPerfNow();
                     await this.render(layout)
+                    postEPUBLoadLog('js.paginator.view.render.end', {
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        phaseElapsedMs: manabiRound(manabiPerfNow() - renderStartedAt, 1),
+                        src,
+                        hasLayout: !!layout,
+                    });
 
                     this.#resizeObserver.observe(doc.body)
 
+                    postEPUBLoadLog('js.paginator.view.load.end', {
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        src,
+                        documentURL: doc?.location?.href ?? null,
+                    });
                     resolve()
                 }, {
                     once: true
                 })
+                postEPUBLoadLog('js.paginator.view.iframeSrc.set', {
+                    elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                    src,
+                });
                 this.#iframe.src = src
             }
         })
@@ -1847,7 +1954,56 @@ export class Paginator extends HTMLElement {
     }
     async scrollToAnchor(anchor, select) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
-        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        await this.#fastScrollToAnchor(anchor, select ? 'selection' : 'navigation')
+    }
+    async #fastScrollToAnchor(anchor, reason = 'anchor') {
+        await this.#awaitDirection();
+        this.#anchor = anchor;
+        const anchorNode = uncollapse(anchor);
+        let node = anchorNode;
+        if (node && node.startContainer !== undefined) {
+            node = node.startContainer;
+        }
+        if (node && (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE)) {
+            const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+            if (element && element.nodeType === Node.ELEMENT_NODE) {
+                let left = element.offsetLeft;
+                let top = element.offsetTop;
+                const width = element.offsetWidth;
+                const height = element.offsetHeight;
+                let current = element;
+                let doc = element.ownerDocument;
+                while (current && current !== this.#container) {
+                    const parent = current.offsetParent;
+                    if (!parent) {
+                        const win = doc.defaultView;
+                        if (win && win.frameElement) {
+                            current = win.frameElement;
+                            doc = current.ownerDocument;
+                            left += current.offsetLeft;
+                            top += current.offsetTop;
+                            continue;
+                        }
+                        break;
+                    }
+                    current = parent;
+                    left += current.offsetLeft;
+                    top += current.offsetTop;
+                }
+                if (width > 0 || height > 0) {
+                    await this.#scrollToRect({
+                        left,
+                        right: left + width,
+                        top,
+                        bottom: top + height,
+                        width,
+                        height
+                    }, reason);
+                    return;
+                }
+            }
+        }
+        await this.#scrollToAnchor(anchor, reason);
     }
     // TODO: Fix newer way and stop using this one that calculates getClientRects
     async #scrollToAnchor(anchor, reason = 'anchor') {
@@ -2107,6 +2263,10 @@ export class Paginator extends HTMLElement {
         //            console.log("#display...")
         this.#setLoading(true)
         const displayStartedAt = manabiPerfNow();
+        postEPUBLoadLog('js.paginator.display.start', {
+            currentIndex: this.#index,
+            isCacheWarmer: !!this.#isCacheWarmer,
+        });
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('display.start', {
                 currentIndex: this.#index,
@@ -2121,6 +2281,16 @@ export class Paginator extends HTMLElement {
             onLoad,
             select
         } = await promise
+        postEPUBLoadLog('js.paginator.display.promiseResolved', {
+            currentIndex: this.#index,
+            targetIndex: index,
+            hasSource: !!src,
+            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+            isCacheWarmer: !!this.#isCacheWarmer,
+        });
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('display.resolved', {
                 targetIndex: index,
@@ -2189,8 +2359,18 @@ export class Paginator extends HTMLElement {
                         once: true,
                     });
                 }
+                postEPUBLoadLog('js.paginator.display.viewLoad.start', {
+                    targetIndex: index,
+                    src,
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                });
                 await view.load(src, afterLoad, beforeRender)
                 //                console.log("#display... awaited load")
+                postEPUBLoadLog('js.paginator.display.viewLoad.end', {
+                    targetIndex: index,
+                    src,
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                });
                 this.#destroyPreviousView(view, 'after-new-view-load')
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
@@ -2226,6 +2406,11 @@ export class Paginator extends HTMLElement {
         }
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        postEPUBLoadLog('js.paginator.display.scrollToAnchor.end', {
+            targetIndex: index,
+            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+            phaseElapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
+        });
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('scroll-to-anchor.end', {
@@ -2237,6 +2422,10 @@ export class Paginator extends HTMLElement {
         }
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
+        postEPUBLoadLog('js.paginator.display.didDisplay.dispatch', {
+            targetIndex: index,
+            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        });
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('did-display.dispatch', {
                 targetIndex: index,
@@ -2257,10 +2446,19 @@ export class Paginator extends HTMLElement {
         select
     }) {
         //        console.log("#goTo...", this.style.display, index, anchor)
+        const goToStartedAt = manabiPerfNow();
         const willLoadNewIndex = index !== this.#index;
         const anchorKind = typeof anchor === 'function'
             ? 'function'
             : (anchor instanceof Range ? 'range' : typeof anchor);
+        postEPUBLoadLog('js.paginator.goTo.start', {
+            index,
+            currentIndex: this.#index,
+            willLoadNewIndex,
+            anchorKind,
+            select: !!select,
+            isCacheWarmer: !!this.#isCacheWarmer,
+        });
         if (!willLoadNewIndex && anchor == null && !select) {
             try {
                 window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
@@ -2302,6 +2500,11 @@ export class Paginator extends HTMLElement {
                 anchor,
                 select
             })
+            postEPUBLoadLog('js.paginator.goTo.end', {
+                index,
+                willLoadNewIndex,
+                elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
+            });
         } else {
             // hide the view until final relocate needs
             this.style.display = 'none'
@@ -2325,9 +2528,18 @@ export class Paginator extends HTMLElement {
             let loadPromise;
             if (this.#prefetchCache.has(index)) {
                 loadPromise = this.#prefetchCache.get(index);
+                postEPUBLoadLog('js.paginator.goTo.loadPromise.cacheHit', {
+                    index,
+                    elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
+                });
             } else {
                 loadPromise = this.sections[index].load();
                 this.#prefetchCache.set(index, loadPromise);
+                postEPUBLoadLog('js.paginator.goTo.loadPromise.created', {
+                    index,
+                    sectionHref: this.sections[index]?.href ?? this.sections[index]?.id ?? null,
+                    elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
+                });
             }
             await this.#display(Promise.resolve(loadPromise)
                 .then(src => ({
@@ -2342,6 +2554,11 @@ export class Paginator extends HTMLElement {
                     console.warn(new Error(`Failed to load section ${index}`));
                     return {};
                 }));
+            postEPUBLoadLog('js.paginator.goTo.end', {
+                index,
+                willLoadNewIndex,
+                elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
+            });
 
             clearTimeout(this.#prefetchTimer);
             this.#prefetchTimer = setTimeout(() => {

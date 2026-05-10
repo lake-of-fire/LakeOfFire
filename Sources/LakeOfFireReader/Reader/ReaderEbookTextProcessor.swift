@@ -263,6 +263,14 @@ internal func ebookTextProcessor(
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
     let totalStartedAt = Date()
+    debugPrint(
+        "# EPUBLOAD",
+        "stage=ebookTextProcessor.start",
+        "sectionLocation=\(sectionLocation)",
+        "isCacheWarmer=\(isCacheWarmer)",
+        "inputBytes=\(content.utf8.count)",
+        "contentURL=\(String(contentURL.absoluteString.prefix(80)))"
+    )
     var readabilityProcessElapsedMs = 0
     var fallbackParseElapsedMs = 0
     var readerModeProcessElapsedMs = 0
@@ -363,6 +371,25 @@ internal func ebookTextProcessor(
         let responseDecodeStartedAt = Date()
         let response = String(decoding: htmlBytes, as: UTF8.self)
         responseDecodeElapsedMs = Int(Date().timeIntervalSince(responseDecodeStartedAt) * 1000)
+        let totalElapsedMs = Int(Date().timeIntervalSince(totalStartedAt) * 1000)
+        debugPrint(
+            "# EPUBLOAD",
+            "stage=ebookTextProcessor.finish",
+            "sectionLocation=\(sectionLocation)",
+            "isCacheWarmer=\(isCacheWarmer)",
+            "inputBytes=\(content.utf8.count)",
+            "responseBytes=\(htmlBytes.count)",
+            "readabilityProcessMs=\(readabilityProcessElapsedMs)",
+            "fallbackParseMs=\(fallbackParseElapsedMs)",
+            "readerModeProcessMs=\(readerModeProcessElapsedMs)",
+            "preprocessEbookMs=\(preprocessEbookElapsedMs)",
+            "serializeMs=\(serializeElapsedMs)",
+            "processHTMLBytesMs=\(processHTMLBytesElapsedMs)",
+            "processHTMLMs=\(processHTMLElapsedMs)",
+            "responseDecodeMs=\(responseDecodeElapsedMs)",
+            "elapsedMs=\(totalElapsedMs)",
+            "contentURL=\(String(contentURL.absoluteString.prefix(80)))"
+        )
         debugPrint(
             "# REPLACETEXT",
             "native.ebookTextProcessor.responseSummary",
@@ -380,11 +407,20 @@ internal func ebookTextProcessor(
                 "processHTMLBytesMs": processHTMLBytesElapsedMs,
                 "processHTMLMs": processHTMLElapsedMs,
                 "responseDecodeMs": responseDecodeElapsedMs,
-                "elapsedMs": Int(Date().timeIntervalSince(totalStartedAt) * 1000)
+                "elapsedMs": totalElapsedMs
             ] as [String: Any]
         )
         return response
     } catch {
+        debugPrint(
+            "# EPUBLOAD",
+            "stage=ebookTextProcessor.error",
+            "sectionLocation=\(sectionLocation)",
+            "isCacheWarmer=\(isCacheWarmer)",
+            "elapsedMs=\(Int(Date().timeIntervalSince(totalStartedAt) * 1000))",
+            "error=\(String(describing: error))",
+            "contentURL=\(String(contentURL.absoluteString.prefix(80)))"
+        )
         debugPrint("Error processing readability content for ebook", error)
     }
     return content
