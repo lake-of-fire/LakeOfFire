@@ -865,6 +865,7 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
+    #skipNextAnchorScrollOnExpand = false
     #pendingPageTurnDirection = null
     #queuedPageTurn = null
 
@@ -1154,9 +1155,13 @@ export class Paginator extends HTMLElement {
         this.#invalidateVisibleRangeCache()
 
         if (this.#scrolledToAnchorOnLoad) {
-            // wait a frame to ensure layout has settled before scrolling
-            await new Promise(resolve => requestAnimationFrame(resolve));
-            await this.#scrollToAnchor(this.#anchor);
+            if (this.#skipNextAnchorScrollOnExpand) {
+                this.#skipNextAnchorScrollOnExpand = false
+            } else {
+                // wait a frame to ensure layout has settled before scrolling
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                await this.#scrollToAnchor(this.#anchor);
+            }
         }
 
         this.#setLoading(false)
@@ -2469,6 +2474,7 @@ export class Paginator extends HTMLElement {
                 this.#invalidateVisibleRangeCache()
                 //                console.log("#display... scrolledToAnchorOnLoad = false")
                 this.#scrolledToAnchorOnLoad = false
+                this.#skipNextAnchorScrollOnExpand = false
 
                 //                console.log("#display... await load")
                 if (!this.#isCacheWarmer) {
@@ -2553,7 +2559,29 @@ export class Paginator extends HTMLElement {
             totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         });
         this.#scrolledToAnchorOnLoad = true
+        this.#skipNextAnchorScrollOnExpand = true
         this.#setLoading(false)
+        let pageCurrent = null
+        let pageTotal = null
+        try {
+            pageCurrent = await this.page()
+            pageTotal = await this.pages()
+        } catch (_error) {}
+        const displaySummary = {
+            targetIndex: index,
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+            select: !!select,
+            pageCurrent,
+            pageTotal,
+            viewRect: rectSnapshot(this.#view?.element),
+            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
+            totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        }
+        if (displaySummary.anchorKind === 'function' && (pageCurrent ?? 1) > 1) {
+            postPaginatorLoadLog('display.anchor-anomaly', displaySummary)
+        }
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('did-display.dispatch', {
                 targetIndex: index,
@@ -2769,7 +2797,7 @@ export class Paginator extends HTMLElement {
             const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
             if (shouldGo) await this.#goTo({
                 index: this.#adjacentIndex(dir),
-                anchor: prev ? () => 1 : () => 0,
+                anchor: prev && !this.#vertical ? () => 1 : () => 0,
             })
             if (shouldGo || !this.hasAttribute('animated')) await wait(100)
         } finally {

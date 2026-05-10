@@ -981,9 +981,9 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                 let propertyName = property.name
                 if property.type == .object, let objectType = property.objectClassName {
                     let primaryKey = realm.schema[objectType]?.primaryKeyProperty?.name ?? ""
-                    if let entryValue = entry.value(forKey: propertyName) as? Object,
-                       let existingValue = existingEntry.value(forKey: propertyName) as? Object {
-                        if entryValue.value(forKey: primaryKey) as? String != existingValue.value(forKey: primaryKey) as? String {
+                    if let entryValue = entry[propertyName] as? Object,
+                       let existingValue = existingEntry[propertyName] as? Object {
+                        if entryValue[primaryKey] as? String != existingValue[primaryKey] as? String {
                             differentEntries.append(entry)
                             break
                         }
@@ -991,14 +991,14 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                 } else if property.isArray {
                     switch property.type {
                     case .string:
-                        if let entryList = entry.value(forKey: propertyName) as? List<String>,
-                           let existingList = existingEntry.value(forKey: propertyName) as? List<String>,
+                        if let entryList = entry[propertyName] as? List<String>,
+                           let existingList = existingEntry[propertyName] as? List<String>,
                            entryList != existingList {
                             differentEntries.append(entry)
                             break
                         }
-                        if let entryList = entry.value(forKey: propertyName) as? List<URL>,
-                           let existingList = existingEntry.value(forKey: propertyName) as? List<URL>,
+                        if let entryList = entry[propertyName] as? List<URL>,
+                           let existingList = existingEntry[propertyName] as? List<URL>,
                            entryList.map(\.absoluteString) != existingList.map(\.absoluteString) {
                             differentEntries.append(entry)
                             break
@@ -1012,7 +1012,7 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                         differentEntries.append(entry)
                         break
                     }
-                } else if entry.value(forKey: propertyName) as? NSObject != existingEntry.value(forKey: propertyName) as? NSObject {
+                } else if entry[propertyName] as? NSObject != existingEntry[propertyName] as? NSObject {
                     differentEntries.append(entry)
                     break
                 }

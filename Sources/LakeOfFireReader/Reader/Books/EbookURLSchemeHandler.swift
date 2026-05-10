@@ -40,8 +40,23 @@ fileprivate func logEbookAsset(_ line: String) {
     Logger.shared.logger.info("\(line)")
 }
 
+fileprivate let ebookLoadVerboseLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_EPUBLOAD_VERBOSE_LOGS"] == "1"
+
+fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any]) -> Bool {
+    if ebookLoadVerboseLoggingEnabled { return true }
+    if event.contains("error") { return true }
+    if payload["isCacheWarmer"] as? Bool == true { return false }
+    if event == "viewer.start" || event == "viewer.response" { return true }
+    if event == "entries.response" { return true }
+    if let elapsedMs = payload["elapsedMs"] as? Int, elapsedMs >= 1_000 { return true }
+    return false
+}
+
 fileprivate func logEbookLoad(_ event: String, _ payload: @autoclosure () -> [String: Any] = [:]) {
-    let details = payload()
+    let payload = payload()
+    guard shouldLogNativeEbookLoad(event: event, payload: payload) else { return }
+    let details = payload
         .sorted { $0.key < $1.key }
         .map { "\($0.key)=\(String(describing: $0.value))" }
         .joined(separator: " ")

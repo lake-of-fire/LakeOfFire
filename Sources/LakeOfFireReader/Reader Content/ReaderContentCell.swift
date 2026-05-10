@@ -271,7 +271,7 @@ struct CloudDriveSyncStatusView: View {
         case .uploading:
             return "icloud.and.arrow.up"
         case .availableLocally:
-            return "checkmark.circle.fill"
+            return "checkmark.icloud"
         case .loadingStatus:
             return nil
         }

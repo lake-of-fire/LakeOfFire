@@ -2,6 +2,28 @@ import XCTest
 @testable import LakeOfFire
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter1.xhtml")
+
+        try FileManager.default.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try Data("<html></html>".utf8).write(to: chapterURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        let entries = try source.enumerateEntries()
+
+        XCTAssertEqual(entries.map(\.path), ["OPS/chapter1.xhtml"])
+    }
+
     func testCacheWarmerCacheHitStillReturnsProcessedContent() async throws {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(

@@ -149,11 +149,25 @@ public struct ReaderPackageEntrySource: Sendable {
         while let fileURL = enumerator?.nextObject() as? URL {
             let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true else { continue }
-            let relativePath = fileURL.path.replacingOccurrences(of: standardizedRootURL.path + "/", with: "")
+            let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
             let subpath = try Self.sanitizeSubpath(relativePath)
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
         }
         return entries.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    static func relativeSubpath(fileURL: URL, rootURL: URL) throws -> String {
+        let standardizedRootURL = rootURL.standardizedFileURL
+        let standardizedFileURL = fileURL.standardizedFileURL
+        let rootComponents = standardizedRootURL.pathComponents
+        let fileComponents = standardizedFileURL.pathComponents
+
+        guard fileComponents.count > rootComponents.count,
+              Array(fileComponents.prefix(rootComponents.count)) == rootComponents else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     private func enumerateArchiveEntries(fileURL: URL) throws -> [ReaderPackageEntryMetadata] {
@@ -355,16 +369,38 @@ public actor ReaderPackageEntrySourceCache {
     }
 
     private static func directoryDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        let trimmed = rawEntryPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !trimmed.isEmpty else {
+        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
             return rootURL
         }
-        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: trimmed)
+        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
     }
 
     private static func fileDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        let subpath = try ReaderPackageEntrySource.sanitizeSubpath(rawEntryPath)
+        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
         return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
+    }
+
+    private static func archiveEntrySubpath(_ rawEntryPath: String) throws -> String? {
+        let trimmed = rawEntryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains("\\") else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        let components = trimmed
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.isEmpty && $0 != "." }
+
+        guard !components.isEmpty else {
+            return nil
+        }
+        guard !components.contains("..") else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+        return components.joined(separator: "/")
     }
 
     private static func freshnessToken(for localURL: URL) throws -> String {

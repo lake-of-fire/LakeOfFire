@@ -30,6 +30,40 @@ public extension View {
     }
 }
 
+private let readerEPUBLoadVerboseLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_EPUBLOAD_VERBOSE_LOGS"] == "1"
+
+private let readerEPUBLoadDefaultEvents: Set<String> = [
+    "viewer.load.start",
+    "viewer.load.native-source.ready",
+    "viewer.load.blob.ready",
+    "viewer.reader-open.dispatch",
+    "viewer.load.error",
+    "reader.open.begin",
+    "reader.open.view.ready",
+    "reader.open.end",
+    "paginator.display.anchor-anomaly",
+]
+
+private func readerEPUBLoadEvent(from line: String) -> String? {
+    guard line.hasPrefix("# EPUBLOAD ") else { return nil }
+    let jsonStart = line.index(line.startIndex, offsetBy: "# EPUBLOAD ".count)
+    let json = line[jsonStart...]
+    guard let data = String(json).data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
+    }
+    return object["event"] as? String
+}
+
+private func shouldLogReaderEPUBLoadLine(_ line: String) -> Bool {
+    if readerEPUBLoadVerboseLoggingEnabled { return true }
+    guard let event = readerEPUBLoadEvent(from: line) else { return false }
+    if event.starts(with: "js.window.") { return true }
+    if event.contains(".error") { return true }
+    return readerEPUBLoadDefaultEvents.contains(event)
+}
+
 private struct ReaderSizeTrackingCacheEntry: Codable {
     let id: String
     let inlineSize: Double
@@ -442,7 +476,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
                         registerEbookViewerFrame(message.frameInfo)
                     }
-                    if logMessage.hasPrefix("# EBOOKFIX1")
+                    let shouldLogEPUBLoad = logMessage.hasPrefix("# EPUBLOAD")
+                        ? shouldLogReaderEPUBLoadLine(logMessage)
+                        : true
+                    if shouldLogEPUBLoad,
+                       logMessage.hasPrefix("# EBOOKFIX1")
                         || logMessage.hasPrefix("# BOOKBUG1")
                         || logMessage.hasPrefix("# EBOOKHTML")
                         || logMessage.hasPrefix("# EBOOKFETCH")
@@ -452,7 +490,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         || logMessage.hasPrefix("# REPLACETEXT ") {
                         Logger.shared.logger.info("\(logMessage)")
                     }
-                    debugPrint(logMessage)
+                    if !logMessage.hasPrefix("# EPUBLOAD") || shouldLogEPUBLoad {
+                        debugPrint(logMessage)
+                    }
                     return
                 }
                 guard let payload = message.body as? [String: Any] else {

@@ -9,6 +9,13 @@ import {
 } from '../foliate-js/overlayer.js'
 
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
+const manabiEPUBLoadVerboseLoggingEnabled = () => !!globalThis.manabi_epubLoadVerboseLoggingEnabled;
+
+const ignoredWindowErrorMessages = new Set([
+    'ResizeObserver loop completed with undelivered notifications.',
+]);
+
+const shouldIgnoreWindowError = message => ignoredWindowErrorMessages.has(String(message ?? ''));
 
 const postEarlyEPUBLoadLog = (event, details = {}) => {
     const payload = {
@@ -22,6 +29,7 @@ const postEarlyEPUBLoadLog = (event, details = {}) => {
 };
 
 window.onerror = function(msg, source, lineno, colno, error) {
+    if (shouldIgnoreWindowError(msg)) return true;
     postEarlyEPUBLoadLog('js.window.onerror', {
         message: String(msg),
         source: String(source ?? ''),
@@ -776,7 +784,28 @@ const postEPUBLog = (event, details = {}) => {
     }
 };
 
+const epubLoadLogDefaultEvents = new Set([
+    'viewer.load.start',
+    'viewer.load.native-source.ready',
+    'viewer.load.blob.ready',
+    'viewer.reader-open.dispatch',
+    'viewer.load.error',
+    'reader.open.begin',
+    'reader.open.view.ready',
+    'reader.open.end',
+    'paginator.display.anchor-anomaly',
+]);
+
+const shouldPostEPUBLoadLog = event => {
+    if (manabiEPUBLoadVerboseLoggingEnabled()) return true;
+    if (typeof event !== 'string') return false;
+    if (event.startsWith('js.window.')) return true;
+    if (event.includes('.error')) return true;
+    return epubLoadLogDefaultEvents.has(event);
+};
+
 const postEPUBLoadLog = (event, details = {}) => {
+    if (!shouldPostEPUBLoadLog(event)) return;
     const payload = {
         event,
         timestamp: Date.now(),
