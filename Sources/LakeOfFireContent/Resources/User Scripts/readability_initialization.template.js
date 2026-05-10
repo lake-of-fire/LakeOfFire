@@ -210,7 +210,7 @@
             return rawValue;
         }
         try {
-            return new Intl.DateTimeFormat(undefined, { dateStyle: 'long' }).format(date);
+            return new Intl.DateTimeFormat(undefined, { dateStyle: 'short' }).format(date);
         } catch (_error) {
             return date.toLocaleDateString();
         }
