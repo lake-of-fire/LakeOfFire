@@ -54,6 +54,13 @@ public class ReaderContent: ObservableObject {
     public init() {
     }
 
+    @MainActor
+    public func refreshObservedContentState() {
+        syncLocationBarTitle()
+        syncContentTitle()
+        objectWillChange.send()
+    }
+
     private func syncLocationBarTitle() {
         guard pageURL.absoluteString != "about:blank" else {
             snippetTitleIsGeneratedFromPrefix = false

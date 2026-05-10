@@ -200,6 +200,21 @@
             headingWrapper.remove();
         }
     }
+
+    function formatReadabilityPublishedTime(rawValue) {
+        if (!rawValue) {
+            return '';
+        }
+        let date = new Date(rawValue);
+        if (Number.isNaN(date.getTime())) {
+            return rawValue;
+        }
+        try {
+            return new Intl.DateTimeFormat(undefined, { dateStyle: 'long' }).format(date);
+        } catch (_error) {
+            return date.toLocaleDateString();
+        }
+    }
     
     let manabi_readability = function () {
         // Don't run on already-Readability-ified content
@@ -253,7 +268,7 @@
                 } else {
                     let title = DOMPurify.sanitize(article.title)
                     let byline = DOMPurify.sanitize(article.byline)
-                    let publishedTime = DOMPurify.sanitize(article.publishedTime || '')
+                    let publishedTime = DOMPurify.sanitize(formatReadabilityPublishedTime(article.publishedTime || ''))
                     var content = DOMPurify.sanitize(article.content)
                     let contentIsInternal = isInternalURL(uri.spec)
                     let viewOriginalHref = DOMPurify.sanitize(String(uri.spec)).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -389,10 +404,64 @@
         }
     } , 3 * 1000)
 
+    let manabi_observedReadabilityHref = window.location.href;
+    let manabi_requestReadabilityForLocationChange = function (reason) {
+        let previousHref = manabi_observedReadabilityHref;
+        let currentHref = window.location.href;
+        if (previousHref === currentHref) {
+            return;
+        }
+        manabi_observedReadabilityHref = currentHref;
+        if (document.body) {
+            document.body.dataset.mnbReaderModeAvailable = 'false';
+            document.body.dataset.isNextLoadInReaderMode = 'false';
+            delete document.body.dataset.mnbReaderModeAvailableFor;
+        }
+        manabi_requestAutomaticReadability(reason);
+        setTimeout(() => {
+            if (manabi_observedReadabilityHref === window.location.href) {
+                manabi_requestAutomaticReadability(reason + '-settled');
+            }
+        }, 500);
+        setTimeout(() => {
+            if (manabi_observedReadabilityHref === window.location.href) {
+                manabi_requestAutomaticReadability(reason + '-late');
+            }
+        }, 1500);
+    }
+
+    let manabi_installReadabilityLocationObserver = function () {
+        if (window.manabi_readabilityLocationObserverInstalled) {
+            return;
+        }
+        window.manabi_readabilityLocationObserverInstalled = true;
+        let wrapHistoryMethod = function (methodName) {
+            let original = history[methodName];
+            if (typeof original !== 'function') {
+                return;
+            }
+            history[methodName] = function () {
+                let result = original.apply(this, arguments);
+                setTimeout(() => {
+                    manabi_requestReadabilityForLocationChange(methodName);
+                }, 0);
+                return result;
+            }
+        }
+        wrapHistoryMethod('pushState');
+        wrapHistoryMethod('replaceState');
+        window.addEventListener('popstate', () => {
+            setTimeout(() => {
+                manabi_requestReadabilityForLocationChange('popstate');
+            }, 0);
+        });
+    }
+
     let initialize = function () {
         if (window.location.protocol === 'about:') {
             return
         }
+        manabi_installReadabilityLocationObserver()
         
         var observer = new MutationObserver(function (mutations) {
             mutations.forEach(function(mutation) {

@@ -110,7 +110,7 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
 private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
 private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
 private let readerContentPublicationDateFallbackFormatter: DateFormatter = {
-    ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
+    ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .long)
 }()
 private let readabilityClassesToPreserve: [String] = [
     "caption",

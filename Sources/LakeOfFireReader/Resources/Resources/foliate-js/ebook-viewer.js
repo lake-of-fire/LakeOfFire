@@ -4210,12 +4210,25 @@ class Reader {
         });
         return snapshot;
     }
+    #applyHideNavigationDueToScrollToBookContent(shouldHide) {
+        const hidden = !!shouldHide;
+        document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
+        const contents = this.view?.renderer?.getContents?.() || [];
+        for (const content of contents) {
+            const body = content?.doc?.body;
+            if (!body) continue;
+            body.classList.toggle('nav-hidden', hidden);
+            body.classList.toggle('nav-hidden-due-to-scroll', hidden);
+            body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+        }
+    }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
         this.navHUD = new NavigationHUD({
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
+            onHideNavigationDueToScrollChange: hidden => this.#applyHideNavigationDueToScrollToBookContent(hidden),
         });
         this.scheduleGoToPageNumber = debounce((pageNumber) => {
             this.goToLocationNumber(pageNumber, 'schedule-location-number')
@@ -6539,6 +6552,7 @@ class Reader {
         this.navHUD?.setIsRTL(this.isRTL);
         this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
+        this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         applyStoredChromeInsets('reader.open');
         postEPUBLoadLog('reader.open.before-view-open', collectEPUBLoadDiagnostics('reader.open.before-view-open', {
             bookDir: this.bookDir,
@@ -7295,6 +7309,7 @@ class Reader {
                 stage: 'before-raf',
             });
         }
+        this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         postPageNumLog('nav.visibility.did-display', {
             before: navVisibilityBefore,
             after: captureNavVisibilityState(),
