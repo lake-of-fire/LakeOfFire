@@ -6818,6 +6818,9 @@ class Reader {
             if (event.target && event.target.ownerDocument !== document) return
             if (event.target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]')) return
                 
+                if (window.__manabiLookupPopoverActive === true) {
+                    window.__manabiSuppressUnhandledTapHideNavigationUntil = Date.now() + 750;
+                }
                 window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                     touchedEntryWithElementId: null,
                     wasAlreadySelected: false,
