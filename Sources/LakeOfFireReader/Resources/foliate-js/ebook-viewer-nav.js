@@ -210,10 +210,11 @@ const safeRound = (value, digits = 1) =>
             : null);
 
 export class NavigationHUD {
-    constructor({ onJumpRequest, getRenderer, formatPercent } = {}) {
+    constructor({ onJumpRequest, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
         this.onJumpRequest = onJumpRequest;
         this.getRenderer = getRenderer;
         this.formatPercent = formatPercent ?? (value => `${Math.round(value * 100)}%`);
+        this.onHideNavigationDueToScrollChange = onHideNavigationDueToScrollChange;
 
         this.navBar = document.getElementById('nav-bar');
         this.navPrimaryText = document.getElementById('nav-primary-text');
@@ -470,6 +471,11 @@ export class NavigationHUD {
         };
         this.hideNavigationDueToScroll = next;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
+        this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
+            source,
+            previous,
+            context,
+        });
         this._applyLabelVariant();
         logEPUBFlash(previous === this.hideNavigationDueToScroll && previousClass === this.hideNavigationDueToScroll
             ? 'js.nav.visibility.noop'
