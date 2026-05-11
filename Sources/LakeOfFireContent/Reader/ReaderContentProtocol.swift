@@ -131,7 +131,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     // Caches.
     var isReaderModeAvailable: Bool { get set }
 
-    // TODO: Don't populate these if they already exist in user library... or cull
+    // TODO: Don't populate these if they already exist in My Library... or cull
     var rssURLs: List<URL> { get }
     var rssTitles: List<String> { get }
     var isRSSAvailable: Bool { get set }

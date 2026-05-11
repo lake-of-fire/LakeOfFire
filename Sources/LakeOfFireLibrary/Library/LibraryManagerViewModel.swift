@@ -242,7 +242,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             
             if let category {
                 try await realm.asyncWrite {
-                    category.title = "User Library"
+                    category.title = "My Library"
                     category.refreshChangeMetadata(explicitlyModified: true)
                 }
             }

@@ -91,6 +91,79 @@ final class FeedStateIndicatorTests: XCTestCase {
         XCTAssertTrue(feed.hasEntriesNewerThanLastViewedAt)
     }
 
+    func testFollowingEntriesInterleavesOneNewEntryPerFollowedFeedByRound() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let firstFeed = Feed()
+        firstFeed.title = "First"
+        firstFeed.rssUrl = URL(string: "https://example.com/first.xml")!
+        firstFeed.iconUrl = firstFeed.rssUrl
+        firstFeed.isFollowed = true
+
+        let secondFeed = Feed()
+        secondFeed.title = "Second"
+        secondFeed.rssUrl = URL(string: "https://example.com/second.xml")!
+        secondFeed.iconUrl = secondFeed.rssUrl
+        secondFeed.isFollowed = true
+
+        try realm.write {
+            realm.add([firstFeed, secondFeed])
+            realm.add(makeEntry(feed: firstFeed, suffix: "first-1", date: baseDate.addingTimeInterval(100)))
+            realm.add(makeEntry(feed: firstFeed, suffix: "first-2", date: baseDate.addingTimeInterval(10)))
+            realm.add(makeEntry(feed: secondFeed, suffix: "second-1", date: baseDate.addingTimeInterval(90)))
+            realm.add(makeEntry(feed: secondFeed, suffix: "second-2", date: baseDate.addingTimeInterval(80)))
+        }
+
+        let followingEntries = Feed.followingEntries(from: [firstFeed, secondFeed])
+
+        XCTAssertEqual(
+            followingEntries.map(\.title),
+            ["first-1", "second-1", "second-2", "first-2"]
+        )
+    }
+
+    func testFollowingEntriesIgnoresUnfollowedAndSeenEntries() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let followedFeed = Feed()
+        followedFeed.title = "Followed"
+        followedFeed.rssUrl = URL(string: "https://example.com/followed.xml")!
+        followedFeed.iconUrl = followedFeed.rssUrl
+        followedFeed.isFollowed = true
+        followedFeed.lastSeenFeedEntriesAt = baseDate.addingTimeInterval(50)
+
+        let unfollowedFeed = Feed()
+        unfollowedFeed.title = "Unfollowed"
+        unfollowedFeed.rssUrl = URL(string: "https://example.com/unfollowed.xml")!
+        unfollowedFeed.iconUrl = unfollowedFeed.rssUrl
+
+        try realm.write {
+            realm.add([followedFeed, unfollowedFeed])
+            realm.add(makeEntry(feed: followedFeed, suffix: "seen", date: baseDate.addingTimeInterval(40)))
+            realm.add(makeEntry(feed: followedFeed, suffix: "new", date: baseDate.addingTimeInterval(60)))
+            realm.add(makeEntry(feed: unfollowedFeed, suffix: "ignored", date: baseDate.addingTimeInterval(70)))
+        }
+
+        let followingEntries = Feed.followingEntries(from: [followedFeed, unfollowedFeed])
+
+        XCTAssertEqual(followingEntries.map(\.title), ["new"])
+    }
+
+    private func makeEntry(feed: Feed, suffix: String, date: Date) -> FeedEntry {
+        let entry = FeedEntry()
+        entry.feedID = feed.id
+        entry.title = suffix
+        entry.url = URL(string: "https://example.com/articles/\(feed.id.uuidString)/\(suffix)")!
+        entry.updateCompoundKey()
+        entry.publicationDate = date
+        entry.createdAt = date
+        return entry
+    }
+
     func testShouldRefreshOnCategoryAppearReturnsTrueWhenFeedHasNoEntries() throws {
         let feed = try makeManagedFeed(entries: [])
         XCTAssertTrue(feed.shouldRefreshOnCategoryAppear)

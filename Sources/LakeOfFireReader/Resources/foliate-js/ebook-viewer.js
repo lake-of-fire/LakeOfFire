@@ -4634,10 +4634,10 @@ class Reader {
     }
     #pageTurnDirectionForMove(method) {
         if (method === 'goLeft') {
-            return 'backward';
+            return this.isRTL ? 'forward' : 'backward';
         }
         if (method === 'goRight') {
-            return 'forward';
+            return this.isRTL ? 'backward' : 'forward';
         }
         return null;
     }
@@ -5973,15 +5973,15 @@ class Reader {
             optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
         };
     }
-    async markAllSectionsAsRead() {
+    buildMarkAllSectionsAsReadPayload() {
         const contents = this.view?.renderer?.getContents?.() || [];
         const doc = contents[0]?.doc;
         if (!isDocumentLike(doc)) {
             if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
-                event: 'js.ebookMarkAllSectionsAsRead.skipped',
+                event: 'js.ebookMarkAllSectionsAsReadPayload.skipped',
                 reason: 'missing-document',
             }));
-            return 0;
+            return null;
         }
         const segmentNodes = Array.from(doc.querySelectorAll('mnb-seg'))
             .filter((segmentNode) => !segmentNode.closest('.tippy-box'));
@@ -6040,12 +6040,19 @@ class Reader {
             segmentIdentifierTailSample: payloadSegmentIdentifiers.slice(-20),
         }));
         if (payloadSegments.length === 0) {
-            return 0;
+            return null;
         }
-        window.webkit.messageHandlers.markSectionAsRead.postMessage({
+        return {
             segments: payloadSegments,
             sentenceIdentifiers: payloadSentenceIdentifiers,
-        });
+        };
+    }
+    applyOptimisticMarkAllSectionsAsReadPayload(payload) {
+        const payloadSegments = Array.isArray(payload?.segments) ? payload.segments : [];
+        const payloadSentenceIdentifiers = Array.isArray(payload?.sentenceIdentifiers) ? payload.sentenceIdentifiers : [];
+        const payloadSegmentIdentifiers = payloadSegments
+            .map((segment) => segment.segmentIdentifier)
+            .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
         for (const segmentIdentifier of payloadSegmentIdentifiers) {
             this.optimisticReadSegmentIdentifiers.add(segmentIdentifier);
         }
@@ -6069,6 +6076,14 @@ class Reader {
             optimisticSentenceReadCount: optimisticProgress.sentenceIdentifiersRead.length,
         }));
         return payloadSegments.length;
+    }
+    async markAllSectionsAsRead() {
+        const payload = this.buildMarkAllSectionsAsReadPayload();
+        if (!payload) {
+            return 0;
+        }
+        window.webkit.messageHandlers.markSectionAsRead.postMessage(payload);
+        return this.applyOptimisticMarkAllSectionsAsReadPayload(payload);
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
@@ -9012,6 +9027,14 @@ window.nextSection = async () => {
 
 window.manabi_markAllSectionsAsRead = async () => {
     return await globalThis.reader?.markAllSectionsAsRead?.() ?? 0;
+}
+
+window.manabi_buildMarkAllSectionsAsReadPayload = () => {
+    return globalThis.reader?.buildMarkAllSectionsAsReadPayload?.() ?? null;
+}
+
+window.manabi_applyOptimisticMarkAllSectionsAsReadPayload = (payload) => {
+    return globalThis.reader?.applyOptimisticMarkAllSectionsAsReadPayload?.(payload) ?? 0;
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

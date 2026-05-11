@@ -45,10 +45,19 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
     @Environment(\.stackListStyle) private var stackListStyle
+    @Environment(\.controlSize) private var controlSize
     @State private var measuredPhysicalCoverWidth: CGFloat?
 
+    private var usesCompactControlSize: Bool {
+        controlSize == .small || controlSize == .mini
+    }
+
+    private var effectiveMaxCellHeight: CGFloat {
+        usesCompactControlSize ? max(1, maxCellHeight * 0.4) : maxCellHeight
+    }
+
     private var baseCardWidth: CGFloat { maxCellHeight * 2.5 }
-    private var reservedThumbnailSlotWidth: CGFloat { maxCellHeight }
+    private var reservedThumbnailSlotWidth: CGFloat { effectiveMaxCellHeight }
     private var measuredThumbnailWidth: CGFloat? {
         guard let measuredPhysicalCoverWidth, measuredPhysicalCoverWidth > 0 else { return nil }
         return min(measuredPhysicalCoverWidth, reservedThumbnailSlotWidth)
@@ -67,7 +76,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     }
 
     private var cardHeight: CGFloat {
-        maxCellHeight
+        effectiveMaxCellHeight
         + ReaderContentHorizontalListLayout.groupBoxContentInsets.top
         + ReaderContentHorizontalListLayout.groupBoxContentInsets.bottom
     }
@@ -298,7 +307,16 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     @State private var pendingScrollTask: Task<Void, Never>?
     @State private var scrollPositionID: String?
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
+    @Environment(\.controlSize) private var controlSize
     //    @State private var viewWidth: CGFloat = 0
+
+    private var usesCompactControlSize: Bool {
+        controlSize == .small || controlSize == .mini
+    }
+
+    private var effectiveMaxCellHeight: CGFloat {
+        usesCompactControlSize ? max(1, maxCellHeight * 0.4) : maxCellHeight
+    }
     
     var body: some View {
         Group {
@@ -408,7 +426,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                 $0.scrollTargetLayout()
             } else { $0 }
         }
-        .frame(minHeight: maxCellHeight)
+        .frame(minHeight: effectiveMaxCellHeight)
     }
 }
 
@@ -425,14 +443,23 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
+    @Environment(\.controlSize) private var controlSize
     let contentSortAscending = false
     var contentFilter: (@ReaderContentListActor @Sendable (Int, C) async throws -> Bool) = { @ReaderContentListActor _, _ in return true }
     //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
 
+    private var usesCompactControlSize: Bool {
+        controlSize == .small || controlSize == .mini
+    }
+
+    private var effectiveMaxCellHeight: CGFloat {
+        usesCompactControlSize ? max(1, maxCellHeight * 0.4) : maxCellHeight
+    }
+
     private var estimatedRowHeight: CGFloat {
-        maxCellHeight
+        effectiveMaxCellHeight
         + ReaderContentHorizontalListLayout.groupBoxContentInsets.top
         + ReaderContentHorizontalListLayout.groupBoxContentInsets.bottom
     }

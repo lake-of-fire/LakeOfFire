@@ -81,7 +81,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     // Continue Reading menu is driven by an injected provider in the environment.
 
     init() { }
-    
+
     @MainActor
     func load(
         item: C,
@@ -89,7 +89,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     ) async throws {
         hasLoadedDisplayState = false
         debugPrint("# loading", item.url.lastPathComponent)
-        
+
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let imageURL = try await item.imageURLToDisplay()
@@ -125,7 +125,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 var sourceTitle: String?
                 // TODO: Store and get site names from OpenGraph
                 var sourceIconURL: URL?
-                
+
                 if includeSource {
                     if sourceURL.isSnippetURL {
                         sourceTitle = "Snippet"
@@ -139,7 +139,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                             actor: ReaderContentCellActor.shared
                         )
                         try Task.checkCancellation()
-                        
+
                         if let feedEntry = readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
                             try Task.checkCancellation()
                             sourceTitle = feed.title
@@ -150,10 +150,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         }
                     }
                 }
-                
+
                 let sourceIconURLChoice = sourceIconURL
                 let sourceTitleChoice = sourceTitle
-                
+
                 try await { @MainActor [weak self] in
                     guard let self else { return }
                     try Task.checkCancellation()
@@ -258,7 +258,7 @@ extension ReaderContentProtocol {
             customMenuOptions: customMenuOptions
         )
     }
-    
+
     @MainActor
     @ViewBuilder public func readerContentCellView(
         appearance: ReaderContentCellAppearance
@@ -268,7 +268,7 @@ extension ReaderContentProtocol {
             customMenuOptions: nil
         )
     }
-    
+
     // Back-compat convenience
     @MainActor
     @ViewBuilder public func readerContentCellView(
@@ -322,9 +322,9 @@ private struct ReaderContentSyncStatusLabel: View {
 
 struct CloudDriveSyncStatusView: View { //, Equatable {
     @ObservedRealmObject var item: ContentFile
-    
+
     @EnvironmentObject var cloudDriveSyncStatusModel: CloudDriveSyncStatusModel
-    
+
     private var title: String? {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
@@ -343,7 +343,7 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
             return nil
         }
     }
-    
+
     private var systemImage: String? {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
@@ -362,7 +362,7 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
             return nil
         }
     }
-    
+
     var body: some View {
         if let title = title, let systemImage = systemImage {
             Label(title, systemImage: systemImage)
@@ -380,22 +380,22 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     // Optional custom menu items to include in the trailing menu.
     // Using AnyView avoids templating this struct with another generic.
     var customMenuOptions: ((C) -> AnyView)? = nil
-    
+
     @State private var resolvedContentFile: ContentFile?
     @State private var contentFileLookupStarted = false
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
-    
+
     static var buttonSize: CGFloat {
         return 26
     }
-    
+
     private let progressBarWidth: CGFloat = 21.0
-    
+
     private var thumbnailEdgeLength: CGFloat {
         let base = appearance.thumbnailDimension ?? appearance.maxCellHeight
         return max(1, base)
     }
-    
+
     private var displayImageURL: URL? {
         viewModel.imageURL ?? item.imageUrl
     }
@@ -575,7 +575,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
         return nil
     }
-    
+
     private var isProgressVisible: Bool {
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
@@ -595,7 +595,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
         return min(1, max(0, position / duration))
     }
-    
+
     private var shouldShowProgressRow: Bool {
         if isProgressVisible { return true }
         if item.hasAudio { return !appearance.isEbookStyle }
@@ -620,7 +620,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 .foregroundStyle(.secondary)
         }
     }
-    
+
     @ViewBuilder
     private var newBadge: some View {
         if showsNewBadge {
@@ -635,21 +635,38 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if appearance.maxCellHeight >= 110 { return 2 }
         return 1
     }
-    
+
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
-    
+    @Environment(\.controlSize) private var controlSize
+
+    private var usesCompactControlSize: Bool {
+        controlSize == .small || controlSize == .mini
+    }
+
+    private var compactScale: CGFloat {
+        0.4
+    }
+
+    private var compactCellHeight: CGFloat {
+        max(1, appearance.maxCellHeight * compactScale)
+    }
+
+    private var compactThumbnailEdgeLength: CGFloat {
+        max(1, thumbnailEdgeLength * compactScale)
+    }
+
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
 
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
     }
-    
+
     private var remainingDurationText: String? {
         Self.formatMetadata(/*wordCount: viewModel.totalWordCount, */remainingTime: viewModel.remainingTime)
     }
-    
+
     private static func formatMetadata(/*wordCount: Int?,*/ remainingTime: TimeInterval?) -> String? {
         var parts: [String] = []
 //        if let wordCount, wordCount > 0 {
@@ -704,7 +721,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         HStack(spacing: 8) {
             newBadge
             audioBadge
-            
+
             if let contentFile = item as? ContentFile {
                 CloudDriveSyncStatusView(item: contentFile)
                     .labelStyle(.iconOnly)
@@ -735,6 +752,16 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     private var titleText: Text {
         Text(displayTitle)
             .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+    }
+
+    @ViewBuilder
+    private var compactTitleRow: some View {
+        titleText
+            .font(.callout)
+            .lineLimit(1)
+            .multilineTextAlignment(.leading)
+            .environment(\._lineHeightMultiple, 0.875)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var showsNewBadge: Bool {
@@ -880,140 +907,187 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     @ViewBuilder
-    private func thumbnailView(for thumbnailChoice: ThumbnailChoice) -> some View {
+    private func thumbnailView(
+        for thumbnailChoice: ThumbnailChoice,
+        edgeLength: CGFloat? = nil,
+        contentHeight: CGFloat? = nil
+    ) -> some View {
+        let edgeLength = edgeLength ?? thumbnailEdgeLength
+        let contentHeight = contentHeight ?? contentColumnHeight
+        let physicalTargetWidth = max(1, edgeLength * 0.7)
+        let physicalMaxHeight = edgeLength
         switch thumbnailChoice {
         case .image(let imageUrl):
             if appearance.isEbookStyle {
                 Color.clear
                     .frame(
-                        width: physicalMediaThumbnailTargetWidth,
-                        height: contentColumnHeight
+                        width: physicalTargetWidth,
+                        height: contentHeight
                     )
                     .overlay {
                         ReaderImage(
                             imageUrl,
                             contentMode: .fit,
-                            maxWidth: physicalMediaThumbnailTargetWidth,
-                            maxHeight: physicalMediaThumbnailMaxHeight
+                            maxWidth: physicalTargetWidth,
+                            maxHeight: edgeLength == thumbnailEdgeLength ? physicalMediaThumbnailMaxHeight : physicalMaxHeight
                         )
                         .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
                     }
             } else {
                 ReaderImage(
                     imageUrl,
-                    maxWidth: thumbnailEdgeLength,
-                    minHeight: thumbnailEdgeLength,
-                    maxHeight: thumbnailEdgeLength
+                    maxWidth: edgeLength,
+                    minHeight: edgeLength,
+                    maxHeight: edgeLength
                 )
                 .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
             }
         case .icon(let iconURL):
             Color.clear
                 .frame(
-                    width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
-                    height: contentColumnHeight
+                    width: appearance.isEbookStyle ? physicalTargetWidth : edgeLength,
+                    height: contentHeight
                 )
                 .overlay {
                     ReaderContentThumbnailTile(
                         content: .icon(iconURL, placeholder: fallbackInitial),
-                        width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
-                        height: appearance.isEbookStyle ? physicalMediaThumbnailMaxHeight : thumbnailEdgeLength,
+                        width: appearance.isEbookStyle ? physicalTargetWidth : edgeLength,
+                        height: appearance.isEbookStyle ? physicalMaxHeight : edgeLength,
                         cornerRadius: thumbnailCornerRadius
                     )
                 }
         case .initial:
             Color.clear
                 .frame(
-                    width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
-                    height: contentColumnHeight
+                    width: appearance.isEbookStyle ? physicalTargetWidth : edgeLength,
+                    height: contentHeight
                 )
                 .overlay {
                     ReaderContentThumbnailTile(
                         content: .initial(fallbackInitial),
-                        width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
-                        height: appearance.isEbookStyle ? physicalMediaThumbnailMaxHeight : thumbnailEdgeLength,
+                        width: appearance.isEbookStyle ? physicalTargetWidth : edgeLength,
+                        height: appearance.isEbookStyle ? physicalMaxHeight : edgeLength,
                         cornerRadius: thumbnailCornerRadius
                     )
                 }
         case .symbol(let systemName):
             Color.clear
                 .frame(
-                    width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
-                    height: contentColumnHeight
+                    width: appearance.isEbookStyle ? physicalTargetWidth : edgeLength,
+                    height: contentHeight
                 )
                 .overlay {
                     ReaderContentThumbnailTile(
                         content: .symbol(systemName),
-                        width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
-                        height: appearance.isEbookStyle ? physicalMediaThumbnailMaxHeight : thumbnailEdgeLength,
+                        width: appearance.isEbookStyle ? physicalTargetWidth : edgeLength,
+                        height: appearance.isEbookStyle ? physicalMaxHeight : edgeLength,
                         cornerRadius: thumbnailCornerRadius
                     )
                 }
         }
     }
-    
-    var body: some View {
-//        GroupBox {
-            HStack(alignment: .top, spacing: 12) {
-                if let thumbnailChoice {
-                    thumbnailView(for: thumbnailChoice)
-                }
 
-                Group {
-                    if usesPlainLayout {
-                        VStack(alignment: .leading, spacing: 0) {
+    @ViewBuilder
+    private var compactLayout: some View {
+        HStack(alignment: .center, spacing: 10) {
+            if let thumbnailChoice {
+                thumbnailView(
+                    for: thumbnailChoice,
+                    edgeLength: compactThumbnailEdgeLength,
+                    contentHeight: compactCellHeight
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                sourceOrAuthorRow
+                compactTitleRow
+                progressMetadata
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(2)
+
+            trailingMenuButton
+                .frame(width: ReaderContentCell<C>.buttonSize, height: ReaderContentCell<C>.buttonSize, alignment: .center)
+                .foregroundStyle(.secondary)
+                .buttonStyle(.clearBordered)
+                .controlSize(.small)
+        }
+        .frame(minHeight: compactCellHeight, maxHeight: compactCellHeight, alignment: .center)
+    }
+
+    @ViewBuilder
+    private var regularLayout: some View {
+        HStack(alignment: .top, spacing: 12) {
+            if let thumbnailChoice {
+                thumbnailView(for: thumbnailChoice)
+            }
+
+            Group {
+                if usesPlainLayout {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            sourceOrAuthorRow
+
                             VStack(alignment: .leading, spacing: 6) {
-                                sourceOrAuthorRow
-                                
-                                VStack(alignment: .leading, spacing: 6) {
-                                    titleRow
-                                    
-                                    topStatusRow
-                                }
-                            }
-
-                            Spacer(minLength: 4)
-
-                            VStack(alignment: .leading, spacing: bottomBlockSpacing) {
-                                progressRow
-                                metadataRow
-                            }
-                            .layoutPriority(3)
-                        }
-                        .frame(
-                            maxWidth: .infinity,
-                            minHeight: contentColumnHeight,
-                            maxHeight: contentColumnHeight,
-                            alignment: .top
-                        )
-                    } else {
-                        VStack(alignment: .leading, spacing: 0) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                sourceOrAuthorRow
-
                                 titleRow
 
                                 topStatusRow
                             }
-
-                            Spacer(minLength: 4)
-
-                            VStack(alignment: .leading, spacing: bottomBlockSpacing) {
-                                progressRow
-                                metadataRow
-                            }
-                            .layoutPriority(3)
                         }
-                        .frame(height: contentColumnHeight, alignment: .top)
+
+                        Spacer(minLength: 4)
+
+                        VStack(alignment: .leading, spacing: bottomBlockSpacing) {
+                            progressRow
+                            metadataRow
+                        }
+                        .layoutPriority(3)
                     }
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: contentColumnHeight,
+                        maxHeight: contentColumnHeight,
+                        alignment: .top
+                    )
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            sourceOrAuthorRow
+
+                            titleRow
+
+                            topStatusRow
+                        }
+
+                        Spacer(minLength: 4)
+
+                        VStack(alignment: .leading, spacing: bottomBlockSpacing) {
+                            progressRow
+                            metadataRow
+                        }
+                        .layoutPriority(3)
+                    }
+                    .frame(height: contentColumnHeight, alignment: .top)
+                }
+            }
+        }
+    }
+
+    var body: some View {
+//        GroupBox {
+            Group {
+                if usesCompactControlSize {
+                    compactLayout
+                } else {
+                    regularLayout
                 }
             }
 //        }
         .frame(
             minWidth: appearance.maxCellHeight,
-            minHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil,
-            idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil,
-            maxHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil
+            minHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? appearance.maxCellHeight : nil),
+            idealHeight: usesCompactControlSize ? compactCellHeight : (hasVisibleThumbnail ? appearance.maxCellHeight : nil),
+            maxHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? appearance.maxCellHeight : nil)
         )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
