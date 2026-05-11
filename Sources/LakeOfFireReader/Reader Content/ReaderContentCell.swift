@@ -304,6 +304,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
+    @Environment(\.controlSize) private var controlSize
 
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
@@ -346,6 +347,22 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 
     private var effectiveCardCellHeight: CGFloat {
         appearance.maxCellHeight
+    }
+
+    private var usesCompactControlSize: Bool {
+        controlSize == .small || controlSize == .mini
+    }
+
+    private var compactScale: CGFloat {
+        0.4
+    }
+
+    private var compactCellHeight: CGFloat {
+        max(1, appearance.maxCellHeight * compactScale)
+    }
+
+    private var compactThumbnailEdgeLength: CGFloat {
+        max(1, thumbnailEdgeLength * compactScale)
     }
 
     private var displayImageURL: URL? {
@@ -711,6 +728,16 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
     }
 
+    @ViewBuilder
+    private var compactTitleRow: some View {
+        titleText
+            .font(.callout)
+            .lineLimit(1)
+            .multilineTextAlignment(.leading)
+            .environment(\._lineHeightMultiple, 0.875)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var showsNewBadge: Bool {
         viewModel.hasLoadedDisplayState &&
         appearance.showsNewBadge &&
@@ -805,47 +832,73 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     }
 
     @ViewBuilder
-    private func thumbnailView(for thumbnailChoice: ThumbnailChoice) -> some View {
+    private func thumbnailView(for thumbnailChoice: ThumbnailChoice, edgeLength: CGFloat? = nil) -> some View {
+        let edgeLength = edgeLength ?? thumbnailEdgeLength
         Group {
             switch thumbnailChoice {
             case .image(let imageURL):
                 if appearance.isEbookStyle {
-                    BookCoverImageView(imageURL: imageURL, dimension: thumbnailEdgeLength)
+                    BookCoverImageView(imageURL: imageURL, dimension: edgeLength)
                 } else {
                     ReaderImage(
                         imageURL,
-                        maxWidth: thumbnailEdgeLength,
-                        minHeight: thumbnailEdgeLength,
-                        maxHeight: thumbnailEdgeLength
+                        maxWidth: edgeLength,
+                        minHeight: edgeLength,
+                        maxHeight: edgeLength
                     )
                     .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
                 }
             case .icon(let sourceIconURL):
                 ReaderContentThumbnailTile(
                     content: .icon(sourceIconURL, placeholder: fallbackInitial),
-                    width: thumbnailEdgeLength,
-                    height: thumbnailEdgeLength,
+                    width: edgeLength,
+                    height: edgeLength,
                     cornerRadius: thumbnailCornerRadius
                 )
             case .initial(let letter):
                 ReaderContentThumbnailTile(
                     content: .initial(letter),
-                    width: thumbnailEdgeLength,
-                    height: thumbnailEdgeLength,
+                    width: edgeLength,
+                    height: edgeLength,
                     cornerRadius: thumbnailCornerRadius
                 )
             case .symbol(let systemName):
                 ReaderContentThumbnailTile(
                     content: .symbol(systemName),
-                    width: thumbnailEdgeLength,
-                    height: thumbnailEdgeLength,
+                    width: edgeLength,
+                    height: edgeLength,
                     cornerRadius: thumbnailCornerRadius
                 )
             }
         }
     }
 
-    public var body: some View {
+    @ViewBuilder
+    private var compactLayout: some View {
+        HStack(alignment: .center, spacing: 10) {
+            if let thumbnailChoice {
+                thumbnailView(for: thumbnailChoice, edgeLength: compactThumbnailEdgeLength)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                sourceOrAuthorRow
+                compactTitleRow
+                progressMetadata
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(2)
+
+            controlsRow
+                .frame(width: buttonSize, height: buttonSize, alignment: .center)
+                .foregroundStyle(.secondary)
+                .buttonStyle(.clearBordered)
+                .controlSize(.small)
+        }
+        .frame(minHeight: compactCellHeight, maxHeight: compactCellHeight, alignment: .center)
+    }
+
+    @ViewBuilder
+    private var regularLayout: some View {
         HStack(alignment: .top, spacing: 12) {
             if let thumbnailChoice {
                 thumbnailView(for: thumbnailChoice)
@@ -896,11 +949,21 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                 }
             }
         }
+    }
+
+    public var body: some View {
+        Group {
+            if usesCompactControlSize {
+                compactLayout
+            } else {
+                regularLayout
+            }
+        }
         .frame(
             minWidth: appearance.maxCellHeight,
-            minHeight: readerContentCellStyle == .card ? effectiveCardCellHeight : nil,
-            idealHeight: hasVisibleThumbnail ? (readerContentCellStyle == .card ? effectiveCardCellHeight : appearance.maxCellHeight) : nil,
-            maxHeight: readerContentCellStyle == .card ? effectiveCardCellHeight : nil
+            minHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? effectiveCardCellHeight : nil),
+            idealHeight: usesCompactControlSize ? compactCellHeight : (hasVisibleThumbnail ? (readerContentCellStyle == .card ? effectiveCardCellHeight : appearance.maxCellHeight) : nil),
+            maxHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? effectiveCardCellHeight : nil)
         )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered

@@ -260,6 +260,17 @@ public struct FeedView: View {
         .toolbar {
             ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
+                    Button {
+                        Task { @MainActor in
+                            try? await setFollowed(!feed.isFollowed)
+                        }
+                    } label: {
+                        Label(feed.isFollowed ? "Following" : "Follow", systemImage: feed.isFollowed ? "checkmark" : "plus")
+                    }
+                }
+            }
+            ToolbarItem(placement: toolbarTrailingPlacement) {
+                if showsToolbar {
                     Menu {
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
@@ -320,4 +331,15 @@ public struct FeedView: View {
         }
     }
 
+    @MainActor
+    private func setFollowed(_ isFollowed: Bool) async throws {
+        try await Realm.asyncWrite(
+            ThreadSafeReference(to: feed),
+            configuration: ReaderContentLoader.feedEntryRealmConfiguration
+        ) { _, feed in
+            feed.isFollowed = isFollowed
+            feed.explicitlyModifiedAt = Date()
+            feed.modifiedAt = Date()
+        }
+    }
 }

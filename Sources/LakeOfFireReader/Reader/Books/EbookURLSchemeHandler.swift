@@ -47,9 +47,11 @@ fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any])
     if ebookLoadVerboseLoggingEnabled { return true }
     if event.contains("error") { return true }
     if payload["isCacheWarmer"] as? Bool == true { return false }
-    if event == "viewer.start" || event == "viewer.response" { return true }
-    if event == "entries.response" { return true }
-    if let elapsedMs = payload["elapsedMs"] as? Int, elapsedMs >= 1_000 { return true }
+    if event == "processText.response",
+       let elapsedMs = payload["elapsedMs"] as? Int,
+       elapsedMs >= 5_000 {
+        return true
+    }
     return false
 }
 

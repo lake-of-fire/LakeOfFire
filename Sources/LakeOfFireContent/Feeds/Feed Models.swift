@@ -90,6 +90,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var lastFetchedETag: String?
     @Persisted public var lastFetchedModifiedAt: Date?
     @Persisted public var showsUnseenBadge = true
+    @Persisted public var isFollowed = false
     @Persisted public var isDeleted = false
     
     public enum CodingKeys: String, CodingKey, CaseIterable {
@@ -105,6 +106,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         case meaningfulContentMinLength
         case extractImageFromContent
         case deleteOrphans
+        case isFollowed
         case modifiedAt
         case isArchived
     }
@@ -129,6 +131,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(displayPublicationDate, forKey: .displayPublicationDate)
         try container.encode(meaningfulContentMinLength, forKey: .meaningfulContentMinLength)
         try container.encode(deleteOrphans, forKey: .deleteOrphans)
+        try container.encode(isFollowed, forKey: .isFollowed)
         try container.encode(modifiedAt, forKey: .modifiedAt)
     }
     
@@ -147,6 +150,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
+        self.isFollowed = try container.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
     }
     
     public func getCategory() -> FeedCategory? {

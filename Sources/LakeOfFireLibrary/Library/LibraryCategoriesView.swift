@@ -173,10 +173,10 @@ struct LibraryCategoriesView: View {
     @ViewBuilder var importExportView: some View {
         ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
 #if os(macOS)
-            Text("Share User Library…")
+            Text("Share My Library…")
                 .frame(maxWidth: .infinity)
 #else
-            Text("Export User Library…")
+            Text("Export My Library…")
 #endif
         }
         .labelStyle(.titleAndIcon)
@@ -208,7 +208,7 @@ struct LibraryCategoriesView: View {
                 }
             }
         } label: {
-            Label("Export User Library…", systemImage: "square.and.arrow.down")
+            Label("Export My Library…", systemImage: "square.and.arrow.down")
                 .frame(maxWidth: .infinity)
         }
         .background(WindowAccessor(for: $window))
@@ -219,7 +219,7 @@ struct LibraryCategoriesView: View {
                 await LibraryDataManager.shared.importOPML(fileURLs: urls)
             }
         }, label: {
-            Label("Import User Library…", systemImage: "square.and.arrow.down")
+            Label("Import My Library…", systemImage: "square.and.arrow.down")
 #if os(macOS)
                 .frame(maxWidth: .infinity)
 #endif
@@ -374,7 +374,7 @@ struct LibraryCategoriesView: View {
                     }
                 } header: {
                     HStack {
-                        Text("User Library")
+                        Text("My Library")
                             .foregroundStyle(.primary)
                         if !isUserLibraryEmpty {
                             Spacer(minLength: 12)
@@ -383,7 +383,7 @@ struct LibraryCategoriesView: View {
                     }
                 }
 
-                Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
+                Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. My Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
                 .labelStyle(.titleOnly)

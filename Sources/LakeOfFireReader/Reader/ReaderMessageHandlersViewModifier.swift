@@ -34,14 +34,6 @@ private let readerEPUBLoadVerboseLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_EPUBLOAD_VERBOSE_LOGS"] == "1"
 
 private let readerEPUBLoadDefaultEvents: Set<String> = [
-    "viewer.load.start",
-    "viewer.load.native-source.ready",
-    "viewer.load.blob.ready",
-    "viewer.reader-open.dispatch",
-    "viewer.load.error",
-    "reader.open.begin",
-    "reader.open.view.ready",
-    "reader.open.end",
     "paginator.display.anchor-anomaly",
 ]
 
@@ -479,18 +471,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     let shouldLogEPUBLoad = logMessage.hasPrefix("# EPUBLOAD")
                         ? shouldLogReaderEPUBLoadLine(logMessage)
                         : true
-                    if shouldLogEPUBLoad,
-                       logMessage.hasPrefix("# EBOOKFIX1")
-                        || logMessage.hasPrefix("# BOOKBUG1")
-                        || logMessage.hasPrefix("# EBOOKHTML")
-                        || logMessage.hasPrefix("# EBOOKFETCH")
-                        || logMessage.hasPrefix("# EPUBLOAD")
-                        || logMessage.hasPrefix("# EPUB ")
-                        || logMessage.hasPrefix("# READER ")
-                        || logMessage.hasPrefix("# REPLACETEXT ") {
+                    let isEBookBugLine = logMessage.hasPrefix("# EBOOKBUG")
+                    if shouldLogEPUBLoad && logMessage.hasPrefix("# EPUBLOAD") {
                         Logger.shared.logger.info("\(logMessage)")
                     }
-                    if !logMessage.hasPrefix("# EPUBLOAD") || shouldLogEPUBLoad {
+                    if readerEPUBLoadVerboseLoggingEnabled,
+                       !isEBookBugLine,
+                       (!logMessage.hasPrefix("# EPUBLOAD") || shouldLogEPUBLoad) {
                         debugPrint(logMessage)
                     }
                     return
@@ -503,7 +490,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 if let prefix = payload["prefix"] as? String,
                    let event = payload["event"] as? String,
-                   ["# EPUB", "# EPUB ", "# READER", "# REPLACETEXT", "# EPUBLOAD"].contains(prefix) {
+                   ["# EPUBLOAD"].contains(prefix) {
                     let details = payload.keys
                         .filter { $0 != "message" && $0 != "windowURL" && $0 != "pageURL" && $0 != "prefix" && $0 != "event" }
                         .sorted()
@@ -513,8 +500,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             return "\(key)=\(printable)"
                         }
                     let line = details.isEmpty ? "\(prefix) \(event)" : "\(prefix) \(event) \(details.joined(separator: " "))"
-                    debugPrint(line)
-                    Logger.shared.logger.info("\(line)")
+                    if shouldLogReaderEPUBLoadLine(line) {
+                        Logger.shared.logger.info("\(line)")
+                    }
+                    if readerEPUBLoadVerboseLoggingEnabled {
+                        debugPrint(line)
+                    }
                     return
                 }
 

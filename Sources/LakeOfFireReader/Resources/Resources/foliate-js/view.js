@@ -179,12 +179,22 @@ export class View extends HTMLElement {
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
-    #onRelocate({ reason, range, index, fraction, size }) {
+    #onRelocate({ reason, range, index, fraction, size, pageTurnDirection }) {
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
-        this.lastLocation = { ...progress, tocItem, pageItem, cfi, range, reason }
+        this.lastLocation = {
+            ...progress,
+            index,
+            sectionIndex: index,
+            tocItem,
+            pageItem,
+            cfi,
+            range,
+            reason,
+            pageTurnDirection,
+        }
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
             this.#emit('relocate', this.lastLocation)

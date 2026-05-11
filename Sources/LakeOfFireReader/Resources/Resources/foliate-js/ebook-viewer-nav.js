@@ -756,12 +756,56 @@ export class NavigationHUD {
         const reportedDirection = typeof detail?.pageTurnDirection === 'string'
             ? detail.pageTurnDirection.toLowerCase()
             : null;
-        if (reportedDirection !== 'forward' && reportedDirection !== 'backward') return;
+        if (reportedDirection !== 'forward' && reportedDirection !== 'backward') {
+            const explicitRelocateSource = this._explicitRelocateHistoryMutationSource ?? null;
+            const shouldRevealForExplicitRelocate = !!(
+                EXPLICIT_RELOCATE_HISTORY_SOURCES.has(explicitRelocateSource)
+                || this.isProcessingRelocateJump
+                || this.pendingRelocateJump
+            );
+            if (shouldRevealForExplicitRelocate) {
+                globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
+                globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
+                this.setHideNavigationDueToScroll(false, 'relocate.explicit', {
+                    reason: detail?.reason ?? null,
+                    explicitRelocateSource,
+                    sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+                    pageNumber: this.rendererPageSnapshot?.current ?? null,
+                    pageCount: this.rendererPageSnapshot?.total ?? null,
+                });
+                try {
+                    logHideNavTrace('nativePost.send', {
+                        source: 'relocate.explicit',
+                        requestedHide: false,
+                        reason: detail?.reason ?? null,
+                        explicitRelocateSource,
+                        pageNumber: this.rendererPageSnapshot?.current ?? null,
+                        pageCount: this.rendererPageSnapshot?.total ?? null,
+                        state: this._captureHideNavState(),
+                    });
+                    window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+                        hideNavigationDueToScroll: false,
+                        source: 'relocate.explicit',
+                        reason: detail?.reason ?? null,
+                        explicitRelocateSource,
+                    });
+                } catch (error) {
+                    logHideNavTrace('nativePost.error', {
+                        source: 'relocate.explicit',
+                        requestedHide: false,
+                        message: error?.message || String(error),
+                    });
+                }
+            }
+            return;
+        }
 
-        const direction = this.isRTL
-            ? (reportedDirection === 'forward' ? 'backward' : 'forward')
-            : reportedDirection;
+        const direction = reportedDirection;
         const shouldHide = direction === 'forward';
+        if (!shouldHide) {
+            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
+            globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
+        }
         this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
             direction,
             reportedDirection,

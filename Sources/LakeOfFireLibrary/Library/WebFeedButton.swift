@@ -183,7 +183,7 @@ struct WebFeedMenuAddButtons<C: ReaderContentProtocol>: View {
 #endif
                 }
             } label: {
-                Label("Add Feed to User Library", systemImage: "plus")
+                Label("Add Feed to My Library", systemImage: "plus")
             }
         }
     }

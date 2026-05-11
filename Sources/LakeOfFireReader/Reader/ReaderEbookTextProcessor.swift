@@ -335,15 +335,15 @@ internal func ebookTextProcessor(
         let serializeStartedAt = Date()
         var htmlBytes = try doc.outerHtmlUTF8()
         serializeElapsedMs = Int(Date().timeIntervalSince(serializeStartedAt) * 1000)
-        print(
-            "# EPUB",
-            "ebookTextProcessor.output",
-            "contentURL=\(contentURL.absoluteString)",
-            "sectionLocation=\(sectionLocation)",
-            "isCacheWarmer=\(isCacheWarmer)",
-            "segmentCount=\(bytePatternCount(Array("<mnb-seg".utf8), in: htmlBytes))",
-            "sentenceCount=\(bytePatternCount(Array("<mnb-sen".utf8), in: htmlBytes))"
-        )
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
+            print(
+                "# EPUB",
+                "ebookTextProcessor.output",
+                "contentURL=\(contentURL.absoluteString)",
+                "sectionLocation=\(sectionLocation)",
+                "isCacheWarmer=\(isCacheWarmer)"
+            )
+        }
 
         if let processHTMLBytes {
             let processHTMLBytesStartedAt = Date()
@@ -399,24 +399,4 @@ internal func ebookTextProcessor(
         debugPrint("Error processing readability content for ebook", error)
     }
     return content
-}
-
-private func bytePatternCount(_ needle: [UInt8], in haystack: [UInt8]) -> Int {
-    guard !needle.isEmpty, haystack.count >= needle.count else { return 0 }
-    var count = 0
-    var index = 0
-    while index <= haystack.count - needle.count {
-        var matched = true
-        for offset in needle.indices where haystack[index + offset] != needle[offset] {
-            matched = false
-            break
-        }
-        if matched {
-            count += 1
-            index += needle.count
-        } else {
-            index += 1
-        }
-    }
-    return count
 }

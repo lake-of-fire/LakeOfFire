@@ -553,6 +553,7 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
+        this.setImageSize()
         this.#debouncedExpand()
         //        await this.expand()
     }
@@ -615,6 +616,7 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
+        this.setImageSize()
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
@@ -633,6 +635,62 @@ class View {
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
+    }
+    setImageSize() {
+        const {
+            width,
+            height,
+            topMargin = 0,
+            bottomMargin = 0,
+            margin = 0,
+        } = this.layout || {};
+        const vertical = this.#vertical;
+        const doc = this.document;
+        const numericWidth = Number.isFinite(width) ? width : 0;
+        const numericHeight = Number.isFinite(height) ? height : 0;
+        const verticalMaxWidth = Math.max(1, numericWidth - margin * 2);
+        const horizontalMaxHeight = Math.max(1, numericHeight - topMargin - bottomMargin - margin * 2);
+        let imageCount = 0;
+        for (const el of doc?.body?.querySelectorAll?.('img, svg, video') || []) {
+            imageCount += 1;
+            const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el);
+            Object.assign(el.style, {
+                maxHeight: vertical
+                    ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
+                    : `${horizontalMaxHeight}px`,
+                maxWidth: vertical
+                    ? `${verticalMaxWidth}px`
+                    : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+                objectFit: 'contain',
+                pageBreakInside: 'avoid',
+                breakInside: 'avoid',
+                boxSizing: 'border-box',
+            });
+            const parent = el.parentElement;
+            const parentText = (parent?.textContent || '').replace(/\s+/g, '');
+            const parentMediaCount = parent?.querySelectorAll?.('img, svg, video')?.length ?? 0;
+            if (parent && parent !== doc.body && parentText.length === 0 && parentMediaCount === 1) {
+                Object.assign(parent.style, {
+                    pageBreakInside: 'avoid',
+                    breakInside: 'avoid',
+                    webkitColumnBreakInside: 'avoid',
+                    boxSizing: 'border-box',
+                });
+            }
+        }
+        if (globalThis.manabiVerboseImageLayout === true) {
+            postPaginatorLoadLog('view.image-size.apply', {
+                vertical,
+                imageCount,
+                width: numericWidth,
+                height: numericHeight,
+                topMargin,
+                bottomMargin,
+                margin,
+                verticalMaxWidth,
+                horizontalMaxHeight,
+            });
+        }
     }
     async expand() {
         const expandStartedAt = manabiPerfNow();

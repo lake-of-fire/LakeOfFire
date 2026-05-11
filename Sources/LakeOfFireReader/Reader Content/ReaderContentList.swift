@@ -507,6 +507,7 @@ struct ListItemToggleStyle: ToggleStyle {
 }
 
 public enum ReaderContentSortOrder {
+    case providedOrder
     case publicationDate
     case createdAt
     case lastVisitedAt
@@ -546,6 +547,8 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         guard let sortOrder else { return contents }
 
         switch sortOrder {
+        case .providedOrder:
+            return contents
         case .publicationDate:
             return contents.sorted { lhs, rhs in
                 switch (lhs.publicationDate, rhs.publicationDate) {
@@ -689,6 +692,8 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
             if let sortOrder {
                 switch sortOrder {
+                case .providedOrder:
+                    break
                 case .publicationDate:
                     filtered = filtered.sorted { lhs, rhs in
                         switch (lhs.publicationDate, rhs.publicationDate) {
