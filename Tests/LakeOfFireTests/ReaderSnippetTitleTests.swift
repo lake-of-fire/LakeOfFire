@@ -1,7 +1,7 @@
 import XCTest
 import RealmSwift
 import RealmSwiftGaps
-@testable import LakeOfFire
+@testable import LakeOfFireContent
 
 final class ReaderSnippetTitleTests: XCTestCase {
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {

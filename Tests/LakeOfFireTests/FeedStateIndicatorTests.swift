@@ -1,6 +1,7 @@
 import XCTest
 import RealmSwift
-@testable import LakeOfFire
+@testable import LakeOfFireContent
+@testable import LakeOfFireReader
 
 final class FeedStateIndicatorTests: XCTestCase {
     private func makeConfiguration(identifier: String = UUID().uuidString) -> Realm.Configuration {

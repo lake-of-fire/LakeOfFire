@@ -1,5 +1,5 @@
 import XCTest
-@testable import LakeOfFire
+@testable import LakeOfFireContent
 
 final class ReaderFileManagerNormalizationTests: XCTestCase {
     func testCanonicalReaderBackingURL_stripsQueryAndFragmentFromReaderFileURL() {

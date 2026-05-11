@@ -1,7 +1,8 @@
 import XCTest
 import RealmSwift
 import RealmSwiftGaps
-@testable import LakeOfFire
+@testable import LakeOfFireContent
+@testable import LakeOfFireReader
 
 final class ReaderMediaMetadataTests: XCTestCase {
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {

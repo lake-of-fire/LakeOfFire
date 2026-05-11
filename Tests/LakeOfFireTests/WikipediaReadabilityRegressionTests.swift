@@ -1,6 +1,7 @@
 import XCTest
 import WebKit
-@testable import LakeOfFire
+import SwiftReadability
+@testable import LakeOfFireContent
 
 @MainActor
 private final class WikipediaReadabilityNavigationDelegate: NSObject, WKNavigationDelegate {

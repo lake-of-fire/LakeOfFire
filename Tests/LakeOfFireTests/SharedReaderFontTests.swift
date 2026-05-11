@@ -1,5 +1,5 @@
 import XCTest
-@testable import LakeOfFire
+@testable import LakeOfFireFiles
 
 final class SharedReaderFontTests: XCTestCase {
     private func makeFontAsset() throws -> SharedReaderFontAsset {
