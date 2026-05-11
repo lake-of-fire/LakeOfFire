@@ -173,6 +173,172 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     }
 }
 
+public extension Feed {
+    public static func canonicalFollowingFeedURLKey(for url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        if components.port == 80, components.scheme == "http" {
+            components.port = nil
+        } else if components.port == 443, components.scheme == "https" {
+            components.port = nil
+        }
+
+        return components.url?.absoluteString ?? url.absoluteString
+    }
+
+    public var canonicalFollowingFeedURLKey: String {
+        Self.canonicalFollowingFeedURLKey(for: rssUrl)
+    }
+
+    public static func uniqueFollowingFeedRepresentatives(from feeds: [Feed]) -> [Feed] {
+        var representativesByURL = [String: Feed]()
+
+        for feed in feeds where !feed.isDeleted && !feed.isArchived {
+            let key = feed.canonicalFollowingFeedURLKey
+            guard let current = representativesByURL[key] else {
+                representativesByURL[key] = feed
+                continue
+            }
+
+            if shouldPreferFollowingFeedRepresentative(feed, over: current) {
+                representativesByURL[key] = feed
+            }
+        }
+
+        return representativesByURL.values.sorted { lhs, rhs in
+            lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    public static func isFollowingFeedGroup(containing feed: Feed, in feeds: [Feed]) -> Bool {
+        let key = feed.canonicalFollowingFeedURLKey
+        return feeds.contains {
+            !$0.isDeleted &&
+            !$0.isArchived &&
+            $0.canonicalFollowingFeedURLKey == key &&
+            $0.isFollowed
+        }
+    }
+
+    public func effectiveSeenDate(for entry: FeedEntry, latestHistoryLastVisitedAt: Date?) -> Date? {
+        let baseline = [lastViewedAt, lastSeenFeedEntriesAt].compactMap { $0 }.max()
+        guard let baseline else { return latestHistoryLastVisitedAt }
+        guard let latestHistoryLastVisitedAt else { return baseline }
+        return max(baseline, latestHistoryLastVisitedAt)
+    }
+
+    public func isEntryUnseen(_ entry: FeedEntry, latestHistoryLastVisitedAt: Date?) -> Bool {
+        guard showsUnseenBadge else { return false }
+        if let effectiveSeenDate = effectiveSeenDate(for: entry, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) {
+            return entry.createdAt > effectiveSeenDate
+        }
+        return latestHistoryLastVisitedAt == nil
+    }
+
+    public static func followingEntries(
+        from feeds: [Feed],
+        historyRealm: Realm? = nil
+    ) -> [FeedEntry] {
+        let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived }) {
+            $0.canonicalFollowingFeedURLKey
+        }
+
+        let entriesByFeed = groupedFeeds.values.compactMap { feedGroup -> [FeedEntry]? in
+            guard feedGroup.contains(where: \.isFollowed) else { return nil }
+            var entriesByURL = [String: FeedEntry]()
+
+            for feed in feedGroup {
+                for entry in feed.getEntries() ?? [] {
+                    let latestHistoryLastVisitedAt = historyRealm.flatMap {
+                        HistoryRecord.latestLastVisitedAt(for: entry.url, in: $0)
+                    }
+                    guard isEntryUnseen(entry, in: feedGroup, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) else {
+                        continue
+                    }
+
+                    let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
+                    if let current = entriesByURL[entryKey] {
+                        if followingEntryRecencySort(lhs: entry, rhs: current) {
+                            entriesByURL[entryKey] = entry
+                        }
+                    } else {
+                        entriesByURL[entryKey] = entry
+                    }
+                }
+            }
+
+            let entries = entriesByURL.values.sorted { followingEntryRecencySort(lhs: $0, rhs: $1) }
+            return entries.isEmpty ? nil : entries
+        }
+
+        var result: [FeedEntry] = []
+        var roundIndex = 0
+        while true {
+            let round = entriesByFeed.compactMap { entries in
+                entries.indices.contains(roundIndex) ? entries[roundIndex] : nil
+            }
+            guard !round.isEmpty else { break }
+            result.append(contentsOf: round.sorted { followingEntryRecencySort(lhs: $0, rhs: $1) })
+            roundIndex += 1
+        }
+        return result
+    }
+
+    public static func followingEntryRecencySort(lhs: FeedEntry, rhs: FeedEntry) -> Bool {
+        switch (lhs.publicationDate, rhs.publicationDate) {
+        case let (left?, right?):
+            if left != right { return left > right }
+            return lhs.createdAt > rhs.createdAt
+        case (nil, nil):
+            return lhs.createdAt > rhs.createdAt
+        case (nil, _?):
+            return false
+        case (_?, nil):
+            return true
+        }
+    }
+
+    private static func shouldPreferFollowingFeedRepresentative(_ candidate: Feed, over current: Feed) -> Bool {
+        if candidate.isFollowed != current.isFollowed {
+            return candidate.isFollowed
+        }
+
+        let titleComparison = candidate.title.localizedCaseInsensitiveCompare(current.title)
+        if titleComparison != .orderedSame {
+            return titleComparison == .orderedAscending
+        }
+
+        return candidate.modifiedAt > current.modifiedAt
+    }
+
+    private static func canonicalFollowingEntryURLKey(for url: URL) -> String {
+        canonicalFollowingFeedURLKey(for: url)
+    }
+
+    private static func effectiveSeenDate(for feedGroup: [Feed], latestHistoryLastVisitedAt: Date?) -> Date? {
+        let baseline = feedGroup
+            .flatMap { [$0.lastViewedAt, $0.lastSeenFeedEntriesAt] }
+            .compactMap { $0 }
+            .max()
+        guard let baseline else { return latestHistoryLastVisitedAt }
+        guard let latestHistoryLastVisitedAt else { return baseline }
+        return max(baseline, latestHistoryLastVisitedAt)
+    }
+
+    private static func isEntryUnseen(_ entry: FeedEntry, in feedGroup: [Feed], latestHistoryLastVisitedAt: Date?) -> Bool {
+        guard feedGroup.contains(where: \.showsUnseenBadge) else { return false }
+        if let effectiveSeenDate = effectiveSeenDate(for: feedGroup, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) {
+            return entry.createdAt > effectiveSeenDate
+        }
+        return latestHistoryLastVisitedAt == nil
+    }
+}
+
 @globalActor
 fileprivate actor FeedEntryActor {
     static let shared = FeedEntryActor()

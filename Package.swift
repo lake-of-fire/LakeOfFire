@@ -213,7 +213,13 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
-                "LakeOfFire",
+                .product(name: "RealmSwift", package: "realm-swift"),
+                .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
+                "LakeOfFireContent",
+                "LakeOfFireCore",
+                "LakeOfFireReader",
+                "LakeOfFireWeb",
+                .product(name: "SwiftReadability", package: "swift-readability"),
             ],
             path: "Tests/LakeOfFireTests",
             resources: [

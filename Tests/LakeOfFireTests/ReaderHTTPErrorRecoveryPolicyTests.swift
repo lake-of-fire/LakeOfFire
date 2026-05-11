@@ -1,5 +1,5 @@
 import XCTest
-@testable import LakeOfFire
+@testable import LakeOfFireReader
 
 final class ReaderHTTPErrorRecoveryPolicyTests: XCTestCase {
     func testHTTPErrorStatusDetectionOnlyTreats4xxAnd5xxAsErrors() {

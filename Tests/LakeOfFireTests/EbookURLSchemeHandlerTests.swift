@@ -1,5 +1,6 @@
 import XCTest
-@testable import LakeOfFire
+@testable import LakeOfFireContent
+@testable import LakeOfFireReader
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
     func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {
@@ -28,8 +29,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
             ebookTextProcessorCacheHits: { _, _ in true },
-            ebookTextProcessor: { _, _, _, _, _, _ in expectedHTML },
+            ebookTextProcessor: { _, _, _, _, _, _, _ in expectedHTML },
             processReadabilityContent: nil,
+            processHTMLBytes: nil,
             processHTML: nil
         )
 
@@ -49,6 +51,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             ebookTextProcessorCacheHits: { _, _ in true },
             ebookTextProcessor: nil,
             processReadabilityContent: nil,
+            processHTMLBytes: nil,
             processHTML: nil
         )
 

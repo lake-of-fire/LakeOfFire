@@ -60,21 +60,6 @@ public extension Feed {
             .max()
     }
 
-    public func effectiveSeenDate(for entry: FeedEntry, latestHistoryLastVisitedAt: Date?) -> Date? {
-        let baseline = [lastViewedAt, lastSeenFeedEntriesAt].compactMap { $0 }.max()
-        guard let baseline else { return latestHistoryLastVisitedAt }
-        guard let latestHistoryLastVisitedAt else { return baseline }
-        return max(baseline, latestHistoryLastVisitedAt)
-    }
-
-    public func isEntryUnseen(_ entry: FeedEntry, latestHistoryLastVisitedAt: Date?) -> Bool {
-        guard showsUnseenBadge else { return false }
-        if let effectiveSeenDate = effectiveSeenDate(for: entry, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) {
-            return entry.createdAt > effectiveSeenDate
-        }
-        return latestHistoryLastVisitedAt == nil
-    }
-
     public func hasUnseenEntries(_ entries: [FeedEntry]) -> Bool {
         guard showsUnseenBadge else { return false }
         guard let historyRealm = try? Realm(configuration: ReaderContentLoader.historyRealmConfiguration) else {

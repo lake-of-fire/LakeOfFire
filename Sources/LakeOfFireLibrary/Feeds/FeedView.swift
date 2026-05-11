@@ -28,10 +28,12 @@ private func logFeedFlash(_ message: String) {
 @MainActor
 public class FeedViewModel: ObservableObject {
     @Published var entries: [FeedEntry]? = nil
+    @Published var isFeedGroupFollowed = false
 
     private static var recentAutomaticFetchAttempts: [UUID: Date] = [:]
     private static let automaticFetchAttemptSuppressionInterval: TimeInterval = 60
     private let instanceID = UUID()
+    private let canonicalFeedURLKey: String
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -54,9 +56,29 @@ public class FeedViewModel: ObservableObject {
             )
         }
     }
+
+    @MainActor
+    private func reloadFollowedStatus(reason: String) async {
+        do {
+            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            isFeedGroupFollowed = realm.objects(Feed.self)
+                .where { !$0.isDeleted }
+                .filter { $0.canonicalFollowingFeedURLKey == self.canonicalFeedURLKey }
+                .contains(where: \.isFollowed)
+            logFeedFlash(
+                "model.reloadFollowedStatus instanceID=\(instanceID.uuidString) feedURLKey=\(canonicalFeedURLKey) reason=\(reason) isFollowed=\(isFeedGroupFollowed)"
+            )
+        } catch {
+            logFeedFlash(
+                "model.reloadFollowedStatus.error instanceID=\(instanceID.uuidString) feedURLKey=\(canonicalFeedURLKey) reason=\(reason) error=\(error.localizedDescription)"
+            )
+        }
+    }
     
     public init(feed: Feed) {
         entries = feed.getEntries()
+        isFeedGroupFollowed = feed.isFollowed
+        canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         let feedID = feed.id
         logDetent(
             "feedViewModel.init instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) title=\(feed.title) initialEntries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
@@ -87,6 +109,23 @@ public class FeedViewModel: ObservableObject {
                     }
                 })
                 .store(in: &cancellables)
+
+            realm.objects(Feed.self)
+                .where { !$0.isDeleted }
+                .collectionPublisher
+                .subscribe(on: feedQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: feedQueue)
+                .receive(on: feedQueue)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        await self?.reloadFollowedStatus(reason: "feedsChanged")
+                    }
+                })
+                .store(in: &cancellables)
+        }
+        Task { @MainActor [weak self] in
+            await self?.reloadFollowedStatus(reason: "init")
         }
     }
     
@@ -213,6 +252,7 @@ public struct FeedView: View {
 
     public var body: some View {
         let currentEntries = viewModel.entries
+        let isFeedGroupFollowed = viewModel.isFeedGroupFollowed
         let showInitialContent = !(currentEntries?.isEmpty ?? true)
         AsyncView(operation: { forceRefreshRequested in
             logDetent(
@@ -262,10 +302,10 @@ public struct FeedView: View {
                 if showsToolbar {
                     Button {
                         Task { @MainActor in
-                            try? await setFollowed(!feed.isFollowed)
+                            try? await setFollowed(!isFeedGroupFollowed)
                         }
                     } label: {
-                        Label(feed.isFollowed ? "Following" : "Follow", systemImage: feed.isFollowed ? "checkmark" : "plus")
+                        Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
                     }
                 }
             }
@@ -333,13 +373,17 @@ public struct FeedView: View {
 
     @MainActor
     private func setFollowed(_ isFollowed: Bool) async throws {
-        try await Realm.asyncWrite(
-            ThreadSafeReference(to: feed),
-            configuration: ReaderContentLoader.feedEntryRealmConfiguration
-        ) { _, feed in
-            feed.isFollowed = isFollowed
-            feed.explicitlyModifiedAt = Date()
-            feed.modifiedAt = Date()
+        let canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
+        try await Realm.asyncWrite(configuration: ReaderContentLoader.feedEntryRealmConfiguration) { realm in
+            let now = Date()
+            let feeds = realm.objects(Feed.self)
+                .where { !$0.isDeleted }
+                .filter { $0.canonicalFollowingFeedURLKey == canonicalFeedURLKey }
+            for feed in feeds {
+                feed.isFollowed = isFollowed
+                feed.explicitlyModifiedAt = now
+                feed.modifiedAt = now
+            }
         }
     }
 }
