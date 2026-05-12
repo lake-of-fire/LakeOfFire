@@ -153,11 +153,149 @@ final class FeedStateIndicatorTests: XCTestCase {
         XCTAssertEqual(followingEntries.map(\.title), ["new"])
     }
 
+    func testFollowingEntriesDedupesDuplicateFeedURLsAndEntryURLs() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://example.com/feed.xml")!
+        let duplicateFeedURL = URL(string: "https://EXAMPLE.com:443/feed.xml#fragment")!
+        let sharedEntryURL = URL(string: "https://example.com/articles/shared")!
+        let duplicateSharedEntryURL = URL(string: "https://EXAMPLE.com:443/articles/shared#duplicate")!
+
+        let followedFeed = Feed()
+        followedFeed.title = "Followed"
+        followedFeed.rssUrl = feedURL
+        followedFeed.iconUrl = feedURL
+        followedFeed.isFollowed = true
+
+        let duplicateFeed = Feed()
+        duplicateFeed.title = "Duplicate"
+        duplicateFeed.rssUrl = duplicateFeedURL
+        duplicateFeed.iconUrl = feedURL
+
+        let otherFeed = Feed()
+        otherFeed.title = "Other"
+        otherFeed.rssUrl = URL(string: "https://example.com/other.xml")!
+        otherFeed.iconUrl = otherFeed.rssUrl
+        otherFeed.isFollowed = true
+
+        try realm.write {
+            realm.add([followedFeed, duplicateFeed, otherFeed])
+            realm.add(makeEntry(feed: followedFeed, suffix: "shared-old", url: sharedEntryURL, date: baseDate.addingTimeInterval(10)))
+            realm.add(makeEntry(feed: duplicateFeed, suffix: "shared-new", url: duplicateSharedEntryURL, date: baseDate.addingTimeInterval(100)))
+            realm.add(makeEntry(feed: duplicateFeed, suffix: "duplicate-unique", date: baseDate.addingTimeInterval(80)))
+            realm.add(makeEntry(feed: otherFeed, suffix: "other", date: baseDate.addingTimeInterval(90)))
+        }
+
+        let followingEntries = Feed.followingEntries(from: [followedFeed, duplicateFeed, otherFeed])
+
+        XCTAssertEqual(
+            followingEntries.map(\.title),
+            ["shared-new", "other", "duplicate-unique"]
+        )
+    }
+
+    func testFollowingEntriesUsesSharedSeenDateForDuplicateFeedURLs() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://example.com/feed.xml")!
+
+        let followedFeed = Feed()
+        followedFeed.title = "Followed"
+        followedFeed.rssUrl = feedURL
+        followedFeed.iconUrl = feedURL
+        followedFeed.isFollowed = true
+        followedFeed.lastSeenFeedEntriesAt = baseDate.addingTimeInterval(90)
+
+        let duplicateFeed = Feed()
+        duplicateFeed.title = "Duplicate"
+        duplicateFeed.rssUrl = URL(string: "https://EXAMPLE.com:443/feed.xml#fragment")!
+        duplicateFeed.iconUrl = feedURL
+
+        try realm.write {
+            realm.add([followedFeed, duplicateFeed])
+            realm.add(makeEntry(feed: duplicateFeed, suffix: "seen-by-group", date: baseDate.addingTimeInterval(80)))
+            realm.add(makeEntry(feed: duplicateFeed, suffix: "new-for-group", date: baseDate.addingTimeInterval(100)))
+        }
+
+        let followingEntries = Feed.followingEntries(from: [followedFeed, duplicateFeed])
+
+        XCTAssertEqual(followingEntries.map(\.title), ["new-for-group"])
+    }
+
+    func testFollowingEntriesUsesCanonicalEntryURLForHistorySeenState() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://example.com/feed.xml")!
+
+        let followedFeed = Feed()
+        followedFeed.title = "Followed"
+        followedFeed.rssUrl = feedURL
+        followedFeed.iconUrl = feedURL
+        followedFeed.isFollowed = true
+
+        let entryURL = URL(string: "https://EXAMPLE.com:443/articles/shared#fragment")!
+        let historyURL = URL(string: "https://example.com/articles/shared")!
+
+        let historyRecord = HistoryRecord()
+        historyRecord.url = historyURL
+        historyRecord.updateCompoundKey()
+        historyRecord.lastVisitedAt = baseDate.addingTimeInterval(120)
+
+        try realm.write {
+            realm.add(followedFeed)
+            realm.add(makeEntry(feed: followedFeed, suffix: "seen-canonical", url: entryURL, date: baseDate.addingTimeInterval(100)))
+            realm.add(historyRecord)
+        }
+
+        let followingEntries = Feed.followingEntries(from: [followedFeed], historyRealm: realm)
+
+        XCTAssertTrue(followingEntries.isEmpty)
+    }
+
+    func testUniqueFollowingFeedRepresentativesCollapseDuplicateFeedURLs() throws {
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://example.com/feed.xml")!
+
+        let firstFeed = Feed()
+        firstFeed.title = "Unfollowed"
+        firstFeed.rssUrl = URL(string: "https://EXAMPLE.com:443/feed.xml#fragment")!
+        firstFeed.iconUrl = feedURL
+        firstFeed.modifiedAt = baseDate.addingTimeInterval(100)
+
+        let followedDuplicate = Feed()
+        followedDuplicate.title = "Followed"
+        followedDuplicate.rssUrl = feedURL
+        followedDuplicate.iconUrl = feedURL
+        followedDuplicate.isFollowed = true
+        followedDuplicate.modifiedAt = baseDate
+
+        let otherFeed = Feed()
+        otherFeed.title = "Other"
+        otherFeed.rssUrl = URL(string: "https://example.com/other.xml")!
+        otherFeed.iconUrl = otherFeed.rssUrl
+
+        let representatives = Feed.uniqueFollowingFeedRepresentatives(from: [firstFeed, followedDuplicate, otherFeed])
+
+        XCTAssertEqual(representatives.map(\.title), ["Followed", "Other"])
+    }
+
     private func makeEntry(feed: Feed, suffix: String, date: Date) -> FeedEntry {
+        makeEntry(
+            feed: feed,
+            suffix: suffix,
+            url: URL(string: "https://example.com/articles/\(feed.id.uuidString)/\(suffix)")!,
+            date: date
+        )
+    }
+
+    private func makeEntry(feed: Feed, suffix: String, url: URL, date: Date) -> FeedEntry {
         let entry = FeedEntry()
         entry.feedID = feed.id
         entry.title = suffix
-        entry.url = URL(string: "https://example.com/articles/\(feed.id.uuidString)/\(suffix)")!
+        entry.url = url
         entry.updateCompoundKey()
         entry.publicationDate = date
         entry.createdAt = date

@@ -849,6 +849,51 @@ const debounce = (fn, delay) => {
     return debounced;
 };
 
+const getVisibleJapaneseTextStateForRenderer = (renderer) => {
+    const contents = renderer?.getContents?.() || [];
+    const currentIndex = getPrimaryRendererContentIndex(renderer);
+    const activeContents = typeof currentIndex === 'number'
+        ? contents.filter((content) => typeof content?.index !== 'number' || content.index === currentIndex)
+        : contents;
+    const viewportRight = window.innerWidth || document.documentElement?.clientWidth || 0;
+    const viewportBottom = window.innerHeight || document.documentElement?.clientHeight || 0;
+    let observedSegmentCount = 0;
+    let visibleSegmentCount = 0;
+
+    const intersectsViewport = (rect) => rect.bottom > 0
+        && rect.right > 0
+        && rect.top < viewportBottom
+        && rect.left < viewportRight;
+
+    for (const content of activeContents) {
+        const doc = content?.doc || content?.document || null;
+        if (!doc?.querySelectorAll) { continue; }
+        const frame = doc.defaultView?.frameElement || null;
+        const frameRect = frame?.getBoundingClientRect?.() || { left: 0, top: 0 };
+        const segments = Array.from(doc.querySelectorAll('mnb-seg'));
+        observedSegmentCount += segments.length;
+        for (const segment of segments) {
+            if (!(segment.textContent || '').trim()) { continue; }
+            const rects = segment.getClientRects ? Array.from(segment.getClientRects()) : [segment.getBoundingClientRect()];
+            const isVisible = rects.some((rect) => intersectsViewport({
+                left: frameRect.left + rect.left,
+                right: frameRect.left + rect.right,
+                top: frameRect.top + rect.top,
+                bottom: frameRect.top + rect.bottom,
+            }));
+            if (isVisible) {
+                visibleSegmentCount += 1;
+            }
+        }
+    }
+
+    return {
+        hasVisibleJapaneseText: visibleSegmentCount > 0,
+        visibleSegmentCount,
+        observedSegmentCount,
+    };
+};
+
 const postReaderLog = (event, details = {}) => {
     if (!manabiDiagnosticsEnabled()) return;
     const payload = {
@@ -7246,6 +7291,7 @@ class Reader {
         sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
+        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer);
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
@@ -7254,6 +7300,9 @@ class Reader {
             currentPageNumber: currentPageNumber,
             totalPages: totalPages,
             sectionIndex: sectionIndex,
+            hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
+            visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
+            observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
         })
     }, 400)
 
