@@ -14,6 +14,8 @@ const CSS_DEFAULTS = {
 };
 
 const MANABI_DISABLE_POST_LOAD_RERENDER = true;
+const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
+const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiPerfNow = () =>
@@ -57,7 +59,12 @@ const postBlankPageLog = (details = {}) => {
         try { console.log('# BLANKPAGE', payload); } catch (_) {}
     }
 };
+const MANABI_MINIMAL_EBOOKBUG_EVENTS = new Set([
+    'paginator-loading-watchdog',
+    'paginator-section-load-error',
+]);
 const postEBookBugLog = (event, details = {}) => {
+    if (!MANABI_MINIMAL_EBOOKBUG_EVENTS.has(event)) return;
     const payload = { event, timestamp: Date.now(), ...details };
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
@@ -741,18 +748,6 @@ class View {
                             column: this.#column,
                             elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
                         });
-                        postEBookBugLog('paginator-expand-skip', {
-                            reason: 'document-not-ready',
-                            hasBody: !!doc?.body,
-                            hasDocumentElement: !!documentElement,
-                            iframeConnected: !!this.#iframe?.isConnected,
-                            elementConnected: !!this.#element?.isConnected,
-                            vertical: this.#vertical,
-                            column: this.#column,
-                            containerRect: rectSnapshot(this.container),
-                            viewRect: rectSnapshot(this.#element),
-                            iframeRect: rectSnapshot(this.#iframe),
-                        })
                         resolve()
                         return
                     }
@@ -961,6 +956,8 @@ export class Paginator extends HTMLElement {
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #suspendOnExpandAnchor = false
     #loadingWatchdogTimer = null
+    #prefetchTimer = null
+    #prefetchCache = new Map()
     #pendingPageTurnDirection = null
     #queuedPageTurn = null
 
@@ -1222,17 +1219,6 @@ export class Paginator extends HTMLElement {
             clearTimeout(this.#loadingWatchdogTimer)
             this.#loadingWatchdogTimer = null
         }
-        postEBookBugLog('paginator-loading-state', {
-            reason,
-            isLoading,
-            index: this.#index,
-            flow: this.getAttribute('flow'),
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-            containerRect: rectSnapshot(this.#container),
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-        })
     }
     async #onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
@@ -1240,16 +1226,6 @@ export class Paginator extends HTMLElement {
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
-        postEBookBugLog('paginator-expand-before', {
-            index: this.#index,
-            flow: this.getAttribute('flow'),
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-            isLoading: this.#isLoading,
-            suspendOnExpandAnchor: this.#suspendOnExpandAnchor,
-            containerRect: rectSnapshot(this.#container),
-            viewRect: rectSnapshot(this.#view?.element),
-        })
     }
     async #onExpand() {
 //        console.log("#onExpand...", this.style.display)
@@ -1257,21 +1233,6 @@ export class Paginator extends HTMLElement {
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
-        postEBookBugLog('paginator-expand-after', {
-            index: this.#index,
-            flow: this.getAttribute('flow'),
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-            isLoading: this.#isLoading,
-            suspendOnExpandAnchor: this.#suspendOnExpandAnchor,
-            anchorKind: this.#anchor instanceof Range
-                ? 'range'
-                : (typeof this.#anchor === 'function' ? 'function' : typeof this.#anchor),
-            containerRect: rectSnapshot(this.#container),
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-        })
-
         if (!this.#suspendOnExpandAnchor) {
             await this.#scrollToAnchor(this.#anchor)
         }
@@ -2890,20 +2851,6 @@ export class Paginator extends HTMLElement {
         //            console.log("#display... fin")
         } catch (error) {
             displayError = error
-            postEBookBugLog('paginator-display-error', {
-                index: this.#index,
-                message: error?.message || String(error),
-                stack: error?.stack || null,
-                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-                flow: this.getAttribute('flow'),
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-                containerRect: rectSnapshot(this.#container),
-                viewRect: rectSnapshot(this.#view?.element),
-                iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-                rootRect: rectSnapshot(this.#view?.document?.documentElement),
-                bodyRect: rectSnapshot(this.#view?.document?.body),
-            })
             throw error
         } finally {
             this.#suspendOnExpandAnchor = false
@@ -2970,20 +2917,6 @@ export class Paginator extends HTMLElement {
             if (!this.#isCacheWarmer) {
                 this.style.visibility = 'hidden'
             }
-            const sectionLoadStartedAt = manabiPerfNow()
-            postEBookBugLog('paginator-section-load-start', {
-                index,
-                currentIndex: this.#index,
-                flow: this.getAttribute('flow'),
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-                hostDisplay: this.style.display || null,
-                hostVisibility: this.style.visibility || null,
-                containerRect: rectSnapshot(this.#container),
-                viewRect: rectSnapshot(this.#view?.element),
-                iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-            })
- 
             const oldIndex = this.#index
             // Reset direction flags and promise before loading a new section
             this.#vertical = this.#verticalRTL = this.#rtl = null;
@@ -3001,28 +2934,29 @@ export class Paginator extends HTMLElement {
             }
 
             try {
+                let sectionLoadPromise;
+                if (MANABI_ENABLE_PREFETCH_PROMISE_REUSE && this.#prefetchCache.has(index)) {
+                    sectionLoadPromise = this.#prefetchCache.get(index);
+                } else {
+                    sectionLoadPromise = this.sections[index].load();
+                    if (MANABI_ENABLE_NEIGHBOR_PREFETCH) {
+                        this.#prefetchCache.set(index, sectionLoadPromise);
+                    }
+                }
                 const timedLoadPromise = Promise.race([
-                    this.sections[index].load(),
+                    sectionLoadPromise,
                     wait(10000).then(() => {
                         throw new Error(`Section load timed out (index=${index})`)
                     }),
                 ])
                 await this.#display(Promise.resolve(timedLoadPromise)
-                    .then(src => {
-                        postEBookBugLog('paginator-section-load-resolved', {
-                            index,
-                            elapsedMs: manabiRound(manabiPerfNow() - sectionLoadStartedAt, 1),
-                            hasSource: !!src,
-                            sourceType: typeof src,
-                        })
-                        return {
-                            index,
-                            src,
-                            anchor,
-                            onLoad,
-                            select
-                        }
-                    })
+                    .then(src => ({
+                        index,
+                        src,
+                        anchor,
+                        onLoad,
+                        select
+                    }))
                     .catch(error => {
                         postPaginatorLoadLog('goTo.section-load.error', {
                             index,
@@ -3031,7 +2965,6 @@ export class Paginator extends HTMLElement {
                         });
                         postEBookBugLog('paginator-section-load-error', {
                             index,
-                            elapsedMs: manabiRound(manabiPerfNow() - sectionLoadStartedAt, 1),
                             message: error?.message || String(error),
                             stack: error?.stack || null,
                         })
@@ -3045,6 +2978,30 @@ export class Paginator extends HTMLElement {
                     stack: error?.stack || null,
                 });
                 throw error;
+            }
+            if (MANABI_ENABLE_NEIGHBOR_PREFETCH) {
+                clearTimeout(this.#prefetchTimer);
+                this.#prefetchTimer = setTimeout(() => {
+                    if (this.#index !== index) return;
+
+                    const wanted = [index - 1, index + 1];
+                    const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)));
+                    this.#prefetchCache = new Map(
+                        [...this.#prefetchCache].filter(([i]) => keep.has(i))
+                    );
+
+                    wanted.forEach(i => {
+                        if (
+                            i >= 0 &&
+                            i < this.sections.length &&
+                            this.sections[i].linear !== 'no' &&
+                            !this.#prefetchCache.has(i)
+                        ) {
+                            const p = this.sections[i].load().catch(() => { });
+                            this.#prefetchCache.set(i, p);
+                        }
+                    });
+                }, 500);
             }
         }
     }
@@ -3187,6 +3144,9 @@ export class Paginator extends HTMLElement {
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
         this.#setLoading(false, 'paginator.destroy')
+        clearTimeout(this.#prefetchTimer)
+        this.#prefetchTimer = null
+        this.#prefetchCache = new Map()
         this.#view.destroy()
         this.#view = null
         this.sections[this.#index]?.unload?.()
