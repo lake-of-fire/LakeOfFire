@@ -244,6 +244,9 @@ public extension Feed {
         from feeds: [Feed],
         historyRealm: Realm? = nil
     ) -> [FeedEntry] {
+        let latestHistoryLastVisitedAtByEntryURL = historyRealm.map {
+            latestHistoryLastVisitedAtByCanonicalEntryURL(in: $0)
+        } ?? [:]
         let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived }) {
             $0.canonicalFollowingFeedURLKey
         }
@@ -254,14 +257,12 @@ public extension Feed {
 
             for feed in feedGroup {
                 for entry in feed.getEntries() ?? [] {
-                    let latestHistoryLastVisitedAt = historyRealm.flatMap {
-                        HistoryRecord.latestLastVisitedAt(for: entry.url, in: $0)
-                    }
+                    let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
+                    let latestHistoryLastVisitedAt = latestHistoryLastVisitedAtByEntryURL[entryKey]
                     guard isEntryUnseen(entry, in: feedGroup, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) else {
                         continue
                     }
 
-                    let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
                     if let current = entriesByURL[entryKey] {
                         if followingEntryRecencySort(lhs: entry, rhs: current) {
                             entriesByURL[entryKey] = entry
@@ -318,6 +319,17 @@ public extension Feed {
 
     private static func canonicalFollowingEntryURLKey(for url: URL) -> String {
         canonicalFollowingFeedURLKey(for: url)
+    }
+
+    private static func latestHistoryLastVisitedAtByCanonicalEntryURL(in realm: Realm) -> [String: Date] {
+        var latestByURL = [String: Date]()
+        for historyRecord in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
+            let key = canonicalFollowingEntryURLKey(for: historyRecord.url)
+            if latestByURL[key].map({ $0 < historyRecord.lastVisitedAt }) ?? true {
+                latestByURL[key] = historyRecord.lastVisitedAt
+            }
+        }
+        return latestByURL
     }
 
     private static func effectiveSeenDate(for feedGroup: [Feed], latestHistoryLastVisitedAt: Date?) -> Date? {

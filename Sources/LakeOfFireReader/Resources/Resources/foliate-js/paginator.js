@@ -1,17 +1,35 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
-const CSS_DEFAULTS = {
-    gapPct: 7,
-    minGapPx: 0,
-    topMarginPx: 48,
-    bottomMarginPx: 48,
-    verticalPaginatedTopMarginPx: 48,
-    verticalPaginatedBottomMarginPx: 48,
-    maxInlineSizePx: 720,
-    maxBlockSizePx: 1440,
-    maxColumnCount: 2,
-    maxColumnCountPortrait: 1,
-};
+const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
+const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+    ? {
+        gapPct: 5,
+        minGapPx: 36,
+        topMarginPx: 4,
+        bottomMarginPx: 32,
+        verticalPaginatedGapPx: 12,
+        verticalPaginatedTopMarginPx: 0,
+        verticalPaginatedBottomMarginPx: 0,
+        sideMarginPx: 32,
+        maxInlineSizePx: 720,
+        maxBlockSizePx: 1440,
+        maxColumnCount: 2,
+        maxColumnCountPortrait: 1,
+    }
+    : {
+        gapPct: 7,
+        minGapPx: 0,
+        topMarginPx: 48,
+        bottomMarginPx: 48,
+        verticalPaginatedGapPx: 0,
+        verticalPaginatedTopMarginPx: 48,
+        verticalPaginatedBottomMarginPx: 48,
+        sideMarginPx: 0,
+        maxInlineSizePx: 720,
+        maxBlockSizePx: 1440,
+        maxColumnCount: 2,
+        maxColumnCountPortrait: 1,
+    };
 
 const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
@@ -974,15 +992,78 @@ export class Paginator extends HTMLElement {
 
     constructor() {
         super()
-        // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
         const {
             gapPct,
             topMarginPx,
+            bottomMarginPx,
+            sideMarginPx,
             maxInlineSizePx,
             maxBlockSizePx,
             maxColumnCount,
             maxColumnCountPortrait
         } = CSS_DEFAULTS;
+        const topSpacingCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            ? `
+                --_top-margin: ${topMarginPx}px;
+                --_bottom-margin: ${bottomMarginPx}px;
+                --_side-margin: var(--side-nav-width, ${sideMarginPx}px);
+            `
+            : `--_margin: ${topMarginPx}px;`;
+        const gridTemplateColumnsCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            ? `
+                var(--_side-margin)
+                1fr
+                minmax(0, calc(var(--_max-width) - var(--_gap)))
+                1fr
+                var(--_side-margin)
+            `
+            : `
+                minmax(var(--_half-gap), 1fr)
+                var(--_half-gap)
+                minmax(0, calc(var(--_max-width) - var(--_gap)))
+                var(--_half-gap)
+                minmax(var(--_half-gap), 1fr)
+            `;
+        const gridTemplateRowsCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            ? `
+                minmax(var(--_top-margin), 1fr)
+                minmax(0, var(--_max-height))
+                minmax(var(--_bottom-margin), 1fr)
+            `
+            : `
+                minmax(var(--_margin), 1fr)
+                minmax(0, var(--_max-height))
+                minmax(var(--_margin), 1fr)
+            `;
+        const headerFooterHeightCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            ? `
+                #header {
+                    height: var(--_top-margin);
+                }
+                #footer {
+                    height: var(--_bottom-margin);
+                }
+            `
+            : `
+                #header, #footer {
+                    height: var(--_margin);
+                }
+            `;
+        const verticalPaginatedCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            ? `
+                #top.mnb-vertical-paginated {
+                    grid-template-rows: 0 minmax(0, 1fr) 0;
+                }
+                #top.mnb-vertical-paginated #container {
+                    grid-row: 1 / -1;
+                }
+                #top.mnb-vertical-paginated #header,
+                #top.mnb-vertical-paginated #footer {
+                    display: none;
+                    height: 0;
+                }
+            `
+            : '';
         this.#root.innerHTML = `<style>
             :host {
                 display: block;
@@ -997,7 +1078,7 @@ export class Paginator extends HTMLElement {
             }
             #top {
                 --_gap: ${gapPct}%;
-                --_margin: ${topMarginPx}px;
+                ${topSpacingCSS}
                 --_max-inline-size: ${maxInlineSizePx}px;
                 --_max-block-size: ${maxBlockSizePx}px;
                 --_max-column-count: ${maxColumnCount};
@@ -1007,16 +1088,8 @@ export class Paginator extends HTMLElement {
                 --_max-width: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
                 --_max-height: var(--_max-block-size);
                 display: grid;
-                grid-template-columns:
-                    minmax(var(--_half-gap), 1fr)
-                    var(--_half-gap)
-                    minmax(0, calc(var(--_max-width) - var(--_gap)))
-                    var(--_half-gap)
-                    minmax(var(--_half-gap), 1fr);
-                grid-template-rows:
-                    minmax(var(--_margin), 1fr)
-                    minmax(0, var(--_max-height))
-                    minmax(var(--_margin), 1fr);
+                grid-template-columns: ${gridTemplateColumnsCSS};
+                grid-template-rows: ${gridTemplateRowsCSS};
                 &.vertical {
                     --_max-column-count-spread: var(--_max-column-count-portrait);
                     --_max-width: var(--_max-block-size);
@@ -1048,6 +1121,7 @@ export class Paginator extends HTMLElement {
                 grid-row: 1 / -1;
                 overflow: auto;
             }
+            ${verticalPaginatedCSS}
             #header {
                 grid-column: 3 / 4;
                 grid-row: 1;
@@ -1060,9 +1134,7 @@ export class Paginator extends HTMLElement {
             #header, #footer {
                 display: grid;
             }
-            #header, #footer {
-                height: var(--_margin);
-            }
+            ${headerFooterHeightCSS}
             :is(#header, #footer) > * {
                 display: flex;
                 align-items: center;
@@ -1460,18 +1532,51 @@ export class Paginator extends HTMLElement {
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
+        this.#top.classList.toggle(
+            'mnb-vertical-paginated',
+            MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && vertical && flow !== 'scrolled'
+        )
 
-        const style = getComputedStyle(this.#top)
-        const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
-        const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-        const topMargin = parseFloat(style.getPropertyValue('--_margin'))
-        const bottomMargin = topMargin
+        let maxInlineSize;
+        let maxColumnCountSpread;
+        let topMargin;
+        let bottomMargin;
+        let g;
+
+        if (MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS) {
+            const {
+                maxInlineSizePx,
+                maxColumnCount,
+                maxColumnCountPortrait,
+                topMarginPx,
+                bottomMarginPx,
+                gapPct,
+                verticalPaginatedTopMarginPx,
+                verticalPaginatedBottomMarginPx,
+            } = CSS_DEFAULTS;
+            maxInlineSize = maxInlineSizePx;
+            const orientationPortrait = height > width;
+            if (orientationPortrait) {
+                maxColumnCountSpread = vertical ? maxColumnCount : maxColumnCountPortrait;
+            } else {
+                maxColumnCountSpread = vertical ? maxColumnCountPortrait : maxColumnCount;
+            }
+            const isPaginatedVertical = vertical && flow !== 'scrolled';
+            topMargin = isPaginatedVertical ? verticalPaginatedTopMarginPx : topMarginPx;
+            bottomMargin = isPaginatedVertical ? verticalPaginatedBottomMarginPx : bottomMarginPx;
+            g = gapPct / 100;
+        } else {
+            const style = getComputedStyle(this.#top)
+            maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+            maxColumnCountSpread = parseInt(style.getPropertyValue('--_max-column-count-spread'))
+            topMargin = parseFloat(style.getPropertyValue('--_margin'))
+            bottomMargin = topMargin
+            g = parseFloat(style.getPropertyValue('--_gap')) / 100
+        }
 
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
-
-        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
 
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -1490,7 +1595,12 @@ export class Paginator extends HTMLElement {
         //     f(x) = x / (1 + x).
         // But we want to keep the outer padding, and make the inner gap bigger.
         // So we apply the inverse, f⁻¹ = -x / (x - 1) to the column gap.
-        const gap = -g / (g - 1) * size
+        const rawGap = -g / (g - 1) * size
+        const gap = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            ? (vertical && flow !== 'scrolled'
+                ? CSS_DEFAULTS.verticalPaginatedGapPx
+                : Math.max(rawGap, CSS_DEFAULTS.minGapPx))
+            : rawGap
 
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
@@ -1513,9 +1623,16 @@ export class Paginator extends HTMLElement {
             }
         }
 
-        const divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
-        const columnWidth = (size / divisor) - gap
-        this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
+        let divisor;
+        let columnWidth;
+        if (MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && this.#isSingleMediaElementWithoutText()) {
+            columnWidth = maxInlineSize
+            this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
+        } else {
+            this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
+            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+            columnWidth = (size / divisor) - gap
+        }
 
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 

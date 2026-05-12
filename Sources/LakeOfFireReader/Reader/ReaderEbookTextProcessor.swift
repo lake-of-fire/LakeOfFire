@@ -11,6 +11,8 @@ import JapaneseLanguageTools
 
 private let ebookTextProcessorReplaceTextDetailedLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
+private let ebookTextProcessorUseMinimalSentinels = true
+private let ebookTextProcessorBypassReaderModeProcessor = true
 
 // Precomputed punctuation set for splitting
 private let splitPunctuation = ParsingStrings([
@@ -49,6 +51,25 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
     // reader tags are injected, so sentinels never split text before MeCab sees it.
     guard let body = doc.body() else { return doc }
     try? body.getElementsByTag("reader-sentinel").remove()
+    if ebookTextProcessorUseMinimalSentinels {
+        do {
+            let startSentinel = Element(Tag("reader-sentinel"), "")
+            try startSentinel.attr("id", "reader-sentinel-0")
+            _ = try? body.prependChild(startSentinel)
+
+            let endSentinel = Element(Tag("reader-sentinel"), "")
+            try endSentinel.attr("id", "reader-sentinel-1")
+            _ = try? body.appendChild(endSentinel)
+            print(
+                "# VISIBLERANGE",
+                "sentinelPreprocess.minimal",
+                "sentinelCount=2"
+            )
+        } catch {
+            print("# VISIBLERANGE sentinelPreprocess.minimal.error \(error)")
+        }
+        return doc
+    }
     let interval = 16
     var charCount = 0
     var nextThreshold = interval
@@ -284,7 +305,7 @@ internal func ebookTextProcessor(
     do {
         var doc: SwiftSoup.Document?
         
-        if let processReadabilityContent {
+        if let processReadabilityContent, !ebookTextProcessorBypassReaderModeProcessor {
             let readabilityProcessStartedAt = Date()
             doc = try await processReadabilityContent(
                 content,
@@ -294,6 +315,14 @@ internal func ebookTextProcessor(
                 { $0 }
             )
             readabilityProcessElapsedMs = Int(Date().timeIntervalSince(readabilityProcessStartedAt) * 1000)
+        } else if ebookTextProcessorBypassReaderModeProcessor {
+            print(
+                "# EPUB",
+                "ebookTextProcessor.readerModeProcessor.bypass",
+                "contentURL=\(contentURL.absoluteString)",
+                "sectionLocation=\(sectionLocation)",
+                "isCacheWarmer=\(isCacheWarmer)"
+            )
         }
         
         if doc == nil {

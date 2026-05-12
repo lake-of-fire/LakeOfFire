@@ -224,6 +224,37 @@ final class FeedStateIndicatorTests: XCTestCase {
         XCTAssertEqual(followingEntries.map(\.title), ["new-for-group"])
     }
 
+    func testFollowingEntriesUsesCanonicalEntryURLForHistorySeenState() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let feedURL = URL(string: "https://example.com/feed.xml")!
+
+        let followedFeed = Feed()
+        followedFeed.title = "Followed"
+        followedFeed.rssUrl = feedURL
+        followedFeed.iconUrl = feedURL
+        followedFeed.isFollowed = true
+
+        let entryURL = URL(string: "https://EXAMPLE.com:443/articles/shared#fragment")!
+        let historyURL = URL(string: "https://example.com/articles/shared")!
+
+        let historyRecord = HistoryRecord()
+        historyRecord.url = historyURL
+        historyRecord.updateCompoundKey()
+        historyRecord.lastVisitedAt = baseDate.addingTimeInterval(120)
+
+        try realm.write {
+            realm.add(followedFeed)
+            realm.add(makeEntry(feed: followedFeed, suffix: "seen-canonical", url: entryURL, date: baseDate.addingTimeInterval(100)))
+            realm.add(historyRecord)
+        }
+
+        let followingEntries = Feed.followingEntries(from: [followedFeed], historyRealm: realm)
+
+        XCTAssertTrue(followingEntries.isEmpty)
+    }
+
     func testUniqueFollowingFeedRepresentativesCollapseDuplicateFeedURLs() throws {
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://example.com/feed.xml")!

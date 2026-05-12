@@ -49,7 +49,9 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         usesCompactControlSize ? max(1, maxCellHeight * 0.4) : maxCellHeight
     }
 
-    private var baseCardWidth: CGFloat { maxCellHeight * 2.5 }
+    private var baseCardWidth: CGFloat {
+        usesCompactControlSize ? cardHeight * 2.75 : maxCellHeight * 2.5
+    }
     private var reservedThumbnailSlotWidth: CGFloat { effectiveMaxCellHeight }
     private var measuredThumbnailWidth: CGFloat? {
         guard let measuredPhysicalCoverWidth, measuredPhysicalCoverWidth > 0 else { return nil }
@@ -353,7 +355,14 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
 
             if !viewModel.showLoadingIndicator, viewModel.filteredContents.isEmpty {
                 emptyStateView()
-                    .frame(maxWidth: .infinity, minHeight: estimatedRowHeight, alignment: .topLeading)
+                    .environment(\.emptyStateBoxFillsAvailableHeight, true)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: estimatedRowHeight,
+                        idealHeight: estimatedRowHeight,
+                        maxHeight: estimatedRowHeight,
+                        alignment: .topLeading
+                    )
             }
 
             if viewModel.showLoadingIndicator {

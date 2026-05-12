@@ -216,12 +216,18 @@ public struct FractionalCompletionMessage: Sendable {
     public var sectionIndex: Int?
     public var currentPageNumber: Int?
     public var totalPages: Int?
+    public var hasVisibleJapaneseText: Bool?
 
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
+        self.init(body: message.body)
+    }
+
+    public init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
         fractionalCompletion = Float(completion)
         self.cfi = cfi
         self.reason = reason
+        hasVisibleJapaneseText = body["hasVisibleJapaneseText"] as? Bool
         if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
         }

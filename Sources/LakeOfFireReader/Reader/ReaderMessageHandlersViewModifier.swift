@@ -12,9 +12,27 @@ import RealmSwiftGaps
 import LakeKit
 
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
+public struct ReaderNavigationVisibilityChange: Sendable {
+    public let shouldHide: Bool
+    public let reason: String?
+    public let source: String?
+    public let direction: String?
+
+    public init(shouldHide: Bool, reason: String?, source: String?, direction: String?) {
+        self.shouldHide = shouldHide
+        self.reason = reason
+        self.source = source
+        self.direction = direction
+    }
+}
+public typealias ReaderNavigationVisibilityWillChangeHandler = @MainActor @Sendable (_ change: ReaderNavigationVisibilityChange) -> Void
 
 private struct ReaderShowOriginalWillBeginHandlerKey: EnvironmentKey {
     static let defaultValue: ReaderShowOriginalWillBeginHandler? = nil
+}
+
+private struct ReaderNavigationVisibilityWillChangeHandlerKey: EnvironmentKey {
+    static let defaultValue: ReaderNavigationVisibilityWillChangeHandler? = nil
 }
 
 public extension EnvironmentValues {
@@ -22,11 +40,20 @@ public extension EnvironmentValues {
         get { self[ReaderShowOriginalWillBeginHandlerKey.self] }
         set { self[ReaderShowOriginalWillBeginHandlerKey.self] = newValue }
     }
+
+    var readerNavigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler? {
+        get { self[ReaderNavigationVisibilityWillChangeHandlerKey.self] }
+        set { self[ReaderNavigationVisibilityWillChangeHandlerKey.self] = newValue }
+    }
 }
 
 public extension View {
     func onReaderShowOriginalWillBegin(_ handler: @escaping ReaderShowOriginalWillBeginHandler) -> some View {
         environment(\.readerShowOriginalWillBeginHandler, handler)
+    }
+
+    func onReaderNavigationVisibilityWillChange(_ handler: @escaping ReaderNavigationVisibilityWillChangeHandler) -> some View {
+        environment(\.readerNavigationVisibilityWillChangeHandler, handler)
     }
 }
 
@@ -126,6 +153,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var navigator: WebViewNavigator
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
+    var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -1196,7 +1224,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
         hideNavigationDueToScroll: Binding<Bool>,
-        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
+        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -1206,6 +1235,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.navigator = navigator
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+        self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
     }
     
     // MARK: Readability
@@ -1272,6 +1302,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         guard previousValue != shouldHide else {
             return
         }
+        navigationVisibilityWillChangeHandler?(
+            ReaderNavigationVisibilityChange(
+                shouldHide: shouldHide,
+                reason: reason,
+                source: source,
+                direction: direction
+            )
+        )
         withAnimation(.easeInOut(duration: 0.2)) {
             hideNavigationDueToScroll.wrappedValue = shouldHide
         }
@@ -1310,6 +1348,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewMessageHandlers) internal var webViewMessageHandlers
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
+    @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
@@ -1327,7 +1366,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         readerContent: readerContent,
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
-                        showOriginalWillBeginHandler: showOriginalWillBeginHandler
+                        showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler
                     )
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -1338,6 +1378,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.navigator = navigator
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                     readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+                    readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
