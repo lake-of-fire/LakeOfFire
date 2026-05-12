@@ -10,6 +10,9 @@ import {
 
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiEPUBLoadVerboseLoggingEnabled = () => !!globalThis.manabi_epubLoadVerboseLoggingEnabled;
+const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = true;
+const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = true;
+const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 
 const ignoredWindowErrorMessages = new Set([
     'ResizeObserver loop completed with undelivered notifications.',
@@ -746,6 +749,51 @@ const debounce = (fn, delay) => {
     return debounced;
 };
 
+const getVisibleJapaneseTextStateForRenderer = (renderer) => {
+    const contents = renderer?.getContents?.() || [];
+    const currentIndex = getPrimaryRendererContentIndex(renderer);
+    const activeContents = typeof currentIndex === 'number'
+        ? contents.filter((content) => typeof content?.index !== 'number' || content.index === currentIndex)
+        : contents;
+    const viewportRight = window.innerWidth || document.documentElement?.clientWidth || 0;
+    const viewportBottom = window.innerHeight || document.documentElement?.clientHeight || 0;
+    let observedSegmentCount = 0;
+    let visibleSegmentCount = 0;
+
+    const intersectsViewport = (rect) => rect.bottom > 0
+        && rect.right > 0
+        && rect.top < viewportBottom
+        && rect.left < viewportRight;
+
+    for (const content of activeContents) {
+        const doc = content?.doc || content?.document || null;
+        if (!doc?.querySelectorAll) { continue; }
+        const frame = doc.defaultView?.frameElement || null;
+        const frameRect = frame?.getBoundingClientRect?.() || { left: 0, top: 0 };
+        const segments = Array.from(doc.querySelectorAll('mnb-seg'));
+        observedSegmentCount += segments.length;
+        for (const segment of segments) {
+            if (!(segment.textContent || '').trim()) { continue; }
+            const rects = segment.getClientRects ? Array.from(segment.getClientRects()) : [segment.getBoundingClientRect()];
+            const isVisible = rects.some((rect) => intersectsViewport({
+                left: frameRect.left + rect.left,
+                right: frameRect.left + rect.right,
+                top: frameRect.top + rect.top,
+                bottom: frameRect.top + rect.bottom,
+            }));
+            if (isVisible) {
+                visibleSegmentCount += 1;
+            }
+        }
+    }
+
+    return {
+        hasVisibleJapaneseText: visibleSegmentCount > 0,
+        visibleSegmentCount,
+        observedSegmentCount,
+    };
+};
+
 const postReaderLog = (event, details = {}) => {
     if (!manabiDiagnosticsEnabled()) return;
     const payload = {
@@ -795,6 +843,16 @@ const postEBookBugLog = (event, details = {}) => {
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
     } catch (error) {
         if (manabiDiagnosticsEnabled()) console.debug('# EBOOKBUG', payload, error);
+    }
+};
+
+const postBlankPageLog = (details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
+    const payload = { event: 'visible-layout-blank', timestamp: Date.now(), ...details };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# BLANKPAGE ${JSON.stringify(payload)}`);
+    } catch (error) {
+        if (manabiDiagnosticsEnabled()) console.debug('# BLANKPAGE', payload, error);
     }
 };
 
@@ -2141,6 +2199,19 @@ const postLandscapeInsetRestoreProbe = (stage, restoreState = null, extra = {}) 
 };
 
 const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
+    if (MANABI_DISABLE_DYNAMIC_CHROME_INSETS) {
+        const nextState = {
+            ...createDefaultChromeInsetState(),
+            source: `${reason}:disabled`,
+            revision: Number.isFinite(globalThis.__manabiChromeInsetsRevision)
+                ? globalThis.__manabiChromeInsetsRevision
+                : 0,
+        };
+        globalThis.__manabiChromeInsets = nextState;
+        applyResolvedChromeInsetState(nextState);
+        return nextState;
+    }
+
     const previousState = getStoredChromeInsetState();
     const storedPositiveState = getStoredPositiveChromeInsetState();
     const ancestorPositiveState = getAncestorChromeInsetState();
@@ -2780,6 +2851,17 @@ const overlapRect = (first, second) => {
 
 const rectArea = (rect) => rect ? Math.max(0, rect.width) * Math.max(0, rect.height) : 0;
 
+const distanceBetweenRects = (first, second) => {
+    if (!first || !second) return null;
+    const dx = first.right < second.left
+        ? second.left - first.right
+        : (second.right < first.left ? first.left - second.right : 0);
+    const dy = first.bottom < second.top
+        ? second.top - first.bottom
+        : (second.bottom < first.top ? first.top - second.bottom : 0);
+    return Math.sqrt(dx * dx + dy * dy);
+};
+
 const compactOverlapElement = (element, rect = null) => {
     if (!element || element.nodeType !== 1) return null;
     const style = summarizeCompactLayoutStyle(element);
@@ -2845,6 +2927,100 @@ const collectVisibleTextRangeItems = (doc, viewport) => {
         range.detach?.();
     }
     return items;
+};
+
+
+const collectBlankPageDiagnosticsForDocument = (doc) => {
+    if (!doc?.documentElement || !doc?.body) return null;
+    const viewport = visiblePageRectForDocument(doc);
+    const visibleTextItems = collectVisibleTextRangeItems(doc, viewport);
+    const mediaSelector = '#reader-content img, #reader-content svg, #reader-content video, #reader-content object, #reader-content image';
+    const mediaRects = Array.from(doc.querySelectorAll(mediaSelector))
+        .flatMap((element) => Array.from(element.getClientRects?.() ?? [element.getBoundingClientRect?.()])
+            .filter((rect) => rect && rect.width > 0 && rect.height > 0)
+            .map((rect) => ({ element, rect })));
+    const visibleMediaItems = mediaRects.filter(({ rect }) => !!overlapRect(rect, viewport));
+    const content = doc.querySelector?.('#reader-content') || doc.body;
+    const contentTextLength = (content?.textContent || '').replace(/\s+/g, '').length;
+    const totalMediaCount = doc.querySelectorAll?.(mediaSelector)?.length ?? 0;
+    if (visibleTextItems.length > 0 || visibleMediaItems.length > 0 || (contentTextLength === 0 && totalMediaCount === 0)) {
+        return null;
+    }
+    const nearestText = collectVisibleTextRangeItems(doc, {
+        left: -100000,
+        top: -100000,
+        right: 100000,
+        bottom: 100000,
+        width: 200000,
+        height: 200000,
+    })
+        .map((item) => ({
+            distance: safeRound(distanceBetweenRects(item.rect, viewport), 1),
+            text: compactOverlapElement(item.element, item.rect),
+            block: compactOverlapElement(closestLayoutBlock(item.element)),
+        }))
+        .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+        .slice(0, 5);
+    const nearestMedia = mediaRects
+        .map((item) => ({
+            distance: safeRound(distanceBetweenRects(item.rect, viewport), 1),
+            media: compactOverlapElement(item.element, item.rect),
+            parent: compactOverlapElement(item.element.parentElement),
+        }))
+        .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
+        .slice(0, 5);
+    const styleSummary = (element) => {
+        try {
+            const style = element?.ownerDocument?.defaultView?.getComputedStyle?.(element);
+            return style ? {
+                display: style.display,
+                position: style.position,
+                writingMode: style.writingMode,
+                direction: style.direction,
+                width: style.width,
+                height: style.height,
+                margin: style.margin,
+                padding: style.padding,
+                transform: style.transform,
+                columnWidth: style.columnWidth,
+                columnGap: style.columnGap,
+                breakBefore: style.breakBefore,
+                breakAfter: style.breakAfter,
+                breakInside: style.breakInside,
+            } : null;
+        } catch (_error) {
+            return null;
+        }
+    };
+    return {
+        documentURL: doc.location?.href || doc.URL || null,
+        bodyClassName: doc.body?.className || null,
+        viewport: summarizeRect(viewport),
+        root: {
+            rect: summarizeRect(doc.documentElement.getBoundingClientRect?.()),
+            clientWidth: doc.documentElement.clientWidth,
+            clientHeight: doc.documentElement.clientHeight,
+            scrollWidth: doc.documentElement.scrollWidth,
+            scrollHeight: doc.documentElement.scrollHeight,
+            style: styleSummary(doc.documentElement),
+        },
+        body: {
+            rect: summarizeRect(doc.body.getBoundingClientRect?.()),
+            clientWidth: doc.body.clientWidth,
+            clientHeight: doc.body.clientHeight,
+            scrollWidth: doc.body.scrollWidth,
+            scrollHeight: doc.body.scrollHeight,
+            style: styleSummary(doc.body),
+        },
+        counts: {
+            visibleTextRects: visibleTextItems.length,
+            visibleMedia: visibleMediaItems.length,
+            totalMedia: totalMediaCount,
+            contentTextLength,
+        },
+        nearestText,
+        nearestMedia,
+    };
 };
 
 const collectVisibleOverlapDiagnosticsForDocument = (doc) => {
@@ -4700,6 +4876,7 @@ class Reader {
         return snapshot;
     }
     #applyHideNavigationDueToScrollToBookContent(shouldHide) {
+        if (MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES) return;
         const hidden = !!shouldHide;
         document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
         const contents = this.view?.renderer?.getContents?.() || [];
@@ -5431,6 +5608,9 @@ class Reader {
         });
     }
     async #settleInitialPaginatorLayout(reason = 'unknown', { allowWhileLoading = false } = {}) {
+        if (MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE) {
+            return { rendered: false, reason: 'initial-paginator-settle-disabled' };
+        }
         if (this.hasSettledInitialPaginatorLayout) {
             return { rendered: false, reason: 'already-settled' };
         }
@@ -5483,6 +5663,9 @@ class Reader {
         }
     }
     #scheduleInitialPaginatorSettle(reason = 'unknown') {
+        if (MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE) {
+            return;
+        }
         if (
             this.hasSettledInitialPaginatorLayout ||
             this.initialPaginatorSettleHandle
@@ -5611,6 +5794,48 @@ class Reader {
             extra,
         };
         postEBookBugLog('image-layout-diagnostics', payload);
+    }
+    #logBlankPageDiagnostics(reason = 'unknown', extra = null) {
+        if (!manabiDiagnosticsEnabled()) return;
+        const docs = getLoadedEbookDocuments().filter((doc) => !isCacheWarmerDocument(doc));
+        if (!docs.length) return;
+        const renderer = this.view?.renderer || null;
+        const rendererContents = renderer?.getContents?.() || [];
+        const documents = docs
+            .slice(0, 2)
+            .map((doc) => {
+                const blank = collectBlankPageDiagnosticsForDocument(doc);
+                if (!blank) return null;
+                const content = rendererContents.find((candidate) => candidate?.doc === doc || candidate?.document === doc) || null;
+                return {
+                    index: content?.index ?? null,
+                    sectionHref: content?.section?.href || content?.href || null,
+                    ...blank,
+                };
+            })
+            .filter(Boolean);
+        if (!documents.length) return;
+        const key = JSON.stringify({
+            reason,
+            documents: documents.map((doc) => ({
+                index: doc.index,
+                viewport: doc.viewport,
+                root: doc.root?.rect,
+                body: doc.body?.rect,
+                nearestText: doc.nearestText?.[0]?.distance ?? null,
+                nearestMedia: doc.nearestMedia?.[0]?.distance ?? null,
+            })),
+        });
+        if (key === this.lastBlankPageDiagnosticsKey) return;
+        this.lastBlankPageDiagnosticsKey = key;
+        postBlankPageLog({
+            reason,
+            rendererFlow: renderer?.getAttribute?.('flow') ?? null,
+            rendererDir: renderer?.getAttribute?.('dir') ?? null,
+            documentCount: documents.length,
+            documents,
+            extra,
+        });
     }
     #logVisibleOverlapDiagnostics(reason = 'unknown', extra = null) {
         if (!manabiDiagnosticsEnabled()) return;
@@ -7792,6 +8017,11 @@ class Reader {
             after: captureNavVisibilityState(),
         });
         this.#syncPageTrackingButtons('nav-buttons', null, 1).catch((error) => console.error(error));
+        this.#logBlankPageDiagnostics('nav-buttons', {
+            markedAsFinished: this.markedAsFinished,
+            showingFinish: !!(completionAction?.type === 'finish'),
+            showingRestart: !!(completionAction?.type === 'restart'),
+        });
         this.#queueLayoutDiagnostics('nav-buttons', {
             markedAsFinished: this.markedAsFinished,
             restartHiddenForMiddlePageWhileNavHidden: isRestartHiddenForMiddlePageWhileNavHidden,
@@ -7955,6 +8185,10 @@ class Reader {
             }, {
                 once: true,
                 anchor: 'did-display.first',
+            });
+            this.#logBlankPageDiagnostics('did-display', {
+                paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
+                paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
             });
             this.#queueLayoutDiagnostics('did-display', {
                 paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
@@ -8169,6 +8403,7 @@ class Reader {
         sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
+        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer);
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
@@ -8177,6 +8412,9 @@ class Reader {
             currentPageNumber: currentPageNumber,
             totalPages: totalPages,
             sectionIndex: sectionIndex,
+            hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
+            visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
+            observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
         })
     }, 400)
     
@@ -8418,6 +8656,12 @@ class Reader {
             totalLocation: detail?.location?.total ?? null,
         });
         this.#updatePageReadMarker('relocate');
+        this.#logBlankPageDiagnostics('relocate', {
+            reason: detail?.reason || null,
+            fraction: safeRound(detail?.fraction),
+            currentLocation: detail?.location?.current ?? null,
+            totalLocation: detail?.location?.total ?? null,
+        });
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
