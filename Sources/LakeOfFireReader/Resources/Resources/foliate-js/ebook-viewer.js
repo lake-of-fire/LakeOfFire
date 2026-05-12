@@ -11,7 +11,7 @@ import {
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiEPUBLoadVerboseLoggingEnabled = () => !!globalThis.manabi_epubLoadVerboseLoggingEnabled;
 const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = true;
-const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = true;
+const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 
 const ignoredWindowErrorMessages = new Set([

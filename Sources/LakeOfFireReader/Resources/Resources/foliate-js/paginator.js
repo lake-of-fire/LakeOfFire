@@ -13,7 +13,7 @@ const CSS_DEFAULTS = {
     maxColumnCountPortrait: 1,
 };
 
-const MANABI_DISABLE_POST_LOAD_RERENDER = true;
+const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
 const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -2918,9 +2918,6 @@ export class Paginator extends HTMLElement {
                 this.style.visibility = 'hidden'
             }
             const oldIndex = this.#index
-            // Reset direction flags and promise before loading a new section
-            this.#vertical = this.#verticalRTL = this.#rtl = null;
-            this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
             const onLoad = async (detail) => {
                 this.sections[oldIndex]?.unload?.()
 
@@ -3068,7 +3065,7 @@ export class Paginator extends HTMLElement {
             const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
             if (shouldGo) await this.#goTo({
                 index: this.#adjacentIndex(dir),
-                anchor: prev && !this.#vertical ? () => 1 : () => 0,
+                anchor: prev ? () => 1 : () => 0,
             })
             if (shouldGo || !this.hasAttribute('animated')) await wait(100)
         } finally {
