@@ -1630,7 +1630,13 @@ export class Paginator extends HTMLElement {
             this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
             this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
-            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+            const shouldForceVerticalSpread = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+                && vertical
+                && flow !== 'scrolled'
+                && maxColumnCountSpread > 1
+            divisor = shouldForceVerticalSpread
+                ? maxColumnCountSpread
+                : Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
             columnWidth = (size / divisor) - gap
         }
 
