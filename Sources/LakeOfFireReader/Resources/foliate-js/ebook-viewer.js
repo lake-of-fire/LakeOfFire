@@ -849,39 +849,27 @@ const debounce = (fn, delay) => {
     return debounced;
 };
 
-const getVisibleJapaneseTextStateForRenderer = (renderer) => {
+const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null) => {
     const contents = renderer?.getContents?.() || [];
     const currentIndex = getPrimaryRendererContentIndex(renderer);
     const activeContents = typeof currentIndex === 'number'
         ? contents.filter((content) => typeof content?.index !== 'number' || content.index === currentIndex)
         : contents;
-    const viewportRight = window.innerWidth || document.documentElement?.clientWidth || 0;
-    const viewportBottom = window.innerHeight || document.documentElement?.clientHeight || 0;
     let observedSegmentCount = 0;
     let visibleSegmentCount = 0;
-
-    const intersectsViewport = (rect) => rect.bottom > 0
-        && rect.right > 0
-        && rect.top < viewportBottom
-        && rect.left < viewportRight;
 
     for (const content of activeContents) {
         const doc = content?.doc || content?.document || null;
         if (!doc?.querySelectorAll) { continue; }
-        const frame = doc.defaultView?.frameElement || null;
-        const frameRect = frame?.getBoundingClientRect?.() || { left: 0, top: 0 };
-        const segments = Array.from(doc.querySelectorAll('mnb-seg'));
-        observedSegmentCount += segments.length;
-        for (const segment of segments) {
-            if (!(segment.textContent || '').trim()) { continue; }
-            const rects = segment.getClientRects ? Array.from(segment.getClientRects()) : [segment.getBoundingClientRect()];
-            const isVisible = rects.some((rect) => intersectsViewport({
-                left: frameRect.left + rect.left,
-                right: frameRect.left + rect.right,
-                top: frameRect.top + rect.top,
-                bottom: frameRect.top + rect.bottom,
-            }));
-            if (isVisible) {
+        const contentVisibleRange = visibleRange?.commonAncestorContainer?.ownerDocument === doc
+            || visibleRange?.startContainer?.ownerDocument === doc
+            || visibleRange?.endContainer?.ownerDocument === doc
+            ? visibleRange
+            : null;
+        const visibleSegmentsResult = collectVisibleSegmentNodesFromRange(doc, contentVisibleRange);
+        observedSegmentCount += visibleSegmentsResult.totalSegmentCount ?? 0;
+        for (const item of visibleSegmentsResult.visibleSegments || []) {
+            if ((item.node?.textContent || '').trim()) {
                 visibleSegmentCount += 1;
             }
         }
@@ -7291,7 +7279,8 @@ class Reader {
         sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer);
+        const visibleRange = this.navHUD?.lastRelocateDetail?.range ?? null;
+        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer, visibleRange);
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
