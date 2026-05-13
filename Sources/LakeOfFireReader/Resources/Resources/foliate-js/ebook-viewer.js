@@ -2615,12 +2615,26 @@ const summarizeCompactLayoutStyle = (element) => {
         maxBlockSize: style.maxBlockSize ?? null,
         objectFit: style.objectFit ?? null,
         fontSize: style.fontSize ?? null,
+        fontFamily: style.fontFamily ?? null,
         lineHeight: style.lineHeight ?? null,
+        verticalAlign: style.verticalAlign ?? null,
+        textOrientation: style.textOrientation ?? null,
+        whiteSpace: style.whiteSpace ?? null,
+        letterSpacing: style.letterSpacing ?? null,
+        rubyPosition: style.rubyPosition ?? null,
+        rubyAlign: style.rubyAlign ?? null,
         margin: style.margin ?? null,
+        padding: style.padding ?? null,
         breakInside: style.breakInside ?? null,
+        breakBefore: style.breakBefore ?? null,
+        breakAfter: style.breakAfter ?? null,
         webkitColumnBreakInside: style.webkitColumnBreakInside ?? null,
+        webkitColumnBreakBefore: style.webkitColumnBreakBefore ?? null,
+        webkitColumnBreakAfter: style.webkitColumnBreakAfter ?? null,
         columnSpan: style.columnSpan ?? null,
         contain: style.contain ?? null,
+        contentVisibility: style.contentVisibility ?? null,
+        transform: style.transform ?? null,
     };
 };
 
@@ -2862,6 +2876,49 @@ const distanceBetweenRects = (first, second) => {
     return Math.sqrt(dx * dx + dy * dy);
 };
 
+const compactElementIdentity = (element) => {
+    if (!element || element.nodeType !== 1) return null;
+    const style = summarizeCompactLayoutStyle(element);
+    return {
+        tagName: element.tagName?.toLowerCase?.() ?? null,
+        id: element.id || null,
+        className: typeof element.className === 'string' ? element.className : (element.getAttribute?.('class') ?? null),
+        style: element.getAttribute?.('style') ?? null,
+        sample: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null,
+        rect: summarizeRect(element.getBoundingClientRect?.()),
+        computed: {
+            display: style?.display ?? null,
+            position: style?.position ?? null,
+            writingMode: style?.writingMode ?? null,
+            direction: style?.direction ?? null,
+            width: style?.width ?? null,
+            height: style?.height ?? null,
+            inlineSize: style?.inlineSize ?? null,
+            blockSize: style?.blockSize ?? null,
+            maxInlineSize: style?.maxInlineSize ?? null,
+            maxBlockSize: style?.maxBlockSize ?? null,
+            fontSize: style?.fontSize ?? null,
+            lineHeight: style?.lineHeight ?? null,
+            verticalAlign: style?.verticalAlign ?? null,
+            textOrientation: style?.textOrientation ?? null,
+            whiteSpace: style?.whiteSpace ?? null,
+            rubyPosition: style?.rubyPosition ?? null,
+            rubyAlign: style?.rubyAlign ?? null,
+            contain: style?.contain ?? null,
+            contentVisibility: style?.contentVisibility ?? null,
+            breakInside: style?.breakInside ?? null,
+        },
+    };
+};
+
+const compactParentChain = (element, limit = 6) => {
+    const chain = [];
+    for (let node = element?.parentElement; node && chain.length < limit; node = node.parentElement) {
+        chain.push(compactElementIdentity(node));
+    }
+    return chain;
+};
+
 const compactOverlapElement = (element, rect = null) => {
     if (!element || element.nodeType !== 1) return null;
     const style = summarizeCompactLayoutStyle(element);
@@ -2869,25 +2926,56 @@ const compactOverlapElement = (element, rect = null) => {
         tagName: element.tagName?.toLowerCase?.() ?? null,
         id: element.id || null,
         className: typeof element.className === 'string' ? element.className : (element.getAttribute?.('class') ?? null),
+        style: element.getAttribute?.('style') ?? null,
         sample: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null,
         rect: summarizeRect(rect ?? element.getBoundingClientRect?.()),
+        childElementCount: element.childElementCount ?? null,
+        previousElementSibling: compactElementIdentity(element.previousElementSibling),
+        nextElementSibling: compactElementIdentity(element.nextElementSibling),
+        parentChain: compactParentChain(element),
         computed: {
             display: style?.display ?? null,
+            position: style?.position ?? null,
             writingMode: style?.writingMode ?? null,
+            direction: style?.direction ?? null,
+            boxSizing: style?.boxSizing ?? null,
+            overflow: style?.overflow ?? null,
             width: style?.width ?? null,
             height: style?.height ?? null,
             inlineSize: style?.inlineSize ?? null,
             blockSize: style?.blockSize ?? null,
             maxWidth: style?.maxWidth ?? null,
             maxHeight: style?.maxHeight ?? null,
+            maxInlineSize: style?.maxInlineSize ?? null,
+            maxBlockSize: style?.maxBlockSize ?? null,
             objectFit: style?.objectFit ?? null,
+            fontSize: style?.fontSize ?? null,
+            fontFamily: style?.fontFamily ?? null,
+            lineHeight: style?.lineHeight ?? null,
+            verticalAlign: style?.verticalAlign ?? null,
+            textOrientation: style?.textOrientation ?? null,
+            whiteSpace: style?.whiteSpace ?? null,
+            letterSpacing: style?.letterSpacing ?? null,
+            rubyPosition: style?.rubyPosition ?? null,
+            rubyAlign: style?.rubyAlign ?? null,
+            margin: style?.margin ?? null,
+            padding: style?.padding ?? null,
             breakInside: style?.breakInside ?? null,
+            breakBefore: style?.breakBefore ?? null,
+            breakAfter: style?.breakAfter ?? null,
+            webkitColumnBreakInside: style?.webkitColumnBreakInside ?? null,
+            webkitColumnBreakBefore: style?.webkitColumnBreakBefore ?? null,
+            webkitColumnBreakAfter: style?.webkitColumnBreakAfter ?? null,
+            columnSpan: style?.columnSpan ?? null,
+            contain: style?.contain ?? null,
+            contentVisibility: style?.contentVisibility ?? null,
+            transform: style?.transform ?? null,
         },
     };
 };
 
 const closestLayoutBlock = (element) =>
-    element?.closest?.('p, li, blockquote, dd, div, mnb-sen') || null;
+    element?.closest?.('mnb-seg, mnb-sen, p, li, blockquote, dd, div') || null;
 
 const visiblePageRectForDocument = (doc) => {
     const root = doc?.documentElement;
@@ -4158,6 +4246,9 @@ const getCSSForBookContent = ({
     justify,
     hyphenate
 }) => {
+    const disableInjectedBookContentCSSForLayoutDiagnosis = true
+    if (disableInjectedBookContentCSSForLayoutDiagnosis) return ''
+
     const parsedSpacing = Number.parseFloat(spacing)
     const rubyReservedSpacing = Number.isFinite(parsedSpacing)
         ? Math.max(parsedSpacing, 1.8)
@@ -4257,33 +4348,28 @@ const getCSSForBookContent = ({
         page-break-inside: avoid !important;
         -webkit-column-break-inside: avoid !important;
     }
-    body.reader-vertical-writing mnb-seg {
+    body.reader-vertical-writing :is(mnb-con, mnb-sen, mnb-seg, mnb-sur) {
         /*
-           Keep native segment boxes atomic in vertical paginated EPUB layout.
-           Plain inline custom elements can collapse onto the same vertical
-           column line when sentence wrappers are display: contents.
+           In WebKit vertical column layout, display: contents and positioned
+           custom inline wrappers can report/paint into the same column slot.
+           Keep Manabi markup as ordinary inline text wrappers in EPUB frames.
         */
-        display: inline-block !important;
-        break-inside: avoid !important;
-        break-before: avoid !important;
-        break-after: avoid !important;
-        page-break-inside: avoid !important;
-        -webkit-column-break-inside: avoid !important;
+        display: inline !important;
+        position: static !important;
+        max-width: none !important;
+        max-height: none !important;
+        max-inline-size: none !important;
+        max-block-size: none !important;
+        contain: none !important;
+        content-visibility: visible !important;
+        break-inside: auto !important;
+        break-before: auto !important;
+        break-after: auto !important;
+        page-break-inside: auto !important;
+        -webkit-column-break-inside: auto !important;
     }
-    body.reader-vertical-writing mnb-sen {
-        /*
-           Sentence wrappers need a real layout box in vertical paginated EPUBs.
-           With display: contents, WebKit can place separate sentence fragments
-           on the same vertical column line after native mnb-sur markup is added.
-        */
-        display: inline-block !important;
-        max-inline-size: 100% !important;
-        vertical-align: baseline !important;
-        break-inside: avoid !important;
-        break-before: avoid !important;
-        break-after: avoid !important;
-        page-break-inside: avoid !important;
-        -webkit-column-break-inside: avoid !important;
+    body.reader-vertical-writing ruby > mnb-sur {
+        display: inline !important;
     }
     body.reader-vertical-writing mnb-sur {
         /*

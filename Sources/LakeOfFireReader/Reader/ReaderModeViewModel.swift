@@ -2940,6 +2940,8 @@ public class ReaderModeViewModel: ObservableObject {
 
             let processedSegmentCount = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
             let processedBodyExists = doc.body() != nil
+            let processedIsEbook = ((try? doc.body()?.attr("data-is-ebook")) ?? "") == "true"
+            let shouldInjectProcessedStyles = !(processedIsEbook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis)
             let processedBodyClasses = (try? doc.body()?.className()) ?? ""
             let processedBodyClassesForFrameInjection: String = {
                 let trimmed = processedBodyClasses.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2947,6 +2949,9 @@ public class ReaderModeViewModel: ObservableObject {
             }()
             let processedTitleDisplayStyle = (try? doc.getElementById("reader-title")?.attr("style")) ?? ""
             let processedStyleTextForFrameInjection: String = {
+                guard shouldInjectProcessedStyles else {
+                    return ""
+                }
                 guard let styleElement = try? doc.getElementById("swiftuiwebview-readability-styles"),
                       let styleHTML = try? styleElement.html() else {
                     return Readability.shared.css
@@ -3059,6 +3064,9 @@ public class ReaderModeViewModel: ObservableObject {
                         return trimmed.isEmpty ? "readability-mode" : trimmed
                     }()
                     let transformedStyleText = {
+                        guard shouldInjectProcessedStyles else {
+                            return ""
+                        }
                         guard let transformedDocument,
                               let styleElement = try? transformedDocument.getElementById("swiftuiwebview-readability-styles"),
                               let styleHTML = try? styleElement.html() else {
@@ -3112,7 +3120,9 @@ public class ReaderModeViewModel: ObservableObject {
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     let transformedContent = transformedContentForFrameInjection ?? ""
                     let transformedBodyClasses = transformedBodyClassesForFrameInjection ?? "readability-mode"
-                    let transformedStyleText = transformedStyleTextForFrameInjection ?? Readability.shared.css
+                    let transformedStyleText = shouldInjectProcessedStyles
+                        ? (transformedStyleTextForFrameInjection ?? Readability.shared.css)
+                        : ""
                     debugPrint(
                         "# SNIPPETTITLE frameInjection",
                         "url=\(url.absoluteString)",
@@ -3707,6 +3717,8 @@ public class ReaderModeViewModel: ObservableObject {
     }
 }
 
+private let readerModeDisableInjectedStylingForEbookLayoutDiagnosis = true
+
 func prepareHTMLForDirectLoad(_ html: String) -> String {
     var updatedHTML = html
     let markerPatterns = [
@@ -3826,6 +3838,12 @@ nonisolated public func processForReaderMode(
     
     if isEBook {
         try doc.body()?.attr("data-is-ebook", "true")
+        if readerModeDisableInjectedStylingForEbookLayoutDiagnosis {
+            try? doc.getElementById("swiftuiwebview-readability-styles")?.remove()
+            try? doc.getElementById("mnb-mark-read-buttons-visibility-style")?.remove()
+            try? doc.getElementById("mnb-readability-styles")?.remove()
+            try? doc.body()?.removeAttr("style")
+        }
     }
     
     if !isCacheWarmer {
@@ -3836,11 +3854,15 @@ nonisolated public func processForReaderMode(
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
             let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
             
-            var bodyStyle = "font-size: \(readerFontSize)px; \(readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize))"
-            if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
-                bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
+            if isEBook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis {
+                _ = try? bodyTag.removeAttr("style")
+            } else {
+                var bodyStyle = "font-size: \(readerFontSize)px; \(readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize))"
+                if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
+                    bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
+                }
+                _ = try? bodyTag.attr("style", bodyStyle)
             }
-            _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-mnb-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-mnb-dark-theme", darkModeTheme.rawValue)
             debugPrint(
