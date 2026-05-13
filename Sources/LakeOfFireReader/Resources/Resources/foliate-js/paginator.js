@@ -34,6 +34,7 @@ const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
 const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
 const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
+const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiPerfNow = () =>
@@ -79,7 +80,13 @@ const postBlankPageLog = (details = {}) => {
 };
 const MANABI_MINIMAL_EBOOKBUG_EVENTS = new Set([
     'paginator-loading-watchdog',
+    'paginator-prefetch-wait-start',
+    'paginator-prefetch-wait-end',
+    'paginator-prefetch-wait-watchdog',
+    'paginator-display-phase',
     'paginator-section-load-error',
+    'paginator-section-load-start',
+    'paginator-section-load-end',
 ]);
 const postEBookBugLog = (event, details = {}) => {
     if (!MANABI_MINIMAL_EBOOKBUG_EVENTS.has(event)) return;
@@ -90,6 +97,23 @@ const postEBookBugLog = (event, details = {}) => {
         try { console.log('# EBOOKBUG', payload); } catch (_) {}
     }
 };
+const sectionDebugInfo = section => section
+    ? {
+        href: section.href ?? null,
+        id: section.id ?? null,
+        linear: section.linear ?? null,
+        loadState: section.loadState ?? section.state ?? null,
+    }
+    : null;
+const prefetchEntryDebugInfo = entry => entry
+    ? {
+        fulfilled: !!entry.fulfilled,
+        rejected: !!entry.rejected,
+        released: !!entry.released,
+        dropped: !!entry.dropped,
+        hasPromise: !!entry.promise,
+    }
+    : null;
 const rectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
     const rect = element.getBoundingClientRect();
@@ -974,6 +998,7 @@ export class Paginator extends HTMLElement {
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #suspendOnExpandAnchor = false
     #loadingWatchdogTimer = null
+    #displayDebugPhase = null
     #prefetchTimer = null
     #prefetchCache = new Map()
     #pendingPageTurnDirection = null
@@ -1279,6 +1304,12 @@ export class Paginator extends HTMLElement {
                     flow: this.getAttribute('flow'),
                     vertical: this.#vertical,
                     rtl: this.#rtl,
+                    displayPhase: this.#displayDebugPhase,
+                    prefetchCache: [...this.#prefetchCache].map(([prefetchIndex, entry]) => ({
+                        index: prefetchIndex,
+                        section: sectionDebugInfo(this.sections[prefetchIndex]),
+                        entry: prefetchEntryDebugInfo(entry),
+                    })),
                     containerRect: rectSnapshot(this.#container),
                     viewRect: rectSnapshot(this.#view?.element),
                     iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
@@ -1291,6 +1322,90 @@ export class Paginator extends HTMLElement {
             clearTimeout(this.#loadingWatchdogTimer)
             this.#loadingWatchdogTimer = null
         }
+    }
+    #cacheNeighborPrefetch(index, promise) {
+        const entry = {
+            promise: null,
+            fulfilled: false,
+            rejected: false,
+            released: false,
+            dropped: false,
+        }
+        entry.promise = Promise.resolve(promise)
+            .then(value => {
+                entry.fulfilled = true
+                if (entry.dropped) this.#releaseNeighborPrefetch(index, entry, false)
+                return value
+            })
+            .catch(error => {
+                entry.rejected = true
+                if (this.#prefetchCache.get(index) === entry) {
+                    this.#prefetchCache.delete(index)
+                }
+                throw error
+            })
+        this.#prefetchCache.set(index, entry)
+        return entry
+    }
+    #releaseNeighborPrefetch(index, entry = this.#prefetchCache.get(index), remove = true) {
+        if (!entry || entry.released) return
+        if (remove && this.#prefetchCache.get(index) === entry) {
+            this.#prefetchCache.delete(index)
+        }
+        if (!entry.fulfilled) {
+            entry.dropped = true
+            return
+        }
+        entry.released = true
+        this.sections[index]?.unload?.()
+    }
+    async #waitForNeighborPrefetch(index) {
+        const entry = this.#prefetchCache.get(index)
+        if (!entry?.promise) return null
+        const startedAt = Date.now()
+        let watchdog = null
+        postEBookBugLog('paginator-prefetch-wait-start', {
+            index,
+            currentIndex: this.#index,
+            section: sectionDebugInfo(this.sections[index]),
+            entry: prefetchEntryDebugInfo(entry),
+        })
+        try {
+            watchdog = setTimeout(() => {
+                postEBookBugLog('paginator-prefetch-wait-watchdog', {
+                    index,
+                    currentIndex: this.#index,
+                    elapsedMs: Date.now() - startedAt,
+                    section: sectionDebugInfo(this.sections[index]),
+                    entry: prefetchEntryDebugInfo(entry),
+                    cacheHasSameEntry: this.#prefetchCache.get(index) === entry,
+                })
+            }, 8000)
+            await entry.promise
+        } catch (_error) {
+            postEBookBugLog('paginator-prefetch-wait-end', {
+                index,
+                currentIndex: this.#index,
+                elapsedMs: Date.now() - startedAt,
+                result: 'rejected',
+                section: sectionDebugInfo(this.sections[index]),
+                entry: prefetchEntryDebugInfo(entry),
+                cacheHasSameEntry: this.#prefetchCache.get(index) === entry,
+            })
+            return null
+        } finally {
+            clearTimeout(watchdog)
+        }
+        postEBookBugLog('paginator-prefetch-wait-end', {
+            index,
+            currentIndex: this.#index,
+            elapsedMs: Date.now() - startedAt,
+            result: entry.fulfilled ? 'fulfilled' : 'not-fulfilled',
+            section: sectionDebugInfo(this.sections[index]),
+            entry: prefetchEntryDebugInfo(entry),
+            cacheHasSameEntry: this.#prefetchCache.get(index) === entry,
+        })
+        return entry.fulfilled ? entry : null
     }
     async #onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
@@ -2761,6 +2876,12 @@ export class Paginator extends HTMLElement {
     async #display(promise) {
         //            console.log("#display...")
         this.#suspendOnExpandAnchor = false
+        this.#displayDebugPhase = {
+            phase: 'start',
+            startedAt: Date.now(),
+            targetIndex: null,
+            currentIndex: this.#index,
+        }
         this.#setLoading(true, 'display.start')
         const displayStartedAt = manabiPerfNow();
         let displayError = null
@@ -2783,6 +2904,23 @@ export class Paginator extends HTMLElement {
                 onLoad,
                 select
             } = await promise
+        const setDisplayPhase = (phase, details = {}) => {
+            this.#displayDebugPhase = {
+                phase,
+                targetIndex: index,
+                currentIndex: this.#index,
+                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                ...details,
+            }
+            postEBookBugLog('paginator-display-phase', this.#displayDebugPhase)
+        }
+        setDisplayPhase('promise.resolved', {
+            hasSource: !!src,
+            anchorKind: typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor),
+            select: !!select,
+        })
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('display.resolved', {
                 targetIndex: index,
@@ -2865,7 +3003,19 @@ export class Paginator extends HTMLElement {
                     src,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 });
+                setDisplayPhase('view.load.start', {
+                    src,
+                    viewExists: !!view,
+                })
                 await view.load(src, afterLoad, beforeRender)
+                setDisplayPhase('view.load.end', {
+                    src,
+                    viewDocumentReadyState: view.document?.readyState ?? null,
+                    viewRect: rectSnapshot(view.element),
+                    iframeRect: rectSnapshot(view.element?.querySelector?.('iframe')),
+                    rootRect: rectSnapshot(view.document?.documentElement),
+                    bodyRect: rectSnapshot(view.document?.body),
+                })
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
@@ -2917,8 +3067,20 @@ export class Paginator extends HTMLElement {
             select: !!select,
             elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         });
+        setDisplayPhase('scroll-to-anchor.start', {
+            viewRect: rectSnapshot(this.#view?.element),
+            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
+            rootRect: rectSnapshot(this.#view?.document?.documentElement),
+            bodyRect: rectSnapshot(this.#view?.document?.body),
+        })
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        setDisplayPhase('scroll-to-anchor.end', {
+            viewRect: rectSnapshot(this.#view?.element),
+            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
+            rootRect: rectSnapshot(this.#view?.document?.documentElement),
+            bodyRect: rectSnapshot(this.#view?.document?.body),
+        })
         this.#suspendOnExpandAnchor = false
         if (hasFocus) this.focusView()
         if (!this.#isCacheWarmer && this.style.visibility === 'hidden') {
@@ -2970,14 +3132,23 @@ export class Paginator extends HTMLElement {
             targetIndex: index,
             totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         });
+        setDisplayPhase('didDisplay.dispatch', displaySummary)
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
+        setDisplayPhase('complete')
         //            console.log("#display... fin")
         } catch (error) {
             displayError = error
+            postEBookBugLog('paginator-display-phase', {
+                phase: 'error',
+                displayPhase: this.#displayDebugPhase,
+                message: error?.message || String(error),
+                stack: error?.stack || null,
+            })
             throw error
         } finally {
             this.#suspendOnExpandAnchor = false
             this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
+            this.#displayDebugPhase = null
         }
     }
     #canGoToIndex(index) {
@@ -3036,6 +3207,11 @@ export class Paginator extends HTMLElement {
                 throw error;
             }
         } else {
+            let prefetchEntry = null
+            if (MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT) {
+                prefetchEntry = await this.#waitForNeighborPrefetch(index)
+            }
+
             // hide visually while preserving layout metrics
             if (!this.#isCacheWarmer) {
                 this.style.visibility = 'hidden'
@@ -3056,12 +3232,43 @@ export class Paginator extends HTMLElement {
             try {
                 let sectionLoadPromise;
                 if (MANABI_ENABLE_PREFETCH_PROMISE_REUSE && this.#prefetchCache.has(index)) {
-                    sectionLoadPromise = this.#prefetchCache.get(index);
+                    sectionLoadPromise = this.#prefetchCache.get(index)?.promise;
                 } else {
-                    sectionLoadPromise = this.sections[index].load();
-                    if (MANABI_ENABLE_NEIGHBOR_PREFETCH) {
-                        this.#prefetchCache.set(index, sectionLoadPromise);
-                    }
+                    const sectionLoadStartedAt = Date.now()
+                    postEBookBugLog('paginator-section-load-start', {
+                        index,
+                        currentIndex: this.#index,
+                        hadPrefetchEntry: !!prefetchEntry,
+                        section: sectionDebugInfo(this.sections[index]),
+                        prefetchEntry: prefetchEntryDebugInfo(prefetchEntry),
+                    })
+                    sectionLoadPromise = this.sections[index].load()
+                        .then(src => {
+                            postEBookBugLog('paginator-section-load-end', {
+                                index,
+                                currentIndex: this.#index,
+                                elapsedMs: Date.now() - sectionLoadStartedAt,
+                                result: 'fulfilled',
+                                hadPrefetchEntry: !!prefetchEntry,
+                                section: sectionDebugInfo(this.sections[index]),
+                                prefetchEntry: prefetchEntryDebugInfo(prefetchEntry),
+                                srcType: typeof src,
+                            })
+                            return src
+                        })
+                        .catch(error => {
+                            postEBookBugLog('paginator-section-load-end', {
+                                index,
+                                currentIndex: this.#index,
+                                elapsedMs: Date.now() - sectionLoadStartedAt,
+                                result: 'rejected',
+                                message: error?.message || String(error),
+                                hadPrefetchEntry: !!prefetchEntry,
+                                section: sectionDebugInfo(this.sections[index]),
+                                prefetchEntry: prefetchEntryDebugInfo(prefetchEntry),
+                            })
+                            throw error
+                        });
                 }
                 const timedLoadPromise = Promise.race([
                     sectionLoadPromise,
@@ -3098,6 +3305,10 @@ export class Paginator extends HTMLElement {
                     stack: error?.stack || null,
                 });
                 throw error;
+            } finally {
+                if (prefetchEntry) {
+                    this.#releaseNeighborPrefetch(index, prefetchEntry)
+                }
             }
             if (MANABI_ENABLE_NEIGHBOR_PREFETCH) {
                 clearTimeout(this.#prefetchTimer);
@@ -3106,9 +3317,9 @@ export class Paginator extends HTMLElement {
 
                     const wanted = [index - 1, index + 1];
                     const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)));
-                    this.#prefetchCache = new Map(
-                        [...this.#prefetchCache].filter(([i]) => keep.has(i))
-                    );
+                    for (const [i, entry] of this.#prefetchCache) {
+                        if (!keep.has(i)) this.#releaseNeighborPrefetch(i, entry)
+                    }
 
                     wanted.forEach(i => {
                         if (
@@ -3117,8 +3328,8 @@ export class Paginator extends HTMLElement {
                             this.sections[i].linear !== 'no' &&
                             !this.#prefetchCache.has(i)
                         ) {
-                            const p = this.sections[i].load().catch(() => { });
-                            this.#prefetchCache.set(i, p);
+                            const entry = this.#cacheNeighborPrefetch(i, this.sections[i].load());
+                            entry.promise.catch(() => { });
                         }
                     });
                 }, 500);
@@ -3266,6 +3477,9 @@ export class Paginator extends HTMLElement {
         this.#setLoading(false, 'paginator.destroy')
         clearTimeout(this.#prefetchTimer)
         this.#prefetchTimer = null
+        for (const [index, entry] of this.#prefetchCache) {
+            this.#releaseNeighborPrefetch(index, entry)
+        }
         this.#prefetchCache = new Map()
         this.#view.destroy()
         this.#view = null
