@@ -578,7 +578,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         ...captureEPUBOverlapState(),
     });
     const rawTrailingBlankSpacers = summarizeRawTrailingBlankSpacerBlocks(text, mediaType);
-    if (rawTrailingBlankSpacers) {
+    if (rawTrailingBlankSpacers && !isCacheWarmer) {
         postEBookBugRootLog('ebook-root-raw-text-has-trailing-blank-spacer-blocks', {
             href,
             mediaType,
@@ -661,8 +661,8 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 segmentCount,
             },
         );
-        if (sentenceCount > 0 || segmentCount > 0) {
-            postEBookBugRootLog('ebook-root-replace-text-produced-manabi-markup', {
+        if (!isCacheWarmer && (sentenceCount <= 0 || segmentCount <= 0)) {
+            postEBookBugRootLog('ebook-root-replace-text-missing-manabi-markup', {
                 href,
                 mediaType,
                 isCacheWarmer: !!isCacheWarmer,

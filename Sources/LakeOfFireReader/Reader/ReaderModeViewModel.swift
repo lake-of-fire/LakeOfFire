@@ -3717,7 +3717,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 }
 
-private let readerModeDisableInjectedStylingForEbookLayoutDiagnosis = false
+private let readerModeDisableInjectedStylingForEbookLayoutDiagnosis = true
 
 func prepareHTMLForDirectLoad(_ html: String) -> String {
     var updatedHTML = html

@@ -543,12 +543,9 @@ class View {
                 page: Math.max(1, Math.ceil(item.end / pageSize)),
                 textLength: (item.element.textContent || '').trim().length,
                 childElementCount: item.element.childElementCount,
-                childSummary: this.#elementDirectChildSummary(item.element),
-                style: this.#elementLayoutStyleSummary(item.element),
                 preview: (item.element.textContent || '').trim().length === 0
                     ? this.#elementDebugPreview(item.element)
                     : null,
-                rect: rectSnapshot(item.rect),
             }))
 
         return {
@@ -1007,19 +1004,19 @@ class View {
                                 vertical: this.#vertical,
                                 rtl: this.#rtl,
                                 side,
-                                otherSide,
                                 pageSize: this.#size,
-                                contentStart: manabiRound(contentStart, 1),
-                                contentRect: rectSnapshot(this.#contentRange),
-                                rootRect: rectSnapshot(documentElement),
-                                bodyRect: rectSnapshot(this.document?.body),
-                                documentClientWidth: documentElement?.clientWidth ?? null,
-                                documentClientHeight: documentElement?.clientHeight ?? null,
-                                documentScrollWidth: documentElement?.scrollWidth ?? null,
-                                documentScrollHeight: documentElement?.scrollHeight ?? null,
-                                bodyScrollWidth: this.document?.body?.scrollWidth ?? null,
-                                bodyScrollHeight: this.document?.body?.scrollHeight ?? null,
-                                ...occupiedDiagnostics,
+                                contentSize: occupiedDiagnostics.contentSize,
+                                rangePageCount: occupiedDiagnostics.rangePageCount,
+                                occupiedEnd: occupiedDiagnostics.occupiedEnd,
+                                occupiedPageCount: occupiedDiagnostics.occupiedPageCount,
+                                overcountPages: occupiedDiagnostics.overcountPages,
+                                textRectCount: occupiedDiagnostics.textRectCount,
+                                mediaRectCount: occupiedDiagnostics.mediaRectCount,
+                                manabiSentenceCount: occupiedDiagnostics.manabiSentenceCount,
+                                manabiSegmentCount: occupiedDiagnostics.manabiSegmentCount,
+                                sourceHref: occupiedDiagnostics.sourceHref,
+                                farthestContent: occupiedDiagnostics.farthestContent?.slice?.(0, 2) ?? [],
+                                farthestElements: occupiedDiagnostics.farthestElements?.slice?.(0, 3) ?? [],
                             })
                         }
                         postPaginatorLoadLog('view.expand.measure.column', {
