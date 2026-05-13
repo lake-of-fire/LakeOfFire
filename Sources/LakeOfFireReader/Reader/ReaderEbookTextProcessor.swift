@@ -12,7 +12,7 @@ import JapaneseLanguageTools
 private let ebookTextProcessorReplaceTextDetailedLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
 private let ebookTextProcessorUseMinimalSentinels = true
-private let ebookTextProcessorBypassReaderModeProcessor = true
+private let ebookTextProcessorBypassReaderModeProcessor = false
 
 // Precomputed punctuation set for splitting
 private let splitPunctuation = ParsingStrings([

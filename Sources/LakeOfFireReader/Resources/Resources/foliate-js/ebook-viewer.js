@@ -4259,15 +4259,52 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing mnb-seg {
         /*
-           Temporary pagination probe: let vertical text segments participate in
-           normal inline layout instead of forcing every segment to inline-block.
+           Keep native segment boxes atomic in vertical paginated EPUB layout.
+           Plain inline custom elements can collapse onto the same vertical
+           column line when sentence wrappers are display: contents.
         */
-        display: inline !important;
-        break-inside: auto !important;
-        break-before: auto !important;
-        break-after: auto !important;
-        page-break-inside: auto !important;
-        -webkit-column-break-inside: auto !important;
+        display: inline-block !important;
+        break-inside: avoid !important;
+        break-before: avoid !important;
+        break-after: avoid !important;
+        page-break-inside: avoid !important;
+        -webkit-column-break-inside: avoid !important;
+    }
+    body.reader-vertical-writing mnb-sen {
+        /*
+           Sentence wrappers need a real layout box in vertical paginated EPUBs.
+           With display: contents, WebKit can place separate sentence fragments
+           on the same vertical column line after native mnb-sur markup is added.
+        */
+        display: inline-block !important;
+        max-inline-size: 100% !important;
+        vertical-align: baseline !important;
+        break-inside: avoid !important;
+        break-before: avoid !important;
+        break-after: avoid !important;
+        page-break-inside: avoid !important;
+        -webkit-column-break-inside: avoid !important;
+    }
+    body.reader-vertical-writing mnb-sur {
+        /*
+           Preserve the ruby-reserved vertical line grid. The app stylesheet
+           normally tightens mnb-sur to 1em for highlight bounds, but in vertical
+           EPUB layout that can collapse adjacent line boxes after mnb-seg is
+           restored.
+        */
+        line-height: inherit !important;
+    }
+    body.reader-vertical-writing #reader-content :is(p, div, figure):has(> img, > svg, > video, > object, > image) {
+        /*
+           WebKit can size a vertical image block to the media's physical block
+           size, then place later vertical text in the remaining horizontal band.
+           Reserve the full page block axis for media-only blocks so native
+           sentence/segment wrappers cannot flow text over the image.
+        */
+        block-size: 100% !important;
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+        -webkit-column-break-inside: avoid !important;
     }
     body.reader-vertical-writing:not([data-is-ebook="true"]) mnb-seg:not(:has(rt)) {
         /*
@@ -4496,7 +4533,7 @@ class Reader {
                 if (document.body?.classList?.contains?.('loading')) {
                     document.body.classList.add('loading-visual');
                 }
-            }, 400);
+            }, 200);
         }
         body.classList.toggle('loading', nextVisible);
         if (previousVisible && !nextVisible) {

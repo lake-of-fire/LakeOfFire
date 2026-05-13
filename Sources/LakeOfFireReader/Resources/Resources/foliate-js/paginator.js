@@ -3075,6 +3075,34 @@ export class Paginator extends HTMLElement {
         })
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
+            const pageCurrent = await this.page().catch(() => null)
+            const pageTotal = await this.pages().catch(() => null)
+            const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
+            const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
+            const landedPastContent = frameRect && rootRect && frameRect.bottom <= rootRect.top + 1
+            if (
+                typeof pageCurrent === 'number'
+                && typeof pageTotal === 'number'
+                && pageTotal > 2
+                && (pageCurrent >= pageTotal - 1 || landedPastContent)
+            ) {
+                const correctedPage = Math.max(1, pageTotal - 2)
+                postEBookBugLog('paginator-anchor-clamped-from-trailing-guard', {
+                    targetIndex: index,
+                    anchor,
+                    pageCurrent,
+                    pageTotal,
+                    correctedPage,
+                    landedPastContent,
+                    viewRect: rectSnapshot(this.#view?.element),
+                    iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
+                    rootRect: rectSnapshot(this.#view?.document?.documentElement),
+                    bodyRect: rectSnapshot(this.#view?.document?.body),
+                })
+                await this.#scrollToPage(correctedPage, 'navigation')
+            }
+        }
         setDisplayPhase('scroll-to-anchor.end', {
             viewRect: rectSnapshot(this.#view?.element),
             iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
@@ -3270,13 +3298,7 @@ export class Paginator extends HTMLElement {
                             throw error
                         });
                 }
-                const timedLoadPromise = Promise.race([
-                    sectionLoadPromise,
-                    wait(10000).then(() => {
-                        throw new Error(`Section load timed out (index=${index})`)
-                    }),
-                ])
-                await this.#display(Promise.resolve(timedLoadPromise)
+                await this.#display(Promise.resolve(sectionLoadPromise)
                     .then(src => ({
                         index,
                         src,
