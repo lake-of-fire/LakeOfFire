@@ -379,8 +379,13 @@ public struct FeedView: View {
             let feeds = realm.objects(Feed.self)
                 .where { !$0.isDeleted }
                 .filter { $0.canonicalFollowingFeedURLKey == canonicalFeedURLKey }
+            let ordinal = feeds.compactMap(\.followingOrdinal).min()
+                ?? (isFollowed ? ((realm.objects(Feed.self).compactMap(\.followingOrdinal).max() ?? -1) + 1) : nil)
             for feed in feeds {
                 feed.isFollowed = isFollowed
+                if let ordinal {
+                    feed.followingOrdinal = ordinal
+                }
                 feed.explicitlyModifiedAt = now
                 feed.modifiedAt = now
             }
