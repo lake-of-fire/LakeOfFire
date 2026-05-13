@@ -408,6 +408,50 @@ const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
     });
 };
 
+const summarizeRawTrailingBlankSpacerBlocks = (text, mediaType) => {
+    if (typeof text !== 'string' || !text) return null;
+    try {
+        const doc = new DOMParser().parseFromString(text, mediaType || 'text/html');
+        if (doc.querySelector?.('parsererror')) return null;
+        const body = doc.body || doc.querySelector?.('body') || doc.documentElement;
+        if (!body?.children?.length) return null;
+        const root = body.children.length === 1
+            && !['script', 'style', 'template', 'noscript'].includes(body.firstElementChild?.localName || '')
+            ? body.firstElementChild
+            : body;
+        const isBlankSpacer = element => {
+            if (!element || !['p', 'div'].includes(element.localName || '')) return false;
+            if ((element.textContent || '').trim()) return false;
+            if (element.hasAttribute?.('id') || element.hasAttribute?.('name')) return false;
+            if (element.querySelector?.('[id], [name], img, svg, video, object, image, audio, canvas, iframe, mnb-con, mnb-sen, mnb-seg, mnb-sur, ruby, rt')) return false;
+            for (const child of Array.from(element.children || [])) {
+                const tag = child.localName || '';
+                if (tag === 'br' || tag === 'wbr') continue;
+                if ((tag === 'span' || tag === 'b' || tag === 'i') && isBlankSpacer(child)) continue;
+                return false;
+            }
+            return true;
+        };
+        const children = Array.from(root.children || []);
+        let count = 0;
+        for (let i = children.length - 1; i >= 0 && isBlankSpacer(children[i]); i -= 1) {
+            count += 1;
+        }
+        if (!count) return null;
+        const last = children.at(-1);
+        const preview = last?.outerHTML || null;
+        return {
+            count,
+            rootTag: root.localName || null,
+            rootClassName: typeof root.className === 'string' && root.className.trim() ? root.className.trim() : null,
+            childCount: children.length,
+            lastPreview: preview && preview.length > 420 ? `${preview.slice(0, 420)}...` : preview,
+        };
+    } catch (_error) {
+        return null;
+    }
+};
+
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
@@ -533,6 +577,16 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         requestTextLength: typeof text === 'string' ? text.length : null,
         ...captureEPUBOverlapState(),
     });
+    const rawTrailingBlankSpacers = summarizeRawTrailingBlankSpacerBlocks(text, mediaType);
+    if (rawTrailingBlankSpacers) {
+        postEBookBugRootLog('ebook-root-raw-text-has-trailing-blank-spacer-blocks', {
+            href,
+            mediaType,
+            isCacheWarmer: !!isCacheWarmer,
+            requestTextLength: typeof text === 'string' ? text.length : null,
+            ...rawTrailingBlankSpacers,
+        });
+    }
     const headers = {
         "Content-Type": mediaType,
         "X-Replaced-Text-Location": href,
@@ -607,6 +661,26 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 segmentCount,
             },
         );
+        if (sentenceCount > 0 || segmentCount > 0) {
+            postEBookBugRootLog('ebook-root-replace-text-produced-manabi-markup', {
+                href,
+                mediaType,
+                isCacheWarmer: !!isCacheWarmer,
+                status: response.status,
+                sentenceCount,
+                segmentCount,
+                requestTextLength: typeof text === 'string' ? text.length : null,
+                responseTextLength: html.length,
+                inputToOutputRatio: typeof text === 'string' && text.length > 0
+                    ? safeRound(html.length / text.length, 3)
+                    : null,
+                responseExpansionRatio: responseTextLength > 0
+                    ? safeRound(html.length / responseTextLength, 3)
+                    : null,
+                containsSentenceTag: html.includes('<mnb-sen'),
+                containsSegmentTag: html.includes('<mnb-seg'),
+            });
+        }
         postEPUBLog('ebook.perf.replace-text.end', {
             href,
             mediaType,
@@ -749,39 +823,27 @@ const debounce = (fn, delay) => {
     return debounced;
 };
 
-const getVisibleJapaneseTextStateForRenderer = (renderer) => {
+const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null) => {
     const contents = renderer?.getContents?.() || [];
     const currentIndex = getPrimaryRendererContentIndex(renderer);
     const activeContents = typeof currentIndex === 'number'
         ? contents.filter((content) => typeof content?.index !== 'number' || content.index === currentIndex)
         : contents;
-    const viewportRight = window.innerWidth || document.documentElement?.clientWidth || 0;
-    const viewportBottom = window.innerHeight || document.documentElement?.clientHeight || 0;
     let observedSegmentCount = 0;
     let visibleSegmentCount = 0;
-
-    const intersectsViewport = (rect) => rect.bottom > 0
-        && rect.right > 0
-        && rect.top < viewportBottom
-        && rect.left < viewportRight;
 
     for (const content of activeContents) {
         const doc = content?.doc || content?.document || null;
         if (!doc?.querySelectorAll) { continue; }
-        const frame = doc.defaultView?.frameElement || null;
-        const frameRect = frame?.getBoundingClientRect?.() || { left: 0, top: 0 };
-        const segments = Array.from(doc.querySelectorAll('mnb-seg'));
-        observedSegmentCount += segments.length;
-        for (const segment of segments) {
-            if (!(segment.textContent || '').trim()) { continue; }
-            const rects = segment.getClientRects ? Array.from(segment.getClientRects()) : [segment.getBoundingClientRect()];
-            const isVisible = rects.some((rect) => intersectsViewport({
-                left: frameRect.left + rect.left,
-                right: frameRect.left + rect.right,
-                top: frameRect.top + rect.top,
-                bottom: frameRect.top + rect.bottom,
-            }));
-            if (isVisible) {
+        const contentVisibleRange = visibleRange?.commonAncestorContainer?.ownerDocument === doc
+            || visibleRange?.startContainer?.ownerDocument === doc
+            || visibleRange?.endContainer?.ownerDocument === doc
+            ? visibleRange
+            : null;
+        const visibleSegmentsResult = collectVisibleSegmentNodesFromRange(doc, contentVisibleRange);
+        observedSegmentCount += visibleSegmentsResult.totalSegmentCount ?? 0;
+        for (const item of visibleSegmentsResult.visibleSegments || []) {
+            if ((item.node?.textContent || '').trim()) {
                 visibleSegmentCount += 1;
             }
         }
@@ -843,6 +905,20 @@ const postEBookBugLog = (event, details = {}) => {
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
     } catch (error) {
         if (manabiDiagnosticsEnabled()) console.debug('# EBOOKBUG', payload, error);
+    }
+};
+
+const postEBookBugRootLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUGROOT ${JSON.stringify(payload)}`);
+    } catch (error) {
+        if (manabiDiagnosticsEnabled()) console.debug('# EBOOKBUGROOT', payload, error);
     }
 };
 
@@ -5644,11 +5720,21 @@ class Reader {
             before: captureNavVisibilityState(),
             ...details,
         });
-        this.navHUD?.setHideNavigationDueToScroll?.(shouldHide, source, {
-            direction,
-            isRTL: this.isRTL,
-            ...details,
-        });
+        if (shouldHide) {
+            this.navHUD?.setHideNavigationDueToScroll?.(true, source, {
+                direction,
+                isRTL: this.isRTL,
+                ...details,
+            });
+        } else {
+            postHideNavLog('pageTurn.hideNavigation.deferRevealToNative', {
+                source,
+                direction,
+                isRTL: this.isRTL,
+                before: captureNavVisibilityState(),
+                ...details,
+            });
+        }
         postEbookNavigationVisibilityToNative(shouldHide, source, {
             direction,
             isRTL: this.isRTL,
@@ -8526,7 +8612,8 @@ class Reader {
         sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer);
+        const visibleRange = this.navHUD?.lastRelocateDetail?.range ?? null;
+        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer, visibleRange);
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,

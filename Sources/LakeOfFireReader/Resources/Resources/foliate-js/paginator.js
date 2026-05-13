@@ -97,6 +97,14 @@ const postEBookBugLog = (event, details = {}) => {
         try { console.log('# EBOOKBUG', payload); } catch (_) {}
     }
 };
+const postEBookBugRootLog = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUGROOT ${JSON.stringify(payload)}`);
+    } catch (_error) {
+        try { console.log('# EBOOKBUGROOT', payload); } catch (_) {}
+    }
+};
 const sectionDebugInfo = section => section
     ? {
         href: section.href ?? null,
@@ -385,6 +393,185 @@ class View {
     #size
     layout = {}
     #isCacheWarmer
+    #elementDebugPath(element) {
+        if (!element) return null
+        const parts = []
+        for (let current = element; current && current.nodeType === Node.ELEMENT_NODE && parts.length < 6; current = current.parentElement) {
+            const tag = current.localName || current.tagName?.toLowerCase?.() || 'element'
+            const id = current.id ? `#${current.id}` : ''
+            const className = typeof current.className === 'string' && current.className.trim()
+                ? `.${current.className.trim().split(/\s+/).slice(0, 2).join('.')}`
+                : ''
+            parts.unshift(`${tag}${id}${className}`)
+        }
+        return parts.join(' > ')
+    }
+    #elementDebugPreview(element) {
+        if (!element) return null
+        const clone = element.cloneNode?.(true)
+        if (!clone) return null
+        for (const descendant of clone.querySelectorAll?.('*') || []) {
+            for (const attribute of Array.from(descendant.attributes || [])) {
+                if (attribute.value && attribute.value.length > 80) {
+                    descendant.setAttribute(attribute.name, `${attribute.value.slice(0, 80)}...`)
+                }
+            }
+        }
+        const html = clone.outerHTML || ''
+        return html.length > 420 ? `${html.slice(0, 420)}...` : html
+    }
+    #elementDirectChildSummary(element) {
+        if (!element) return []
+        return Array.from(element.children || []).slice(0, 6).map(child => ({
+            tag: child.localName || child.tagName?.toLowerCase?.() || null,
+            id: child.id || null,
+            className: typeof child.className === 'string' && child.className.trim()
+                ? child.className.trim().split(/\s+/).slice(0, 4).join(' ')
+                : null,
+            textLength: (child.textContent || '').trim().length,
+            childElementCount: child.childElementCount,
+            display: this.document?.defaultView?.getComputedStyle?.(child)?.display ?? null,
+        }))
+    }
+    #elementLayoutStyleSummary(element) {
+        const style = this.document?.defaultView?.getComputedStyle?.(element)
+        if (!style) return null
+        return {
+            display: style.display,
+            writingMode: style.writingMode,
+            lineHeight: style.lineHeight,
+            fontSize: style.fontSize,
+            marginTop: style.marginTop,
+            marginRight: style.marginRight,
+            marginBottom: style.marginBottom,
+            marginLeft: style.marginLeft,
+            paddingTop: style.paddingTop,
+            paddingRight: style.paddingRight,
+            paddingBottom: style.paddingBottom,
+            paddingLeft: style.paddingLeft,
+            blockSize: style.blockSize,
+            inlineSize: style.inlineSize,
+            breakBefore: style.breakBefore,
+            breakAfter: style.breakAfter,
+            breakInside: style.breakInside,
+            webkitColumnBreakBefore: style.webkitColumnBreakBefore,
+            webkitColumnBreakAfter: style.webkitColumnBreakAfter,
+            webkitColumnBreakInside: style.webkitColumnBreakInside,
+        }
+    }
+    #collectOccupiedContentDiagnostics({ side, pageSize, contentSize, rangePageCount }) {
+        const doc = this.document
+        const body = doc?.body
+        if (!body || !Number.isFinite(pageSize) || pageSize <= 0) return null
+
+        const axisEnd = rect => side === 'height' ? rect.bottom : rect.right
+        const contentItems = []
+        const addContentRect = (rect, node, kind) => {
+            if (!rect || rect.width <= 0 || rect.height <= 0) return
+            const end = axisEnd(rect)
+            if (!Number.isFinite(end)) return
+            const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement
+            contentItems.push({
+                kind,
+                end,
+                rect,
+                path: this.#elementDebugPath(element),
+                tag: element?.localName || element?.tagName?.toLowerCase?.() || null,
+                textLength: (node?.nodeValue || element?.textContent || '').trim().length,
+            })
+        }
+
+        const nodeFilter = doc.defaultView?.NodeFilter || globalThis.NodeFilter
+        const walker = nodeFilter
+            ? doc.createTreeWalker?.(body, nodeFilter.SHOW_TEXT, {
+                acceptNode(node) {
+                    if (!(node.nodeValue || '').trim()) return nodeFilter.FILTER_REJECT
+                    const parent = node.parentElement
+                    if (!parent || parent.closest?.('script, style, template, noscript')) return nodeFilter.FILTER_REJECT
+                    return nodeFilter.FILTER_ACCEPT
+                },
+            })
+            : null
+        for (let node = walker?.nextNode?.(); node; node = walker.nextNode()) {
+            const range = doc.createRange()
+            range.selectNodeContents(node)
+            for (const rect of range.getClientRects?.() || []) addContentRect(rect, node, 'text')
+            range.detach?.()
+        }
+        for (const element of body.querySelectorAll?.('img, svg, video, object, image') || []) {
+            for (const rect of element.getClientRects?.() || []) addContentRect(rect, element, 'media')
+        }
+
+        const occupiedEnd = contentItems.length ? Math.max(...contentItems.map(item => item.end)) : null
+        const occupiedPageCount = Number.isFinite(occupiedEnd)
+            ? Math.max(1, Math.ceil(occupiedEnd / pageSize))
+            : null
+        const farthestContent = contentItems
+            .sort((a, b) => b.end - a.end)
+            .slice(0, 3)
+            .map(item => ({
+                kind: item.kind,
+                tag: item.tag,
+                path: item.path,
+                end: manabiRound(item.end, 1),
+                page: Math.max(1, Math.ceil(item.end / pageSize)),
+                textLength: item.textLength,
+                rect: rectSnapshot(item.rect),
+            }))
+
+        const elementItems = []
+        for (const element of body.querySelectorAll?.('*') || []) {
+            if (element.closest?.('script, style, template, noscript')) continue
+            for (const rect of element.getClientRects?.() || []) {
+                if (!rect || rect.width <= 0 || rect.height <= 0) continue
+                const end = axisEnd(rect)
+                if (!Number.isFinite(end)) continue
+                elementItems.push({
+                    end,
+                    element,
+                    rect,
+                })
+            }
+        }
+        const farthestElements = elementItems
+            .sort((a, b) => b.end - a.end)
+            .slice(0, 6)
+            .map(item => ({
+                tag: item.element.localName || item.element.tagName?.toLowerCase?.() || null,
+                path: this.#elementDebugPath(item.element),
+                end: manabiRound(item.end, 1),
+                page: Math.max(1, Math.ceil(item.end / pageSize)),
+                textLength: (item.element.textContent || '').trim().length,
+                childElementCount: item.element.childElementCount,
+                childSummary: this.#elementDirectChildSummary(item.element),
+                style: this.#elementLayoutStyleSummary(item.element),
+                preview: (item.element.textContent || '').trim().length === 0
+                    ? this.#elementDebugPreview(item.element)
+                    : null,
+                rect: rectSnapshot(item.rect),
+            }))
+
+        return {
+            contentSize: manabiRound(contentSize, 1),
+            rangePageCount,
+            occupiedEnd: manabiRound(occupiedEnd, 1),
+            occupiedPageCount,
+            overcountPages: typeof occupiedPageCount === 'number'
+                ? rangePageCount - occupiedPageCount
+                : null,
+            textRectCount: contentItems.filter(item => item.kind === 'text').length,
+            mediaRectCount: contentItems.filter(item => item.kind === 'media').length,
+            manabiSentenceCount: body.querySelectorAll?.('mnb-sen')?.length ?? 0,
+            manabiSegmentCount: body.querySelectorAll?.('mnb-seg')?.length ?? 0,
+            manabiSurfaceCount: body.querySelectorAll?.('mnb-sur')?.length ?? 0,
+            manabiContainerCount: body.querySelectorAll?.('mnb-con')?.length ?? 0,
+            sourceHref: body.dataset?.mnbSourceHref || null,
+            hasManabiSentenceDataset: body.dataset?.mnbHasSentences || null,
+            hasManabiSegmentDataset: body.dataset?.mnbHasSegments || null,
+            farthestContent,
+            farthestElements,
+        }
+    }
     constructor({
         container,
         onBeforeExpand,
@@ -805,6 +992,36 @@ class View {
                         const contentSize = contentStart + contentRect[side]
                         const pageCount = Math.ceil(contentSize / this.#size)
                         const expandedSize = pageCount * this.#size
+                        const occupiedDiagnostics = this.#collectOccupiedContentDiagnostics({
+                            side,
+                            pageSize: this.#size,
+                            contentSize,
+                            rangePageCount: pageCount,
+                        })
+                        if (
+                            occupiedDiagnostics
+                            && typeof occupiedDiagnostics.overcountPages === 'number'
+                            && occupiedDiagnostics.overcountPages >= 1
+                        ) {
+                            postEBookBugRootLog('paginator-root-range-overcounts-rendered-content', {
+                                vertical: this.#vertical,
+                                rtl: this.#rtl,
+                                side,
+                                otherSide,
+                                pageSize: this.#size,
+                                contentStart: manabiRound(contentStart, 1),
+                                contentRect: rectSnapshot(this.#contentRange),
+                                rootRect: rectSnapshot(documentElement),
+                                bodyRect: rectSnapshot(this.document?.body),
+                                documentClientWidth: documentElement?.clientWidth ?? null,
+                                documentClientHeight: documentElement?.clientHeight ?? null,
+                                documentScrollWidth: documentElement?.scrollWidth ?? null,
+                                documentScrollHeight: documentElement?.scrollHeight ?? null,
+                                bodyScrollWidth: this.document?.body?.scrollWidth ?? null,
+                                bodyScrollHeight: this.document?.body?.scrollHeight ?? null,
+                                ...occupiedDiagnostics,
+                            })
+                        }
                         postPaginatorLoadLog('view.expand.measure.column', {
                             vertical: this.#vertical,
                             side,
