@@ -725,128 +725,6 @@ internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
     )
 }
 
-private func readerModeFinalSegmentDOMDiagnosticsScript() -> String {
-    #if DEBUG
-    return """
-    <script id="mnb-final-segment-dom-diagnostics">
-    (function() {
-        const post = (payload) => {
-            try {
-                const message = '# SEGMENTDOM ' + JSON.stringify(payload);
-                const webkitPrint = window.webkit?.messageHandlers?.print;
-                if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
-                    webkitPrint.postMessage(message);
-                    return;
-                }
-                if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
-                    print.postMessage(message);
-                }
-            } catch (_) {}
-        };
-        const compact = (value, max) => {
-            const text = String(value || '').replace(/\\s+/g, ' ');
-            return text.length <= max ? text : text.slice(0, max) + '…';
-        };
-        const segmentText = (segment) => (segment?.textContent || '').replace(/\\s+/g, '');
-        const interestingWindow = (segments, index) => {
-            const start = Math.max(0, index - 2);
-            const end = Math.min(segments.length, index + 5);
-            const slice = segments.slice(start, end);
-            return {
-                index,
-                start,
-                end,
-                text: compact(slice.map(segmentText).join('|'), 260),
-                html: compact(slice.map((segment) => segment.outerHTML || '').join(''), 1200),
-            };
-        };
-        const isInteresting = (text) => {
-            const joined = String(text || '').replace(/\\|/g, '');
-            return joined.includes('注文し') || joined.includes('文し');
-        };
-        const collectMetadataMatches = () => {
-            const matches = [];
-            for (const script of Array.from(document.querySelectorAll('script[data-mnb-seg-meta]'))) {
-                try {
-                    const payload = JSON.parse(script.textContent || '{}');
-                    const texts = payload?.t?.s || [];
-                    for (let index = 0; index < texts.length; index += 1) {
-                        const text = String(texts[index] || '');
-                        if (isInteresting(text)) {
-                            matches.push({ index, text: compact(text, 120) });
-                            if (matches.length >= 12) {
-                                return matches;
-                            }
-                        }
-                    }
-                } catch (_) {}
-            }
-            return matches;
-        };
-        const collect = (phase) => {
-            const segments = Array.from(document.querySelectorAll('mnb-seg'));
-            const windows = [];
-            for (let index = 0; index < segments.length; index += 1) {
-                const windowText = segments
-                    .slice(Math.max(0, index - 2), Math.min(segments.length, index + 5))
-                    .map(segmentText)
-                    .join('|');
-                if (isInteresting(windowText)) {
-                    windows.push(interestingWindow(segments, index));
-                    if (windows.length >= 10) {
-                        break;
-                    }
-                }
-            }
-            post({
-                phase,
-                href: window.location.href,
-                readyState: document.readyState,
-                segmentCount: segments.length,
-                metadataSidecarCount: document.querySelectorAll('script[data-mnb-seg-meta]').length,
-                windows,
-                metadataMatches: collectMetadataMatches(),
-            });
-        };
-        const schedule = () => {
-            collect('initial');
-            if (typeof requestAnimationFrame === 'function') {
-                requestAnimationFrame(() => collect('animationFrame'));
-            }
-            setTimeout(() => collect('after250ms'), 250);
-        };
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', schedule, { once: true });
-        } else {
-            schedule();
-        }
-    })();
-    </script>
-    """
-    #else
-    return ""
-    #endif
-}
-
-private func injectReaderModeFinalSegmentDOMDiagnostics(into html: String) -> String {
-    #if DEBUG
-    guard !html.contains(#"id="mnb-final-segment-dom-diagnostics""#),
-          !html.contains(#"id='mnb-final-segment-dom-diagnostics'"#) else {
-        return html
-    }
-    let script = readerModeFinalSegmentDOMDiagnosticsScript()
-    guard !script.isEmpty else { return html }
-    if let bodyCloseRange = html.range(of: "</body>", options: [.caseInsensitive, .backwards]) {
-        var updatedHTML = html
-        updatedHTML.insert(contentsOf: script, at: bodyCloseRange.lowerBound)
-        return updatedHTML
-    }
-    return html + script
-    #else
-    return html
-    #endif
-}
-
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
     if let doc = try? SwiftSoup.parse(html),
        let title = titleFromReadabilityDocument(doc) {
@@ -3170,20 +3048,6 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 "processHTMLElapsed=\(String(format: "%.3f", processHTMLElapsed))s",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
             )
-            let diagnosticsInjectionStartedAt = CFAbsoluteTimeGetCurrent()
-            let transformedHTMLForDiagnostics = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
-            let transformedHTMLWithDiagnostics = injectReaderModeFinalSegmentDOMDiagnostics(into: transformedHTMLForDiagnostics)
-            if transformedHTMLWithDiagnostics != transformedHTMLForDiagnostics {
-                transformedHTMLString = transformedHTMLWithDiagnostics
-                transformedHTMLBytes = Array(transformedHTMLWithDiagnostics.utf8)
-            }
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.finalDOMDiagnostics",
-                "renderBaseURL=\(renderBaseURL.absoluteString)",
-                "injected=\(transformedHTMLWithDiagnostics != transformedHTMLForDiagnostics)",
-                "bytes=\(transformedHTMLBytes.count)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - diagnosticsInjectionStartedAt))s"
-            )
             let frameInjectionPrepStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
@@ -3862,16 +3726,16 @@ func prepareHTMLForDirectLoad(_ html: String) -> String {
     }
 
     if updatedHTML.range(of: "<body", options: .caseInsensitive) == nil {
-        return injectReaderModeFinalSegmentDOMDiagnostics(into: """
+        return """
         <html>
         <head></head>
         <body>
         \(updatedHTML)
         </body>
         </html>
-        """)
+        """
     }
-    return injectReaderModeFinalSegmentDOMDiagnostics(into: updatedHTML)
+    return updatedHTML
 }
 
 fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#

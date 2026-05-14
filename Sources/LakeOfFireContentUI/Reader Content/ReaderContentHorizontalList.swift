@@ -499,12 +499,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                     )
                     .onAppear {
                         let estimatedRowHeightString = String(format: "%.1f", estimatedRowHeight)
-                        debugPrint(
-                            "# APR21b",
-                            "source=ReaderContentHorizontalList.emptyState",
-                            "estimatedRowHeight=\(estimatedRowHeightString)",
-                            "contentsCount=\(contents.count)"
-                        )
                     }
             }
             

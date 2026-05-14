@@ -129,6 +129,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 if includeSource {
                     if sourceURL.isSnippetURL {
                         sourceTitle = "Snippet"
+                    } else if sourceURL.contentKind != .webpage {
+                        sourceTitle = sourceURL.contentKindTitle
                     } else if let feedTitle {
                         sourceTitle = feedTitle
                         sourceIconURL = feedIconURL ?? itemSourceIconURL
@@ -242,6 +244,45 @@ public extension EnvironmentValues {
 public extension View {
     func readerContentCellStyle(_ style: ReaderContentCellStyle) -> some View {
         environment(\.readerContentCellStyle, style)
+    }
+}
+
+public struct ReaderContentCellAnnotationStatus: Equatable, Sendable {
+    public var noteCount: Int
+    public var unfinishedTaskCount: Int
+    public var finishedTaskCount: Int
+
+    public init(noteCount: Int = 0, unfinishedTaskCount: Int = 0, finishedTaskCount: Int = 0) {
+        self.noteCount = noteCount
+        self.unfinishedTaskCount = unfinishedTaskCount
+        self.finishedTaskCount = finishedTaskCount
+    }
+
+    public var taskSymbolName: String? {
+        if unfinishedTaskCount > 0 { return "circle" }
+        if finishedTaskCount > 0 { return "circle.checkmark" }
+        return nil
+    }
+}
+
+private struct ReaderContentCellAnnotationStatusLoaderKey: EnvironmentKey {
+    static let defaultValue: @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus = { _, _ in
+        ReaderContentCellAnnotationStatus()
+    }
+}
+
+public extension EnvironmentValues {
+    var readerContentCellAnnotationStatusLoader: @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus {
+        get { self[ReaderContentCellAnnotationStatusLoaderKey.self] }
+        set { self[ReaderContentCellAnnotationStatusLoaderKey.self] = newValue }
+    }
+}
+
+public extension View {
+    func readerContentCellAnnotationStatusLoader(
+        _ loader: @escaping @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus
+    ) -> some View {
+        environment(\.readerContentCellAnnotationStatusLoader, loader)
     }
 }
 
@@ -413,6 +454,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
+    @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @State private var annotationStatus = ReaderContentCellAnnotationStatus()
 
     // Match the parent card's rounding minus its padding and scale it with the actual thumbnail size.
     private var thumbnailCornerRadius: CGFloat {
@@ -457,6 +500,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
         let secondary = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !secondary.isEmpty { return secondary }
+        if item.url.contentKind != .webpage {
+            return item.url.contentKindTitle
+        }
         if let host = item.url.host {
             let trimmedHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
             if !trimmedHost.isEmpty {
@@ -478,6 +524,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         guard appearance.includeSource else { return nil }
         if item.url.isSnippetURL {
             return "Snippet"
+        }
+        if item.url.contentKind != .webpage {
+            return item.url.contentKindTitle
         }
         if let host = item.url.host, !host.isEmpty {
             let trimmedHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
@@ -721,6 +770,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         HStack(spacing: 8) {
             newBadge
             audioBadge
+
+            if !usesCompactControlSize, annotationStatus.noteCount > 0 {
+                Image(systemName: "text.pad.header")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !usesCompactControlSize, let taskSymbolName = annotationStatus.taskSymbolName {
+                Image(systemName: taskSymbolName)
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            }
 
             if let contentFile = item as? ContentFile {
                 CloudDriveSyncStatusView(item: contentFile)
@@ -1098,7 +1159,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     item: item,
                     includeSource: appearance.includeSource
                 )
+                annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
             }
+        }
+        .task(id: item.compoundKey) {
+            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
         }
         .onChange(of: item.compoundKey) { _ in
             resolvedContentFile = nil
