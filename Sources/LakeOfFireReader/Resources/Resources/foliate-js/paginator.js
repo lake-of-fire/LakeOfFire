@@ -66,10 +66,6 @@ const postPaginatorLoadLog = (event, details = {}) => {
         try { console.log('# EPUBLOAD', `paginator.${event}`, details); } catch (_) {}
     }
 };
-const postMay5PaginatorLog = (event, details = {}) => {
-    void event;
-    void details;
-};
 const MANABI_MINIMAL_EBOOKBUG_EVENTS = new Set([
     'paginator-prefetch-wait-start',
     'paginator-prefetch-wait-end',
@@ -2469,16 +2465,6 @@ export class Paginator extends HTMLElement {
             rightOpacity = 0;
         if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
         else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
-        postMay5PaginatorLog('swipe.chevron.progress', {
-            dx: manabiRound(dx, 2),
-            minSwipe,
-            leftOpacity: manabiRound(leftOpacity, 3),
-            rightOpacity: manabiRound(rightOpacity, 3),
-            reachedThreshold: Math.abs(dx) > minSwipe,
-            bookDir: this.bookDir ?? null,
-            vertical: this.#vertical,
-            scrolled: this.scrolled,
-        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2491,10 +2477,6 @@ export class Paginator extends HTMLElement {
         }));
         if (Math.abs(dx) > minSwipe) {
             // Enqueue the reset after meeting threshold
-            postMay5PaginatorLog('swipe.chevron.resetAfterThreshold', {
-                dx: manabiRound(dx, 2),
-                minSwipe,
-            });
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,

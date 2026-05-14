@@ -6,13 +6,13 @@ public extension URL {
             return nil
         }
         if isEBookURL {
-            return "book"
+            return "Book"
         } else if isFileURL {
-            return "file"
+            return "File"
         } else if isSnippetURL {
-            return "snippet"
+            return "Snippet"
         }
-        return "webpage"
+        return "Webpage"
     }
 
     enum ContentKind {

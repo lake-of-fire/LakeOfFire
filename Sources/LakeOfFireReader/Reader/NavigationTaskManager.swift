@@ -5,7 +5,19 @@ import LakeOfFireContentUI
 import LakeOfFireContent
 import LakeOfFireCore
 
+private actor NavigationTaskWaitState {
+    private var didResume = false
+
+    func resume(_ continuation: CheckedContinuation<Void, Never>) {
+        guard !didResume else { return }
+        didResume = true
+        continuation.resume()
+    }
+}
+
 internal class NavigationTaskManager: Identifiable {
+    private static let taskDrainTimeoutNanoseconds: UInt64 = 1_000_000_000
+
     @MainActor
     var onNavigationCommittedTask: Task<Void, Error>?
     @MainActor
@@ -14,6 +26,24 @@ internal class NavigationTaskManager: Identifiable {
     var onNavigationFailedTask: Task<Void, Error>?
     @MainActor
     var onURLChangedTask: Task<Void, Error>?
+    @MainActor
+    private var urlChangedGeneration = 0
+
+    private static func waitBrieflyForTask(_ task: Task<Void, Error>?) async {
+        guard let task else { return }
+
+        await withCheckedContinuation { continuation in
+            let state = NavigationTaskWaitState()
+            Task {
+                _ = try? await task.value
+                await state.resume(continuation)
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: taskDrainTimeoutNanoseconds)
+                await state.resume(continuation)
+            }
+        }
+    }
     
     @MainActor
     func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
@@ -32,10 +62,9 @@ internal class NavigationTaskManager: Identifiable {
     @MainActor
     func startOnNavigationFinished(task: @escaping () async -> Void) {
         onNavigationFinishedTask?.cancel()
+        let committedTask = onNavigationCommittedTask
         onNavigationFinishedTask = Task { @MainActor in
-            if let committedTask = onNavigationCommittedTask {
-                _ = try? await committedTask.value // Wait for the committed task to finish if it's still running
-            }
+            await Self.waitBrieflyForTask(committedTask)
             try Task.checkCancellation()
             await task()
         }
@@ -43,11 +72,10 @@ internal class NavigationTaskManager: Identifiable {
     
     @MainActor
     func startOnNavigationFailed(task: @escaping () async -> Void) {
-        onNavigationFailedTask?.cancel()
+        let failedTask = onNavigationFailedTask
+        failedTask?.cancel()
         onNavigationFailedTask = Task { @MainActor in
-            if let failedTask = onNavigationFailedTask {
-                _ = try? await failedTask.value
-            }
+            await Self.waitBrieflyForTask(failedTask)
             try Task.checkCancellation()
             await task()
         }
@@ -55,15 +83,20 @@ internal class NavigationTaskManager: Identifiable {
     
     @MainActor
     func startOnURLChanged(task: @escaping () async -> Void) {
-        Task { @MainActor in
-            onURLChangedTask?.cancel()
-            _ = try? await onURLChangedTask?.value
-            onURLChangedTask = Task { @MainActor in
-                try Task.checkCancellation()
-                await task()
-            }
-            _ = try? await onURLChangedTask?.value
-            onURLChangedTask = nil
+        let previousURLChangedTask = onURLChangedTask
+        previousURLChangedTask?.cancel()
+        urlChangedGeneration += 1
+        let generation = urlChangedGeneration
+        let nextTask = Task { @MainActor in
+            await Self.waitBrieflyForTask(previousURLChangedTask)
+            try Task.checkCancellation()
+            await task()
+        }
+        onURLChangedTask = nextTask
+        Task { @MainActor [weak self] in
+            _ = try? await nextTask.value
+            guard let self, self.urlChangedGeneration == generation else { return }
+            self.onURLChangedTask = nil
         }
     }
 }

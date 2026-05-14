@@ -190,6 +190,49 @@ public extension View {
     }
 }
 
+public struct ReaderContentCellAnnotationStatus: Equatable, Sendable {
+    public var noteCount: Int
+    public var unfinishedTaskCount: Int
+    public var finishedTaskCount: Int
+
+    public init(noteCount: Int = 0, unfinishedTaskCount: Int = 0, finishedTaskCount: Int = 0) {
+        self.noteCount = noteCount
+        self.unfinishedTaskCount = unfinishedTaskCount
+        self.finishedTaskCount = finishedTaskCount
+    }
+
+    public var taskSymbolName: String? {
+        if unfinishedTaskCount > 0 {
+            return "circle"
+        }
+        if finishedTaskCount > 0 {
+            return "circle.checkmark"
+        }
+        return nil
+    }
+}
+
+private struct ReaderContentCellAnnotationStatusLoaderKey: EnvironmentKey {
+    static let defaultValue: @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus = { _, _ in
+        ReaderContentCellAnnotationStatus()
+    }
+}
+
+public extension EnvironmentValues {
+    var readerContentCellAnnotationStatusLoader: @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus {
+        get { self[ReaderContentCellAnnotationStatusLoaderKey.self] }
+        set { self[ReaderContentCellAnnotationStatusLoaderKey.self] = newValue }
+    }
+}
+
+public extension View {
+    func readerContentCellAnnotationStatusLoader(
+        _ loader: @escaping @MainActor (URL, String) async -> ReaderContentCellAnnotationStatus
+    ) -> some View {
+        environment(\.readerContentCellAnnotationStatusLoader, loader)
+    }
+}
+
 extension ReaderContentProtocol {
     @ViewBuilder public func readerContentCellView(
         appearance: ReaderContentCellAppearance,
@@ -303,6 +346,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
+    @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.controlSize) private var controlSize
 
@@ -310,6 +354,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     @State private var clearBorderedLabelHeight: CGFloat = 0
+    @State private var annotationStatus = ReaderContentCellAnnotationStatus()
 
     public init(item: C, appearance: ReaderContentCellAppearance, customMenuOptions: ((C) -> AnyView)? = nil) {
         self._item = ObservedRealmObject(wrappedValue: item)
@@ -389,6 +434,9 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         if item.url.isSnippetURL {
             return "Snippet"
         }
+        if item.url.contentKind != .webpage {
+            return item.url.contentKindTitle
+        }
         if let host = item.url.host, !host.isEmpty {
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }
@@ -426,6 +474,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                 "viewModelTitle=\(viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines).truncate(80))"
             )
             return "Untitled"
+        }
+
+        if item.url.contentKind != .webpage {
+            return item.url.contentKindTitle
         }
 
         if let host = item.url.host, !host.isEmpty {
@@ -623,6 +675,16 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 
             if showsAudioBadge {
                 Image(systemName: "headphones")
+                    .imageScale(.small)
+            }
+
+            if !usesCompactControlSize, annotationStatus.noteCount > 0 {
+                Image(systemName: "text.pad.header")
+                    .imageScale(.small)
+            }
+
+            if !usesCompactControlSize, let taskSymbolName = annotationStatus.taskSymbolName {
+                Image(systemName: taskSymbolName)
                     .imageScale(.small)
             }
 
@@ -971,7 +1033,11 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         .onAppear {
             Task { @MainActor in
                 try? await viewModel.load(item: item, includeSource: appearance.includeSource)
+                annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
             }
+        }
+        .task(id: item.compoundKey) {
+            annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
         }
         .onChange(of: item.imageUrl) { newImageURL in
             guard newImageURL != viewModel.imageURL else { return }

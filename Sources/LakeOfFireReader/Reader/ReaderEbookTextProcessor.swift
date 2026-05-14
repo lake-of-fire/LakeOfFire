@@ -5,32 +5,30 @@ import LakeOfFireContentUI
 import LakeOfFireContent
 import LakeOfFireCore
 import SwiftSoup
-import LRUCache
-import LakeKit
-import JapaneseLanguageTools
 
 private let ebookTextProcessorReplaceTextDetailedLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
-private let ebookTextProcessorUseMinimalSentinels = true
 private let ebookTextProcessorBypassReaderModeProcessor = false
 
-// Precomputed punctuation set for splitting
-private let splitPunctuation = ParsingStrings([
-    "、","。","．","，","？","！","：","；","…","‥","ー","－",
-    "「","」","『","』","【","】","〔","〕","（","）","［","］",
-    "｛","｝","〈","〉","《","》","“","”","‘","’","·","・","／",
-    "＼","—","〜","～","〃","々","〆","ゝ","ゞ"
-])
-
-private func isASCIILetterOrNumber(_ character: Character) -> Bool {
-    character.unicodeScalars.allSatisfy {
-        $0.isASCII && CharacterSet.alphanumerics.contains($0)
-    }
+@inline(__always)
+private func ebookProcessorElapsedMilliseconds(since startedAt: Date?) -> Int {
+    guard let startedAt else { return 0 }
+    return Int(Date().timeIntervalSince(startedAt) * 1000)
 }
 
-private func isJapaneseWordCharacter(_ character: Character) -> Bool {
-    let text = String(character)
-    return text.isKana || text.isKanji || text == "々" || text == "〻"
+@inline(__always)
+private func bodyStartsWithReaderSentinel(_ body: Element) -> Bool {
+    for index in 0..<body.childNodeSize() {
+        let node = body.childNode(index)
+        if let textNode = node as? TextNode, textNode.isBlank() {
+            continue
+        }
+        guard let element = node as? Element else {
+            return false
+        }
+        return element.tagName() == "reader-sentinel"
+    }
+    return false
 }
 
 internal extension URL {
@@ -50,229 +48,22 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
     // Apply visibility sentinels. In the ebook pipeline this must run after
     // reader tags are injected, so sentinels never split text before MeCab sees it.
     guard let body = doc.body() else { return doc }
-    try? body.getElementsByTag("reader-sentinel").remove()
-    if ebookTextProcessorUseMinimalSentinels {
-        do {
-            let startSentinel = Element(Tag("reader-sentinel"), "")
-            try startSentinel.attr("id", "reader-sentinel-0")
-            _ = try? body.prependChild(startSentinel)
-
-            let endSentinel = Element(Tag("reader-sentinel"), "")
-            try endSentinel.attr("id", "reader-sentinel-1")
-            _ = try? body.appendChild(endSentinel)
-            print(
-                "# VISIBLERANGE",
-                "sentinelPreprocess.minimal",
-                "sentinelCount=2"
-            )
-        } catch {
-            print("# VISIBLERANGE sentinelPreprocess.minimal.error \(error)")
-        }
-        return doc
+    if bodyStartsWithReaderSentinel(body) {
+        try? body.getElementsByTag("reader-sentinel").remove()
     }
-    let interval = 16
-    var charCount = 0
-    var nextThreshold = interval
-    var idx = 0
-    
-    func findSplitOffset(_ text: String, desiredOffset: Int, maxDistance: Int) -> Int {
-        let characters = Array(text)
-        let len = characters.count
-        guard desiredOffset > 0 && desiredOffset < len else {
-            return desiredOffset
-        }
-        var bestOffset: Int?
-        var bestScore = Int.min
-        for dist in 0...maxDistance {
-            for offset in [desiredOffset - dist, desiredOffset + dist] {
-                if offset <= 0 || offset >= len { continue }
-                let curr = characters[offset]
-                let prev = characters[offset - 1]
-                if isJapaneseWordCharacter(curr) && isJapaneseWordCharacter(prev) {
-                    continue
-                }
-                var score = 0
-                // Prefer splitting at ASCII whitespace
-                if curr.isWhitespace || prev.isWhitespace {
-                    score += 3
-                }
-                // Treat punctuation via precomputed splitPunctuation set
-                if splitPunctuation.contains(Array(String(curr).utf8)) || splitPunctuation.contains(Array(String(prev).utf8)) {
-                    score += 3
-                }
-                // Avoid splitting in the middle of ASCII alphanumeric words
-                if isASCIILetterOrNumber(curr) && isASCIILetterOrNumber(prev) {
-                    score -= 4
-                }
-                // Avoid splitting at very start or end
-                if offset == 0 || offset == len {
-                    score -= 5
-                }
-                // Distance penalty
-                score -= abs(offset - desiredOffset) / 2
-                if score > bestScore {
-                    bestScore = score
-                    bestOffset = offset
-                }
-                if bestScore >= 3 { break }
-            }
-            if bestScore >= 3 { break }
-        }
-        return bestOffset ?? 0
-    }
-    
     do {
-        func closestAncestor(from node: Node, where predicate: (Element) -> Bool) -> Element? {
-            var current = node.parent()
-            while let ancestor = current {
-                if let element = ancestor as? Element, predicate(element) {
-                    return element
-                }
-                current = ancestor.parent()
-            }
-            return nil
-        }
+        let startSentinel = Element(Tag("reader-sentinel"), "")
+        try startSentinel.attr("id", "reader-sentinel-0")
+        _ = try? body.prependChild(startSentinel)
 
-        func hasAncestorTag(_ tagNames: Set<String>, from node: Node) -> Bool {
-            closestAncestor(from: node) { tagNames.contains($0.tagNameNormal()) } != nil
-        }
-
-        func sentinelAnchor(for node: Node) -> Element? {
-            closestAncestor(from: node) { $0.tagNameNormal() == "mnb-seg" }
-        }
-
-        func sentinelAnchorKey(for anchor: Element) -> String {
-            if let id = try? anchor.attr("id"), !id.isEmpty {
-                return "id:\(id)"
-            }
-            if let selector = try? anchor.cssSelector(), !selector.isEmpty {
-                return "selector:\(selector)"
-            }
-            return "html:\((try? anchor.outerHtml()) ?? "")"
-        }
-
-        let ignoredTextAncestorTags: Set<String> = ["reader-sentinel", "script", "style", "rt", "rp"]
-        func bodyTextNodesInDocumentOrder() -> [TextNode] {
-            ((try? body.getAllElements().flatMap { $0.textNodes() }) ?? [])
-                .filter { !hasAncestorTag(ignoredTextAncestorTags, from: $0) }
-        }
-
-        var textNodes = bodyTextNodesInDocumentOrder()
-        let initialTextNodeCount = textNodes.count
-        let initialTextCharacterCount = textNodes.reduce(0) { $0 + $1.text().count }
-        var splitAttemptCount = 0
-        var splitRejectedCount = 0
-        var splitFailedCount = 0
-        print(
-            "# VISIBLERANGE",
-            "sentinelPreprocess.start",
-            "textNodeCount=\(initialTextNodeCount)",
-            "textCharacterCount=\(initialTextCharacterCount)",
-            "interval=\(interval)"
-        )
-        var nodeIdx = 0
-        var anchoredSentinelKeys = Set<String>()
-        while nodeIdx < textNodes.count {
-            var node = textNodes[nodeIdx]
-            var offsetInNode = 0
-            if let anchor = sentinelAnchor(for: node) {
-                let nodeTextLength = node.text().count
-                let anchorKey = sentinelAnchorKey(for: anchor)
-                while charCount + nodeTextLength >= nextThreshold {
-                    if !anchoredSentinelKeys.contains(anchorKey) {
-                        let sentinel = Element(Tag("reader-sentinel"), "")
-                        try sentinel.attr("id", "reader-sentinel-\(idx)")
-                        idx += 1
-                        _ = try? anchor.after(sentinel)
-                        anchoredSentinelKeys.insert(anchorKey)
-                    } else {
-                        splitRejectedCount += 1
-                    }
-                    nextThreshold += interval
-                }
-                charCount += nodeTextLength
-                nodeIdx += 1
-                continue
-            }
-
-            // Attempt to insert as many sentinels as needed inside this node
-            while charCount + (node.text().count - offsetInNode) >= nextThreshold {
-                let nodeText = node.text()
-                let desiredOffset = nextThreshold - charCount
-                let splitOffset = findSplitOffset(
-                    nodeText,
-                    desiredOffset: desiredOffset,
-                    maxDistance: interval * 2
-                )
-                let splitIndex = splitOffset
-                splitAttemptCount += 1
-                // Sanity check
-                if splitIndex <= 0 {
-                    splitRejectedCount += 1
-                    nextThreshold += interval
-                    continue
-                }
-                if splitIndex >= nodeText.count {
-                    let sentinel = Element(Tag("reader-sentinel"), "")
-                    try sentinel.attr("id", "reader-sentinel-\(idx)")
-                    idx += 1
-                    _ = try? node.after(sentinel)
-                    charCount = nextThreshold
-                    nextThreshold += interval
-                    offsetInNode = nodeText.count
-                    break
-                }
-
-                // Split the text node
-                let newTextNode = try? node.splitText(splitIndex)
-                
-                // Insert sentinel between the two halves
-                let sentinel = Element(Tag("reader-sentinel"), "")
-                try sentinel.attr("id", "reader-sentinel-\(idx)")
-                idx += 1
-                _ = try? node.after(sentinel)
-                
-                if let newTextNode = newTextNode {
-                    _ = try? sentinel.after(newTextNode)
-                    // Re-fetch text nodes to include the split part
-                    textNodes = bodyTextNodesInDocumentOrder()
-                    // Advance counters for next threshold
-                    charCount = nextThreshold
-                    nextThreshold += interval
-                    // Reset offset and stay on the new node
-                    node = newTextNode
-                    offsetInNode = 0
-                    continue  // re‑enter inner while with updated node
-                } else {
-                    splitFailedCount += 1
-                    break
-                }
-            }
-            
-            // No more splits needed in this node; account for its remaining characters
-            charCount += node.text().count - offsetInNode
-            nodeIdx += 1
-        }
-        
-        if idx == 0 {
-            let sentinel = Element(Tag("reader-sentinel"), "")
-            try sentinel.attr("id", "reader-sentinel-0")
-            _ = try? body.prependChild(sentinel)
-        }
-        print(
-            "# VISIBLERANGE",
-            "sentinelPreprocess.end",
-            "initialTextNodeCount=\(initialTextNodeCount)",
-            "initialTextCharacterCount=\(initialTextCharacterCount)",
-            "sentinelCount=\(idx == 0 ? 1 : idx)",
-            "usedFallbackSentinel=\(idx == 0)",
-            "splitAttemptCount=\(splitAttemptCount)",
-            "splitRejectedCount=\(splitRejectedCount)",
-            "splitFailedCount=\(splitFailedCount)"
-        )
+        let endSentinel = Element(Tag("reader-sentinel"), "")
+        try endSentinel.attr("id", "reader-sentinel-1")
+        _ = try? body.appendChild(endSentinel)
         return doc
     } catch {
-        print(error)
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
+            print("# VISIBLERANGE sentinelPreprocess.minimal.error \(error)")
+        }
         return doc
     }
 }
@@ -291,7 +82,8 @@ internal func ebookTextProcessor(
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
-    let totalStartedAt = Date()
+    let collectTiming = ebookTextProcessorReplaceTextDetailedLoggingEnabled
+    let totalStartedAt = collectTiming ? Date() : nil
     var readabilityProcessElapsedMs = 0
     var fallbackParseElapsedMs = 0
     var readerModeProcessElapsedMs = 0
@@ -306,7 +98,7 @@ internal func ebookTextProcessor(
         var doc: SwiftSoup.Document?
         
         if let processReadabilityContent, !ebookTextProcessorBypassReaderModeProcessor {
-            let readabilityProcessStartedAt = Date()
+            let readabilityProcessStartedAt = collectTiming ? Date() : nil
             doc = try await processReadabilityContent(
                 content,
                 contentURL,
@@ -314,19 +106,21 @@ internal func ebookTextProcessor(
                 isCacheWarmer,
                 { $0 }
             )
-            readabilityProcessElapsedMs = Int(Date().timeIntervalSince(readabilityProcessStartedAt) * 1000)
+            readabilityProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readabilityProcessStartedAt)
         } else if ebookTextProcessorBypassReaderModeProcessor {
-            print(
-                "# EPUB",
-                "ebookTextProcessor.readerModeProcessor.bypass",
-                "contentURL=\(contentURL.absoluteString)",
-                "sectionLocation=\(sectionLocation)",
-                "isCacheWarmer=\(isCacheWarmer)"
-            )
+            if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
+                print(
+                    "# EPUB",
+                    "ebookTextProcessor.readerModeProcessor.bypass",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "sectionLocation=\(sectionLocation)",
+                    "isCacheWarmer=\(isCacheWarmer)"
+                )
+            }
         }
         
         if doc == nil {
-            let fallbackParseStartedAt = Date()
+            let fallbackParseStartedAt = collectTiming ? Date() : nil
             // TODO: Consolidate our parsing boilerplate
             let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
             let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
@@ -336,7 +130,7 @@ internal func ebookTextProcessor(
             if isXML {
                 doc?.outputSettings().escapeMode(.xhtml)
             }
-            fallbackParseElapsedMs = Int(Date().timeIntervalSince(fallbackParseStartedAt) * 1000)
+            fallbackParseElapsedMs = ebookProcessorElapsedMilliseconds(since: fallbackParseStartedAt)
         }
         
         guard var doc else {
@@ -344,7 +138,7 @@ internal func ebookTextProcessor(
             return content
         }
         
-        let readerModeProcessStartedAt = Date()
+        let readerModeProcessStartedAt = collectTiming ? Date() : nil
         try processForReaderMode(
             doc: doc,
             url: sectionLocationURL, //nil,
@@ -356,14 +150,14 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
-        readerModeProcessElapsedMs = Int(Date().timeIntervalSince(readerModeProcessStartedAt) * 1000)
-        let preprocessEbookStartedAt = Date()
+        readerModeProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readerModeProcessStartedAt)
+        let preprocessEbookStartedAt = collectTiming ? Date() : nil
         doc = preprocessEbookContent(doc: doc)
-        preprocessEbookElapsedMs = Int(Date().timeIntervalSince(preprocessEbookStartedAt) * 1000)
+        preprocessEbookElapsedMs = ebookProcessorElapsedMilliseconds(since: preprocessEbookStartedAt)
         
-        let serializeStartedAt = Date()
+        let serializeStartedAt = collectTiming ? Date() : nil
         var htmlBytes = try doc.outerHtmlUTF8()
-        serializeElapsedMs = Int(Date().timeIntervalSince(serializeStartedAt) * 1000)
+        serializeElapsedMs = ebookProcessorElapsedMilliseconds(since: serializeStartedAt)
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
             print(
                 "# EPUB",
@@ -375,18 +169,18 @@ internal func ebookTextProcessor(
         }
 
         if let processHTMLBytes {
-            let processHTMLBytesStartedAt = Date()
+            let processHTMLBytesStartedAt = collectTiming ? Date() : nil
             htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTMLBytes(
                     htmlBytes,
                     isCacheWarmer
                 )
             }
-            processHTMLBytesElapsedMs = Int(Date().timeIntervalSince(processHTMLBytesStartedAt) * 1000)
+            processHTMLBytesElapsedMs = ebookProcessorElapsedMilliseconds(since: processHTMLBytesStartedAt)
         }
 
         if let processHTML {
-            let processHTMLStartedAt = Date()
+            let processHTMLStartedAt = collectTiming ? Date() : nil
             let html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTML(
                     String(decoding: htmlBytes, as: UTF8.self),
@@ -394,14 +188,14 @@ internal func ebookTextProcessor(
                 )
             }
             htmlBytes = Array(html.utf8)
-            processHTMLElapsedMs = Int(Date().timeIntervalSince(processHTMLStartedAt) * 1000)
+            processHTMLElapsedMs = ebookProcessorElapsedMilliseconds(since: processHTMLStartedAt)
         }
 
-        let responseDecodeStartedAt = Date()
+        let responseDecodeStartedAt = collectTiming ? Date() : nil
         let response = String(decoding: htmlBytes, as: UTF8.self)
-        responseDecodeElapsedMs = Int(Date().timeIntervalSince(responseDecodeStartedAt) * 1000)
-        let elapsedMs = Int(Date().timeIntervalSince(totalStartedAt) * 1000)
-        if ebookTextProcessorReplaceTextDetailedLoggingEnabled || elapsedMs >= 1_000 {
+        responseDecodeElapsedMs = ebookProcessorElapsedMilliseconds(since: responseDecodeStartedAt)
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
+            let elapsedMs = ebookProcessorElapsedMilliseconds(since: totalStartedAt)
             debugPrint(
                 "# REPLACETEXT",
                 "native.ebookTextProcessor.responseSummary",
@@ -425,7 +219,9 @@ internal func ebookTextProcessor(
         }
         return response
     } catch {
-        debugPrint("Error processing readability content for ebook", error)
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
+            debugPrint("Error processing readability content for ebook", error)
+        }
     }
     return content
 }

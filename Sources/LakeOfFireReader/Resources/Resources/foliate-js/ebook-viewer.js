@@ -993,22 +993,6 @@ const postFontLog = (event, details = {}) => {
     } catch {}
 };
 
-const postMay4Log = (event, details = {}) => {
-    if (!globalThis.manabiDebugMay4PageTrackingEnabled) return;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY4 ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            ...details,
-        }));
-    } catch {}
-};
-
-const postMay5Log = (event, details = {}) => {
-    void event;
-    void details;
-};
-
 
 const postHideNavLog = (event, details = {}) => {
     globalThis.__manabiHideNavLogCount = globalThis.__manabiHideNavLogCount || 0;
@@ -1066,11 +1050,6 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
 };
 
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
-    postMay5Log('lookup.close.request', {
-        reason,
-        pageURL: window.location.href,
-        ...details,
-    });
     try {
         window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
             touchedEntryWithElementId: null,
@@ -1089,106 +1068,9 @@ const resolveFoliatePaginator = (view = null) => {
         || null;
 };
 
-const collectMay4DocumentState = (doc = null) => {
-    const body = doc?.body || null;
-    const firstSegment = doc?.querySelector?.('mnb-seg') || null;
-    const firstTrackingSection = doc?.querySelector?.('.mnb-tracking-section') || null;
-    const firstLearningSegment = doc?.querySelector?.('mnb-seg.mnb-tracking-learning') || null;
-    const firstHighlightedSegment = doc?.querySelector?.(
-        'mnb-seg.mnb-tracking-learning, mnb-seg.mnb-tracking-read, mnb-seg.mnb-tracking-known, mnb-seg.mnb-tracking-unseen-flashcard'
-    ) || null;
-    const highlightedStyle = firstHighlightedSegment ? doc.defaultView?.getComputedStyle?.(firstHighlightedSegment) : null;
-    const firstSegmentMetadata = segmentMetadataForNode(firstSegment);
-    return {
-        documentURL: doc?.URL || doc?.location?.href || null,
-        readyState: doc?.readyState || null,
-        bodyClassName: body?.className || null,
-        bodyTextLength: body?.innerText?.length ?? null,
-        trackingEnabled: body?.getAttribute?.('data-mnb-tracking-enabled') ?? null,
-        trackingHighlightsEnabled: body?.getAttribute?.('data-mnb-tracking-highlights-enabled') ?? null,
-        subscriptionIsActive: body?.getAttribute?.('data-mnb-subscription-is-active') ?? null,
-        learningStatusVisibility: body?.getAttribute?.('data-mnb-learning-status-visibility') ?? null,
-        segmentCount: doc?.querySelectorAll?.('mnb-seg')?.length ?? null,
-        sentenceCount: doc?.querySelectorAll?.('mnb-sen')?.length ?? null,
-        segmentMetadataCount: segmentMetadataBootstrap(doc).byID.size,
-        trackingSectionCount: doc?.querySelectorAll?.('.mnb-tracking-section')?.length ?? null,
-        learningCount: doc?.querySelectorAll?.('mnb-seg.mnb-tracking-learning')?.length ?? null,
-        readCount: doc?.querySelectorAll?.('mnb-seg.mnb-tracking-read')?.length ?? null,
-        knownCount: doc?.querySelectorAll?.('mnb-seg.mnb-tracking-known')?.length ?? null,
-        unseenFlashcardCount: doc?.querySelectorAll?.('mnb-seg.mnb-tracking-unseen-flashcard')?.length ?? null,
-        firstSegmentClassName: firstSegment?.className || null,
-        firstSegmentID: firstSegment?.id || null,
-        firstSegmentSearchString: firstSegmentMetadata?.s || firstSegmentMetadata?.ns || null,
-        firstSegmentEntryIDCount: (firstSegmentMetadata?.j?.length || 0) + (firstSegmentMetadata?.n?.length || 0),
-        firstTrackingSectionKind: firstTrackingSection?.getAttribute?.('data-mnb-tracking-section-kind') ?? null,
-        firstTrackingSectionRead: firstTrackingSection?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
-        firstLearningSegmentClassName: firstLearningSegment?.className || null,
-        firstHighlightedSegmentClassName: firstHighlightedSegment?.className || null,
-        firstHighlightedBackground: highlightedStyle?.backgroundColor ?? null,
-        firstHighlightedBoxShadow: highlightedStyle?.boxShadow ?? null,
-    };
-};
-
-const collectMay4ButtonState = () => {
-    const container = document.getElementById('page-tracking-container');
-    const host = document.getElementById('page-tracking-buttons');
-    const button = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"], #page-tracking-buttons .page-read-button[data-completion-action]');
-    const buttonStyle = button instanceof Element ? getComputedStyle(button) : null;
-    const label = button?.querySelector?.('.mnb-tracking-button-label') || null;
-    const labelStyle = label instanceof Element ? getComputedStyle(label) : null;
-    const rootStyle = getComputedStyle(document.documentElement);
-    const rect = button?.getBoundingClientRect?.() || null;
-    return {
-        containerExists: container instanceof HTMLElement,
-        hostExists: host instanceof HTMLElement,
-        containerHidden: container?.hidden ?? null,
-        hostHidden: host?.hidden ?? null,
-        buttonExists: button instanceof HTMLElement,
-        buttonRect: rect ? {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-        } : null,
-        buttonReadAttr: button?.getAttribute?.('data-mnb-tracking-section-read') ?? null,
-        buttonReadState: button?.getAttribute?.('data-read-state') ?? null,
-        buttonCompletionAction: button?.getAttribute?.('data-completion-action') ?? null,
-        buttonDisabled: button instanceof HTMLButtonElement ? button.disabled : null,
-        buttonFontFamily: buttonStyle?.fontFamily ?? null,
-        buttonDisplay: buttonStyle?.display ?? null,
-        buttonVisibility: buttonStyle?.visibility ?? null,
-        buttonOpacity: buttonStyle?.opacity ?? null,
-        buttonColor: buttonStyle?.color ?? null,
-        buttonBackgroundColor: buttonStyle?.backgroundColor ?? null,
-        labelFontFamily: labelStyle?.fontFamily ?? null,
-        labelText: label?.textContent ?? null,
-        uiFontVariable: rootStyle.getPropertyValue('--mnb-ui-font-family')?.trim?.() || null,
-        bodyLoading: !!document.body?.classList?.contains?.('loading'),
-        navHiddenDueToScroll: !!document.getElementById('nav-bar')?.classList?.contains?.('nav-hidden-due-to-scroll'),
-    };
-};
-
-const collectMay4DocumentSummary = (doc = null) => ({
-    documentURL: doc?.URL || doc?.location?.href || null,
-    bodyClassName: doc?.body?.className || null,
-    segmentCount: doc?.querySelectorAll?.('mnb-seg')?.length ?? null,
-    trackingSectionCount: doc?.querySelectorAll?.('.mnb-tracking-section')?.length ?? null,
-});
-
 const getActiveReaderDocument = () => {
     const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
     return contents[0]?.doc || null;
-};
-
-const collectMay4ButtonSummary = () => {
-    const button = collectMay4ButtonState();
-    return {
-        buttonExists: button.buttonExists,
-        buttonLabel: button.labelText,
-        buttonHidden: button.hostHidden ?? button.containerHidden ?? null,
-        completionAction: button.buttonCompletionAction,
-        readState: button.buttonReadState,
-    };
 };
 
 const runWithNavigationIntent = async (intent, operation) => {
@@ -2965,16 +2847,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             visibleLeft: safeRound(visibleBounds.left, 1),
             visibleRight: safeRound(visibleBounds.right, 1),
         });
-        postMay4Log('visibleRange.collect.collapsedViewportFallback', {
-            viewportWidth,
-            viewportHeight,
-            visibleLeft: safeRound(visibleBounds.left, 1),
-            visibleRight: safeRound(visibleBounds.right, 1),
-            frameLeft: safeRound(frameRect?.left, 1),
-            containerLeft: safeRound(containerRect?.left, 1),
-            hasExpectedPaginatorContainer,
-            ...collectMay4DocumentSummary(doc),
-        });
     }
     const rangeCommonAncestor = visibleRange?.commonAncestorContainer ?? null;
     const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
@@ -3709,38 +3581,38 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known),
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known),
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-tracking-learning, .mnb-tracking-read, .mnb-tracking-known, .mnb-tracking-unseen-flashcard) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-tracking-read):not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-read:not(.mnb-tracking-learning):not(.mnb-tracking-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-learning > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-learning > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-known > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-tracking-known > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
     }
     body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected {
@@ -4777,17 +4649,6 @@ class Reader {
                 state: captureNavVisibilityState(),
             });
         }
-        postMay4Log('pageReadMarker.update', {
-            reason,
-            transitionMode,
-            isRead,
-            hasState: !!state,
-            stateCount: this.pageTrackingStates.length,
-            hasCompletionAction: !!this.completionAction,
-            axis: isVertical ? 'block' : 'inline',
-            ...collectMay4DocumentSummary(getActiveReaderDocument()),
-            ...collectMay4ButtonSummary(),
-        });
     }
     #clearVisiblePageReadChrome(reason = 'unspecified') {
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
@@ -5395,20 +5256,6 @@ class Reader {
         const renderStartedAt = performance.now();
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const buttonBefore = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
-        postMay4Log('pageTracking.render.beforeDOM', {
-            reason,
-            shouldShowPageTracking,
-            markReadButtonsVisible,
-            stateCount: pageTrackingStates.length,
-            visibleScreenIsRead: visibleState?.isRead ?? null,
-            visibleSegmentCount: visibleState?.visibleSegmentCount ?? null,
-            unreadVisibleSegmentCount: visibleState?.unreadVisibleSegmentCount ?? null,
-            selectedSegmentCount: visibleState?.payload?.segments?.length ?? null,
-            selectedSentenceCount: visibleState?.payload?.sentenceIdentifiers?.length ?? null,
-            hasCompletionAction: !!completionAction,
-            completionActionType: completionAction?.type ?? null,
-            ...collectMay4ButtonSummary(),
-        });
         container.hidden = !shouldShowPageTracking;
         buttonHost.hidden = !shouldShowPageTracking;
         if (this.lastPageTrackingVisibility !== null && this.lastPageTrackingVisibility && !shouldShowPageTracking) {
@@ -5429,12 +5276,6 @@ class Reader {
             buttonHost.innerHTML = '';
             this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
-            postMay4Log('pageTracking.render.hidden', {
-                reason,
-                stateCount: pageTrackingStates.length,
-                hasCompletionAction: !!completionAction,
-                ...collectMay4ButtonSummary(),
-            });
             return;
         }
         if (completionAction) {
@@ -5454,12 +5295,6 @@ class Reader {
                 </button>
             `;
             this.#updatePageReadMarker(reason, null);
-            postMay4Log('pageTracking.render.completionButton', {
-                reason,
-                completionActionType: completionAction.type,
-                isBusy,
-                ...collectMay4ButtonSummary(),
-            });
             this.navHUD?.refreshAuxiliaryLayout?.();
             this.#scheduleInitialPaginatorSettle('page-tracking-render.completion-action');
             return;
@@ -5509,16 +5344,6 @@ class Reader {
         }).join('');
         this.#updatePageReadMarker(reason);
         const buttonAfter = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
-        postMay4Log('pageTracking.render.afterDOM', {
-            reason,
-            stateCount: pageTrackingStates.length,
-            visibleScreenIsRead: visibleState?.isRead ?? null,
-            visibleSegmentCount: visibleState?.visibleSegmentCount ?? null,
-            unreadVisibleSegmentCount: visibleState?.unreadVisibleSegmentCount ?? null,
-            selectedSegmentCount: visibleState?.payload?.segments?.length ?? null,
-            selectedSentenceCount: visibleState?.payload?.sentenceIdentifiers?.length ?? null,
-            ...collectMay4ButtonSummary(),
-        });
         requestAnimationFrame(() => {
             const buttonFrame = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
             const buttonStyle = buttonFrame instanceof Element ? getComputedStyle(buttonFrame) : null;
@@ -5526,12 +5351,6 @@ class Reader {
             const markerTop = document.getElementById('page-read-marker-top');
             const sideStyle = markerSide instanceof Element ? getComputedStyle(markerSide) : null;
             const topStyle = markerTop instanceof Element ? getComputedStyle(markerTop) : null;
-            postMay4Log('pageTracking.render.raf', {
-                reason,
-                stateCount: pageTrackingStates.length,
-                visibleScreenIsRead: visibleState?.isRead ?? null,
-                ...collectMay4ButtonSummary(),
-            });
         });
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#scheduleInitialPaginatorSettle('page-tracking-render');
@@ -5667,9 +5486,6 @@ class Reader {
     }
     maybeFlashInitialForwardSideNavChevron(restoreState = null) {
         if (this.hasFlashedInitialForwardSideNavChevron) {
-            postMay5Log('swipe.chevron.initial.skip', {
-                reason: 'already-flashed',
-            });
             return;
         }
         const sectionIndex = typeof restoreState?.sectionIndex === 'number'
@@ -5689,22 +5505,9 @@ class Reader {
             && (rendererPageCurrent == null || rendererPageCurrent <= 1)
             && (currentFraction == null || currentFraction <= 0.003);
         if (!onFirstSection || !onFirstPage) {
-            postMay5Log('swipe.chevron.initial.skip', {
-                reason: 'not-first-page',
-                sectionIndex,
-                locationCurrent,
-                rendererPageCurrent,
-                currentFraction: safeRound(currentFraction, 6),
-            });
             return;
         }
         this.hasFlashedInitialForwardSideNavChevron = true;
-        postMay5Log('swipe.chevron.initial.flash', {
-            sectionIndex,
-            locationCurrent,
-            rendererPageCurrent,
-            currentFraction: safeRound(currentFraction, 6),
-        });
         this.#flashForwardSideNavChevron();
     }
     #flashSideNavChevron(direction) {
@@ -5800,15 +5603,6 @@ class Reader {
         const progressBucket = Math.floor(progress * 4);
         if (state.lastLoggedProgressBucket !== progressBucket || progress >= 1) {
             state.lastLoggedProgressBucket = progressBucket;
-            postMay5Log('mainDocument.swipe.progress', {
-                dx: safeRound(dx, 2),
-                dy: safeRound(dy, 2),
-                progress: safeRound(progress, 3),
-                leftOpacity: safeRound(leftOpacity, 3),
-                rightOpacity: safeRound(rightOpacity, 3),
-                reachedThreshold: Math.abs(dx) > minSwipe,
-                isRTL: !!this.isRTL,
-            });
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
@@ -5849,10 +5643,6 @@ class Reader {
                     reason: 'mainDocumentSwipe.touchend',
                 },
             }));
-            postMay5Log('mainDocument.swipe.reset', {
-                reason: 'touchend',
-                triggered: this.#mainDocumentSwipeState?.triggered ?? null,
-            });
         }
         this.#mainDocumentSwipeState = null;
     }
@@ -5863,14 +5653,6 @@ class Reader {
             && globalThis.reader
             && globalThis.reader.hasLoadedLastPosition !== true;
         if (isRestorePending) {
-            postMay4Log('pageState.sync.defer', {
-                reason,
-                retryCount,
-                deferReason: 'restore-pending',
-                hasView: !!this.view,
-                hasRenderer: !!this.view?.renderer,
-                ...collectMay4ButtonSummary(),
-            });
             const diagnosticsKey = `restore-pending:${reason}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
@@ -5891,16 +5673,6 @@ class Reader {
         if (!isDocumentLike(doc)) {
             this.pageTrackingStates = [];
             this.#renderPageTrackingButtons(reason);
-            postMay4Log('pageState.sync.defer', {
-                reason,
-                retryCount,
-                deferReason: 'no-document',
-                contentsCount: contents.length,
-                hasView: !!this.view,
-                hasRenderer: !!this.view?.renderer,
-                hasExplicitDoc: isDocumentLike(explicitDoc),
-                ...collectMay4ButtonSummary(),
-            });
             const diagnosticsKey = `no-document:${reason}:${contents.length}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
@@ -5925,13 +5697,6 @@ class Reader {
             ? this.navHUD.lastRelocateDetail.range
             : null;
         if (visibleRange?.collapsed === true && retryCount > 0) {
-            postMay4Log('pageState.sync.defer', {
-                reason,
-                retryCount,
-                deferReason: 'collapsed-visible-range',
-                ...collectMay4DocumentSummary(doc),
-                ...collectMay4ButtonSummary(),
-            });
             this.#queuePageTrackingRetry(reason, doc, retryCount);
             return;
         }
@@ -5940,24 +5705,6 @@ class Reader {
             diagnostics,
         } = await buildVisiblePageTrackingStates(doc, this.articleReadingProgress, visibleRange);
         const visibleScreenState = states.find((state) => state.id === 'visible-screen') ?? null;
-        postMay4Log('pageState.sync.result', {
-            reason,
-            documentURL: diagnostics.documentURL,
-            retryCount,
-            stateCount: diagnostics.stateCount,
-            visibleSegmentCount: diagnostics.visibleSegmentCount,
-            totalSegmentCount: diagnostics.totalSegmentCount,
-            unreadVisibleSegmentCount: visibleScreenState?.unreadVisibleSegmentCount ?? null,
-            selectedSegmentCount: visibleScreenState?.payload?.segments?.length ?? null,
-            selectedSentenceCount: visibleScreenState?.payload?.sentenceIdentifiers?.length ?? null,
-            outOfViewportCount: diagnostics.outOfViewportCount,
-            viewportWidth: diagnostics.viewportWidth,
-            viewportHeight: diagnostics.viewportHeight,
-            clusterAxis: diagnostics.clusterAxis,
-            usedFoliateRange: !!visibleRange,
-            ...collectMay4DocumentSummary(doc),
-            ...collectMay4ButtonSummary(),
-        });
         const shouldRetryEmptyDocument =
             retryCount > 0
             && diagnostics.stateCount === 0
@@ -5969,17 +5716,6 @@ class Reader {
                 || diagnostics.viewportHeight <= 0
             );
         if (shouldRetryEmptyDocument) {
-            postMay4Log('pageState.sync.defer', {
-                reason,
-                retryCount,
-                deferReason: 'zero-viewport-empty-document',
-                documentURL: diagnostics.documentURL,
-                viewportWidth: diagnostics.viewportWidth,
-                viewportHeight: diagnostics.viewportHeight,
-                totalSegmentCount: diagnostics.totalSegmentCount,
-                ...collectMay4DocumentSummary(doc),
-                ...collectMay4ButtonSummary(),
-            });
             const diagnosticsKey = `empty-document:${reason}:${diagnostics.documentURL || 'nil'}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
                 this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
@@ -6563,12 +6299,6 @@ class Reader {
         this.view.addEventListener('sideNavChevronOpacity', e => {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
-            postMay5Log('swipe.chevron.opacity.received', {
-                leftOpacity: e.detail?.leftOpacity ?? null,
-                rightOpacity: e.detail?.rightOpacity ?? null,
-                leftExists: !!l,
-                rightExists: !!r,
-            });
             
             const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
@@ -6584,12 +6314,6 @@ class Reader {
                     elem.style.removeProperty('opacity');
                     elem.style.removeProperty('visibility');
                     elem.classList.add('chevron-visible');
-                    postMay5Log('swipe.chevron.opacity.applied', {
-                        key,
-                        mode: 'full',
-                        value,
-                        className: elem.className || null,
-                    });
                     return;
                 }
                 
@@ -6598,12 +6322,6 @@ class Reader {
                     elem.classList.remove('chevron-visible');
                     elem.style.opacity = value;
                     elem.style.visibility = 'visible';
-                    postMay5Log('swipe.chevron.opacity.applied', {
-                        key,
-                        mode: 'partial',
-                        value,
-                        className: elem.className || null,
-                    });
                     return;
                 }
                 
@@ -6614,24 +6332,12 @@ class Reader {
                         elem.style.removeProperty('opacity');
                         elem.style.removeProperty('visibility');
                         this.#chevronFadeTimers[key] = null;
-                        postMay5Log('swipe.chevron.opacity.applied', {
-                            key,
-                            mode: 'delayed-hide',
-                            value,
-                            className: elem.className || null,
-                        });
                     }, FADER_DELAY);
                 } else {
                     // Already hidden: do nothing
                     elem.style.removeProperty('opacity');
                     elem.style.removeProperty('visibility');
                     elem.classList.remove('chevron-visible');
-                    postMay5Log('swipe.chevron.opacity.applied', {
-                        key,
-                        mode: 'hide',
-                        value,
-                        className: elem.className || null,
-                    });
                 }
             };
             
