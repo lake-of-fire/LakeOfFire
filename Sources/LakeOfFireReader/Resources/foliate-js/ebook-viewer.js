@@ -3561,6 +3561,21 @@ const getCSSForBookContent = ({
         font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
     }
 
+    body[data-mnb-romaji-mode-enabled="true"] rt,
+    body[data-mnb-romaji-mode-enabled="true"] rt *,
+    body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before,
+    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt,
+    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt *,
+    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt .tt-outline-char::before,
+    body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt,
+    body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt *,
+    body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt .tt-outline-char::before {
+        font-family: system-ui !important;
+        font-weight: 400 !important;
+        letter-spacing: normal !important;
+        color: var(--theme-text-color) !important;
+    }
+
     body *:not(.mnb-tracking-container *):not(mnb-seg *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
@@ -7153,6 +7168,18 @@ class Reader {
             try {
                 window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
                     event: 'ebook.document.fonts.forward.error',
+                    timestamp: Date.now(),
+                    documentURL: doc?.location?.href || null,
+                    message: error?.message || String(error),
+                }));
+            } catch {}
+        }
+        try {
+            window.manabiApplyReaderFontSizeToEbookDocuments?.('document-load', doc);
+        } catch (error) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
+                    event: 'ebook.document.fontSize.forward.error',
                     timestamp: Date.now(),
                     documentURL: doc?.location?.href || null,
                     message: error?.message || String(error),
