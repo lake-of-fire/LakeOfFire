@@ -802,24 +802,20 @@ export class NavigationHUD {
 
         const direction = reportedDirection;
         const shouldHide = direction === 'forward';
-        if (!shouldHide) {
-            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
-            globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
-        }
-        this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
-            direction,
-            reportedDirection,
-            isRTL: this.isRTL,
-            reason: detail?.reason ?? null,
-            sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
-            pageNumber: this.rendererPageSnapshot?.current ?? null,
-            pageCount: this.rendererPageSnapshot?.total ?? null,
-        });
-        if (!shouldHide && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
-            logHideNavTrace('nativePost.ignored', {
+        if (shouldHide) {
+            this.setHideNavigationDueToScroll(true, 'relocate.page-turn', {
+                direction,
+                reportedDirection,
+                isRTL: this.isRTL,
+                reason: detail?.reason ?? null,
+                sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+                pageNumber: this.rendererPageSnapshot?.current ?? null,
+                pageCount: this.rendererPageSnapshot?.total ?? null,
+            });
+        } else {
+            logHideNavTrace('relocate.pageTurnReveal.deferToNative', {
                 source: 'relocate.page-turn',
                 requestedHide: shouldHide,
-                reason: 'preserve-hidden-through-next-display',
                 direction,
                 reportedDirection,
                 isRTL: this.isRTL,
@@ -827,7 +823,6 @@ export class NavigationHUD {
                 pageCount: this.rendererPageSnapshot?.total ?? null,
                 state: this._captureHideNavState(),
             });
-            return;
         }
         try {
             logHideNavTrace('nativePost.send', {

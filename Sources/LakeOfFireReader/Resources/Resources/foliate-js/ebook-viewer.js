@@ -4538,6 +4538,21 @@ const getCSSForBookContent = ({
         font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
     }
 
+    body[data-mnb-romaji-mode-enabled="true"] rt,
+    body[data-mnb-romaji-mode-enabled="true"] rt *,
+    body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before,
+    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt,
+    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt *,
+    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt .tt-outline-char::before,
+    body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt,
+    body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt *,
+    body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt .tt-outline-char::before {
+        font-family: system-ui !important;
+        font-weight: 400 !important;
+        letter-spacing: normal !important;
+        color: var(--theme-text-color) !important;
+    }
+
     body.reader-is-single-media-element-without-text *:not(.mnb-tracking-container *):not(mnb-seg *) {
         max-height: 99vh;
     }
@@ -8487,6 +8502,18 @@ class Reader {
                 }));
             } catch {}
         }
+        try {
+            window.manabiApplyReaderFontSizeToEbookDocuments?.('document-load', doc);
+        } catch (error) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
+                    event: 'ebook.document.fontSize.forward.error',
+                    timestamp: Date.now(),
+                    documentURL: doc?.location?.href || null,
+                    message: error?.message || String(error),
+                }));
+            } catch {}
+        }
         if (doc?.fonts?.ready?.then) {
             const fontsReadyStartedAt = performanceNowMs();
             doc.fonts.ready.then(() => {
@@ -8812,8 +8839,10 @@ class Reader {
                     fraction: Number.isFinite(effectiveFraction) ? effectiveFraction : fraction,
                     cfi: persistedLocator,
                     reason,
-                    currentPageNumber: null,
-                    totalPages: null,
+                    currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                        ? this.navHUD.rendererPageSnapshot.current
+                        : null,
+                    totalPages: typeof rendererTotal === 'number' ? rendererTotal : null,
                     sectionIndex,
                 })
             }

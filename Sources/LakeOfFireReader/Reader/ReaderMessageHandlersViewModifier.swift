@@ -753,6 +753,30 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
+                if !shouldHide,
+                   source?.contains("page-turn") == true {
+                    navigationVisibilityWillChangeHandler?(
+                        ReaderNavigationVisibilityChange(
+                            shouldHide: shouldHide,
+                            reason: nil,
+                            source: source,
+                            direction: direction
+                        )
+                    )
+                    lastNavigationVisibilityEvent = .init(
+                        timestamp: Date(),
+                        shouldHide: shouldHide,
+                        source: source,
+                        direction: direction
+                    )
+                    debugPrint(
+                        "# EPUB  navigationVisibility.deferPageTurnReveal",
+                        "source=\(source ?? "nil")",
+                        "direction=\(direction ?? "nil")",
+                        "hideNavigationDueToScroll=\(hideNavigationDueToScroll.wrappedValue)"
+                    )
+                    return
+                }
                 setHideNavigationDueToScroll(
                     shouldHide,
                     reason: nil,
