@@ -3561,6 +3561,11 @@ const getCSSForBookContent = ({
         font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
     }
 
+    body:not([data-mnb-romaji-mode-enabled="true"]) rt {
+        color: var(--theme-secondary-text) !important;
+        color: color-mix(in srgb, var(--theme-secondary-text) 85%, var(--theme-text-color) 15%) !important;
+    }
+
     body[data-mnb-romaji-mode-enabled="true"] rt,
     body[data-mnb-romaji-mode-enabled="true"] rt *,
     body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before,
