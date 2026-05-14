@@ -71,6 +71,8 @@ private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
     return rawValue == "YuKyokasho"
 }
 
+private let readerModeReadabilityCSS = Readability.shared.css
+
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
     let gateCSS = """
     html[data-mnb-font-pending="1"] body.readability-mode {
@@ -307,7 +309,7 @@ internal func buildCanonicalReadabilityHTML(
         <head>
             <meta charset="utf-8">
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
-            <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)
+            <style type="text/css" id="swiftuiwebview-readability-styles">\(readerModeReadabilityCSS)
             \(titleSuppressionCSS)</style>
             <title>\(resolvedTitle)</title>
         </head>
@@ -2954,9 +2956,9 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 guard let styleElement = try? doc.getElementById("swiftuiwebview-readability-styles"),
                       let styleHTML = try? styleElement.html() else {
-                    return Readability.shared.css
+                    return readerModeReadabilityCSS
                 }
-                return styleHTML.isEmpty ? Readability.shared.css : styleHTML
+                return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
             }()
             debugPrint(
                 "# READERTRACE",
@@ -3121,7 +3123,7 @@ public class ReaderModeViewModel: ObservableObject {
                     let transformedContent = transformedContentForFrameInjection ?? ""
                     let transformedBodyClasses = transformedBodyClassesForFrameInjection ?? "readability-mode"
                     let transformedStyleText = shouldInjectProcessedStyles
-                        ? (transformedStyleTextForFrameInjection ?? Readability.shared.css)
+                        ? (transformedStyleTextForFrameInjection ?? "")
                         : ""
                     debugPrint(
                         "# SNIPPETTITLE frameInjection",
@@ -3717,7 +3719,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 }
 
-private let readerModeDisableInjectedStylingForEbookLayoutDiagnosis = true
+private let readerModeDisableInjectedStylingForEbookLayoutDiagnosis = false
 
 func prepareHTMLForDirectLoad(_ html: String) -> String {
     var updatedHTML = html
@@ -3854,15 +3856,14 @@ nonisolated public func processForReaderMode(
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
             let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
             
-            if isEBook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis {
-                _ = try? bodyTag.removeAttr("style")
-            } else {
-                var bodyStyle = "font-size: \(readerFontSize)px; \(readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize))"
+            var bodyStyle = "font-size: \(readerFontSize)px;"
+            if !(isEBook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis) {
+                bodyStyle += " \(readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize))"
                 if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
                     bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
                 }
-                _ = try? bodyTag.attr("style", bodyStyle)
             }
+            _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-mnb-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-mnb-dark-theme", darkModeTheme.rawValue)
             debugPrint(

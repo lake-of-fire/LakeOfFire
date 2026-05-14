@@ -408,50 +408,6 @@ const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
     });
 };
 
-const summarizeRawTrailingBlankSpacerBlocks = (text, mediaType) => {
-    if (typeof text !== 'string' || !text) return null;
-    try {
-        const doc = new DOMParser().parseFromString(text, mediaType || 'text/html');
-        if (doc.querySelector?.('parsererror')) return null;
-        const body = doc.body || doc.querySelector?.('body') || doc.documentElement;
-        if (!body?.children?.length) return null;
-        const root = body.children.length === 1
-            && !['script', 'style', 'template', 'noscript'].includes(body.firstElementChild?.localName || '')
-            ? body.firstElementChild
-            : body;
-        const isBlankSpacer = element => {
-            if (!element || !['p', 'div'].includes(element.localName || '')) return false;
-            if ((element.textContent || '').trim()) return false;
-            if (element.hasAttribute?.('id') || element.hasAttribute?.('name')) return false;
-            if (element.querySelector?.('[id], [name], img, svg, video, object, image, audio, canvas, iframe, mnb-con, mnb-sen, mnb-seg, mnb-sur, ruby, rt')) return false;
-            for (const child of Array.from(element.children || [])) {
-                const tag = child.localName || '';
-                if (tag === 'br' || tag === 'wbr') continue;
-                if ((tag === 'span' || tag === 'b' || tag === 'i') && isBlankSpacer(child)) continue;
-                return false;
-            }
-            return true;
-        };
-        const children = Array.from(root.children || []);
-        let count = 0;
-        for (let i = children.length - 1; i >= 0 && isBlankSpacer(children[i]); i -= 1) {
-            count += 1;
-        }
-        if (!count) return null;
-        const last = children.at(-1);
-        const preview = last?.outerHTML || null;
-        return {
-            count,
-            rootTag: root.localName || null,
-            rootClassName: typeof root.className === 'string' && root.className.trim() ? root.className.trim() : null,
-            childCount: children.length,
-            lastPreview: preview && preview.length > 420 ? `${preview.slice(0, 420)}...` : preview,
-        };
-    } catch (_error) {
-        return null;
-    }
-};
-
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
@@ -577,16 +533,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         requestTextLength: typeof text === 'string' ? text.length : null,
         ...captureEPUBOverlapState(),
     });
-    const rawTrailingBlankSpacers = summarizeRawTrailingBlankSpacerBlocks(text, mediaType);
-    if (rawTrailingBlankSpacers && !isCacheWarmer) {
-        postEBookBugRootLog('ebook-root-raw-text-has-trailing-blank-spacer-blocks', {
-            href,
-            mediaType,
-            isCacheWarmer: !!isCacheWarmer,
-            requestTextLength: typeof text === 'string' ? text.length : null,
-            ...rawTrailingBlankSpacers,
-        });
-    }
     const headers = {
         "Content-Type": mediaType,
         "X-Replaced-Text-Location": href,
@@ -661,26 +607,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 segmentCount,
             },
         );
-        if (!isCacheWarmer && (sentenceCount <= 0 || segmentCount <= 0)) {
-            postEBookBugRootLog('ebook-root-replace-text-missing-manabi-markup', {
-                href,
-                mediaType,
-                isCacheWarmer: !!isCacheWarmer,
-                status: response.status,
-                sentenceCount,
-                segmentCount,
-                requestTextLength: typeof text === 'string' ? text.length : null,
-                responseTextLength: html.length,
-                inputToOutputRatio: typeof text === 'string' && text.length > 0
-                    ? safeRound(html.length / text.length, 3)
-                    : null,
-                responseExpansionRatio: responseTextLength > 0
-                    ? safeRound(html.length / responseTextLength, 3)
-                    : null,
-                containsSentenceTag: html.includes('<mnb-sen'),
-                containsSegmentTag: html.includes('<mnb-seg'),
-            });
-        }
         postEPUBLog('ebook.perf.replace-text.end', {
             href,
             mediaType,
@@ -908,30 +834,6 @@ const postEBookBugLog = (event, details = {}) => {
     }
 };
 
-const postEBookBugRootLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUGROOT ${JSON.stringify(payload)}`);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# EBOOKBUGROOT', payload, error);
-    }
-};
-
-const postBlankPageLog = (details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = { event: 'visible-layout-blank', timestamp: Date.now(), ...details };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# BLANKPAGE ${JSON.stringify(payload)}`);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# BLANKPAGE', payload, error);
-    }
-};
-
 const epubLoadLogDefaultEvents = new Set([
     'viewer.load.start',
     'viewer.load.native-source.ready',
@@ -967,19 +869,6 @@ const postEPUBLoadLog = (event, details = {}) => {
     }
 };
 globalThis.__manabiPostEPUBLoadLog = postEPUBLoadLog;
-
-const postShortLineLog = (event, details = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# SHORTLINE ${JSON.stringify(payload)}`);
-    } catch (error) {
-        try { console.log('# SHORTLINE', event, details, error); } catch (_error) {}
-    }
-};
 
 const loadRectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
@@ -1999,10 +1888,6 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         requestedHide: normalized,
         after: captureNavVisibilityState(),
     });
-    globalThis.reader?.queueLayoutDiagnostics?.('native-hide-bridge', {
-        source,
-        shouldHide: normalized,
-    });
     return normalized;
 };
 
@@ -2620,648 +2505,6 @@ const summarizeElementLayout = (element) => {
     };
 };
 
-const summarizeLayoutComputedStyle = (element) => {
-    if (!element || element.nodeType !== 1) return null;
-    const ownerWindow = element.ownerDocument?.defaultView || window;
-    const style = ownerWindow.getComputedStyle?.(element);
-    if (!style) return null;
-    return {
-        display: style.display ?? null,
-        visibility: style.visibility ?? null,
-        opacity: style.opacity ?? null,
-        position: style.position ?? null,
-        float: style.cssFloat ?? style.float ?? null,
-        writingMode: style.writingMode ?? null,
-        direction: style.direction ?? null,
-        boxSizing: style.boxSizing ?? null,
-        overflow: style.overflow ?? null,
-        overflowX: style.overflowX ?? null,
-        overflowY: style.overflowY ?? null,
-        width: style.width ?? null,
-        height: style.height ?? null,
-        minWidth: style.minWidth ?? null,
-        minHeight: style.minHeight ?? null,
-        maxWidth: style.maxWidth ?? null,
-        maxHeight: style.maxHeight ?? null,
-        inlineSize: style.inlineSize ?? null,
-        blockSize: style.blockSize ?? null,
-        minInlineSize: style.minInlineSize ?? null,
-        minBlockSize: style.minBlockSize ?? null,
-        maxInlineSize: style.maxInlineSize ?? null,
-        maxBlockSize: style.maxBlockSize ?? null,
-        aspectRatio: style.aspectRatio ?? null,
-        objectFit: style.objectFit ?? null,
-        objectPosition: style.objectPosition ?? null,
-        lineHeight: style.lineHeight ?? null,
-        fontSize: style.fontSize ?? null,
-        margin: style.margin ?? null,
-        padding: style.padding ?? null,
-        breakBefore: style.breakBefore ?? null,
-        breakAfter: style.breakAfter ?? null,
-        breakInside: style.breakInside ?? null,
-        webkitColumnBreakBefore: style.webkitColumnBreakBefore ?? null,
-        webkitColumnBreakAfter: style.webkitColumnBreakAfter ?? null,
-        webkitColumnBreakInside: style.webkitColumnBreakInside ?? null,
-        columnSpan: style.columnSpan ?? null,
-        contain: style.contain ?? null,
-        contentVisibility: style.contentVisibility ?? null,
-        transform: style.transform ?? null,
-    };
-};
-
-const summarizeCompactLayoutStyle = (element) => {
-    if (!element || element.nodeType !== 1) return null;
-    const ownerWindow = element.ownerDocument?.defaultView || window;
-    const style = ownerWindow.getComputedStyle?.(element);
-    if (!style) return null;
-    return {
-        display: style.display ?? null,
-        position: style.position ?? null,
-        writingMode: style.writingMode ?? null,
-        direction: style.direction ?? null,
-        boxSizing: style.boxSizing ?? null,
-        overflow: style.overflow ?? null,
-        width: style.width ?? null,
-        height: style.height ?? null,
-        maxWidth: style.maxWidth ?? null,
-        maxHeight: style.maxHeight ?? null,
-        inlineSize: style.inlineSize ?? null,
-        blockSize: style.blockSize ?? null,
-        maxInlineSize: style.maxInlineSize ?? null,
-        maxBlockSize: style.maxBlockSize ?? null,
-        objectFit: style.objectFit ?? null,
-        fontSize: style.fontSize ?? null,
-        fontFamily: style.fontFamily ?? null,
-        lineHeight: style.lineHeight ?? null,
-        verticalAlign: style.verticalAlign ?? null,
-        textOrientation: style.textOrientation ?? null,
-        whiteSpace: style.whiteSpace ?? null,
-        letterSpacing: style.letterSpacing ?? null,
-        rubyPosition: style.rubyPosition ?? null,
-        rubyAlign: style.rubyAlign ?? null,
-        margin: style.margin ?? null,
-        padding: style.padding ?? null,
-        breakInside: style.breakInside ?? null,
-        breakBefore: style.breakBefore ?? null,
-        breakAfter: style.breakAfter ?? null,
-        webkitColumnBreakInside: style.webkitColumnBreakInside ?? null,
-        webkitColumnBreakBefore: style.webkitColumnBreakBefore ?? null,
-        webkitColumnBreakAfter: style.webkitColumnBreakAfter ?? null,
-        columnSpan: style.columnSpan ?? null,
-        contain: style.contain ?? null,
-        contentVisibility: style.contentVisibility ?? null,
-        transform: style.transform ?? null,
-    };
-};
-
-const summarizeLayoutNode = (element) => {
-    if (!element || element.nodeType !== 1) return null;
-    const className = typeof element.className === 'string'
-        ? element.className
-        : (element.getAttribute?.('class') ?? null);
-    return {
-        tagName: element.tagName?.toLowerCase?.() ?? null,
-        id: element.id || null,
-        className,
-        attrs: {
-            width: element.getAttribute?.('width') ?? null,
-            height: element.getAttribute?.('height') ?? null,
-            style: element.getAttribute?.('style') ?? null,
-        },
-        clientWidth: element.clientWidth ?? null,
-        clientHeight: element.clientHeight ?? null,
-        scrollWidth: element.scrollWidth ?? null,
-        scrollHeight: element.scrollHeight ?? null,
-        offsetWidth: element.offsetWidth ?? null,
-        offsetHeight: element.offsetHeight ?? null,
-        rect: summarizeRect(element.getBoundingClientRect?.()),
-        computed: summarizeLayoutComputedStyle(element),
-    };
-};
-
-const summarizeCompactLayoutNode = (element) => {
-    if (!element || element.nodeType !== 1) return null;
-    const className = typeof element.className === 'string'
-        ? element.className
-        : (element.getAttribute?.('class') ?? null);
-    return {
-        tagName: element.tagName?.toLowerCase?.() ?? null,
-        id: element.id || null,
-        className,
-        style: element.getAttribute?.('style') ?? null,
-        clientWidth: element.clientWidth ?? null,
-        clientHeight: element.clientHeight ?? null,
-        scrollWidth: element.scrollWidth ?? null,
-        scrollHeight: element.scrollHeight ?? null,
-        rect: summarizeRect(element.getBoundingClientRect?.()),
-        computed: summarizeCompactLayoutStyle(element),
-    };
-};
-
-const summarizeMatchingSizingRules = (element, limit = 14) => {
-    if (!element || element.nodeType !== 1) return [];
-    const doc = element.ownerDocument;
-    const relevantPropertyPattern = /(^|-)width$|(^|-)height$|inline-size|block-size|object-fit|object-position|writing-mode|break-|column-|display|contain|aspect-ratio/i;
-    const matches = [];
-    const addRule = (rule, sheetIndex, ruleIndex, mediaText = null) => {
-        if (!rule?.selectorText || typeof element.matches !== 'function') return;
-        let matched = false;
-        try {
-            matched = element.matches(rule.selectorText);
-        } catch (_error) {
-            return;
-        }
-        if (!matched) return;
-        const declarations = {};
-        const style = rule.style;
-        for (let index = 0; style && index < style.length; index += 1) {
-            const name = style[index];
-            if (!relevantPropertyPattern.test(name)) continue;
-            declarations[name] = style.getPropertyValue(name)?.trim?.() || '';
-            const priority = style.getPropertyPriority?.(name);
-            if (priority) declarations[`${name}!priority`] = priority;
-        }
-        if (!Object.keys(declarations).length) return;
-        matches.push({
-            sheetIndex,
-            ruleIndex,
-            mediaText,
-            selectorText: rule.selectorText,
-            declarations,
-        });
-    };
-    for (const [sheetIndex, sheet] of Array.from(doc?.styleSheets ?? []).entries()) {
-        let rules = null;
-        try {
-            rules = sheet.cssRules;
-        } catch (error) {
-            matches.push({
-                sheetIndex,
-                accessError: error?.message ?? String(error),
-                href: sheet.href ?? null,
-            });
-            continue;
-        }
-        for (const [ruleIndex, rule] of Array.from(rules ?? []).entries()) {
-            if (matches.length >= limit) break;
-            const ruleConstants = doc?.defaultView?.CSSRule || globalThis.CSSRule || {};
-            if (rule?.type === ruleConstants.STYLE_RULE) {
-                addRule(rule, sheetIndex, ruleIndex);
-            } else if (rule?.cssRules && (rule.type === ruleConstants.MEDIA_RULE || rule.type === ruleConstants.SUPPORTS_RULE)) {
-                for (const nestedRule of Array.from(rule.cssRules)) {
-                    if (matches.length >= limit) break;
-                    if (nestedRule?.type === ruleConstants.STYLE_RULE) {
-                        addRule(nestedRule, sheetIndex, ruleIndex, rule.conditionText || rule.media?.mediaText || null);
-                    }
-                }
-            }
-        }
-    }
-    return matches;
-};
-
-const summarizeImageLayoutDiagnosticsForDocument = (doc, reason = 'unknown') => {
-    if (!doc?.defaultView || !doc?.documentElement) return null;
-    const win = doc.defaultView;
-    const root = doc.documentElement;
-    const body = doc.body;
-    const localViewport = {
-        left: 0,
-        top: 0,
-        right: root.clientWidth,
-        bottom: root.clientHeight,
-        width: root.clientWidth,
-        height: root.clientHeight,
-    };
-    const frameRect = summarizeRect(win.frameElement?.getBoundingClientRect?.());
-    const isNearViewport = (rect) => {
-        if (!rect) return false;
-        const expandY = Math.max(root.clientHeight || 0, 744);
-        const expandX = Math.max(root.clientWidth || 0, 374);
-        return rect.right >= -expandX
-            && rect.left <= localViewport.right + expandX
-            && rect.bottom >= -expandY
-            && rect.top <= localViewport.bottom + expandY;
-    };
-    const images = Array.from(doc.querySelectorAll('img, svg, video, object, image'))
-        .map((element, domIndex) => ({
-            element,
-            domIndex,
-            rect: element.getBoundingClientRect?.(),
-        }))
-        .filter(({ rect }) => isNearViewport(rect))
-        .sort((a, b) => {
-            const aVisible = !!a.rect && a.rect.bottom > 0 && a.rect.top < localViewport.bottom && a.rect.right > 0 && a.rect.left < localViewport.right;
-            const bVisible = !!b.rect && b.rect.bottom > 0 && b.rect.top < localViewport.bottom && b.rect.right > 0 && b.rect.left < localViewport.right;
-            if (aVisible !== bVisible) return aVisible ? -1 : 1;
-            return Math.abs((a.rect?.top ?? 0) - localViewport.top) - Math.abs((b.rect?.top ?? 0) - localViewport.top);
-        })
-        .slice(0, globalThis.manabiVerboseImageLayout === true ? 8 : 4)
-        .map(({ element, domIndex, rect }) => {
-            const computed = summarizeCompactLayoutStyle(element);
-            const parent = summarizeCompactLayoutNode(element.parentElement);
-            const isNaturalSized = (element.naturalWidth ?? 0) > 0
-                && (element.naturalHeight ?? 0) > 0
-                && Math.abs((element.clientWidth ?? 0) - element.naturalWidth) <= 1
-                && Math.abs((element.clientHeight ?? 0) - element.naturalHeight) <= 1;
-            const isOversizedForViewport = !!rect
-                && (rect.width > localViewport.width * 1.25 || rect.height > localViewport.height * 1.25);
-            return {
-                domIndex,
-                tagName: element.tagName?.toLowerCase?.() ?? null,
-                id: element.id || null,
-                className: typeof element.className === 'string' ? element.className : (element.getAttribute?.('class') ?? null),
-                srcPresent: !!(element.getAttribute?.('src') ?? element.getAttribute?.('href') ?? element.currentSrc),
-                naturalWidth: element.naturalWidth ?? null,
-                naturalHeight: element.naturalHeight ?? null,
-                clientWidth: element.clientWidth ?? null,
-                clientHeight: element.clientHeight ?? null,
-                offsetWidth: element.offsetWidth ?? null,
-                offsetHeight: element.offsetHeight ?? null,
-                complete: element.complete ?? null,
-                style: element.getAttribute?.('style') ?? null,
-                hasWidthAttr: element.hasAttribute?.('width') ?? null,
-                hasHeightAttr: element.hasAttribute?.('height') ?? null,
-                rect: summarizeRect(rect),
-                hostRect: frameRect && rect ? summarizeRect({
-                    left: frameRect.left + rect.left,
-                    top: frameRect.top + rect.top,
-                    right: frameRect.left + rect.right,
-                    bottom: frameRect.top + rect.bottom,
-                    width: rect.width,
-                    height: rect.height,
-                }) : null,
-                computed,
-                parent,
-                naturalSized: isNaturalSized,
-                oversizedForViewport: isOversizedForViewport,
-                matchingSizingRules: globalThis.manabiVerboseImageLayout === true
-                    ? summarizeMatchingSizingRules(element, 6)
-                    : summarizeMatchingSizingRules(element, 2),
-            };
-        });
-    return {
-        reason,
-        documentURL: doc.location?.href || doc.URL || null,
-        readyState: doc.readyState || null,
-        bodyClassName: body?.className || null,
-        localViewport: summarizeRect(localViewport),
-        hostFrameRect: frameRect,
-        rootBox: {
-            clientWidth: root.clientWidth,
-            clientHeight: root.clientHeight,
-            scrollWidth: root.scrollWidth,
-            scrollHeight: root.scrollHeight,
-            rect: summarizeRect(root.getBoundingClientRect?.()),
-            computed: summarizeCompactLayoutStyle(root),
-        },
-        bodyBox: body ? {
-            clientWidth: body.clientWidth,
-            clientHeight: body.clientHeight,
-            scrollWidth: body.scrollWidth,
-            scrollHeight: body.scrollHeight,
-            rect: summarizeRect(body.getBoundingClientRect?.()),
-            computed: summarizeCompactLayoutStyle(body),
-        } : null,
-        imageCount: doc.querySelectorAll?.('img, svg, video, object, image')?.length ?? null,
-        loggedImageCount: images.length,
-        images,
-    };
-};
-
-const overlapRect = (first, second) => {
-    if (!first || !second) return null;
-    const left = Math.max(first.left, second.left);
-    const top = Math.max(first.top, second.top);
-    const right = Math.min(first.right, second.right);
-    const bottom = Math.min(first.bottom, second.bottom);
-    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return null;
-    return { left, top, right, bottom, width: right - left, height: bottom - top };
-};
-
-const rectArea = (rect) => rect ? Math.max(0, rect.width) * Math.max(0, rect.height) : 0;
-
-const distanceBetweenRects = (first, second) => {
-    if (!first || !second) return null;
-    const dx = first.right < second.left
-        ? second.left - first.right
-        : (second.right < first.left ? first.left - second.right : 0);
-    const dy = first.bottom < second.top
-        ? second.top - first.bottom
-        : (second.bottom < first.top ? first.top - second.bottom : 0);
-    return Math.sqrt(dx * dx + dy * dy);
-};
-
-const compactElementIdentity = (element) => {
-    if (!element || element.nodeType !== 1) return null;
-    const style = summarizeCompactLayoutStyle(element);
-    return {
-        tagName: element.tagName?.toLowerCase?.() ?? null,
-        id: element.id || null,
-        className: typeof element.className === 'string' ? element.className : (element.getAttribute?.('class') ?? null),
-        style: element.getAttribute?.('style') ?? null,
-        sample: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null,
-        rect: summarizeRect(element.getBoundingClientRect?.()),
-        computed: {
-            display: style?.display ?? null,
-            position: style?.position ?? null,
-            writingMode: style?.writingMode ?? null,
-            direction: style?.direction ?? null,
-            width: style?.width ?? null,
-            height: style?.height ?? null,
-            inlineSize: style?.inlineSize ?? null,
-            blockSize: style?.blockSize ?? null,
-            maxInlineSize: style?.maxInlineSize ?? null,
-            maxBlockSize: style?.maxBlockSize ?? null,
-            fontSize: style?.fontSize ?? null,
-            lineHeight: style?.lineHeight ?? null,
-            verticalAlign: style?.verticalAlign ?? null,
-            textOrientation: style?.textOrientation ?? null,
-            whiteSpace: style?.whiteSpace ?? null,
-            rubyPosition: style?.rubyPosition ?? null,
-            rubyAlign: style?.rubyAlign ?? null,
-            contain: style?.contain ?? null,
-            contentVisibility: style?.contentVisibility ?? null,
-            breakInside: style?.breakInside ?? null,
-        },
-    };
-};
-
-const compactParentChain = (element, limit = 6) => {
-    const chain = [];
-    for (let node = element?.parentElement; node && chain.length < limit; node = node.parentElement) {
-        chain.push(compactElementIdentity(node));
-    }
-    return chain;
-};
-
-const compactOverlapElement = (element, rect = null) => {
-    if (!element || element.nodeType !== 1) return null;
-    const style = summarizeCompactLayoutStyle(element);
-    return {
-        tagName: element.tagName?.toLowerCase?.() ?? null,
-        id: element.id || null,
-        className: typeof element.className === 'string' ? element.className : (element.getAttribute?.('class') ?? null),
-        style: element.getAttribute?.('style') ?? null,
-        sample: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null,
-        rect: summarizeRect(rect ?? element.getBoundingClientRect?.()),
-        childElementCount: element.childElementCount ?? null,
-        previousElementSibling: compactElementIdentity(element.previousElementSibling),
-        nextElementSibling: compactElementIdentity(element.nextElementSibling),
-        parentChain: compactParentChain(element),
-        computed: {
-            display: style?.display ?? null,
-            position: style?.position ?? null,
-            writingMode: style?.writingMode ?? null,
-            direction: style?.direction ?? null,
-            boxSizing: style?.boxSizing ?? null,
-            overflow: style?.overflow ?? null,
-            width: style?.width ?? null,
-            height: style?.height ?? null,
-            inlineSize: style?.inlineSize ?? null,
-            blockSize: style?.blockSize ?? null,
-            maxWidth: style?.maxWidth ?? null,
-            maxHeight: style?.maxHeight ?? null,
-            maxInlineSize: style?.maxInlineSize ?? null,
-            maxBlockSize: style?.maxBlockSize ?? null,
-            objectFit: style?.objectFit ?? null,
-            fontSize: style?.fontSize ?? null,
-            fontFamily: style?.fontFamily ?? null,
-            lineHeight: style?.lineHeight ?? null,
-            verticalAlign: style?.verticalAlign ?? null,
-            textOrientation: style?.textOrientation ?? null,
-            whiteSpace: style?.whiteSpace ?? null,
-            letterSpacing: style?.letterSpacing ?? null,
-            rubyPosition: style?.rubyPosition ?? null,
-            rubyAlign: style?.rubyAlign ?? null,
-            margin: style?.margin ?? null,
-            padding: style?.padding ?? null,
-            breakInside: style?.breakInside ?? null,
-            breakBefore: style?.breakBefore ?? null,
-            breakAfter: style?.breakAfter ?? null,
-            webkitColumnBreakInside: style?.webkitColumnBreakInside ?? null,
-            webkitColumnBreakBefore: style?.webkitColumnBreakBefore ?? null,
-            webkitColumnBreakAfter: style?.webkitColumnBreakAfter ?? null,
-            columnSpan: style?.columnSpan ?? null,
-            contain: style?.contain ?? null,
-            contentVisibility: style?.contentVisibility ?? null,
-            transform: style?.transform ?? null,
-        },
-    };
-};
-
-const closestLayoutBlock = (element) =>
-    element?.closest?.('mnb-seg, mnb-sen, p, li, blockquote, dd, div') || null;
-
-const visiblePageRectForDocument = (doc) => {
-    const root = doc?.documentElement;
-    const frameRect = doc?.defaultView?.frameElement?.getBoundingClientRect?.();
-    const rootRect = root?.getBoundingClientRect?.();
-    const pageHeight = Math.max(1, rootRect?.height || 744);
-    const pageWidth = Math.max(1, root?.clientWidth || rootRect?.width || 374);
-    const top = Math.max(0, -(frameRect?.top ?? 0));
-    return { left: 0, top, right: pageWidth, bottom: top + pageHeight, width: pageWidth, height: pageHeight };
-};
-
-const collectVisibleTextRangeItems = (doc, viewport) => {
-    const content = doc?.querySelector?.('#reader-content');
-    const win = doc?.defaultView;
-    const textFilter = win?.NodeFilter;
-    if (!content || !doc?.createTreeWalker || !doc?.createRange || !textFilter) return [];
-    const intersectsViewport = (rect) => !!overlapRect(rect, viewport);
-    const hiddenSelector = 'script, style, template, noscript, img, svg, video, object, image';
-    const walker = doc.createTreeWalker(content, textFilter.SHOW_TEXT, {
-        acceptNode(node) {
-            if (!(node.nodeValue || '').trim()) return textFilter.FILTER_REJECT;
-            const parent = node.parentElement;
-            if (!parent || parent.closest?.(hiddenSelector)) return textFilter.FILTER_REJECT;
-            return textFilter.FILTER_ACCEPT;
-        },
-    });
-    const items = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        const element = node.parentElement;
-        if (!element) continue;
-        const range = doc.createRange();
-        range.selectNodeContents(node);
-        for (const rect of range.getClientRects?.() || []) {
-            if (rect.width <= 0 || rect.height <= 0 || !intersectsViewport(rect)) continue;
-            items.push({ element, rect, text: node.nodeValue || '' });
-        }
-        range.detach?.();
-    }
-    return items;
-};
-
-
-const collectBlankPageDiagnosticsForDocument = (doc) => {
-    if (!doc?.documentElement || !doc?.body) return null;
-    const viewport = visiblePageRectForDocument(doc);
-    const visibleTextItems = collectVisibleTextRangeItems(doc, viewport);
-    const mediaSelector = '#reader-content img, #reader-content svg, #reader-content video, #reader-content object, #reader-content image';
-    const mediaRects = Array.from(doc.querySelectorAll(mediaSelector))
-        .flatMap((element) => Array.from(element.getClientRects?.() ?? [element.getBoundingClientRect?.()])
-            .filter((rect) => rect && rect.width > 0 && rect.height > 0)
-            .map((rect) => ({ element, rect })));
-    const visibleMediaItems = mediaRects.filter(({ rect }) => !!overlapRect(rect, viewport));
-    const content = doc.querySelector?.('#reader-content') || doc.body;
-    const contentTextLength = (content?.textContent || '').replace(/\s+/g, '').length;
-    const totalMediaCount = doc.querySelectorAll?.(mediaSelector)?.length ?? 0;
-    if (visibleTextItems.length > 0 || visibleMediaItems.length > 0 || (contentTextLength === 0 && totalMediaCount === 0)) {
-        return null;
-    }
-    const nearestText = collectVisibleTextRangeItems(doc, {
-        left: -100000,
-        top: -100000,
-        right: 100000,
-        bottom: 100000,
-        width: 200000,
-        height: 200000,
-    })
-        .map((item) => ({
-            distance: safeRound(distanceBetweenRects(item.rect, viewport), 1),
-            text: compactOverlapElement(item.element, item.rect),
-            block: compactOverlapElement(closestLayoutBlock(item.element)),
-        }))
-        .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
-        .slice(0, 5);
-    const nearestMedia = mediaRects
-        .map((item) => ({
-            distance: safeRound(distanceBetweenRects(item.rect, viewport), 1),
-            media: compactOverlapElement(item.element, item.rect),
-            parent: compactOverlapElement(item.element.parentElement),
-        }))
-        .sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity))
-        .slice(0, 5);
-    const styleSummary = (element) => {
-        try {
-            const style = element?.ownerDocument?.defaultView?.getComputedStyle?.(element);
-            return style ? {
-                display: style.display,
-                position: style.position,
-                writingMode: style.writingMode,
-                direction: style.direction,
-                width: style.width,
-                height: style.height,
-                margin: style.margin,
-                padding: style.padding,
-                transform: style.transform,
-                columnWidth: style.columnWidth,
-                columnGap: style.columnGap,
-                breakBefore: style.breakBefore,
-                breakAfter: style.breakAfter,
-                breakInside: style.breakInside,
-            } : null;
-        } catch (_error) {
-            return null;
-        }
-    };
-    return {
-        documentURL: doc.location?.href || doc.URL || null,
-        bodyClassName: doc.body?.className || null,
-        viewport: summarizeRect(viewport),
-        root: {
-            rect: summarizeRect(doc.documentElement.getBoundingClientRect?.()),
-            clientWidth: doc.documentElement.clientWidth,
-            clientHeight: doc.documentElement.clientHeight,
-            scrollWidth: doc.documentElement.scrollWidth,
-            scrollHeight: doc.documentElement.scrollHeight,
-            style: styleSummary(doc.documentElement),
-        },
-        body: {
-            rect: summarizeRect(doc.body.getBoundingClientRect?.()),
-            clientWidth: doc.body.clientWidth,
-            clientHeight: doc.body.clientHeight,
-            scrollWidth: doc.body.scrollWidth,
-            scrollHeight: doc.body.scrollHeight,
-            style: styleSummary(doc.body),
-        },
-        counts: {
-            visibleTextRects: visibleTextItems.length,
-            visibleMedia: visibleMediaItems.length,
-            totalMedia: totalMediaCount,
-            contentTextLength,
-        },
-        nearestText,
-        nearestMedia,
-    };
-};
-
-const collectVisibleOverlapDiagnosticsForDocument = (doc) => {
-    if (!doc?.documentElement || !doc?.body) return null;
-    const viewport = visiblePageRectForDocument(doc);
-    const intersectsViewport = (rect) => !!overlapRect(rect, viewport);
-    const mediaItems = Array.from(doc.querySelectorAll('#reader-content img, #reader-content svg, #reader-content video, #reader-content object, #reader-content image'))
-        .flatMap((element) => Array.from(element.getClientRects?.() ?? [element.getBoundingClientRect?.()])
-            .map((rect) => ({ element, rect })))
-        .filter(({ rect }) => intersectsViewport(rect));
-    const textItems = collectVisibleTextRangeItems(doc, viewport);
-    let mediaTextOverlap = null;
-    for (const media of mediaItems) {
-        for (const text of textItems) {
-            if (media.element === text.element || media.element.contains?.(text.element) || text.element.contains?.(media.element)) continue;
-            const overlap = overlapRect(media.rect, text.rect);
-            const area = rectArea(overlap);
-            if (area < 200) continue;
-            if (!mediaTextOverlap || area > mediaTextOverlap.overlapArea) {
-                mediaTextOverlap = {
-                    overlapArea: safeRound(area, 1),
-                    overlap: summarizeRect(overlap),
-                    media: compactOverlapElement(media.element, media.rect),
-                    mediaParent: compactOverlapElement(media.element.parentElement),
-                    text: compactOverlapElement(text.element, text.rect),
-                    textBlock: compactOverlapElement(closestLayoutBlock(text.element)),
-                };
-            }
-        }
-    }
-    let textTextOverlap = null;
-    for (let firstIndex = 0; firstIndex < textItems.length; firstIndex += 1) {
-        const first = textItems[firstIndex];
-        for (let secondIndex = firstIndex + 1; secondIndex < textItems.length; secondIndex += 1) {
-            const second = textItems[secondIndex];
-            if (first.element === second.element || first.element.contains?.(second.element) || second.element.contains?.(first.element)) continue;
-            const overlap = overlapRect(first.rect, second.rect);
-            const area = rectArea(overlap);
-            if (area < 300) continue;
-            if (!textTextOverlap || area > textTextOverlap.overlapArea) {
-                textTextOverlap = {
-                    overlapArea: safeRound(area, 1),
-                    overlap: summarizeRect(overlap),
-                    first: compactOverlapElement(first.element, first.rect),
-                    firstBlock: compactOverlapElement(closestLayoutBlock(first.element)),
-                    second: compactOverlapElement(second.element, second.rect),
-                    secondBlock: compactOverlapElement(closestLayoutBlock(second.element)),
-                };
-            }
-        }
-    }
-    if (!mediaTextOverlap && !textTextOverlap) return null;
-    return {
-        documentURL: doc.location?.href || doc.URL || null,
-        bodyClassName: doc.body?.className || null,
-        viewport: summarizeRect(viewport),
-        root: {
-            clientWidth: doc.documentElement.clientWidth,
-            clientHeight: doc.documentElement.clientHeight,
-            scrollWidth: doc.documentElement.scrollWidth,
-            scrollHeight: doc.documentElement.scrollHeight,
-        },
-        body: {
-            clientWidth: doc.body.clientWidth,
-            clientHeight: doc.body.clientHeight,
-            scrollWidth: doc.body.scrollWidth,
-            scrollHeight: doc.body.scrollHeight,
-        },
-        counts: {
-            media: mediaItems.length,
-            textRects: textItems.length,
-        },
-        mediaTextOverlap,
-        textTextOverlap,
-    };
-};
-
 const summarizeFoliateViewLayout = (_view) => null;
 
 const postReaderVisibilityProbe = (_stage, _view = null, _extra = null) => {};
@@ -3287,10 +2530,16 @@ const parseEntryIDs = (rawValue) => {
 // Mirrors manabi_reader.js sidecar expansion. The HTML sidecar stores table-compressed
 // segment tuples so EPUB sections do not repeat large lookup attrs thousands of times.
 const segmentMetadataBootstrap = (doc) => {
-    if (!doc?.querySelectorAll) {
+    if (!doc) {
         return { byID: new Map(), idsByEntryID: new Map() };
     }
-    const sidecars = Array.from(doc.querySelectorAll('[data-mnb-seg-meta]'));
+    const primarySidecar = typeof doc.getElementById === 'function'
+        ? doc.getElementById('mnb-segment-metadata')
+        : null;
+    const sidecars = primarySidecar
+        ? [primarySidecar]
+        : Array.from(doc.getElementsByTagName?.('script') || [])
+            .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta'));
     const sidecarSignature = sidecars
         .map((sidecar) => String((sidecar.textContent || '').length))
         .join('|');
@@ -4424,26 +3673,6 @@ const getCSSForBookContent = ({
         page-break-inside: avoid !important;
         -webkit-column-break-inside: avoid !important;
     }
-    body.reader-vertical-writing :is(mnb-con, mnb-sen, mnb-seg, mnb-sur) {
-        /*
-           In WebKit vertical column layout, display: contents and positioned
-           custom inline wrappers can report/paint into the same column slot.
-           Keep Manabi markup as ordinary inline text wrappers in EPUB frames.
-        */
-        display: inline !important;
-        position: static !important;
-        max-width: none !important;
-        max-height: none !important;
-        max-inline-size: none !important;
-        max-block-size: none !important;
-        contain: none !important;
-        content-visibility: visible !important;
-        break-inside: auto !important;
-        break-before: auto !important;
-        break-after: auto !important;
-        page-break-inside: auto !important;
-        -webkit-column-break-inside: auto !important;
-    }
     body.reader-vertical-writing ruby > mnb-sur {
         display: inline !important;
     }
@@ -4538,6 +3767,11 @@ const getCSSForBookContent = ({
         font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
     }
 
+    body:not([data-mnb-romaji-mode-enabled="true"]) rt {
+        color: var(--theme-secondary-text) !important;
+        color: color-mix(in srgb, var(--theme-secondary-text) 85%, var(--theme-text-color) 15%) !important;
+    }
+
     body[data-mnb-romaji-mode-enabled="true"] rt,
     body[data-mnb-romaji-mode-enabled="true"] rt *,
     body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before,
@@ -4584,101 +3818,6 @@ reader-sentinel {
     }
 `
 }
-
-const collectShortLineDiagnosticsForDocument = (doc, options = {}) => {
-    if (!doc?.body) return { reason: 'missing-document' };
-    const round = (value, digits = 2) =>
-        Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
-    const viewportHeight = doc.defaultView?.innerHeight ?? 0;
-    const viewportWidth = doc.defaultView?.innerWidth ?? 0;
-    const blocks = Array.from(doc.querySelectorAll('p, li, blockquote, dd, mnb-sen, mnb-seg'))
-        .filter(element => {
-            const text = element.textContent?.trim() || '';
-            if (!text) return false;
-            const rect = element.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return false;
-            if (viewportHeight > 0 && (rect.bottom < 0 || rect.top > viewportHeight)) return false;
-            if (viewportWidth > 0 && (rect.right < 0 || rect.left > viewportWidth)) return false;
-            return true;
-        })
-        .slice(0, 8);
-    const samples = blocks.map((element, blockIndex) => {
-        const style = doc.defaultView?.getComputedStyle?.(element);
-        const writingMode = style?.writingMode || '';
-        const vertical = writingMode.startsWith('vertical');
-        const range = doc.createRange();
-        range.selectNodeContents(element);
-        const rects = Array.from(range.getClientRects())
-            .filter(rect => rect.width > 0 && rect.height > 0)
-            .slice(0, 240);
-        range.detach?.();
-
-        const rubyRects = Array.from(element.querySelectorAll('rt'))
-            .flatMap(rt => Array.from(rt.getClientRects?.() || []))
-            .filter(rect => rect.width > 0 && rect.height > 0);
-        const groups = new Map();
-        for (const rect of rects) {
-            const key = vertical ? Math.round(rect.left) : Math.round(rect.top);
-            const existing = groups.get(key) || {
-                minBlockStart: vertical ? rect.left : rect.top,
-                maxBlockEnd: vertical ? rect.right : rect.bottom,
-                minInlineStart: vertical ? rect.top : rect.left,
-                maxInlineEnd: vertical ? rect.bottom : rect.right,
-                rectCount: 0,
-                hasRubyRect: false,
-            };
-            existing.minBlockStart = Math.min(existing.minBlockStart, vertical ? rect.left : rect.top);
-            existing.maxBlockEnd = Math.max(existing.maxBlockEnd, vertical ? rect.right : rect.bottom);
-            existing.minInlineStart = Math.min(existing.minInlineStart, vertical ? rect.top : rect.left);
-            existing.maxInlineEnd = Math.max(existing.maxInlineEnd, vertical ? rect.bottom : rect.right);
-            existing.rectCount += 1;
-            existing.hasRubyRect = existing.hasRubyRect || rubyRects.some(rubyRect =>
-                !(rubyRect.right < rect.left
-                    || rubyRect.left > rect.right
-                    || rubyRect.bottom < rect.top
-                    || rubyRect.top > rect.bottom)
-            );
-            groups.set(key, existing);
-        }
-        const lines = Array.from(groups.values())
-            .sort((a, b) => a.minBlockStart - b.minBlockStart)
-            .map(line => ({
-                blockStart: round(line.minBlockStart),
-                advance: round(line.maxBlockEnd - line.minBlockStart),
-                inlineSize: round(line.maxInlineEnd - line.minInlineStart),
-                rectCount: line.rectCount,
-                hasRubyRect: line.hasRubyRect,
-            }))
-            .slice(0, 12);
-        const advances = lines.map(line => line.advance).filter(value => Number.isFinite(value));
-        const blockStarts = lines.map(line => line.blockStart).filter(value => Number.isFinite(value));
-        const blockDeltas = blockStarts.slice(1).map((value, index) => round(value - blockStarts[index]));
-        return {
-            blockIndex,
-            tagName: element.tagName?.toLowerCase() || null,
-            className: typeof element.className === 'string' ? element.className.slice(0, 80) : null,
-            text: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
-            computedLineHeight: style?.lineHeight || null,
-            computedFontSize: style?.fontSize || null,
-            writingMode: writingMode || null,
-            hasRuby: !!element.querySelector('ruby, rt'),
-            rectCount: rects.length,
-            rubyRectCount: rubyRects.length,
-            minAdvance: advances.length ? round(Math.min(...advances)) : null,
-            maxAdvance: advances.length ? round(Math.max(...advances)) : null,
-            blockDeltas,
-            lines,
-        };
-    });
-    return {
-        reason: options.reason || null,
-        documentURL: doc.location?.href || doc.URL || null,
-        viewportWidth: round(viewportWidth),
-        viewportHeight: round(viewportHeight),
-        blockCount: blocks.length,
-        samples,
-    };
-};
 
 const $ = document.querySelector.bind(document)
 
@@ -4750,7 +3889,6 @@ class Reader {
     lastPageTrackingDiagnosticsKey = null;
     lastBookReadingProgressKey = null;
     pageTrackingRetryHandle = null;
-    layoutDiagnosticsHandle = null;
     initialPaginatorSettleHandle = null;
     hasSettledInitialPaginatorLayout = false;
     hasFlashedInitialForwardSideNavChevron = false;
@@ -5460,7 +4598,6 @@ class Reader {
                 orientationType: screen.orientation?.type ?? null,
             });
             this.#updatePageReadMarker('window-resize');
-            this.#queueLayoutDiagnostics('window-resize');
         });
         window.visualViewport?.addEventListener?.('resize', () => {
             postBookRotateLog('visualViewport.resize', {
@@ -5474,7 +4611,6 @@ class Reader {
                 orientationType: screen.orientation?.type ?? null,
             });
             this.#updatePageReadMarker('visual-viewport-resize');
-            this.#queueLayoutDiagnostics('visual-viewport-resize');
         });
         screen.orientation?.addEventListener?.('change', () => {
             postBookRotateLog('screen.orientation.change', {
@@ -5486,7 +4622,6 @@ class Reader {
                 orientationType: screen.orientation?.type ?? null,
             });
             this.#updatePageReadMarker('screen-orientation-change');
-            this.#queueLayoutDiagnostics('screen-orientation-change');
         });
     }
     #logPageTracking(event, details = {}) {
@@ -5792,45 +4927,6 @@ class Reader {
             this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1).catch((error) => console.error(error));
         });
     }
-    queueLayoutDiagnostics(reason = 'unknown', extra = null) {
-        this.#queueLayoutDiagnostics(reason, extra);
-    }
-    logImageLayoutDiagnostics(reason = 'manual', extra = null) {
-        this.#logImageLayoutDiagnostics(reason, extra);
-    }
-    logVisibleOverlapDiagnostics(reason = 'manual', extra = null) {
-        this.#logVisibleOverlapDiagnostics(reason, extra);
-    }
-    #queueLayoutDiagnostics(reason = 'unknown', extra = null) {
-        postBookRotateLog('layout.queue', {
-            reason,
-            hadPending: !!this.layoutDiagnosticsHandle,
-            extra,
-            innerWidth: window.innerWidth ?? null,
-            innerHeight: window.innerHeight ?? null,
-            visualViewportWidth: window.visualViewport?.width ?? null,
-            visualViewportHeight: window.visualViewport?.height ?? null,
-            orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-            orientationType: screen.orientation?.type ?? null,
-        });
-        if (this.layoutDiagnosticsHandle) {
-            cancelAnimationFrame(this.layoutDiagnosticsHandle);
-        }
-        this.layoutDiagnosticsHandle = requestAnimationFrame(() => {
-            this.layoutDiagnosticsHandle = null;
-            postBookRotateLog('layout.flush', {
-                reason,
-                extra,
-                innerWidth: window.innerWidth ?? null,
-                innerHeight: window.innerHeight ?? null,
-                visualViewportWidth: window.visualViewport?.width ?? null,
-                visualViewportHeight: window.visualViewport?.height ?? null,
-                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-                orientationType: screen.orientation?.type ?? null,
-            });
-            this.#logLayoutDiagnostics(reason, extra);
-        });
-    }
     async #settleInitialPaginatorLayout(reason = 'unknown', { allowWhileLoading = false } = {}) {
         if (MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE) {
             return { rendered: false, reason: 'initial-paginator-settle-disabled' };
@@ -5865,14 +4961,6 @@ class Reader {
                 await renderer.render();
                 this.#updatePageReadMarker('initial-paginator-settle.forced-render');
                 this.hasSettledInitialPaginatorLayout = true;
-                this.#queueLayoutDiagnostics('initial-paginator-settle.forced-render', {
-                    reason,
-                    previousSize: result?.previousSize ?? null,
-                    currentSize: result?.currentSize ?? null,
-                    renderedBeforeForce: result?.rendered ?? false,
-                    toolbarGapPx: snapshot.toolbarGapPx,
-                    stageGapPx: snapshot.stageGapPx,
-                });
                 return { ...result, forcedRender: true };
             }
             if (result?.rendered) {
@@ -5962,155 +5050,6 @@ class Reader {
         return containerBottom != null && contentBottom != null
             ? safeRound(containerBottom - contentBottom, 1)
             : null;
-    }
-    #logImageLayoutDiagnostics(reason = 'unknown', extra = null) {
-        if (!manabiDiagnosticsEnabled()) return;
-        const isManual = extra?.manual === true || reason === 'manual';
-        if (!isManual && globalThis.manabiVerboseImageLayout !== true) return;
-        const docs = getLoadedEbookDocuments();
-        if (!docs.length) return;
-        const renderer = this.view?.renderer || null;
-        const rendererContents = renderer?.getContents?.() || [];
-        const payloadDocuments = docs
-            .filter((doc) => !isCacheWarmerDocument(doc))
-            .slice(0, 3)
-            .map((doc) => {
-                const content = rendererContents.find((candidate) => candidate?.doc === doc || candidate?.document === doc) || null;
-                return {
-                    index: content?.index ?? null,
-                    sectionHref: content?.section?.href || content?.href || null,
-                    ...summarizeImageLayoutDiagnosticsForDocument(doc, reason),
-                };
-            })
-            .filter(Boolean);
-        if (!payloadDocuments.length) return;
-        const primary = payloadDocuments[0];
-        const scrollKey = primary?.bodyBox?.rect?.top ?? primary?.rootBox?.rect?.top ?? null;
-        const imageKey = primary?.images?.map((image) => [
-            image.domIndex,
-            image.rect?.left,
-            image.rect?.top,
-            image.rect?.width,
-            image.rect?.height,
-            image.computed?.width,
-            image.computed?.height,
-            image.computed?.maxWidth,
-            image.computed?.maxHeight,
-            image.computed?.writingMode,
-        ].join(':')).join('|') || 'none';
-        const key = JSON.stringify({
-            reason,
-            documentURL: primary?.documentURL ?? null,
-            scrollKey,
-            imageKey,
-        });
-        if (key === this.lastImageLayoutDiagnosticsKey && globalThis.manabiVerboseImageLayout !== true) {
-            return;
-        }
-        this.lastImageLayoutDiagnosticsKey = key;
-        const payload = {
-            reason,
-            rendererFlow: renderer?.getAttribute?.('flow') ?? null,
-            rendererDir: renderer?.getAttribute?.('dir') ?? null,
-            currentPercent: typeof this.view?.fraction === 'number' ? safeRound(this.view.fraction, 6) : null,
-            documentCount: payloadDocuments.length,
-            documents: payloadDocuments,
-            extra,
-        };
-        postEBookBugLog('image-layout-diagnostics', payload);
-    }
-    #logBlankPageDiagnostics(reason = 'unknown', extra = null) {
-        if (!manabiDiagnosticsEnabled()) return;
-        const docs = getLoadedEbookDocuments().filter((doc) => !isCacheWarmerDocument(doc));
-        if (!docs.length) return;
-        const renderer = this.view?.renderer || null;
-        const rendererContents = renderer?.getContents?.() || [];
-        const documents = docs
-            .slice(0, 2)
-            .map((doc) => {
-                const blank = collectBlankPageDiagnosticsForDocument(doc);
-                if (!blank) return null;
-                const content = rendererContents.find((candidate) => candidate?.doc === doc || candidate?.document === doc) || null;
-                return {
-                    index: content?.index ?? null,
-                    sectionHref: content?.section?.href || content?.href || null,
-                    ...blank,
-                };
-            })
-            .filter(Boolean);
-        if (!documents.length) return;
-        const key = JSON.stringify({
-            reason,
-            documents: documents.map((doc) => ({
-                index: doc.index,
-                viewport: doc.viewport,
-                root: doc.root?.rect,
-                body: doc.body?.rect,
-                nearestText: doc.nearestText?.[0]?.distance ?? null,
-                nearestMedia: doc.nearestMedia?.[0]?.distance ?? null,
-            })),
-        });
-        if (key === this.lastBlankPageDiagnosticsKey) return;
-        this.lastBlankPageDiagnosticsKey = key;
-        postBlankPageLog({
-            reason,
-            rendererFlow: renderer?.getAttribute?.('flow') ?? null,
-            rendererDir: renderer?.getAttribute?.('dir') ?? null,
-            documentCount: documents.length,
-            documents,
-            extra,
-        });
-    }
-    #logVisibleOverlapDiagnostics(reason = 'unknown', extra = null) {
-        if (!manabiDiagnosticsEnabled()) return;
-        const docs = getLoadedEbookDocuments().filter((doc) => !isCacheWarmerDocument(doc));
-        if (!docs.length) return;
-        const renderer = this.view?.renderer || null;
-        const rendererContents = renderer?.getContents?.() || [];
-        const documents = docs
-            .slice(0, 2)
-            .map((doc) => {
-                const overlap = collectVisibleOverlapDiagnosticsForDocument(doc);
-                if (!overlap) return null;
-                const content = rendererContents.find((candidate) => candidate?.doc === doc || candidate?.document === doc) || null;
-                return {
-                    index: content?.index ?? null,
-                    sectionHref: content?.section?.href || content?.href || null,
-                    ...overlap,
-                };
-            })
-            .filter(Boolean);
-        if (!documents.length) return;
-        const key = JSON.stringify({
-            documents: documents.map((doc) => ({
-                index: doc.index,
-                viewport: doc.viewport,
-                mediaTextArea: doc.mediaTextOverlap?.overlapArea ?? null,
-                textTextArea: doc.textTextOverlap?.overlapArea ?? null,
-                mediaText: [
-                    doc.mediaTextOverlap?.media?.tagName,
-                    doc.mediaTextOverlap?.media?.rect,
-                    doc.mediaTextOverlap?.text?.tagName,
-                    doc.mediaTextOverlap?.text?.rect,
-                ],
-                textText: [
-                    doc.textTextOverlap?.first?.tagName,
-                    doc.textTextOverlap?.first?.rect,
-                    doc.textTextOverlap?.second?.tagName,
-                    doc.textTextOverlap?.second?.rect,
-                ],
-            })),
-        });
-        if (key === this.lastVisibleOverlapDiagnosticsKey && globalThis.manabiVerboseImageLayout !== true) return;
-        this.lastVisibleOverlapDiagnosticsKey = key;
-        postEBookBugLog('visible-layout-overlap', {
-            reason,
-            rendererFlow: renderer?.getAttribute?.('flow') ?? null,
-            rendererDir: renderer?.getAttribute?.('dir') ?? null,
-            documentCount: documents.length,
-            documents,
-            extra,
-        });
     }
     #logLayoutTransition(_reason, _previousSnapshot, _nextSnapshot) {}
     #buildLayoutSnapshot(reason = 'unknown', extra = null) {
@@ -6427,105 +5366,6 @@ class Reader {
     collectLayoutGapProbe(reason = 'unknown', extra = null) {
         return this.#buildLayoutSnapshot(reason, extra);
     }
-    #logLayoutDiagnostics(reason = 'unknown', extra = null) {
-        const layoutSnapshot = this.#buildLayoutSnapshot(reason, extra);
-        postBookRotateLog('layout.snapshot', {
-            reason,
-            currentPercent: layoutSnapshot.currentPercent,
-            cssInsets: layoutSnapshot.cssInsets,
-            windowInnerBox: layoutSnapshot.windowInnerBox,
-            visualViewportBox: layoutSnapshot.visualViewportBox,
-            visualViewportOffset: layoutSnapshot.visualViewportOffset,
-            documentClientBox: layoutSnapshot.documentClientBox,
-            bodyClientBox: layoutSnapshot.bodyClientBox,
-            livePaginatorBox: layoutSnapshot.livePaginatorBox,
-            navBarRect: layoutSnapshot.navBarRect,
-            readerStageRect: layoutSnapshot.readerStageRect,
-            liveFoliateViewRect: layoutSnapshot.liveFoliateViewRect,
-            livePaginatorRect: layoutSnapshot.livePaginatorRect,
-            visibleTextRect: layoutSnapshot.visibleTextRect,
-            visibleTextRectCount: layoutSnapshot.visibleTextRectCount,
-            toolbarGapPx: layoutSnapshot.toolbarGapPx,
-            stageGapPx: layoutSnapshot.stageGapPx,
-            navHiddenClass: document.getElementById('nav-bar')?.classList?.contains('nav-hidden-due-to-scroll') ?? null,
-            bodyLoading: layoutSnapshot.bodyLoading,
-        });
-        if (!layoutSnapshot.bodyLoading
-            && typeof layoutSnapshot.currentPercent === 'number'
-            && layoutSnapshot.livePaginatorBox != null) {
-            markEPUBPerf('layout.ready.first', {
-                reason,
-                currentPercent: layoutSnapshot.currentPercent,
-                livePaginatorBox: layoutSnapshot.livePaginatorBox,
-                cssInsets: layoutSnapshot.cssInsets,
-            }, {
-                once: true,
-                anchor: 'did-display.first',
-            });
-        }
-        const hasLayoutAnomaly = [
-            layoutSnapshot.toolbarGapPx,
-            layoutSnapshot.toolbarGapLastRectPx,
-            layoutSnapshot.stageGapPx,
-        ].some((value) => typeof value === 'number' && Math.abs(value) > 120);
-        const shouldLogLayout = !!globalThis.manabiVerboseLayout || hasLayoutAnomaly;
-        const key = JSON.stringify(layoutSnapshot);
-        this.#logVisibleOverlapDiagnostics(reason, extra);
-        this.#logImageLayoutDiagnostics(reason, extra);
-        if (key === this.lastLayoutDiagnosticsKey) {
-            return;
-        }
-        this.lastLayoutSnapshot = layoutSnapshot;
-        this.lastLayoutDiagnosticsKey = key;
-        postMay5Log('layout.toolbarGap', {
-            reason,
-            currentPercent: layoutSnapshot.currentPercent,
-            navHiddenDueToScroll: document.getElementById('nav-bar')?.classList?.contains('nav-hidden-due-to-scroll') ?? null,
-            bodyClassName: document.body?.className ?? null,
-            cssInsets: layoutSnapshot.cssInsets,
-            htmlCssInsets: layoutSnapshot.htmlCssInsets,
-            visualViewportBox: layoutSnapshot.visualViewportBox,
-            readerStageRect: layoutSnapshot.readerStageRect,
-            navBarRect: layoutSnapshot.navBarRect,
-            pageTrackingRect: layoutSnapshot.pageTrackingRect,
-            pageReadButtonRect: layoutSnapshot.pageReadButtonRect,
-            liveFoliateViewRect: layoutSnapshot.liveFoliateViewRect,
-            livePaginatorRect: layoutSnapshot.livePaginatorRect,
-            rendererLocalName: layoutSnapshot.rendererLocalName,
-            rendererRect: layoutSnapshot.rendererRect,
-            paginatorShadowChildren: layoutSnapshot.paginatorShadowChildren,
-            paginatorContainerChildren: layoutSnapshot.paginatorContainerChildren,
-            foliateViewShadowChildren: layoutSnapshot.foliateViewShadowChildren,
-            iframeCount: layoutSnapshot.iframeCount,
-            iframeSearchSources: layoutSnapshot.iframeSearchSources,
-            iframeCandidateRects: layoutSnapshot.iframeCandidateRects,
-            iframeAccessError: layoutSnapshot.iframeAccessError,
-            visibleFrameRect: layoutSnapshot.visibleFrameRect,
-            visibleTextRect: layoutSnapshot.visibleTextRect,
-            viewportVisibleTextRect: layoutSnapshot.viewportVisibleTextRect,
-            lastVisibleTextRect: layoutSnapshot.lastVisibleTextRect,
-            visibleTextRectCount: layoutSnapshot.visibleTextRectCount,
-            viewportVisibleTextRectCount: layoutSnapshot.viewportVisibleTextRectCount,
-            toolbarGapPx: layoutSnapshot.toolbarGapPx,
-            toolbarGapLastRectPx: layoutSnapshot.toolbarGapLastRectPx,
-            toolbarGapViewportTextPx: layoutSnapshot.toolbarGapViewportTextPx,
-            stageGapPx: layoutSnapshot.stageGapPx,
-            frameBottomToLastTextBottomPx: layoutSnapshot.frameBottomToLastTextBottomPx,
-            viewportFrameBottomToTextBottomPx: layoutSnapshot.viewportFrameBottomToTextBottomPx,
-            iframeWritingMode: layoutSnapshot.iframeWritingMode,
-            iframeBodyClientBox: layoutSnapshot.iframeBodyClientBox,
-            iframeBodyScrollBox: layoutSnapshot.iframeBodyScrollBox,
-            iframeMargins: layoutSnapshot.iframeMargins,
-            iframePadding: layoutSnapshot.iframePadding,
-            pagesLeftLabelRect: layoutSnapshot.pagesLeftLabelRect,
-            pagesLeftLabelHidden: layoutSnapshot.pagesLeftLabelHidden,
-            pagesLeftLabelVisibleAttr: layoutSnapshot.pagesLeftLabelVisibleAttr,
-            pagesLeftLabelText: layoutSnapshot.pagesLeftLabelText,
-        });
-        if (shouldLogLayout) {
-            postEPUBLog('ebook.layout.diagnostics', layoutSnapshot);
-        }
-    }
     refreshPageTrackingVisibility(reason = 'settings-changed') {
         this.#renderPageTrackingButtons(reason);
         requestAnimationFrame(async () => {
@@ -6538,7 +5378,6 @@ class Reader {
                 }
             }
             this.#updatePageReadMarker(`page-tracking-visibility.${reason}`);
-            this.#queueLayoutDiagnostics(`page-tracking-visibility.${reason}`);
         });
     }
 
@@ -6623,10 +5462,6 @@ class Reader {
             });
             this.navHUD?.refreshAuxiliaryLayout?.();
             this.#scheduleInitialPaginatorSettle('page-tracking-render.completion-action');
-            this.#queueLayoutDiagnostics('page-tracking-render', {
-                completionAction: completionAction.type,
-                stateCount: 0,
-            });
             return;
         }
         buttonHost.innerHTML = pageTrackingStates.map((state) => {
@@ -6700,9 +5535,6 @@ class Reader {
         });
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#scheduleInitialPaginatorSettle('page-tracking-render');
-        this.#queueLayoutDiagnostics('page-tracking-render', {
-            stateCount: pageTrackingStates.length,
-        });
     }
     async #advanceAfterMarkRead() {
         if (!this.view?.renderer) {
@@ -7263,10 +6095,6 @@ class Reader {
             });
         }
         this.#syncPageTrackingButtons('progress-applied', null, 2).catch((error) => console.error(error));
-        this.#queueLayoutDiagnostics('progress-applied', {
-            articleSentenceCount: this.articleReadingProgress.articleSentenceCount,
-            readSegmentIdentifiers: this.articleReadingProgress.readSegmentIdentifiers.length,
-        });
     }
     async #handleCompletionAction(actionType) {
         if (this.completionActionBusy) {
@@ -7639,10 +6467,6 @@ class Reader {
         $('#nav-bar').style.visibility = 'visible'
         postReaderVisibilityProbe('reader.open:nav-visible', this.view, {
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
-        });
-        this.#queueLayoutDiagnostics('reader-open', {
-            isRTL: this.isRTL,
-            bookDir: this.bookDir,
         });
         this.buttons = {
             prev: document.getElementById('btn-prev-chapter'),
@@ -8241,19 +7065,6 @@ class Reader {
             after: captureNavVisibilityState(),
         });
         this.#syncPageTrackingButtons('nav-buttons', null, 1).catch((error) => console.error(error));
-        this.#logBlankPageDiagnostics('nav-buttons', {
-            markedAsFinished: this.markedAsFinished,
-            showingFinish: !!(completionAction?.type === 'finish'),
-            showingRestart: !!(completionAction?.type === 'restart'),
-        });
-        this.#queueLayoutDiagnostics('nav-buttons', {
-            markedAsFinished: this.markedAsFinished,
-            restartHiddenForMiddlePageWhileNavHidden: isRestartHiddenForMiddlePageWhileNavHidden,
-            showingFinish: !!(completionAction?.type === 'finish'),
-            showingRestart: !!(completionAction?.type === 'restart'),
-            showPrev: !!(this.buttons.prev && !this.buttons.prev.hidden),
-            showNext: !!(this.buttons.next && !this.buttons.next.hidden),
-        });
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -8410,33 +7221,7 @@ class Reader {
                 once: true,
                 anchor: 'did-display.first',
             });
-            this.#logBlankPageDiagnostics('did-display', {
-                paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
-                paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
-            });
-            this.#queueLayoutDiagnostics('did-display', {
-                paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
-                paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
-            });
-            for (const content of this.view?.renderer?.getContents?.() || []) {
-                postShortLineLog('did-display.raf', {
-                    index: content.index ?? null,
-                    ...collectShortLineDiagnosticsForDocument(content.doc, {
-                        reason: 'did-display.raf',
-                    }),
-                });
-            }
             this.#updatePageReadMarker('did-display.raf');
-            setTimeout(() => {
-                for (const content of this.view?.renderer?.getContents?.() || []) {
-                    postShortLineLog('did-display.750ms', {
-                        index: content.index ?? null,
-                        ...collectShortLineDiagnosticsForDocument(content.doc, {
-                            reason: 'did-display.750ms',
-                        }),
-                    });
-                }
-            }, 750);
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
@@ -8603,9 +7388,6 @@ class Reader {
         })
         requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2).catch((error) => console.error(error)));
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
-            documentURL: doc?.location?.href || null,
-        });
-        this.#queueLayoutDiagnostics('document-load', {
             documentURL: doc?.location?.href || null,
         });
     }
@@ -8878,29 +7660,13 @@ class Reader {
             orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
             orientationType: screen.orientation?.type ?? null,
         });
-        this.#queueLayoutDiagnostics('relocate', {
-            reason: detail?.reason || null,
-            currentPercent,
-        });
         postReaderVisibilityProbe('reader.relocate', this.view, {
             reason: detail?.reason || null,
             fraction: safeRound(detail?.fraction),
             currentLocation: detail?.location?.current ?? null,
             totalLocation: detail?.location?.total ?? null,
         });
-        this.#queueLayoutDiagnostics('relocate', {
-            reason: detail?.reason || null,
-            fraction: safeRound(detail?.fraction),
-            currentLocation: detail?.location?.current ?? null,
-            totalLocation: detail?.location?.total ?? null,
-        });
         this.#updatePageReadMarker('relocate');
-        this.#logBlankPageDiagnostics('relocate', {
-            reason: detail?.reason || null,
-            fraction: safeRound(detail?.fraction),
-            currentLocation: detail?.location?.current ?? null,
-            totalLocation: detail?.location?.total ?? null,
-        });
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
@@ -10080,16 +8846,6 @@ window.manabiCancelScheduledReaderFractionGoTo = () => {
     postPageNumLog('goto.live-schedule.cancel', {
         navLabel: globalThis.reader?.navHUD?.latestPrimaryLabel ?? '',
     });
-    return true;
-}
-
-window.manabiLogImageLayoutDiagnostics = (reason = 'manual') => {
-    globalThis.reader?.logImageLayoutDiagnostics?.(reason, { manual: true });
-    return true;
-}
-
-window.manabiLogVisibleOverlapDiagnostics = (reason = 'manual') => {
-    globalThis.reader?.logVisibleOverlapDiagnostics?.(reason, { manual: true });
     return true;
 }
 

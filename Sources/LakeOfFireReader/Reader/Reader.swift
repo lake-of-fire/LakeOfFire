@@ -182,7 +182,26 @@ func applyReaderFontSize(
         return
     }
     do {
-        try await evaluateJavaScript("document.body.style.fontSize = '\(size)px';", true)
+        try await evaluateJavaScript(
+            """
+            (function() {
+                const fontSize = '\(size)px';
+                const applyFontSize = (doc) => {
+                    const body = doc?.body;
+                    if (!body) { return false; }
+                    body.style.fontSize;
+                    body.style.fontSize = fontSize;
+                    return true;
+                };
+                let appliedCount = applyFontSize(document) ? 1 : 0;
+                try {
+                    appliedCount += globalThis.manabiApplyReaderFontSizeToEbookDocuments?.('lake-reader-font-size')?.appliedCount ?? 0;
+                } catch (_) {}
+                return { appliedCount, fontSize };
+            })();
+            """,
+            true
+        )
         await syncReaderPaginationTrackingSettingsKey(
             readerFontSize: readerFontSize,
             lightModeTheme: lightModeTheme,
@@ -260,9 +279,26 @@ func applyReaderLightTheme(
 ) async throws {
     try await evaluateJavaScript(
         """
-        if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
-            document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
-        }
+        (function() {
+            const theme = '\(lightModeTheme)';
+            const applyTheme = (doc) => {
+                const body = doc?.body;
+                if (!body) { return false; }
+                if (body.getAttribute('data-mnb-light-theme') !== theme) {
+                    body.setAttribute('data-mnb-light-theme', theme);
+                }
+                return true;
+            };
+            let appliedCount = applyTheme(document) ? 1 : 0;
+            try {
+                const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
+                for (const content of contents) {
+                    const doc = content?.doc ?? content?.document ?? null;
+                    if (applyTheme(doc)) { appliedCount += 1; }
+                }
+            } catch (_) {}
+            return { appliedCount, lightModeTheme: theme };
+        })();
         """,
         true
     )
@@ -287,9 +323,26 @@ func applyReaderDarkTheme(
 ) async throws {
     try await evaluateJavaScript(
         """
-        if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
-            document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
-        }
+        (function() {
+            const theme = '\(darkModeTheme)';
+            const applyTheme = (doc) => {
+                const body = doc?.body;
+                if (!body) { return false; }
+                if (body.getAttribute('data-mnb-dark-theme') !== theme) {
+                    body.setAttribute('data-mnb-dark-theme', theme);
+                }
+                return true;
+            };
+            let appliedCount = applyTheme(document) ? 1 : 0;
+            try {
+                const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
+                for (const content of contents) {
+                    const doc = content?.doc ?? content?.document ?? null;
+                    if (applyTheme(doc)) { appliedCount += 1; }
+                }
+            } catch (_) {}
+            return { appliedCount, darkModeTheme: theme };
+        })();
         """,
         true
     )

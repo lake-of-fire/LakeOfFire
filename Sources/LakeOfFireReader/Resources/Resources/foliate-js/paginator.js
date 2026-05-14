@@ -70,20 +70,10 @@ const postMay5PaginatorLog = (event, details = {}) => {
     void event;
     void details;
 };
-const postBlankPageLog = (details = {}) => {
-    const payload = { event: 'paginator-visible-blank', timestamp: Date.now(), ...details };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# BLANKPAGE ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# BLANKPAGE', payload); } catch (_) {}
-    }
-};
 const MANABI_MINIMAL_EBOOKBUG_EVENTS = new Set([
-    'paginator-loading-watchdog',
     'paginator-prefetch-wait-start',
     'paginator-prefetch-wait-end',
     'paginator-prefetch-wait-watchdog',
-    'paginator-display-phase',
     'paginator-section-load-error',
     'paginator-section-load-start',
     'paginator-section-load-end',
@@ -95,14 +85,6 @@ const postEBookBugLog = (event, details = {}) => {
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
     } catch (_error) {
         try { console.log('# EBOOKBUG', payload); } catch (_) {}
-    }
-};
-const postEBookBugRootLog = (event, details = {}) => {
-    const payload = { event, timestamp: Date.now(), ...details };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUGROOT ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# EBOOKBUGROOT', payload); } catch (_) {}
     }
 };
 const sectionDebugInfo = section => section
@@ -122,22 +104,6 @@ const prefetchEntryDebugInfo = entry => entry
         hasPromise: !!entry.promise,
     }
     : null;
-const rectSnapshot = element => {
-    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
-    const rect = element.getBoundingClientRect();
-    const round = value => Number.isFinite(value) ? Number(value.toFixed(1)) : null;
-    return {
-        x: round(rect.x),
-        y: round(rect.y),
-        width: round(rect.width),
-        height: round(rect.height),
-        top: round(rect.top),
-        right: round(rect.right),
-        bottom: round(rect.bottom),
-        left: round(rect.left),
-    };
-};
-
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
     let timeout;
@@ -393,182 +359,6 @@ class View {
     #size
     layout = {}
     #isCacheWarmer
-    #elementDebugPath(element) {
-        if (!element) return null
-        const parts = []
-        for (let current = element; current && current.nodeType === Node.ELEMENT_NODE && parts.length < 6; current = current.parentElement) {
-            const tag = current.localName || current.tagName?.toLowerCase?.() || 'element'
-            const id = current.id ? `#${current.id}` : ''
-            const className = typeof current.className === 'string' && current.className.trim()
-                ? `.${current.className.trim().split(/\s+/).slice(0, 2).join('.')}`
-                : ''
-            parts.unshift(`${tag}${id}${className}`)
-        }
-        return parts.join(' > ')
-    }
-    #elementDebugPreview(element) {
-        if (!element) return null
-        const clone = element.cloneNode?.(true)
-        if (!clone) return null
-        for (const descendant of clone.querySelectorAll?.('*') || []) {
-            for (const attribute of Array.from(descendant.attributes || [])) {
-                if (attribute.value && attribute.value.length > 80) {
-                    descendant.setAttribute(attribute.name, `${attribute.value.slice(0, 80)}...`)
-                }
-            }
-        }
-        const html = clone.outerHTML || ''
-        return html.length > 420 ? `${html.slice(0, 420)}...` : html
-    }
-    #elementDirectChildSummary(element) {
-        if (!element) return []
-        return Array.from(element.children || []).slice(0, 6).map(child => ({
-            tag: child.localName || child.tagName?.toLowerCase?.() || null,
-            id: child.id || null,
-            className: typeof child.className === 'string' && child.className.trim()
-                ? child.className.trim().split(/\s+/).slice(0, 4).join(' ')
-                : null,
-            textLength: (child.textContent || '').trim().length,
-            childElementCount: child.childElementCount,
-            display: this.document?.defaultView?.getComputedStyle?.(child)?.display ?? null,
-        }))
-    }
-    #elementLayoutStyleSummary(element) {
-        const style = this.document?.defaultView?.getComputedStyle?.(element)
-        if (!style) return null
-        return {
-            display: style.display,
-            writingMode: style.writingMode,
-            lineHeight: style.lineHeight,
-            fontSize: style.fontSize,
-            marginTop: style.marginTop,
-            marginRight: style.marginRight,
-            marginBottom: style.marginBottom,
-            marginLeft: style.marginLeft,
-            paddingTop: style.paddingTop,
-            paddingRight: style.paddingRight,
-            paddingBottom: style.paddingBottom,
-            paddingLeft: style.paddingLeft,
-            blockSize: style.blockSize,
-            inlineSize: style.inlineSize,
-            breakBefore: style.breakBefore,
-            breakAfter: style.breakAfter,
-            breakInside: style.breakInside,
-            webkitColumnBreakBefore: style.webkitColumnBreakBefore,
-            webkitColumnBreakAfter: style.webkitColumnBreakAfter,
-            webkitColumnBreakInside: style.webkitColumnBreakInside,
-        }
-    }
-    #collectOccupiedContentDiagnostics({ side, pageSize, contentSize, rangePageCount }) {
-        const doc = this.document
-        const body = doc?.body
-        if (!body || !Number.isFinite(pageSize) || pageSize <= 0) return null
-
-        const axisEnd = rect => side === 'height' ? rect.bottom : rect.right
-        const contentItems = []
-        const addContentRect = (rect, node, kind) => {
-            if (!rect || rect.width <= 0 || rect.height <= 0) return
-            const end = axisEnd(rect)
-            if (!Number.isFinite(end)) return
-            const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement
-            contentItems.push({
-                kind,
-                end,
-                rect,
-                path: this.#elementDebugPath(element),
-                tag: element?.localName || element?.tagName?.toLowerCase?.() || null,
-                textLength: (node?.nodeValue || element?.textContent || '').trim().length,
-            })
-        }
-
-        const nodeFilter = doc.defaultView?.NodeFilter || globalThis.NodeFilter
-        const walker = nodeFilter
-            ? doc.createTreeWalker?.(body, nodeFilter.SHOW_TEXT, {
-                acceptNode(node) {
-                    if (!(node.nodeValue || '').trim()) return nodeFilter.FILTER_REJECT
-                    const parent = node.parentElement
-                    if (!parent || parent.closest?.('script, style, template, noscript')) return nodeFilter.FILTER_REJECT
-                    return nodeFilter.FILTER_ACCEPT
-                },
-            })
-            : null
-        for (let node = walker?.nextNode?.(); node; node = walker.nextNode()) {
-            const range = doc.createRange()
-            range.selectNodeContents(node)
-            for (const rect of range.getClientRects?.() || []) addContentRect(rect, node, 'text')
-            range.detach?.()
-        }
-        for (const element of body.querySelectorAll?.('img, svg, video, object, image') || []) {
-            for (const rect of element.getClientRects?.() || []) addContentRect(rect, element, 'media')
-        }
-
-        const occupiedEnd = contentItems.length ? Math.max(...contentItems.map(item => item.end)) : null
-        const occupiedPageCount = Number.isFinite(occupiedEnd)
-            ? Math.max(1, Math.ceil(occupiedEnd / pageSize))
-            : null
-        const farthestContent = contentItems
-            .sort((a, b) => b.end - a.end)
-            .slice(0, 3)
-            .map(item => ({
-                kind: item.kind,
-                tag: item.tag,
-                path: item.path,
-                end: manabiRound(item.end, 1),
-                page: Math.max(1, Math.ceil(item.end / pageSize)),
-                textLength: item.textLength,
-                rect: rectSnapshot(item.rect),
-            }))
-
-        const elementItems = []
-        for (const element of body.querySelectorAll?.('*') || []) {
-            if (element.closest?.('script, style, template, noscript')) continue
-            for (const rect of element.getClientRects?.() || []) {
-                if (!rect || rect.width <= 0 || rect.height <= 0) continue
-                const end = axisEnd(rect)
-                if (!Number.isFinite(end)) continue
-                elementItems.push({
-                    end,
-                    element,
-                    rect,
-                })
-            }
-        }
-        const farthestElements = elementItems
-            .sort((a, b) => b.end - a.end)
-            .slice(0, 6)
-            .map(item => ({
-                tag: item.element.localName || item.element.tagName?.toLowerCase?.() || null,
-                path: this.#elementDebugPath(item.element),
-                end: manabiRound(item.end, 1),
-                page: Math.max(1, Math.ceil(item.end / pageSize)),
-                textLength: (item.element.textContent || '').trim().length,
-                childElementCount: item.element.childElementCount,
-                preview: (item.element.textContent || '').trim().length === 0
-                    ? this.#elementDebugPreview(item.element)
-                    : null,
-            }))
-
-        return {
-            contentSize: manabiRound(contentSize, 1),
-            rangePageCount,
-            occupiedEnd: manabiRound(occupiedEnd, 1),
-            occupiedPageCount,
-            overcountPages: typeof occupiedPageCount === 'number'
-                ? rangePageCount - occupiedPageCount
-                : null,
-            textRectCount: contentItems.filter(item => item.kind === 'text').length,
-            mediaRectCount: contentItems.filter(item => item.kind === 'media').length,
-            manabiSentenceCount: body.querySelectorAll?.('mnb-sen')?.length ?? 0,
-            manabiSegmentCount: body.querySelectorAll?.('mnb-seg')?.length ?? 0,
-            manabiSurfaceCount: body.querySelectorAll?.('mnb-sur')?.length ?? 0,
-            manabiContainerCount: body.querySelectorAll?.('mnb-con')?.length ?? 0,
-            sourceHref: body.dataset?.mnbSourceHref || null,
-            hasManabiSentenceDataset: body.dataset?.mnbHasSentences || null,
-            hasManabiSegmentDataset: body.dataset?.mnbHasSegments || null,
-            farthestContent,
-            farthestElements,
-        }
-    }
     constructor({
         container,
         onBeforeExpand,
@@ -878,14 +668,6 @@ class View {
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
         await this.expand()
-        postPaginatorLoadLog('view.columnize.end', {
-            vertical,
-            width,
-            height,
-            pageSize: this.#size,
-            elementRect: rectSnapshot(this.#element),
-            iframeRect: rectSnapshot(this.#iframe),
-        });
         //        console.log("columnize... await'd expand")
         //            //            this.#debouncedExpand()
         //        }
@@ -989,55 +771,6 @@ class View {
                         const contentSize = contentStart + contentRect[side]
                         const pageCount = Math.ceil(contentSize / this.#size)
                         const expandedSize = pageCount * this.#size
-                        const occupiedDiagnostics = this.#collectOccupiedContentDiagnostics({
-                            side,
-                            pageSize: this.#size,
-                            contentSize,
-                            rangePageCount: pageCount,
-                        })
-                        if (
-                            occupiedDiagnostics
-                            && typeof occupiedDiagnostics.overcountPages === 'number'
-                            && occupiedDiagnostics.overcountPages >= 1
-                        ) {
-                            postEBookBugRootLog('paginator-root-range-overcounts-rendered-content', {
-                                vertical: this.#vertical,
-                                rtl: this.#rtl,
-                                side,
-                                pageSize: this.#size,
-                                contentSize: occupiedDiagnostics.contentSize,
-                                rangePageCount: occupiedDiagnostics.rangePageCount,
-                                occupiedEnd: occupiedDiagnostics.occupiedEnd,
-                                occupiedPageCount: occupiedDiagnostics.occupiedPageCount,
-                                overcountPages: occupiedDiagnostics.overcountPages,
-                                textRectCount: occupiedDiagnostics.textRectCount,
-                                mediaRectCount: occupiedDiagnostics.mediaRectCount,
-                                manabiSentenceCount: occupiedDiagnostics.manabiSentenceCount,
-                                manabiSegmentCount: occupiedDiagnostics.manabiSegmentCount,
-                                sourceHref: occupiedDiagnostics.sourceHref,
-                                farthestContent: occupiedDiagnostics.farthestContent?.slice?.(0, 2) ?? [],
-                                farthestElements: occupiedDiagnostics.farthestElements?.slice?.(0, 3) ?? [],
-                            })
-                        }
-                        postPaginatorLoadLog('view.expand.measure.column', {
-                            vertical: this.#vertical,
-                            side,
-                            otherSide,
-                            pageSize: this.#size,
-                            contentStart,
-                            contentSize,
-                            pageCount,
-                            expandedSize,
-                            documentClientWidth: documentElement?.clientWidth ?? null,
-                            documentClientHeight: documentElement?.clientHeight ?? null,
-                            documentScrollWidth: documentElement?.scrollWidth ?? null,
-                            documentScrollHeight: documentElement?.scrollHeight ?? null,
-                            bodyScrollWidth: this.document?.body?.scrollWidth ?? null,
-                            bodyScrollHeight: this.document?.body?.scrollHeight ?? null,
-                            contentRect: rectSnapshot(this.#contentRange),
-                            rootRect: rectSnapshot(documentElement),
-                        });
-
                         this.#element.style.padding = '0'
                         this.#iframe.style[side] = `${expandedSize}px`
                         this.#element.style[side] = `${expandedSize + this.#size * 2}px`
@@ -1104,8 +837,6 @@ class View {
                         vertical: this.#vertical,
                         column: this.#column,
                         elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
-                        elementRect: rectSnapshot(this.#element),
-                        iframeRect: rectSnapshot(this.#iframe),
                     });
                     resolve()
                 } catch (error) {
@@ -1211,8 +942,6 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #suspendOnExpandAnchor = false
-    #loadingWatchdogTimer = null
-    #displayDebugPhase = null
     #prefetchTimer = null
     #prefetchCache = new Map()
     #pendingPageTurnDirection = null
@@ -1224,8 +953,6 @@ export class Paginator extends HTMLElement {
     #visibleRangeCache = null
     #visibleRangeInFlight = null
     #visibleRangeCacheVersion = 0
-    #lastBlankPageLogKey = null
-
     #elementVisibilityObserver = null
     #elementMutationObserver = null
 
@@ -1509,32 +1236,8 @@ export class Paginator extends HTMLElement {
         this.#isLoading = isLoading;
         if (isLoading) {
             this.#top.classList.add('reader-loading');
-            clearTimeout(this.#loadingWatchdogTimer)
-            this.#loadingWatchdogTimer = setTimeout(() => {
-                if (!this.#isLoading) return
-                postEBookBugLog('paginator-loading-watchdog', {
-                    reason,
-                    index: this.#index,
-                    flow: this.getAttribute('flow'),
-                    vertical: this.#vertical,
-                    rtl: this.#rtl,
-                    displayPhase: this.#displayDebugPhase,
-                    prefetchCache: [...this.#prefetchCache].map(([prefetchIndex, entry]) => ({
-                        index: prefetchIndex,
-                        section: sectionDebugInfo(this.sections[prefetchIndex]),
-                        entry: prefetchEntryDebugInfo(entry),
-                    })),
-                    containerRect: rectSnapshot(this.#container),
-                    viewRect: rectSnapshot(this.#view?.element),
-                    iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-                    rootRect: rectSnapshot(this.#view?.document?.documentElement),
-                    bodyRect: rectSnapshot(this.#view?.document?.body),
-                })
-            }, 8000)
         } else {
             this.#top.classList.remove('reader-loading');
-            clearTimeout(this.#loadingWatchdogTimer)
-            this.#loadingWatchdogTimer = null
         }
     }
     #cacheNeighborPrefetch(index, promise) {
@@ -1743,55 +1446,6 @@ export class Paginator extends HTMLElement {
                         .slice(expandedStart, expandedEnd + 1)
                         .map(element => element.id)
                         .filter(Boolean)
-                    const payload = {
-                        event: 'sentinelRange.expanded',
-                        timestamp: Date.now(),
-                        source: visibleSource,
-                        visibleSentinelCount: visibleIDSet.size,
-                        expandedSentinelCount: expandedSentinelIDs.length,
-                        firstVisibleSentinelID: elements[firstIndex]?.id || null,
-                        lastVisibleSentinelID: elements[lastIndex]?.id || null,
-                        firstExpandedSentinelID: elements[expandedStart]?.id || null,
-                        lastExpandedSentinelID: elements[expandedEnd]?.id || null,
-                        totalSentinelCount: elements.length,
-                    }
-                    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`
-                    console.log(line)
-                    window.webkit?.messageHandlers?.print?.postMessage?.(line)
-                } else {
-                    const containerRect = this.#container && typeof this.#container.getBoundingClientRect === 'function'
-                        ? this.#container.getBoundingClientRect()
-                        : null
-                    const frameElement = this.#view?.document?.defaultView?.frameElement ?? null
-                    const iframeRect = frameElement && typeof frameElement.getBoundingClientRect === 'function'
-                        ? frameElement.getBoundingClientRect()
-                        : null
-                    const payload = {
-                        event: 'sentinelRange.empty',
-                        timestamp: Date.now(),
-                        source: visibleSource,
-                        observerVisibleSentinelCount: visibleSentinelIDs.length,
-                        totalSentinelCount: elements.length,
-                        containerRect: containerRect
-                            ? {
-                                left: Math.round(containerRect.left),
-                                top: Math.round(containerRect.top),
-                                width: Math.round(containerRect.width),
-                                height: Math.round(containerRect.height),
-                            }
-                            : null,
-                        iframeRect: iframeRect
-                            ? {
-                                left: Math.round(iframeRect.left),
-                                top: Math.round(iframeRect.top),
-                                width: Math.round(iframeRect.width),
-                                height: Math.round(iframeRect.height),
-                            }
-                            : null,
-                    }
-                    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`
-                    console.log(line)
-                    window.webkit?.messageHandlers?.print?.postMessage?.(line)
                 }
 
                 resolve?.(expandedSentinelIDs)
@@ -2779,9 +2433,6 @@ export class Paginator extends HTMLElement {
         //            console.log("#afterScroll...")
 
         this.#cachedStart = null;
-        await this.#logBlankPageDiagnostics(reason)
-        await this.#logTrailingPageDiagnostics(reason)
-
         const range = await this.#getVisibleRange()
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
@@ -2812,237 +2463,6 @@ export class Paginator extends HTMLElement {
             detail
         }))
 
-    }
-    async #logBlankPageDiagnostics(reason) {
-        const doc = this.#view?.document
-        if (!doc?.body || !doc?.documentElement) return
-        const size = await this.size().catch(() => null)
-        const start = await this.start().catch(() => null)
-        if (!Number.isFinite(size) || size <= 0 || !Number.isFinite(start)) return
-        const viewport = this.#vertical && !this.scrolled
-            ? { left: 0, top: start, right: doc.documentElement.scrollWidth || doc.documentElement.clientWidth || 0, bottom: start + size }
-            : { left: start, top: 0, right: start + size, bottom: doc.documentElement.scrollHeight || doc.documentElement.clientHeight || 0 }
-        const intersects = rect => rect
-            && rect.width > 0
-            && rect.height > 0
-            && rect.right > viewport.left
-            && rect.left < viewport.right
-            && rect.bottom > viewport.top
-            && rect.top < viewport.bottom
-        const visibleText = []
-        const allText = []
-        const walker = doc.createTreeWalker?.(doc.body, NodeFilter.SHOW_TEXT, {
-            acceptNode(node) {
-                if (!(node.nodeValue || '').trim()) return NodeFilter.FILTER_REJECT
-                const parent = node.parentElement
-                if (!parent || parent.closest?.('script, style, template, noscript')) return NodeFilter.FILTER_REJECT
-                return NodeFilter.FILTER_ACCEPT
-            },
-        })
-        for (let node = walker?.nextNode?.(); node; node = walker.nextNode()) {
-            const range = doc.createRange()
-            range.selectNodeContents(node)
-            for (const rect of range.getClientRects?.() || []) {
-                if (rect.width <= 0 || rect.height <= 0) continue
-                const item = { element: node.parentElement, rect, sample: (node.nodeValue || '').replace(/\s+/g, ' ').slice(0, 60) }
-                allText.push(item)
-                if (intersects(rect)) visibleText.push(item)
-            }
-            range.detach?.()
-        }
-        const mediaSelector = 'img, svg, video, object, image'
-        const allMedia = Array.from(doc.body.querySelectorAll?.(mediaSelector) || [])
-            .flatMap(element => Array.from(element.getClientRects?.() || [])
-                .filter(rect => rect.width > 0 && rect.height > 0)
-                .map(rect => ({ element, rect })))
-        const visibleMedia = allMedia.filter(({ rect }) => intersects(rect))
-        const contentTextLength = (doc.body.textContent || '').replace(/\s+/g, '').length
-        if (visibleText.length || visibleMedia.length || (!contentTextLength && !allMedia.length)) return
-        const distance = rect => {
-            const dx = rect.right < viewport.left ? viewport.left - rect.right : (viewport.right < rect.left ? rect.left - viewport.right : 0)
-            const dy = rect.bottom < viewport.top ? viewport.top - rect.bottom : (viewport.bottom < rect.top ? rect.top - viewport.bottom : 0)
-            return Math.sqrt(dx * dx + dy * dy)
-        }
-        const describe = ({ element, rect, sample }) => ({
-            distance: manabiRound(distance(rect), 1),
-            tagName: element?.tagName?.toLowerCase?.() ?? null,
-            className: typeof element?.className === 'string' ? element.className : null,
-            sample: sample ?? null,
-            rect: rectSnapshot(element),
-            clientRect: {
-                left: manabiRound(rect.left, 1),
-                top: manabiRound(rect.top, 1),
-                right: manabiRound(rect.right, 1),
-                bottom: manabiRound(rect.bottom, 1),
-                width: manabiRound(rect.width, 1),
-                height: manabiRound(rect.height, 1),
-            },
-        })
-        const nearestText = allText.map(describe).sort((a, b) => a.distance - b.distance).slice(0, 5)
-        const nearestMedia = allMedia.map(({ element, rect }) => describe({ element, rect })).sort((a, b) => a.distance - b.distance).slice(0, 5)
-        const key = JSON.stringify({
-            index: this.#index,
-            reason,
-            start: manabiRound(start, 1),
-            size: manabiRound(size, 1),
-            nearestText: nearestText[0]?.distance ?? null,
-            nearestMedia: nearestMedia[0]?.distance ?? null,
-        })
-        if (key === this.#lastBlankPageLogKey) return
-        this.#lastBlankPageLogKey = key
-        const styleSummary = element => {
-            try {
-                const style = element?.ownerDocument?.defaultView?.getComputedStyle?.(element)
-                return style ? {
-                    display: style.display,
-                    position: style.position,
-                    writingMode: style.writingMode,
-                    direction: style.direction,
-                    width: style.width,
-                    height: style.height,
-                    margin: style.margin,
-                    padding: style.padding,
-                    columnWidth: style.columnWidth,
-                    columnGap: style.columnGap,
-                    breakBefore: style.breakBefore,
-                    breakAfter: style.breakAfter,
-                    breakInside: style.breakInside,
-                } : null
-            } catch (_error) {
-                return null
-            }
-        }
-        postBlankPageLog({
-            reason,
-            index: this.#index,
-            flow: this.getAttribute('flow'),
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-            page: await this.page().catch(() => null),
-            pages: await this.pages().catch(() => null),
-            start: manabiRound(start, 1),
-            size: manabiRound(size, 1),
-            viewSize: manabiRound(await this.viewSize().catch(() => NaN), 1),
-            viewport,
-            containerRect: rectSnapshot(this.#container),
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-            rootRect: rectSnapshot(doc.documentElement),
-            bodyRect: rectSnapshot(doc.body),
-            rootStyle: styleSummary(doc.documentElement),
-            bodyStyle: styleSummary(doc.body),
-            counts: {
-                visibleTextRects: visibleText.length,
-                visibleMedia: visibleMedia.length,
-                totalTextRects: allText.length,
-                totalMedia: allMedia.length,
-                contentTextLength,
-            },
-            nearestText,
-            nearestMedia,
-        })
-    }
-    async #logTrailingPageDiagnostics(reason) {
-        const doc = this.#view?.document
-        if (!doc?.body || !doc?.documentElement) return
-        const size = await this.size().catch(() => null)
-        const start = await this.start().catch(() => null)
-        const page = await this.page().catch(() => null)
-        const pages = await this.pages().catch(() => null)
-        const viewSize = await this.viewSize().catch(() => null)
-        if (!Number.isFinite(size) || size <= 0 || !Number.isFinite(start) || !Number.isFinite(page) || !Number.isFinite(pages)) return
-        if (page < pages - 3) return
-
-        const contentRects = []
-        const addRect = (element, rect, sample = null) => {
-            if (!rect || rect.width <= 0 || rect.height <= 0) return
-            contentRects.push({ element, rect, sample })
-        }
-        const walker = doc.createTreeWalker?.(doc.body, NodeFilter.SHOW_TEXT, {
-            acceptNode(node) {
-                if (!(node.nodeValue || '').trim()) return NodeFilter.FILTER_REJECT
-                const parent = node.parentElement
-                if (!parent || parent.closest?.('script, style, template, noscript')) return NodeFilter.FILTER_REJECT
-                return NodeFilter.FILTER_ACCEPT
-            },
-        })
-        for (let node = walker?.nextNode?.(); node; node = walker.nextNode()) {
-            const range = doc.createRange()
-            range.selectNodeContents(node)
-            for (const rect of range.getClientRects?.() || []) {
-                addRect(node.parentElement, rect, (node.nodeValue || '').replace(/\s+/g, ' ').slice(0, 80))
-            }
-            range.detach?.()
-        }
-        for (const element of doc.body.querySelectorAll?.('img, svg, video, object, image') || []) {
-            for (const rect of element.getClientRects?.() || []) {
-                addRect(element, rect, null)
-            }
-        }
-        const axisEnd = rect => this.#vertical && !this.scrolled ? rect.bottom : rect.right
-        const axisStart = rect => this.#vertical && !this.scrolled ? rect.top : rect.left
-        const sorted = contentRects
-            .map(({ element, rect, sample }) => ({ element, rect, sample, end: axisEnd(rect), start: axisStart(rect) }))
-            .sort((a, b) => b.end - a.end)
-        const last = sorted[0] ?? null
-        const contentEnd = last?.end ?? 0
-        const blankFromPage = Number.isFinite(contentEnd) && Number.isFinite(size) ? Math.ceil(contentEnd / size) : null
-        const trailingGap = Number.isFinite(viewSize) && Number.isFinite(contentEnd) ? viewSize - contentEnd : null
-        const key = JSON.stringify({
-            index: this.#index,
-            reason,
-            page,
-            pages,
-            start: manabiRound(start, 1),
-            contentEnd: manabiRound(contentEnd, 1),
-            viewSize: manabiRound(viewSize, 1),
-        })
-        if (key === this.#lastBlankPageLogKey) return
-        this.#lastBlankPageLogKey = key
-        const describe = item => item ? {
-            tagName: item.element?.tagName?.toLowerCase?.() ?? null,
-            className: typeof item.element?.className === 'string' ? item.element.className : null,
-            sample: item.sample,
-            axisStart: manabiRound(item.start, 1),
-            axisEnd: manabiRound(item.end, 1),
-            rect: rectSnapshot(item.element),
-            clientRect: {
-                left: manabiRound(item.rect.left, 1),
-                top: manabiRound(item.rect.top, 1),
-                right: manabiRound(item.rect.right, 1),
-                bottom: manabiRound(item.rect.bottom, 1),
-                width: manabiRound(item.rect.width, 1),
-                height: manabiRound(item.rect.height, 1),
-            },
-        } : null
-        postBlankPageLog({
-            event: 'paginator-end-page-diagnostics',
-            reason,
-            index: this.#index,
-            flow: this.getAttribute('flow'),
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-            page,
-            pages,
-            start: manabiRound(start, 1),
-            size: manabiRound(size, 1),
-            viewSize: manabiRound(viewSize, 1),
-            contentEnd: manabiRound(contentEnd, 1),
-            trailingGap: manabiRound(trailingGap, 1),
-            blankFromPage,
-            currentPageLooksPastContent: Number.isFinite(contentEnd) ? start >= contentEnd : null,
-            containerRect: rectSnapshot(this.#container),
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-            rootRect: rectSnapshot(doc.documentElement),
-            bodyRect: rectSnapshot(doc.body),
-            counts: {
-                contentRects: contentRects.length,
-                contentTextLength: (doc.body.textContent || '').replace(/\s+/g, '').length,
-            },
-            furthestContent: describe(last),
-            previousContent: sorted.slice(1, 4).map(describe),
-        })
     }
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
@@ -3090,12 +2510,6 @@ export class Paginator extends HTMLElement {
     async #display(promise) {
         //            console.log("#display...")
         this.#suspendOnExpandAnchor = false
-        this.#displayDebugPhase = {
-            phase: 'start',
-            startedAt: Date.now(),
-            targetIndex: null,
-            currentIndex: this.#index,
-        }
         this.#setLoading(true, 'display.start')
         const displayStartedAt = manabiPerfNow();
         let displayError = null
@@ -3118,23 +2532,6 @@ export class Paginator extends HTMLElement {
                 onLoad,
                 select
             } = await promise
-        const setDisplayPhase = (phase, details = {}) => {
-            this.#displayDebugPhase = {
-                phase,
-                targetIndex: index,
-                currentIndex: this.#index,
-                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-                ...details,
-            }
-            postEBookBugLog('paginator-display-phase', this.#displayDebugPhase)
-        }
-        setDisplayPhase('promise.resolved', {
-            hasSource: !!src,
-            anchorKind: typeof anchor === 'function'
-                ? 'function'
-                : (anchor instanceof Range ? 'range' : typeof anchor),
-            select: !!select,
-        })
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('display.resolved', {
                 targetIndex: index,
@@ -3217,19 +2614,7 @@ export class Paginator extends HTMLElement {
                     src,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 });
-                setDisplayPhase('view.load.start', {
-                    src,
-                    viewExists: !!view,
-                })
                 await view.load(src, afterLoad, beforeRender)
-                setDisplayPhase('view.load.end', {
-                    src,
-                    viewDocumentReadyState: view.document?.readyState ?? null,
-                    viewRect: rectSnapshot(view.element),
-                    iframeRect: rectSnapshot(view.element?.querySelector?.('iframe')),
-                    rootRect: rectSnapshot(view.document?.documentElement),
-                    bodyRect: rectSnapshot(view.document?.body),
-                })
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
@@ -3281,12 +2666,6 @@ export class Paginator extends HTMLElement {
             select: !!select,
             elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         });
-        setDisplayPhase('scroll-to-anchor.start', {
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-            rootRect: rectSnapshot(this.#view?.document?.documentElement),
-            bodyRect: rectSnapshot(this.#view?.document?.body),
-        })
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
         if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
@@ -3302,27 +2681,9 @@ export class Paginator extends HTMLElement {
                 && (pageCurrent >= pageTotal - 1 || landedPastContent)
             ) {
                 const correctedPage = Math.max(1, pageTotal - 2)
-                postEBookBugLog('paginator-anchor-clamped-from-trailing-guard', {
-                    targetIndex: index,
-                    anchor,
-                    pageCurrent,
-                    pageTotal,
-                    correctedPage,
-                    landedPastContent,
-                    viewRect: rectSnapshot(this.#view?.element),
-                    iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-                    rootRect: rectSnapshot(this.#view?.document?.documentElement),
-                    bodyRect: rectSnapshot(this.#view?.document?.body),
-                })
                 await this.#scrollToPage(correctedPage, 'navigation')
             }
         }
-        setDisplayPhase('scroll-to-anchor.end', {
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-            rootRect: rectSnapshot(this.#view?.document?.documentElement),
-            bodyRect: rectSnapshot(this.#view?.document?.body),
-        })
         this.#suspendOnExpandAnchor = false
         if (hasFocus) this.focusView()
         if (!this.#isCacheWarmer && this.style.visibility === 'hidden') {
@@ -3341,27 +2702,6 @@ export class Paginator extends HTMLElement {
             elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
             totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         });
-        let pageCurrent = null
-        let pageTotal = null
-        try {
-            pageCurrent = await this.page()
-            pageTotal = await this.pages()
-        } catch (_error) {}
-        const displaySummary = {
-            targetIndex: index,
-            anchorKind: typeof anchor === 'function'
-                ? 'function'
-                : (anchor instanceof Range ? 'range' : typeof anchor),
-            select: !!select,
-            pageCurrent,
-            pageTotal,
-            viewRect: rectSnapshot(this.#view?.element),
-            iframeRect: rectSnapshot(this.#view?.element?.querySelector?.('iframe')),
-            totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-        }
-        if (displaySummary.anchorKind === 'function' && (pageCurrent ?? 1) > 1) {
-            postPaginatorLoadLog('display.anchor-anomaly', displaySummary)
-        }
         if (!this.#isCacheWarmer) {
             markPaginatorPerf('did-display.dispatch', {
                 targetIndex: index,
@@ -3374,23 +2714,14 @@ export class Paginator extends HTMLElement {
             targetIndex: index,
             totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         });
-        setDisplayPhase('didDisplay.dispatch', displaySummary)
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
-        setDisplayPhase('complete')
         //            console.log("#display... fin")
         } catch (error) {
             displayError = error
-            postEBookBugLog('paginator-display-phase', {
-                phase: 'error',
-                displayPhase: this.#displayDebugPhase,
-                message: error?.message || String(error),
-                stack: error?.stack || null,
-            })
             throw error
         } finally {
             this.#suspendOnExpandAnchor = false
             this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
-            this.#displayDebugPhase = null
         }
     }
     #canGoToIndex(index) {

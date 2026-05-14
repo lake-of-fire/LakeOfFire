@@ -469,10 +469,6 @@ export class NavigationHUD {
         // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
         this._updateRelocateButtons();
         this._updateAuxiliaryInsets();
-        globalThis.reader?.queueLayoutDiagnostics?.('nav-hide-due-to-scroll', {
-            source,
-            shouldHide: this.hideNavigationDueToScroll,
-        });
     }
 
     _captureHideNavState() {
@@ -508,9 +504,6 @@ export class NavigationHUD {
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
             compactLabel: this.navPrimaryTextCompact?.textContent || '',
-        });
-        globalThis.reader?.queueLayoutDiagnostics?.('nav-hidden-state', {
-            shouldHide: this.navHidden,
         });
     }
 

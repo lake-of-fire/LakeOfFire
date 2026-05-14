@@ -11,14 +11,14 @@ body.readability-mode {
     --mnb-reader-max-width-override: 40em;
 }
 
-body.readability-mode,
-body.readability-mode #reader-header,
-body.readability-mode #reader-content,
-body.readability-mode #reader-content > .page,
-body.readability-mode #reader-content > article,
-body.readability-mode #reader-content > div,
-body.readability-mode #reader-content .page > article,
-body.readability-mode #reader-content [style*="max-width"]:not(img):not(video):not(canvas) {
+body.readability-mode:not([data-is-ebook="true"]),
+body.readability-mode:not([data-is-ebook="true"]) #reader-header,
+body.readability-mode:not([data-is-ebook="true"]) #reader-content,
+body.readability-mode:not([data-is-ebook="true"]) #reader-content > .page,
+body.readability-mode:not([data-is-ebook="true"]) #reader-content > article,
+body.readability-mode:not([data-is-ebook="true"]) #reader-content > div,
+body.readability-mode:not([data-is-ebook="true"]) #reader-content .page > article,
+body.readability-mode:not([data-is-ebook="true"]) #reader-content [style*="max-width"]:not(img):not(video):not(canvas) {
     max-width: var(--mnb-reader-max-width-override) !important;
     width: auto !important;
 }
