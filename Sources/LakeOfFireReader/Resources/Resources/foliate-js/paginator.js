@@ -256,6 +256,38 @@ async function getDirection({ bodylessStyle, bodylessDoc }) {
     return { vertical, verticalRTL, rtl };
 }
 
+function getDirectionFromDocument(doc) {
+    const body = doc?.body;
+    const documentElement = doc?.documentElement;
+    if (!body || !documentElement) return null;
+
+    const explicitDirection = body.getAttribute('data-mnb-writing-direction')?.trim?.().toLowerCase?.() ?? null;
+    const styleText = [
+        body.getAttribute('style') ?? '',
+        documentElement.getAttribute('style') ?? '',
+        doc.getElementById?.('mnb-writing-direction-bootstrap')?.textContent ?? '',
+    ].join(';');
+    const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
+    const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
+    let writingMode = writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    if (!writingMode && (explicitDirection === 'vertical' || body.classList?.contains?.('reader-vertical-writing'))) {
+        writingMode = 'vertical-rl';
+    }
+    if (!writingMode && explicitDirection === 'horizontal') {
+        writingMode = 'horizontal-tb';
+    }
+    if (!writingMode) return null;
+
+    const direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+        body.dir === 'rtl' ||
+        documentElement.dir === 'rtl' ||
+        direction === 'rtl';
+    return { vertical, verticalRTL, rtl, writingMode, direction };
+}
+
 const makeMarginals = (length, part) => Array.from({
     length
 }, () => {
@@ -427,14 +459,16 @@ class View {
                         postPaginatorLoadLog('view.afterLoad.end', {
                             src,
                             documentURL: doc?.location?.href || null,
-                            bodyTextLength: doc?.body?.innerText?.length ?? null,
-                            segmentCount: doc?.querySelectorAll?.('mnb-seg')?.length ?? null,
-                            sentenceCount: doc?.querySelectorAll?.('mnb-sen')?.length ?? null,
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         });
 
-                        const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
-                        const direction = await getDirection({ bodylessStyle, bodylessDoc });
+                        let direction = getDirectionFromDocument(doc);
+                        let directionSource = 'document';
+                        if (!direction) {
+                            const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
+                            direction = await getDirection({ bodylessStyle, bodylessDoc });
+                            directionSource = 'bodyless-iframe';
+                        }
                         this.#vertical = direction.vertical;
                         this.#verticalRTL = direction.verticalRTL;
                         this.#rtl = direction.rtl;
@@ -444,8 +478,9 @@ class View {
                             vertical: this.#vertical,
                             verticalRTL: this.#verticalRTL,
                             rtl: this.#rtl,
-                            writingMode: bodylessStyle?.writingMode || null,
-                            cssDirection: bodylessStyle?.direction || null,
+                            directionSource,
+                            writingMode: direction.writingMode || null,
+                            cssDirection: direction.direction || null,
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         });
 

@@ -23,4 +23,9 @@ body.readability-mode:not([data-is-ebook="true"]) #reader-content [style*="max-w
     width: auto !important;
 }
 
+body.readability-mode[data-is-ebook="true"] #reader-content [style*="max-width"]:not(img):not(video):not(canvas) {
+    max-width: var(--mnb-reader-max-width-override) !important;
+    width: auto !important;
+}
+
 /* TODO: Fonts! */

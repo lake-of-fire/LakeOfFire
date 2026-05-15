@@ -1218,6 +1218,7 @@
                     position: relative;
                     width: 20px;
                     height: 20px;
+                    --mnb-spinner-animation-iterations: 3;
                     contain: strict; }
                 .ispinner .ispinner-blade {
                     position: absolute;
@@ -1233,8 +1234,8 @@
                     animation-name: iSpinnerBlade;
                     animation-duration: 1s;
                     animation-timing-function: linear;
-                    animation-iteration-count: infinite;
-                    will-change: opacity; }
+                    animation-iteration-count: var(--mnb-spinner-animation-iterations);
+                    animation-fill-mode: forwards; }
                 .ispinner .ispinner-blade:nth-child(1) {
                     transform: rotate(45deg) translateY(-6.5px);
                     animation-delay: -1.625s; }
@@ -1291,7 +1292,7 @@
                     50% {
                         opacity: 0.25; }
                     100% {
-                        opacity: 0.25; } }
+                        opacity: 0; } }
                 /* End of forked iSpinner CSS */
                 
                 .ispinner {

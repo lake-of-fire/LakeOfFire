@@ -749,7 +749,24 @@ const debounce = (fn, delay) => {
     return debounced;
 };
 
-const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null) => {
+const visibleJapaneseTextStateForVisibleSegmentsResult = (visibleSegmentsResult = null) => {
+    let visibleSegmentCount = 0;
+    for (const item of visibleSegmentsResult?.visibleSegments || []) {
+        if ((item.node?.textContent || '').trim()) {
+            visibleSegmentCount += 1;
+        }
+    }
+    return {
+        hasVisibleJapaneseText: visibleSegmentCount > 0,
+        visibleSegmentCount,
+        observedSegmentCount: visibleSegmentsResult?.totalSegmentCount ?? 0,
+    };
+};
+
+const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null, visibleSegmentsResult = null) => {
+    if (visibleSegmentsResult) {
+        return visibleJapaneseTextStateForVisibleSegmentsResult(visibleSegmentsResult);
+    }
     const contents = renderer?.getContents?.() || [];
     const currentIndex = getPrimaryRendererContentIndex(renderer);
     const activeContents = typeof currentIndex === 'number'
@@ -928,7 +945,7 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
         readerBodyClass: readerBody?.className || null,
         readerBodySegmentCount: readerDoc?.querySelectorAll?.('mnb-seg')?.length ?? null,
         readerBodySentenceCount: readerDoc?.querySelectorAll?.('mnb-sen')?.length ?? null,
-        readerBodyTextLength: readerBody?.innerText?.length ?? null,
+        readerBodyTextLength: readerBody?.textContent?.length ?? null,
         readerDocumentClientWidth: readerRoot?.clientWidth ?? null,
         readerDocumentClientHeight: readerRoot?.clientHeight ?? null,
         readerDocumentScrollWidth: readerRoot?.scrollWidth ?? null,
@@ -955,33 +972,6 @@ const summarizeDocumentFontState = (doc) => ({
     isCacheWarmerDocument: isCacheWarmerDocument(doc),
 });
 
-const captureDocumentFontApplicationState = (doc) => {
-    if (!doc?.defaultView) {
-        return {
-            computedFontFamily: null,
-            sampleTag: null,
-            sampleText: null,
-        };
-    }
-    const sample =
-        doc.body?.querySelector?.('p, li, div, span, ruby, mnb-sen, mnb-seg')
-        || doc.body
-        || doc.documentElement
-        || null;
-    let computedFontFamily = null;
-    try {
-        computedFontFamily = sample
-            ? doc.defaultView.getComputedStyle(sample).fontFamily
-            : null;
-    } catch {}
-    return {
-        computedFontFamily,
-        sampleTag: sample?.tagName || null,
-        sampleText: sample?.textContent?.trim?.()?.slice?.(0, 60) || null,
-        injectedFontFamily: doc.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
-        fontInjected: doc.documentElement?.dataset?.mnbFontInjected ?? null,
-    };
-};
 
 const postFontLog = (event, details = {}) => {
     try {
@@ -1148,7 +1138,6 @@ const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unk
         targetTag: targetFontStyle.tagName || null,
         href: targetFontStyle.href || null,
         family: targetFontStyle.dataset?.mnbInjectedFontFamily || null,
-        ...captureDocumentFontApplicationState(doc),
     });
     return true;
 };
@@ -2548,8 +2537,21 @@ const buildExampleSentenceForSegment = (segmentNode) => {
     };
 };
 
+const rectHasPositiveFiniteSize = (rect) => {
+    return Number.isFinite(rect?.left)
+        && Number.isFinite(rect?.top)
+        && Number.isFinite(rect?.right)
+        && Number.isFinite(rect?.bottom)
+        && Number.isFinite(rect?.width)
+        && Number.isFinite(rect?.height)
+        && rect.width > 0
+        && rect.height > 0;
+};
+
 const rectIntersectsViewport = (rect, viewportWidth, viewportHeight) => {
-    if (!rect || rect.width <= 0 || rect.height <= 0) {
+    if (!rectHasPositiveFiniteSize(rect)
+        || !Number.isFinite(viewportWidth)
+        || !Number.isFinite(viewportHeight)) {
         return false;
     }
     return rect.right > 0
@@ -2559,7 +2561,11 @@ const rectIntersectsViewport = (rect, viewportWidth, viewportHeight) => {
 };
 
 const rectIntersectsBounds = (rect, bounds) => {
-    if (!rect || rect.width <= 0 || rect.height <= 0 || !bounds) {
+    if (!rectHasPositiveFiniteSize(rect)
+        || !Number.isFinite(bounds?.left)
+        || !Number.isFinite(bounds?.top)
+        || !Number.isFinite(bounds?.right)
+        || !Number.isFinite(bounds?.bottom)) {
         return false;
     }
     return rect.right > bounds.left
@@ -2568,32 +2574,47 @@ const rectIntersectsBounds = (rect, bounds) => {
         && rect.top < bounds.bottom;
 };
 
-const positiveClientRectsForNode = (node) => {
-    const rects = [];
-    if (typeof node?.getClientRects === 'function') {
-        rects.push(...Array.from(node.getClientRects()));
+const positiveBoundingClientRectForNode = (node) => {
+    if (typeof node?.getBoundingClientRect !== 'function') {
+        return null;
     }
-    if (typeof node?.getBoundingClientRect === 'function') {
-        rects.push(node.getBoundingClientRect());
+    const rect = node.getBoundingClientRect();
+    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+};
+
+const positiveClientRectsForNode = (node) => {
+    if (typeof node?.getClientRects === 'function') {
+        const rects = Array.from(node.getClientRects()).filter((rect) => rect && rect.width > 0 && rect.height > 0);
+        if (rects.length > 0) {
+            return rects;
+        }
     }
     const doc = node?.ownerDocument ?? null;
     if (doc?.createRange && node?.childNodes?.length > 0) {
         const range = doc.createRange();
         try {
             range.selectNodeContents(node);
-            rects.push(...Array.from(range.getClientRects?.() ?? []));
+            const rects = Array.from(range.getClientRects?.() ?? [])
+                .filter((rect) => rect && rect.width > 0 && rect.height > 0);
+            if (rects.length > 0) {
+                return rects;
+            }
         } catch (_error) {
             // ignore unmeasurable nodes
         } finally {
             range.detach?.();
         }
     }
-    return rects.filter((rect) => rect && rect.width > 0 && rect.height > 0);
+    const boundingRect = positiveBoundingClientRectForNode(node);
+    return boundingRect ? [boundingRect] : [];
 };
 
-const firstVisibleClientRectForNode = (node, bounds) => {
-    const rects = positiveClientRectsForNode(node);
-    return rects.find((rect) => rectIntersectsBounds(rect, bounds)) ?? null;
+const visibleClientRectsForNode = (node, bounds) => {
+    const boundingRect = positiveBoundingClientRectForNode(node);
+    if (!rectIntersectsBounds(boundingRect, bounds)) {
+        return [];
+    }
+    return positiveClientRectsForNode(node).filter((rect) => rectIntersectsBounds(rect, bounds));
 };
 
 const viewportBoundsForReaderDocument = (doc) => {
@@ -2615,18 +2636,22 @@ const viewportBoundsForReaderDocument = (doc) => {
             && containerRect.width > 0
             && containerRect.height > 0;
         if (!hasGeometry) {
-            return {
-                viewportWidth: 0,
-                viewportHeight: 0,
-                visibleBounds: null,
-                frameRect,
-                containerRect,
+        return {
+            viewportWidth: 0,
+            viewportHeight: 0,
+            viewportLeft: 0,
+            viewportTop: 0,
+            visibleBounds: null,
+            frameRect,
+            containerRect,
                 hasExpectedPaginatorContainer,
             };
         }
         return {
             viewportWidth: containerRect.width,
             viewportHeight: containerRect.height,
+            viewportLeft: containerRect.left,
+            viewportTop: containerRect.top,
             visibleBounds: {
                 left: containerRect.left - frameRect.left,
                 top: containerRect.top - frameRect.top,
@@ -2643,6 +2668,8 @@ const viewportBoundsForReaderDocument = (doc) => {
     return {
         viewportWidth,
         viewportHeight,
+        viewportLeft: 0,
+        viewportTop: 0,
         visibleBounds: {
             left: 0,
             top: 0,
@@ -2722,7 +2749,8 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             continue;
         }
         const rectStartedAt = performance.now();
-        const rect = firstVisibleClientRectForNode(segmentNode, visibleBounds);
+        const rects = visibleClientRectsForNode(segmentNode, visibleBounds);
+        const rect = rects[0] ?? null;
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
         const rangeStartedAt = performance.now();
@@ -2743,6 +2771,7 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         visibleSegments.push({
             node: segmentNode,
             rect,
+            rects,
             segmentIdentifier,
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
@@ -2819,6 +2848,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             visibleSegments: [],
             viewportWidth: 0,
             viewportHeight: 0,
+            viewportLeft: 0,
+            viewportTop: 0,
             totalSegmentCount: 0,
             hiddenTooltipCount: 0,
             missingIdentifierCount: 0,
@@ -2829,6 +2860,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const {
         viewportWidth,
         viewportHeight,
+        viewportLeft,
+        viewportTop,
         visibleBounds,
         frameRect,
         containerRect,
@@ -2909,7 +2942,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             continue;
         }
         const rectStartedAt = performance.now();
-        const rect = firstVisibleClientRectForNode(segmentNode, visibleBounds);
+        const rects = visibleClientRectsForNode(segmentNode, visibleBounds);
+        const rect = rects[0] ?? null;
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
         const isInVisibleRange = useVisibleRange
@@ -2935,6 +2969,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         visibleSegments.push({
             node: segmentNode,
             rect,
+            rects,
             segmentIdentifier,
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
@@ -2958,7 +2993,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
                 continue;
             }
             const rectStartedAt = performance.now();
-            const rect = firstVisibleClientRectForNode(segmentNode, visibleBounds);
+            const rects = visibleClientRectsForNode(segmentNode, visibleBounds);
+            const rect = rects[0] ?? null;
             fallbackRectMeasureCount += 1;
             fallbackRectMeasureElapsedMs += performance.now() - rectStartedAt;
             if (!rect) {
@@ -2969,6 +3005,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             fallbackSegments.push({
                 node: segmentNode,
                 rect,
+                rects,
                 segmentIdentifier,
                 sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
             });
@@ -3018,6 +3055,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         visibleSegments,
         viewportWidth,
         viewportHeight,
+        viewportLeft,
+        viewportTop,
+        frameLeft: Number.isFinite(frameRect?.left) ? frameRect.left : 0,
+        frameTop: Number.isFinite(frameRect?.top) ? frameRect.top : 0,
         totalSegmentCount,
         hiddenTooltipCount,
         missingIdentifierCount,
@@ -3025,7 +3066,62 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     };
 };
 
-const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null) => {
+const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult) => {
+    const view = doc?.defaultView ?? null;
+    const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
+    const viewportWidth = visibleSegmentsResult?.viewportWidth
+        ?? window.visualViewport?.width
+        ?? window.innerWidth
+        ?? document.documentElement?.clientWidth
+        ?? null;
+    const viewportHeight = visibleSegmentsResult?.viewportHeight
+        ?? window.visualViewport?.height
+        ?? window.innerHeight
+        ?? document.documentElement?.clientHeight
+        ?? null;
+    const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
+    const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
+    if (typeof builder !== 'function') {
+        window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+            targets: [],
+            visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+            viewportWidth,
+            viewportHeight,
+            viewportLeft,
+            viewportTop,
+        });
+        return;
+    }
+    view?.manabi_resetNativeLookupHitTargets?.();
+    const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
+    const frameTop = visibleSegmentsResult?.frameTop ?? 0;
+    const targets = [];
+    for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
+        const rects = item?.rects?.length ? item.rects : (item?.rect ? [item.rect] : []);
+        if (!item?.node || rects.length === 0) {
+            continue;
+        }
+        const target = builder(item.node, rects.map((rect) => ({
+            left: rect.left + frameLeft,
+            top: rect.top + frameTop,
+            width: rect.width,
+            height: rect.height,
+        })));
+        if (target) {
+            targets.push(target);
+        }
+    }
+    window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+        targets,
+        visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+        viewportWidth,
+        viewportHeight,
+        viewportLeft,
+        viewportTop,
+    });
+};
+
+const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null, visibleSegmentsResult = null) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
     const hasAnyMarkedReadContent = readSegmentIdentifiers.size > 0
@@ -3038,7 +3134,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
         hiddenTooltipCount,
         missingIdentifierCount,
         outOfViewportCount,
-    } = collectVisibleSegmentNodesFromRange(doc, visibleRange);
+    } = visibleSegmentsResult || collectVisibleSegmentNodesFromRange(doc, visibleRange);
     const clusterAxis = !!doc?.body?.classList?.contains?.('reader-vertical-writing') ? 'block' : 'inline';
     let recoveredTextSearchStringCount = 0;
     let skippedMissingSearchStringCount = 0;
@@ -3698,6 +3794,10 @@ const percentFormat = new Intl.NumberFormat(locales, {
     style: 'percent'
 })
 
+const loadingVisualDelayMs = 200;
+const loadingVisualMaximumMs = 3500;
+const navSpinnerMaximumMs = 3500;
+
 class Reader {
     #show(btn, show = true) {
         if (show) {
@@ -3717,16 +3817,23 @@ class Reader {
         if (nextVisible) {
             loadingIndicator?.removeAttribute?.('hidden');
             clearTimeout(this.loadingVisualTimer);
+            clearTimeout(this.loadingVisualMaximumTimer);
             this.loadingVisualTimer = setTimeout(() => {
                 if (document.body?.classList?.contains?.('loading')) {
                     document.body.classList.add('loading-visual');
                 }
-            }, 200);
+            }, loadingVisualDelayMs);
+            this.loadingVisualMaximumTimer = setTimeout(() => {
+                loadingIndicator?.setAttribute?.('hidden', '');
+                document.body?.classList?.remove?.('loading-visual');
+            }, loadingVisualMaximumMs);
         }
         body.classList.toggle('loading', nextVisible);
         if (previousVisible && !nextVisible) {
             clearTimeout(this.loadingVisualTimer);
+            clearTimeout(this.loadingVisualMaximumTimer);
             this.loadingVisualTimer = null;
+            this.loadingVisualMaximumTimer = null;
             body.classList.remove('loading-visual');
             loadingIndicator?.setAttribute?.('hidden', '');
         }
@@ -3769,6 +3876,8 @@ class Reader {
     lastLayoutSnapshot = null;
     lastCFIPersistenceObservation = null;
     unstableCFIs = new Set();
+    visiblePageCollectionGeneration = 0;
+    visiblePageSegmentSnapshot = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -4653,6 +4762,7 @@ class Reader {
     #clearVisiblePageReadChrome(reason = 'unspecified') {
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
         if (reason === 'page-turn-start') {
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.pageReadMarkerAwaitingPageState = true;
         }
         document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
@@ -4666,6 +4776,51 @@ class Reader {
                 label.textContent = 'Mark Read';
             });
         });
+    }
+    #invalidateVisiblePageSegmentSnapshot() {
+        this.visiblePageCollectionGeneration += 1;
+        this.visiblePageSegmentSnapshot = null;
+        window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+            targets: [],
+            visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+            viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
+            viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
+            viewportLeft: 0,
+            viewportTop: 0,
+        });
+        this.#postUpdateReadingProgressMessage?.cancel?.();
+        if (this.pageTrackingRetryHandle) {
+            cancelAnimationFrame(this.pageTrackingRetryHandle);
+            this.pageTrackingRetryHandle = null;
+        }
+    }
+    #visibleRangeForDocument(doc) {
+        const range = this.navHUD?.lastRelocateDetail?.range ?? null;
+        return range?.commonAncestorContainer?.ownerDocument === doc
+            || range?.startContainer?.ownerDocument === doc
+            || range?.endContainer?.ownerDocument === doc
+            ? range
+            : null;
+    }
+    #visiblePageSegmentResult(doc, visibleRange = null) {
+        const snapshot = this.visiblePageSegmentSnapshot;
+        if (
+            snapshot
+            && snapshot.generation === this.visiblePageCollectionGeneration
+            && snapshot.doc === doc
+            && snapshot.visibleRange === visibleRange
+        ) {
+            return snapshot.result;
+        }
+        const result = collectVisibleSegmentNodesFromRange(doc, visibleRange);
+        this.visiblePageSegmentSnapshot = {
+            generation: this.visiblePageCollectionGeneration,
+            doc,
+            visibleRange,
+            result,
+        };
+        postNativeLookupHitTargetsForVisibleSegments(doc, result);
+        return result;
     }
     #updateEbookSubscriptionPreviewPageState({
         sectionIndex = null,
@@ -4883,16 +5038,20 @@ class Reader {
         return `x=${x ?? 'nil'} y=${y ?? 'nil'} w=${width ?? 'nil'} h=${height ?? 'nil'}`;
     }
     #intersectRects(a, b) {
-        if (!a || !b) {
+        if (!Number.isFinite(a?.left)
+            || !Number.isFinite(a?.top)
+            || !Number.isFinite(a?.right)
+            || !Number.isFinite(a?.bottom)
+            || !Number.isFinite(b?.left)
+            || !Number.isFinite(b?.top)
+            || !Number.isFinite(b?.right)
+            || !Number.isFinite(b?.bottom)) {
             return null;
         }
-        const left = Math.max(a.left ?? -Infinity, b.left ?? -Infinity);
-        const top = Math.max(a.top ?? -Infinity, b.top ?? -Infinity);
-        const right = Math.min(a.right ?? Infinity, b.right ?? Infinity);
-        const bottom = Math.min(a.bottom ?? Infinity, b.bottom ?? Infinity);
-        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
-            return null;
-        }
+        const left = Math.max(a.left, b.left);
+        const top = Math.max(a.top, b.top);
+        const right = Math.min(a.right, b.right);
+        const bottom = Math.min(a.bottom, b.bottom);
         if (right <= left || bottom <= top) {
             return null;
         }
@@ -5692,18 +5851,23 @@ class Reader {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
             this.pageTrackingRetryHandle = null;
         }
-        const visibleRange = this.navHUD?.lastRelocateDetail?.range?.commonAncestorContainer?.ownerDocument === doc
-            || this.navHUD?.lastRelocateDetail?.range?.startContainer?.ownerDocument === doc
-            ? this.navHUD.lastRelocateDetail.range
-            : null;
+        const syncGeneration = this.visiblePageCollectionGeneration;
+        const visibleRange = this.#visibleRangeForDocument(doc);
         if (visibleRange?.collapsed === true && retryCount > 0) {
             this.#queuePageTrackingRetry(reason, doc, retryCount);
+            return;
+        }
+        const visibleSegmentsResult = this.#visiblePageSegmentResult(doc, visibleRange);
+        if (syncGeneration !== this.visiblePageCollectionGeneration) {
             return;
         }
         const {
             states,
             diagnostics,
-        } = await buildVisiblePageTrackingStates(doc, this.articleReadingProgress, visibleRange);
+        } = await buildVisiblePageTrackingStates(doc, this.articleReadingProgress, visibleRange, visibleSegmentsResult);
+        if (syncGeneration !== this.visiblePageCollectionGeneration) {
+            return;
+        }
         const visibleScreenState = states.find((state) => state.id === 'visible-screen') ?? null;
         const shouldRetryEmptyDocument =
             retryCount > 0
@@ -6963,7 +7127,6 @@ class Reader {
                 ebookCustomFontTag: doc?.getElementById?.('mnb-custom-fonts-inline')?.tagName || null,
                 ebookCustomFontHref: doc?.getElementById?.('mnb-custom-fonts-inline')?.href || null,
                 ...summarizeDocumentFontState(doc),
-                ...captureDocumentFontApplicationState(doc),
                 ...captureEPUBOverlapState(),
             });
         }
@@ -6979,7 +7142,6 @@ class Reader {
             ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
             ebookInjectedFontFamily: doc?.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
             ebookFontInjected: doc?.documentElement?.dataset?.mnbFontInjected ?? null,
-            ...captureDocumentFontApplicationState(doc),
         });
         try {
             window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
@@ -7012,7 +7174,7 @@ class Reader {
                     documentURL: doc?.location?.href || null,
                     elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
                     ...summarizeDocumentFontState(doc),
-                    bodyTextLength: doc?.body?.innerText?.length ?? null,
+                    bodyTextLength: doc?.body?.textContent?.length ?? null,
                 });
                 try {
                     window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
@@ -7021,15 +7183,14 @@ class Reader {
                         documentURL: doc?.location?.href || null,
                         elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
                         ...summarizeDocumentFontState(doc),
-                        ...captureDocumentFontApplicationState(doc),
-                        bodyTextLength: doc?.body?.innerText?.length ?? null,
+                        bodyTextLength: doc?.body?.textContent?.length ?? null,
                     }));
                 } catch {}
                 if (!isCacheWarmerDocument(doc)) {
                     markEPUBPerf('document.fonts.ready.first', {
                         documentURL: doc?.location?.href || null,
                         elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
-                        bodyTextLength: doc?.body?.innerText?.length ?? null,
+                        bodyTextLength: doc?.body?.textContent?.length ?? null,
                         ...captureEPUBOverlapState(),
                     }, {
                         once: true,
@@ -7037,14 +7198,13 @@ class Reader {
                     postReplaceTextPerfLog('document.fonts.ready.first', {
                         documentURL: doc?.location?.href || null,
                         elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
-                        bodyTextLength: doc?.body?.innerText?.length ?? null,
+                        bodyTextLength: doc?.body?.textContent?.length ?? null,
                         bodyScrollHeight: doc?.body?.scrollHeight ?? null,
                         outerHasCustomFontStyle: !!document.getElementById('mnb-custom-fonts-inline'),
                         ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
                         ebookCustomFontTag: doc?.getElementById?.('mnb-custom-fonts-inline')?.tagName || null,
                         ebookCustomFontHref: doc?.getElementById?.('mnb-custom-fonts-inline')?.href || null,
                         ...summarizeDocumentFontState(doc),
-                        ...captureDocumentFontApplicationState(doc),
                         ...captureEPUBOverlapState(),
                     });
                 }
@@ -7061,7 +7221,7 @@ class Reader {
             postEPUBLog('ebook.perf.document.animation-frame', {
                 documentURL: doc?.location?.href || null,
                 sourceHref,
-                bodyTextLength: doc?.body?.innerText?.length ?? null,
+                bodyTextLength: doc?.body?.textContent?.length ?? null,
                 bodyScrollHeight: doc?.body?.scrollHeight ?? null,
                 ...summarizeDocumentFontState(doc),
                 ...captureEPUBOverlapState(),
@@ -7071,7 +7231,7 @@ class Reader {
                 markEPUBPerf('document.animation-frame.first', {
                     documentURL: doc?.location?.href || null,
                     sourceHref,
-                    bodyTextLength: doc?.body?.innerText?.length ?? null,
+                    bodyTextLength: doc?.body?.textContent?.length ?? null,
                     bodyScrollHeight: doc?.body?.scrollHeight ?? null,
                     ...captureEPUBOverlapState(),
                 }, {
@@ -7080,7 +7240,7 @@ class Reader {
                 postReplaceTextPerfLog('document.animation-frame.first', {
                     documentURL: doc?.location?.href || null,
                     sourceHref,
-                    bodyTextLength: doc?.body?.innerText?.length ?? null,
+                    bodyTextLength: doc?.body?.textContent?.length ?? null,
                     bodyScrollHeight: doc?.body?.scrollHeight ?? null,
                     ...captureEPUBOverlapState(),
                 });
@@ -7127,8 +7287,17 @@ class Reader {
         sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-        const visibleRange = this.navHUD?.lastRelocateDetail?.range ?? null;
-        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(this.view?.renderer, visibleRange);
+        const contents = this.view?.renderer?.getContents?.() || [];
+        const doc = contents[0]?.doc || contents[0]?.document || null;
+        const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;
+        const visibleSegmentsResult = isDocumentLike(doc)
+            ? this.#visiblePageSegmentResult(doc, visibleRange)
+            : null;
+        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(
+            this.view?.renderer,
+            visibleRange,
+            visibleSegmentsResult
+        );
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
@@ -7146,6 +7315,7 @@ class Reader {
     async #onRelocate({
         detail
     }) {
+        this.#invalidateVisiblePageSegmentSnapshot();
         const {
             fraction,
             location,
@@ -7161,6 +7331,11 @@ class Reader {
             totalLocation: location?.total ?? null,
         });
         await this.navHUD?.handleRelocate(detail);
+        const nativeLookupDoc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+        if (isDocumentLike(nativeLookupDoc)) {
+            const nativeLookupVisibleRange = this.#visibleRangeForDocument(nativeLookupDoc);
+            this.#visiblePageSegmentResult(nativeLookupDoc, nativeLookupVisibleRange);
+        }
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({
             navHUD: this.navHUD,
@@ -7430,6 +7605,7 @@ class Reader {
             }
             if (label) label.style.visibility = '';
         };
+        const navSpinnerFallbackTimer = setTimeout(restoreIcon, navSpinnerMaximumMs);
         let nav;
         switch (type) {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
@@ -7445,6 +7621,7 @@ class Reader {
                 break;
         }
         Promise.resolve(nav).finally(() => {
+            clearTimeout(navSpinnerFallbackTimer);
             restoreIcon();
         });
     }
