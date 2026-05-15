@@ -3631,6 +3631,11 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
+    mnb-con,
+    mnb-sen {
+        display: contents !important;
+    }
+
     mnb-seg {
         /* Keep book segments atomic so page turns never split a segment across pages. */
         display: inline-block !important;
@@ -3797,7 +3802,7 @@ const percentFormat = new Intl.NumberFormat(locales, {
 
 const loadingVisualDelayMs = 200;
 const loadingVisualMaximumMs = 3500;
-const navSpinnerMaximumMs = 3500;
+const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #show(btn, show = true) {
