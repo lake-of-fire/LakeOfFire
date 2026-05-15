@@ -7167,6 +7167,9 @@ class Reader {
             } catch {}
         }
         try {
+            window.manabiApplyReaderThemeToEbookDocuments?.('document-load', doc);
+        } catch (_error) {}
+        try {
             window.manabiApplyReaderFontSizeToEbookDocuments?.('document-load', doc);
         } catch (error) {
             try {
