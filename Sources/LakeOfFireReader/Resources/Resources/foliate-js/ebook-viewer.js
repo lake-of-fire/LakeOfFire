@@ -3081,8 +3081,9 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         ?? null;
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
+    const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     if (typeof builder !== 'function') {
-        window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+        messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth,
@@ -3111,7 +3112,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets.push(target);
         }
     }
-    window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+    messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
         visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
         viewportWidth,

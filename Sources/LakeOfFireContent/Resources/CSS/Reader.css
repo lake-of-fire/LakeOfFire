@@ -18,6 +18,12 @@ body:not([data-is-ebook="true"]) {
   margin-right: auto;
 }
 
+body[data-is-ebook="true"]:not(.reader-vertical-writing) {
+  padding: 24px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 #reader-header {
   text-align: start;
 }
