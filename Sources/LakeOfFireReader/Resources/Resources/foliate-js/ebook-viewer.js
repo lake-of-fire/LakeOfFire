@@ -4578,7 +4578,9 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('window-resize');
+            requestAnimationFrame(() => this.#syncPageTrackingButtons('window-resize', null, 1).catch((error) => console.error(error)));
         });
         window.visualViewport?.addEventListener?.('resize', () => {
             postBookRotateLog('visualViewport.resize', {
@@ -4591,8 +4593,14 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('visual-viewport-resize');
+            requestAnimationFrame(() => this.#syncPageTrackingButtons('visual-viewport-resize', null, 1).catch((error) => console.error(error)));
         });
+        window.manabiInvalidateVisiblePageSegmentSnapshot = (reason = 'manual') => {
+            this.#invalidateVisiblePageSegmentSnapshot();
+            requestAnimationFrame(() => this.#syncPageTrackingButtons(reason, null, 1).catch((error) => console.error(error)));
+        };
         screen.orientation?.addEventListener?.('change', () => {
             postBookRotateLog('screen.orientation.change', {
                 innerWidth: window.innerWidth ?? null,
@@ -4602,7 +4610,9 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('screen-orientation-change');
+            requestAnimationFrame(() => this.#syncPageTrackingButtons('screen-orientation-change', null, 1).catch((error) => console.error(error)));
         });
     }
     #logPageTracking(event, details = {}) {
@@ -8132,10 +8142,12 @@ class CacheWarmer {
 window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
 //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
 window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 
 window.loadNextCacheWarmerSection = async () => {
