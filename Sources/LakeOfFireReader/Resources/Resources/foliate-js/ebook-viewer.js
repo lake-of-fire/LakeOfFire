@@ -3636,9 +3636,14 @@ const getCSSForBookContent = ({
         display: contents !important;
     }
 
+    mnb-sur {
+        contain: style paint !important;
+    }
+
     mnb-seg {
         /* Keep book segments atomic so page turns never split a segment across pages. */
         display: inline-block !important;
+        contain: style paint !important;
         vertical-align: baseline !important;
         max-inline-size: 100% !important;
         break-inside: avoid !important;
