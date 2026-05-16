@@ -264,15 +264,11 @@ public struct FeedView: View {
     private func setFollowed(_ isFollowed: Bool) async throws {
         let canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         try await Realm.asyncWrite(configuration: ReaderContentLoader.feedEntryRealmConfiguration) { realm in
-            let now = Date()
-            let feeds = realm.objects(Feed.self)
-                .where { !$0.isDeleted }
-                .filter { $0.canonicalFollowingFeedURLKey == canonicalFeedURLKey }
-            for feed in feeds {
-                feed.isFollowed = isFollowed
-                feed.explicitlyModifiedAt = now
-                feed.modifiedAt = now
-            }
+            Feed.setFollowingStatusForFeedGroup(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                isFollowed: isFollowed,
+                in: realm
+            )
         }
     }
 }

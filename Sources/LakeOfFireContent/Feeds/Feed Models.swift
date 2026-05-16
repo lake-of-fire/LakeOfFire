@@ -92,6 +92,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var lastFetchedModifiedAt: Date?
     @Persisted public var showsUnseenBadge = true
     @Persisted public var isFollowed = false
+    @Persisted public var followingOrdinal: Int?
     @Persisted public var isDeleted = false
     
     public enum CodingKeys: String, CodingKey, CaseIterable {
@@ -108,6 +109,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         case extractImageFromContent
         case deleteOrphans
         case isFollowed
+        case followingOrdinal
         case modifiedAt
         case isArchived
     }
@@ -133,6 +135,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(meaningfulContentMinLength, forKey: .meaningfulContentMinLength)
         try container.encode(deleteOrphans, forKey: .deleteOrphans)
         try container.encode(isFollowed, forKey: .isFollowed)
+        try container.encode(followingOrdinal, forKey: .followingOrdinal)
         try container.encode(modifiedAt, forKey: .modifiedAt)
     }
     
@@ -152,6 +155,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
         self.isFollowed = try container.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
+        self.followingOrdinal = try container.decodeIfPresent(Int.self, forKey: .followingOrdinal)
     }
     
     public func getCategory() -> FeedCategory? {
@@ -212,7 +216,16 @@ public extension Feed {
         }
 
         return representativesByURL.values.sorted { lhs, rhs in
-            lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            switch (lhs.followingOrdinal, rhs.followingOrdinal) {
+            case let (left?, right?) where left != right:
+                return left < right
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
         }
     }
 
@@ -298,7 +311,24 @@ public extension Feed {
             $0.canonicalFollowingFeedURLKey
         }
 
-        let entriesByFeed = groupedFeeds.values.compactMap { feedGroup -> [FeedEntry]? in
+        let orderedFeedGroups = groupedFeeds.values.sorted { lhs, rhs in
+            let left = representativeOrdinal(in: Array(lhs))
+            let right = representativeOrdinal(in: Array(rhs))
+            switch (left, right) {
+            case let (left?, right?) where left != right:
+                return left < right
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                let leftTitle = lhs.map(\.title).min { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending } ?? ""
+                let rightTitle = rhs.map(\.title).min { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending } ?? ""
+                return leftTitle.localizedCaseInsensitiveCompare(rightTitle) == .orderedAscending
+            }
+        }
+
+        let entriesByFeed = orderedFeedGroups.compactMap { feedGroup -> [FeedEntry]? in
             guard feedGroup.contains(where: \.isFollowed) else { return nil }
             var entriesByURL = [String: FeedEntry]()
 
@@ -351,7 +381,22 @@ public extension Feed {
         }
     }
 
+    private static func representativeOrdinal(in feedGroup: [Feed]) -> Int? {
+        feedGroup.compactMap(\.followingOrdinal).min()
+    }
+
     private static func shouldPreferFollowingFeedRepresentative(_ candidate: Feed, over current: Feed) -> Bool {
+        switch (candidate.followingOrdinal, current.followingOrdinal) {
+        case let (left?, right?) where left != right:
+            return left < right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            break
+        }
+
         if candidate.isFollowed != current.isFollowed {
             return candidate.isFollowed
         }
