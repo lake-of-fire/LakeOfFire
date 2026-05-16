@@ -12,6 +12,14 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
+private func readerLoadDurationString(_ interval: TimeInterval) -> String {
+    let milliseconds = Int64((max(0, Double(interval)) * 1_000).rounded())
+    let seconds = milliseconds / 1_000
+    let rawFractionalString = String(milliseconds % 1_000)
+    let fractionalString = String(repeating: "0", count: max(0, 3 - rawFractionalString.count)) + rawFractionalString
+    return "\(seconds).\(fractionalString)s"
+}
+
 private struct ReaderStatusBarFadeOverlay: ViewModifier {
     var topFadeHeight: CGFloat
     var backgroundColor: Color
@@ -877,7 +885,7 @@ public extension WebViewNavigator {
                 "# READERLOAD stage=navigator.loadContent.dispatched targetURL=\(url.absoluteString)"
             )
             debugPrint(
-                "# READERLOAD stage=navigator.loadContent.summary contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) resolveElapsed=\(String(format: "%.3f", resolvedAt - loadStartedAt))s dispatchElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - resolvedAt))s totalElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - loadStartedAt))s readerDefault=\(content.isReaderModeByDefault) targetKind=\(url.isReaderURLLoaderURL ? "readerLoader" : (url.isHTTP ? "http" : (url.isFileURL ? "file" : "other")))"
+                "# READERLOAD stage=navigator.loadContent.summary contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) resolveElapsed=\(readerLoadDurationString(resolvedAt - loadStartedAt)) dispatchElapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt)) totalElapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - loadStartedAt)) readerDefault=\(content.isReaderModeByDefault) targetKind=\(url.isReaderURLLoaderURL ? "readerLoader" : (url.isHTTP ? "http" : (url.isFileURL ? "file" : "other")))"
             )
         } else {
             debugPrint(

@@ -183,6 +183,9 @@ public struct FeedView: View {
     var showsToolbar = true
     @State private var showsReaderContentNewBadges = true
     @Environment(\.contentSelection) private var contentSelection
+#if os(iOS)
+    @Environment(\.editMode) private var editMode
+#endif
 
     private var entries: [FeedEntry] {
         viewModel.entries ?? []
@@ -191,6 +194,41 @@ public struct FeedView: View {
     private var showsMarkAllAsSeenAction: Bool {
         feed.showsUnseenBadge && !entries.isEmpty
     }
+
+    private var allowsVideoMakerSelection: Bool {
+#if DEBUG
+        true
+#else
+        false
+#endif
+    }
+
+#if DEBUG
+    private var showsSelectionInOverflowMenu: Bool {
+#if os(iOS)
+        if #available(iOS 26, *) {
+            return true
+        }
+        return false
+#else
+        return false
+#endif
+    }
+
+    private var showsSelectionToolbarButton: Bool {
+#if os(iOS)
+        !showsSelectionInOverflowMenu
+#else
+        false
+#endif
+    }
+#endif
+
+#if DEBUG && os(iOS)
+    private func setSelectionModeActive(_ isActive: Bool) {
+        editMode?.wrappedValue = isActive ? .active : .inactive
+    }
+#endif
 
     private func entryIDsDescription(_ entries: [FeedEntry]?) -> String {
         (entries ?? []).map(\.compoundKey).joined(separator: ",")
@@ -226,7 +264,8 @@ public struct FeedView: View {
                     entrySelection: contentSelection,
                     useDefaultRowInsets: true,
                     showsNewBadges: showsReaderContentNewBadges,
-                    separateRowsIntoSections: true
+                    separateRowsIntoSections: true,
+                    allowEditing: allowsVideoMakerSelection
                 ) {
                 } emptyStateView: {
                     EmptyStateBoxView(
@@ -299,6 +338,18 @@ public struct FeedView: View {
         }
         .toolbar {
             ToolbarItem(placement: toolbarTrailingPlacement) {
+#if DEBUG
+                if showsToolbar,
+                   !isHorizontal,
+                   !(currentEntries?.isEmpty ?? true),
+                   showsSelectionToolbarButton {
+                    EditButton()
+                }
+#else
+                EmptyView()
+#endif
+            }
+            ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
                     Button {
                         Task { @MainActor in
@@ -312,6 +363,19 @@ public struct FeedView: View {
             ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
                     Menu {
+#if DEBUG
+                        if !isHorizontal && !(currentEntries?.isEmpty ?? true) {
+#if os(iOS)
+                            if showsSelectionInOverflowMenu {
+                                Button {
+                                    setSelectionModeActive(editMode?.wrappedValue == .inactive)
+                                } label: {
+                                    Label(editMode?.wrappedValue == .inactive ? "Select" : "Done", systemImage: "checklist")
+                                }
+                            }
+#endif
+                        }
+#endif
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
                                 Task { @MainActor in

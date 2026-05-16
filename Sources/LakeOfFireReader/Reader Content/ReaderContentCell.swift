@@ -349,6 +349,9 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
     @Environment(\.controlSize) private var controlSize
+#if DEBUG
+    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
+#endif
 
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
@@ -644,6 +647,19 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         item.hasAudio
     }
 
+#if DEBUG
+    @ViewBuilder
+    private var videoMakerMenuItem: some View {
+        if item.hasTranscriptTracerVideoSource, let readerContentVideoMakerOpenAction {
+            Button {
+                readerContentVideoMakerOpenAction([item])
+            } label: {
+                Label("Make Video", systemImage: "film")
+            }
+        }
+    }
+#endif
+
     @ViewBuilder
     private var sourceOrAuthorRow: some View {
         if appearance.isEbookStyle, let author = bookAuthorText {
@@ -819,6 +835,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 
                 AnyView(self.item.bookmarkButtonView(iconOnly: false))
 
+#if DEBUG
+                videoMakerMenuItem
+#endif
+
                 if let customMenuOptions {
                     customMenuOptions(self.item)
                 }
@@ -847,6 +867,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 
                 AnyView(self.item.bookmarkButtonView(iconOnly: false))
 
+#if DEBUG
+                videoMakerMenuItem
+#endif
+
                 if let customMenuOptions {
                     customMenuOptions(self.item)
                 }
@@ -873,6 +897,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                 }
 
                 AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+#if DEBUG
+                videoMakerMenuItem
+#endif
 
                 if let customMenuOptions {
                     customMenuOptions(self.item)

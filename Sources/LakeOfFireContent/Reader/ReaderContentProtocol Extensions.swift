@@ -4,6 +4,12 @@ import RealmSwift
 import RealmSwiftGaps
 
 public extension ReaderContentProtocol {
+#if DEBUG
+    var hasTranscriptTracerVideoSource: Bool {
+        contentSubtitleURL != nil && !resolvedVoiceAudioURLs.isEmpty
+    }
+#endif
+
     @MainActor
     public var locationShortName: String? {
         if url.absoluteString == "about:blank" {
