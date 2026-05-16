@@ -388,15 +388,26 @@ export class NavigationHUD {
     }
     
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
+        const sequence = (globalThis.__manabiNavVisibilitySequence = Number(globalThis.__manabiNavVisibilitySequence || 0) + 1);
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            logEPUBNav('nav.visibility.scroll-toggle-preserved', {
+                sequence,
+                source,
+                previous,
+                shouldHide: next,
+                context,
+                state: this._captureHideNavState(),
+            });
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
             logEPUBNav('nav.visibility.scroll-toggle-noop', {
+                sequence,
                 source,
+                previous,
                 shouldHide: next,
                 navHidden: this.navHidden,
                 labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
@@ -423,6 +434,7 @@ export class NavigationHUD {
         });
         this._applyLabelVariant();
         logEPUBNav('nav.visibility.scroll-toggle', {
+            sequence,
             source,
             previous,
             shouldHide: this.hideNavigationDueToScroll,
@@ -797,6 +809,21 @@ export class NavigationHUD {
 
         const direction = reportedDirection;
         const shouldHide = direction === 'forward';
+        const now = Date.now();
+        if (direction === 'forward') {
+            globalThis.__manabiLastForwardPageTurnHideAtMs = now;
+        } else if (direction === 'backward') {
+            globalThis.__manabiLastBackwardPageTurnRevealAtMs = now;
+        }
+        logHideNavTrace('relocate.pageTurnVisibilityIntent', {
+            source: 'relocate.page-turn',
+            direction,
+            requestedHide: shouldHide,
+            now,
+            lastForwardPageTurnHideAtMs: globalThis.__manabiLastForwardPageTurnHideAtMs ?? null,
+            lastBackwardPageTurnRevealAtMs: globalThis.__manabiLastBackwardPageTurnRevealAtMs ?? null,
+            state: this._captureHideNavState(),
+        });
         if (shouldHide) {
             this.setHideNavigationDueToScroll(true, 'relocate.page-turn', {
                 direction,

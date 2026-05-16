@@ -1324,7 +1324,34 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         direction: String? = nil
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
+        let isPageTurnVisibilityChange = source?.contains("page-turn") == true
+        debugPrint(
+            "# EPUB  navigationVisibility.native",
+            "source=\(source ?? "nil")",
+            "direction=\(direction ?? "nil")",
+            "reason=\(reason ?? "nil")",
+            "previous=\(previousValue)",
+            "requested=\(shouldHide)",
+            "pageTurn=\(isPageTurnVisibilityChange)"
+        )
         guard previousValue != shouldHide else {
+            if isPageTurnVisibilityChange {
+                navigationVisibilityWillChangeHandler?(
+                    ReaderNavigationVisibilityChange(
+                        shouldHide: shouldHide,
+                        reason: reason,
+                        source: source,
+                        direction: direction
+                    )
+                )
+            }
+            debugPrint(
+                "# EPUB  navigationVisibility.nativeNoop",
+                "source=\(source ?? "nil")",
+                "direction=\(direction ?? "nil")",
+                "value=\(shouldHide)",
+                "pageTurn=\(isPageTurnVisibilityChange)"
+            )
             return
         }
         navigationVisibilityWillChangeHandler?(
@@ -1335,8 +1362,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 direction: direction
             )
         )
-        withAnimation(.easeInOut(duration: 0.2)) {
+        if isPageTurnVisibilityChange {
             hideNavigationDueToScroll.wrappedValue = shouldHide
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                hideNavigationDueToScroll.wrappedValue = shouldHide
+            }
         }
     }
 
@@ -1435,7 +1466,7 @@ extension ReaderMessageHandlersViewModifier {
         guard readerContent.pageURL.isEBookURL else { return }
         let boolLiteral = hideNavigationDueToScroll.wrappedValue ? "true" : "false"
         do {
-            try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral));")
+            try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
         } catch {
             // Ignore boot timing races.
         }

@@ -1039,6 +1039,24 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
     }
 };
 
+const recordPageTurnNavigationIntent = (direction, source, details = {}) => {
+    const now = Date.now();
+    if (direction === 'forward') {
+        globalThis.__manabiLastForwardPageTurnHideAtMs = now;
+    } else if (direction === 'backward') {
+        globalThis.__manabiLastBackwardPageTurnRevealAtMs = now;
+    }
+    postHideNavLog('pageTurn.visibilityIntent', {
+        direction,
+        source,
+        now,
+        lastForwardPageTurnHideAtMs: globalThis.__manabiLastForwardPageTurnHideAtMs ?? null,
+        lastBackwardPageTurnRevealAtMs: globalThis.__manabiLastBackwardPageTurnRevealAtMs ?? null,
+        state: captureNavVisibilityState(),
+        ...details,
+    });
+};
+
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
     try {
         window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
@@ -1723,10 +1741,12 @@ const injectBodyDatasetAttributes = (html, attributes) => {
 };
 
 const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
+    const sequence = (globalThis.__manabiNativeBridgeVisibilitySequence = Number(globalThis.__manabiNativeBridgeVisibilitySequence || 0) + 1);
     const normalized = !!shouldHide;
     const body = document.body;
     const before = captureNavVisibilityState();
     postHideNavLog('js.bridge.begin', {
+        sequence,
         source,
         requestedHide: normalized,
         before,
@@ -1739,22 +1759,23 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         bodyClassApplied: false,
     });
     const bridgeState = {
+        sequence,
         source,
         shouldHide: normalized,
+        beforeHudHideNavigationDueToScroll: before.hudHideNavigationDueToScroll ?? null,
+        beforeLabelVariant: before.labelVariant ?? null,
         ...captureNavVisibilityState(),
     };
-    const bridgeKey = JSON.stringify(bridgeState);
-    if (globalThis.__manabiLastNavigationVisibilityBridgeKey !== bridgeKey) {
-        globalThis.__manabiLastNavigationVisibilityBridgeKey = bridgeKey;
-        postReaderLog('ebook.navigationVisibility.bridge', bridgeState);
-    }
+    postReaderLog('ebook.navigationVisibility.bridge', bridgeState);
     postPageNumLog('nav.visibility.bridge', {
+        sequence,
         source,
         shouldHide: normalized,
         before,
         after: captureNavVisibilityState(),
     });
     postHideNavLog('js.bridge.finish', {
+        sequence,
         source,
         requestedHide: normalized,
         after: captureNavVisibilityState(),
@@ -1762,14 +1783,14 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     return normalized;
 };
 
-window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
+window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabiSetHideNavigationDueToScroll') => {
     const requestedHide = !!shouldHide;
     if (requestedHide) {
         const ignoreCount = Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0);
         if (ignoreCount > 0) {
             globalThis.__manabiIgnoreNextIncomingHideNavigationCount = ignoreCount - 1;
             postHideNavLog('js.bridge.ignored', {
-                source: 'window.manabiSetHideNavigationDueToScroll',
+                source,
                 requestedHide: true,
                 remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
                 currentState: captureNavVisibilityState(),
@@ -1777,9 +1798,29 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
             return false;
         }
     } else {
+        const now = Date.now();
+        const lastForwardPageTurnHideAtMs = Number(globalThis.__manabiLastForwardPageTurnHideAtMs || 0);
+        const lastBackwardPageTurnRevealAtMs = Number(globalThis.__manabiLastBackwardPageTurnRevealAtMs || 0);
+        const isStaleSwiftRevealAfterForwardPageTurn =
+            source === 'swift.bindingPush'
+            && lastForwardPageTurnHideAtMs > lastBackwardPageTurnRevealAtMs
+            && now - lastForwardPageTurnHideAtMs < 1500
+            && globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
+        if (isStaleSwiftRevealAfterForwardPageTurn) {
+            postHideNavLog('js.bridge.ignored', {
+                source,
+                requestedHide: false,
+                reason: 'stale-swift-reveal-after-forward-page-turn',
+                now,
+                lastForwardPageTurnHideAtMs,
+                lastBackwardPageTurnRevealAtMs,
+                currentState: captureNavVisibilityState(),
+            });
+            return true;
+        }
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             postHideNavLog('js.bridge.ignored', {
-                source: 'window.manabiSetHideNavigationDueToScroll',
+                source,
                 requestedHide: false,
                 reason: 'preserve-hidden-through-next-display',
                 currentState: captureNavVisibilityState(),
@@ -1790,7 +1831,7 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
         if (ignoreCount > 0) {
             globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = ignoreCount - 1;
             postHideNavLog('js.bridge.ignored', {
-                source: 'window.manabiSetHideNavigationDueToScroll',
+                source,
                 requestedHide: false,
                 remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
                 currentState: captureNavVisibilityState(),
@@ -1798,7 +1839,7 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
             return true;
         }
     }
-    return setNativeHideNavigationState(requestedHide, 'window.manabiSetHideNavigationDueToScroll');
+    return setNativeHideNavigationState(requestedHide, source);
 };
 
 const normalizeChromeInsetCSSValue = (value) => {
@@ -4848,7 +4889,7 @@ class Reader {
         postNativeLookupHitTargetsForVisibleSegments(doc, result);
         return result;
     }
-    #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2) {
+    #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2, explicitDoc = null) {
         if (this.nativeLookupHitTargetRefreshHandle) {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
@@ -4866,7 +4907,9 @@ class Reader {
                     return;
                 }
                 this.nativeLookupHitTargetRefreshHandle = null;
-                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                const doc = isDocumentLike(explicitDoc)
+                    ? explicitDoc
+                    : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
                 if (!isDocumentLike(doc)) {
                     return;
                 }
@@ -4939,6 +4982,10 @@ class Reader {
             return;
         }
         const shouldHide = direction === 'forward';
+        recordPageTurnNavigationIntent(direction, source, {
+            isRTL: this.isRTL,
+            ...details,
+        });
         postHideNavLog('pageTurn.hideNavigation.apply', {
             source,
             direction,
@@ -7317,6 +7364,9 @@ class Reader {
             currentPageURL: doc.location.href,
         })
         requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2).catch((error) => console.error(error)));
+        if (!isCacheWarmerDocument(doc)) {
+            this.#scheduleNativeLookupHitTargetRefresh('document-load', 1, doc);
+        }
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
         });
