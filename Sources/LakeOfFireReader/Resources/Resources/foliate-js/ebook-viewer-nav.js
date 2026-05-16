@@ -229,6 +229,8 @@ export class NavigationHUD {
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
+        this.auxiliaryInsetsFrame = 0;
+        this.lastAuxiliaryInsetsState = null;
         this.lastResolvedSectionIndexLog = null;
         this.lastRelocateButtonsStateLog = null;
         this._applyLabelVariant();
@@ -301,7 +303,7 @@ export class NavigationHUD {
         this.isRTL = !!isRTL;
         this._applyRelocateButtonEdges();
         this._updateSectionProgress({ source: 'rtl' });
-        this._updateAuxiliaryInsets();
+        this._requestAuxiliaryInsetsUpdate();
     }
 
     setSectionPageCountsFromCache(counts) {
@@ -468,7 +470,7 @@ export class NavigationHUD {
         }
         // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
         this._updateRelocateButtons();
-        this._updateAuxiliaryInsets();
+        this._requestAuxiliaryInsetsUpdate();
     }
 
     _captureHideNavState() {
@@ -1018,7 +1020,7 @@ export class NavigationHUD {
     }
 
     refreshAuxiliaryLayout() {
-        this._updateAuxiliaryInsets();
+        this._requestAuxiliaryInsetsUpdate();
     }
 
     _applyRelocateButtonEdges() {
@@ -1032,7 +1034,15 @@ export class NavigationHUD {
         if (this.navRelocateButtons?.forward) {
             this.navRelocateButtons.forward.dataset.navRtl = 'false';
         }
-        this._updateAuxiliaryInsets();
+        this._requestAuxiliaryInsetsUpdate();
+    }
+
+    _requestAuxiliaryInsetsUpdate() {
+        if (this.auxiliaryInsetsFrame) return;
+        this.auxiliaryInsetsFrame = requestAnimationFrame(() => {
+            this.auxiliaryInsetsFrame = 0;
+            this._updateAuxiliaryInsets();
+        });
     }
 
     _updateAuxiliaryInsets() {
@@ -1068,22 +1078,6 @@ export class NavigationHUD {
             rightVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
             rightForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
         );
-        const parseReservePx = (value) => {
-            const parsed = parseFloat(String(value ?? '').trim());
-            return Number.isFinite(parsed) ? parsed : 0;
-        };
-        const compactPercentReserve = Math.max(
-            0,
-            parseReservePx(window.getComputedStyle(styleTarget).getPropertyValue('--nav-compact-percent-min-width')),
-        );
-        const primaryPercentReserve = Math.max(
-            0,
-            this.navHiddenOverlay?.percent?.offsetWidth ?? 0,
-            this.navPrimaryText?.dataset?.labelVariant === 'compact'
-                ? this.navPrimaryTextCompact?.offsetWidth ?? 0
-                : this.navPrimaryTextFull?.offsetWidth ?? 0,
-        );
-        const percentReserve = Math.max(compactPercentReserve, primaryPercentReserve);
         for (const button of [this.navRelocateButtons?.back, this.navRelocateButtons?.forward]) {
             if (!button?.style) continue;
             const buttonRect = button.getBoundingClientRect?.() ?? null;
@@ -1096,76 +1090,22 @@ export class NavigationHUD {
                 button.style.bottom = '';
             }
         }
-        styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
-        styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
-        logNavHide('hud:aux-layout', {
+        const nextState = {
             leftInset,
             rightInset,
-            percentReserve: Math.ceil(percentReserve),
-            backButtonWidth: this.navRelocateButtons?.back?.offsetWidth ?? null,
-            forwardButtonWidth: this.navRelocateButtons?.forward?.offsetWidth ?? null,
-            backButtonHidden: this.navRelocateButtons?.back?.hidden ?? null,
-            forwardButtonHidden: this.navRelocateButtons?.forward?.hidden ?? null,
             backButtonEdge: this.navRelocateButtons?.back?.dataset?.navEdge ?? null,
             forwardButtonEdge: this.navRelocateButtons?.forward?.dataset?.navEdge ?? null,
-            pageTrackingContainerHidden: this.pageTrackingContainer?.hidden ?? null,
-            pageTrackingButtonsHidden: this.pageTrackingButtons?.hidden ?? null,
-            pageTrackingButtonCount: this.pageTrackingButtons?.childElementCount ?? 0,
-            pageTrackingContainerWidth: this.pageTrackingContainer?.offsetWidth ?? null,
-            pageTrackingButtonsWidth: this.pageTrackingButtons?.offsetWidth ?? null,
-            pageTrackingContainerDisplay: this.pageTrackingContainer ? window.getComputedStyle(this.pageTrackingContainer).display : null,
-            pageTrackingContainerVisibility: this.pageTrackingContainer ? window.getComputedStyle(this.pageTrackingContainer).visibility : null,
-            pageTrackingOwnedByMainDocument: this.pageTrackingContainer?.ownerDocument === document,
-            pageTrackingContainedByReaderStage: !!document.getElementById('reader-stage')?.contains(this.pageTrackingContainer),
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-        });
-        const backRect = this.navRelocateButtons?.back?.getBoundingClientRect?.() ?? null;
-        const forwardRect = this.navRelocateButtons?.forward?.getBoundingClientRect?.() ?? null;
-        this._logJumpPosition('relocate-buttons.layout', {
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            nav: navRect ? {
-                left: Math.round(navRect.left),
-                right: Math.round(navRect.right),
-                top: Math.round(navRect.top),
-                bottom: Math.round(navRect.bottom),
-                width: Math.round(navRect.width),
-                height: Math.round(navRect.height),
-            } : null,
-            pageRead: pageReadRect ? {
-                left: Math.round(pageReadRect.left),
-                right: Math.round(pageReadRect.right),
-                top: Math.round(pageReadRect.top),
-                bottom: Math.round(pageReadRect.bottom),
-                width: Math.round(pageReadRect.width),
-                height: Math.round(pageReadRect.height),
-            } : null,
-            back: this.navRelocateButtons?.back ? {
-                hidden: !!this.navRelocateButtons.back.hidden,
-                ariaHidden: this.navRelocateButtons.back.getAttribute('aria-hidden'),
-                edge: this.navRelocateButtons.back.dataset?.navEdge ?? null,
-                rtl: this.navRelocateButtons.back.dataset?.navRtl ?? null,
-                left: backRect ? Math.round(backRect.left) : null,
-                right: backRect ? Math.round(backRect.right) : null,
-                top: backRect ? Math.round(backRect.top) : null,
-                bottom: backRect ? Math.round(backRect.bottom) : null,
-                width: backRect ? Math.round(backRect.width) : null,
-                height: backRect ? Math.round(backRect.height) : null,
-            } : null,
-            forward: this.navRelocateButtons?.forward ? {
-                hidden: !!this.navRelocateButtons.forward.hidden,
-                ariaHidden: this.navRelocateButtons.forward.getAttribute('aria-hidden'),
-                edge: this.navRelocateButtons.forward.dataset?.navEdge ?? null,
-                rtl: this.navRelocateButtons.forward.dataset?.navRtl ?? null,
-                left: forwardRect ? Math.round(forwardRect.left) : null,
-                right: forwardRect ? Math.round(forwardRect.right) : null,
-                top: forwardRect ? Math.round(forwardRect.top) : null,
-                bottom: forwardRect ? Math.round(forwardRect.bottom) : null,
-                width: forwardRect ? Math.round(forwardRect.width) : null,
-                height: forwardRect ? Math.round(forwardRect.height) : null,
-            } : null,
-        });
+        };
+        const previousState = this.lastAuxiliaryInsetsState;
+        const changed = !previousState
+            || previousState.leftInset !== nextState.leftInset
+            || previousState.rightInset !== nextState.rightInset
+            || previousState.backButtonEdge !== nextState.backButtonEdge
+            || previousState.forwardButtonEdge !== nextState.forwardButtonEdge;
+        if (!changed) return;
+        this.lastAuxiliaryInsetsState = nextState;
+        styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
+        styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
     }
 
     _setButtonEdge(button, edge) {
@@ -1435,7 +1375,7 @@ export class NavigationHUD {
         if (this.navPrimaryText) this.navPrimaryText.hidden = false;
         const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
         this._updateCompactPercent(descriptor);
-        requestAnimationFrame(() => this._updateAuxiliaryInsets());
+        this._requestAuxiliaryInsetsUpdate();
     }
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
@@ -2530,7 +2470,7 @@ export class NavigationHUD {
                 hiddenDueToScroll: this.hideNavigationDueToScroll,
             });
         }
-        this._updateAuxiliaryInsets();
+        this._requestAuxiliaryInsetsUpdate();
     }
     
     _serializeStack(stack) {

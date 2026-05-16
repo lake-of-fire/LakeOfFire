@@ -3889,6 +3889,7 @@ class Reader {
     unstableCFIs = new Set();
     visiblePageCollectionGeneration = 0;
     visiblePageSegmentSnapshot = null;
+    nativeLookupHitTargetRefreshHandle = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -4814,6 +4815,10 @@ class Reader {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
             this.pageTrackingRetryHandle = null;
         }
+        if (this.nativeLookupHitTargetRefreshHandle) {
+            cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
+            this.nativeLookupHitTargetRefreshHandle = null;
+        }
     }
     #visibleRangeForDocument(doc) {
         const range = this.navHUD?.lastRelocateDetail?.range ?? null;
@@ -4842,6 +4847,41 @@ class Reader {
         };
         postNativeLookupHitTargetsForVisibleSegments(doc, result);
         return result;
+    }
+    #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2) {
+        if (this.nativeLookupHitTargetRefreshHandle) {
+            cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
+            this.nativeLookupHitTargetRefreshHandle = null;
+        }
+        const generation = this.visiblePageCollectionGeneration;
+        const remainingFrames = Math.max(1, Math.round(frameDelay));
+        const runAfterFrame = (framesRemaining) => {
+            this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
+                if (generation !== this.visiblePageCollectionGeneration) {
+                    this.nativeLookupHitTargetRefreshHandle = null;
+                    return;
+                }
+                if (framesRemaining > 1) {
+                    runAfterFrame(framesRemaining - 1);
+                    return;
+                }
+                this.nativeLookupHitTargetRefreshHandle = null;
+                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                if (!isDocumentLike(doc)) {
+                    return;
+                }
+                const visibleRange = this.#visibleRangeForDocument(doc);
+                postVisibleRangeLog('nativeHitTargets.deferredRefresh', {
+                    reason,
+                    generation,
+                    frameDelay: remainingFrames,
+                    hasVisibleRange: !!visibleRange,
+                    rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+                });
+                this.#visiblePageSegmentResult(doc, visibleRange);
+            });
+        };
+        runAfterFrame(remainingFrames);
     }
     #updateEbookSubscriptionPreviewPageState({
         sectionIndex = null,
@@ -7355,11 +7395,7 @@ class Reader {
             totalLocation: location?.total ?? null,
         });
         await this.navHUD?.handleRelocate(detail);
-        const nativeLookupDoc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
-        if (isDocumentLike(nativeLookupDoc)) {
-            const nativeLookupVisibleRange = this.#visibleRangeForDocument(nativeLookupDoc);
-            this.#visiblePageSegmentResult(nativeLookupDoc, nativeLookupVisibleRange);
-        }
+        this.#scheduleNativeLookupHitTargetRefresh('relocate', 2);
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({
             navHUD: this.navHUD,

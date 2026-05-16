@@ -43,7 +43,7 @@ body:not([data-is-ebook="true"]) {
   height: auto !important;
 }*/
 
-#reader-content p {
+body:not([data-is-ebook="true"]) #reader-content p {
   line-height: 1.4em;
   margin: 0px;
   margin-bottom: 20px;
@@ -51,8 +51,8 @@ body:not([data-is-ebook="true"]) {
 
 /* Covers all images showing edge-to-edge using a
    an optional caption text */
-#reader-content .wp-caption,
-#reader-content figure {
+body:not([data-is-ebook="true"]) #reader-content .wp-caption,
+body:not([data-is-ebook="true"]) #reader-content figure {
   display: block !important;
   width: 100% !important;
   margin: 0px !important;
@@ -61,15 +61,15 @@ body:not([data-is-ebook="true"]) {
 
 /* If image is place inside one of these blocks
    there's no need to add margin at the bottom */
-#reader-content .wp-caption img,
-#reader-content figure img {
+body:not([data-is-ebook="true"]) #reader-content .wp-caption img,
+body:not([data-is-ebook="true"]) #reader-content figure img {
   margin-bottom: 0px !important;
 }
 
 /* Image caption text */
-#reader-content .caption,
-#reader-content .wp-caption-text,
-#reader-content figcaption {
+body:not([data-is-ebook="true"]) #reader-content .caption,
+body:not([data-is-ebook="true"]) #reader-content .wp-caption-text,
+body:not([data-is-ebook="true"]) #reader-content figcaption {
   font-family: sans-serif;
   margin: 0px !important;
   padding-top: 4px !important;
@@ -77,14 +77,14 @@ body:not([data-is-ebook="true"]) {
 
 /* Ensure all pre-formatted code inside the reader content
    are properly wrapped inside content width */
-#reader-content code,
-#reader-content pre {
+body:not([data-is-ebook="true"]) #reader-content code,
+body:not([data-is-ebook="true"]) #reader-content pre {
   white-space: pre-wrap !important;
   margin-bottom: 20px !important;
   word-break: break-all;
 }
 
-#reader-content blockquote {
+body:not([data-is-ebook="true"]) #reader-content blockquote {
   margin: 0px !important;
   margin-bottom: 20px !important;
   padding: 0px !important;
@@ -94,20 +94,20 @@ body:not([data-is-ebook="true"]) {
   border-left: 2px solid !important;
 }
 
-#reader-content ul,
-#reader-content ol {
+body:not([data-is-ebook="true"]) #reader-content ul,
+body:not([data-is-ebook="true"]) #reader-content ol {
   margin: 0px !important;
   margin-bottom: 20px !important;
   padding: 0px !important;
   line-height: 1.5;
 }
 
-#reader-content ul {
+body:not([data-is-ebook="true"]) #reader-content ul {
   -webkit-padding-start: 30px !important;
   list-style: disk !important;
 }
 
-#reader-content ol {
+body:not([data-is-ebook="true"]) #reader-content ol {
   -webkit-padding-start: 35px !important;
   list-style: decimal !important;
 }

@@ -20,7 +20,7 @@
                         - (var(--word-tracking-status-outline-offset) * 2)
                         - 2px - 4px
                     );
-                    --word-tracking-checkmark-thickness: 0.125em;
+                    --word-tracking-checkmark-thickness: 2px;
                     --word-tracking-checkmark-left: calc(var(--word-tracking-status-size) / 9.4 + var(--word-tracking-status-size) / 16);
                     --word-tracking-checkmark-height: calc(var(--word-tracking-status-size) / 1.8);
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
@@ -88,7 +88,7 @@
                     --nav-primary-hidden-shift-y: 14px;
                     --mnb-reader-stage-bottom-inset: calc(
                         var(--mnb-nav-bar-height)
-                        + var(--mnb-toolbar-visual-bottom-inset, 0px)
+                        + var(--mnb-toolbar-physical-bottom-inset, 0px)
                     );
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
@@ -252,7 +252,7 @@
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: var(--mnb-toolbar-visual-bottom-inset, 0px);
+                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
                     height: var(--mnb-nav-bar-height) !important;
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);
@@ -538,7 +538,7 @@
                     position: absolute;
                     top: auto;
                     bottom: calc(
-                        var(--mnb-toolbar-visual-bottom-inset, 0px)
+                        var(--mnb-toolbar-physical-bottom-inset, 0px)
                         + 8px
                         + ((var(--page-read-button-height) - 26px) / 2)
                     );
@@ -711,8 +711,19 @@
                     text-align: left;
                 }
                 #page-tracking-container {
+                    --word-tracking-status-outline-offset: 1px;
+                    --page-read-button-height: 30px;
+                    --word-tracking-status-size: calc(
+                        var(--page-read-button-height)
+                        - (var(--word-tracking-status-outline-offset) * 2)
+                        - 2px - 4px
+                    );
+                    --word-tracking-checkmark-thickness: 2px;
+                    --word-tracking-checkmark-left: calc(var(--word-tracking-status-size) / 9.4 + var(--word-tracking-status-size) / 16);
+                    --word-tracking-checkmark-height: calc(var(--word-tracking-status-size) / 1.8);
+                    --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
                     position: fixed;
-                    bottom: calc(var(--mnb-toolbar-visual-bottom-inset, 0px) + 7px);
+                    bottom: calc(var(--mnb-toolbar-physical-bottom-inset, 0px) + 7px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -723,6 +734,8 @@
                     z-index: 7;
                     pointer-events: auto;
                     padding-block: 5px;
+                    font-size: 14px !important;
+                    line-height: 1;
                 }
                 body[data-mnb-mark-read-buttons-visible="false"] #page-tracking-container {
                     display: none !important;
@@ -772,7 +785,7 @@
                     opacity: 1;
                     visibility: visible !important;
                     font-family: var(--mnb-ui-font-family) !important;
-                    font-size: inherit;
+                    font-size: 14px !important;
                     box-sizing: content-box;
                     border-radius: 9999px;
                     border: 1px solid var(--theme-tracking-unread-color);
@@ -887,7 +900,7 @@
                     overflow: hidden;
                     white-space: nowrap;
                     font-family: var(--mnb-ui-font-family) !important;
-                    font-size: 0.85rem;
+                    font-size: 12px;
                     line-height: 1;
                     font-weight: 400;
                     color: currentColor;
@@ -1218,7 +1231,7 @@
                     position: relative;
                     width: 20px;
                     height: 20px;
-                    --mnb-spinner-animation-iterations: 3;
+                    --mnb-spinner-animation-iterations: 1;
                     contain: strict; }
                 .ispinner .ispinner-blade {
                     position: absolute;
@@ -1236,6 +1249,8 @@
                     animation-timing-function: linear;
                     animation-iteration-count: var(--mnb-spinner-animation-iterations);
                     animation-fill-mode: forwards; }
+                .ispinner.nav-spinner .ispinner-blade {
+                    animation: none; }
                 .ispinner .ispinner-blade:nth-child(1) {
                     transform: rotate(45deg) translateY(-6.5px);
                     animation-delay: -1.625s; }

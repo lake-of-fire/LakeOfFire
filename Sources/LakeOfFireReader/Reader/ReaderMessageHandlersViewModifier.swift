@@ -754,7 +754,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
                 if !shouldHide,
-                   source?.contains("page-turn") == true {
+                   source?.contains("page-turn") == true,
+                   direction != "backward" {
                     navigationVisibilityWillChangeHandler?(
                         ReaderNavigationVisibilityChange(
                             shouldHide: shouldHide,
