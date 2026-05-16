@@ -3020,8 +3020,9 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         ?? null;
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
+    const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     if (typeof builder !== 'function') {
-        window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+        messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth,
@@ -3050,7 +3051,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets.push(target);
         }
     }
-    window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+    messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
         visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
         viewportWidth,
@@ -3722,7 +3723,7 @@ const percentFormat = new Intl.NumberFormat(locales, {
 
 const loadingVisualDelayMs = 400;
 const loadingVisualMaximumMs = 3500;
-const navSpinnerMaximumMs = 3500;
+const navSpinnerMaximumMs = 1200;
 
 class Reader {
     #show(btn, show = true) {
@@ -3809,6 +3810,7 @@ class Reader {
     unstableCFIs = new Set();
     visiblePageCollectionGeneration = 0;
     visiblePageSegmentSnapshot = null;
+    nativeLookupHitTargetRefreshHandle = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -4501,7 +4503,9 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('window-resize');
+            requestAnimationFrame(() => this.#syncPageTrackingButtons('window-resize', null, 1).catch((error) => console.error(error)));
             this.#queueLayoutDiagnostics('window-resize');
         });
         window.visualViewport?.addEventListener?.('resize', () => {
@@ -4515,7 +4519,9 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('visual-viewport-resize');
+            requestAnimationFrame(() => this.#syncPageTrackingButtons('visual-viewport-resize', null, 1).catch((error) => console.error(error)));
             this.#queueLayoutDiagnostics('visual-viewport-resize');
         });
         screen.orientation?.addEventListener?.('change', () => {
@@ -4527,9 +4533,15 @@ class Reader {
                 orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
                 orientationType: screen.orientation?.type ?? null,
             });
+            this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('screen-orientation-change');
+            requestAnimationFrame(() => this.#syncPageTrackingButtons('screen-orientation-change', null, 1).catch((error) => console.error(error)));
             this.#queueLayoutDiagnostics('screen-orientation-change');
         });
+        window.manabiInvalidateVisiblePageSegmentSnapshot = (reason = 'manual') => {
+            this.#invalidateVisiblePageSegmentSnapshot();
+            requestAnimationFrame(() => this.#syncPageTrackingButtons(reason, null, 1).catch((error) => console.error(error)));
+        };
     }
     #logPageTracking(event, details = {}) {
         postReaderLog(event, details);
@@ -4793,6 +4805,10 @@ class Reader {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
             this.pageTrackingRetryHandle = null;
         }
+        if (this.nativeLookupHitTargetRefreshHandle) {
+            cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
+            this.nativeLookupHitTargetRefreshHandle = null;
+        }
     }
     #visibleRangeForDocument(doc) {
         const range = this.navHUD?.lastRelocateDetail?.range ?? null;
@@ -4821,6 +4837,41 @@ class Reader {
         };
         postNativeLookupHitTargetsForVisibleSegments(doc, result);
         return result;
+    }
+    #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2) {
+        if (this.nativeLookupHitTargetRefreshHandle) {
+            cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
+            this.nativeLookupHitTargetRefreshHandle = null;
+        }
+        const generation = this.visiblePageCollectionGeneration;
+        const remainingFrames = Math.max(1, Math.round(frameDelay));
+        const runAfterFrame = (framesRemaining) => {
+            this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
+                if (generation !== this.visiblePageCollectionGeneration) {
+                    this.nativeLookupHitTargetRefreshHandle = null;
+                    return;
+                }
+                if (framesRemaining > 1) {
+                    runAfterFrame(framesRemaining - 1);
+                    return;
+                }
+                this.nativeLookupHitTargetRefreshHandle = null;
+                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                if (!isDocumentLike(doc)) {
+                    return;
+                }
+                const visibleRange = this.#visibleRangeForDocument(doc);
+                postVisibleRangeLog('nativeHitTargets.deferredRefresh', {
+                    reason,
+                    generation,
+                    frameDelay: remainingFrames,
+                    hasVisibleRange: !!visibleRange,
+                    rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+                });
+                this.#visiblePageSegmentResult(doc, visibleRange);
+            });
+        };
+        runAfterFrame(remainingFrames);
     }
     #updateEbookSubscriptionPreviewPageState({
         sectionIndex = null,
@@ -7515,11 +7566,7 @@ class Reader {
             totalLocation: location?.total ?? null,
         });
         await this.navHUD?.handleRelocate(detail);
-        const nativeLookupDoc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
-        if (isDocumentLike(nativeLookupDoc)) {
-            const nativeLookupVisibleRange = this.#visibleRangeForDocument(nativeLookupDoc);
-            this.#visiblePageSegmentResult(nativeLookupDoc, nativeLookupVisibleRange);
-        }
+        this.#scheduleNativeLookupHitTargetRefresh('relocate', 2);
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({
             navHUD: this.navHUD,
@@ -8335,10 +8382,12 @@ class CacheWarmer {
 window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
 //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
 window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 
 window.loadNextCacheWarmerSection = async () => {
