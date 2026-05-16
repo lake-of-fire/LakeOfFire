@@ -803,6 +803,16 @@ public struct ReaderContentLoader {
             return loaderURL
         }
 
+        if contentURL.isReaderBookURL,
+           !contentURL.isEBookURL,
+           contentHasLocallyRetrievableHTML,
+           let loaderURL = readerLoaderURL(for: contentURL) {
+            logReaderLoad(
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=readerBookLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+            )
+            return loaderURL
+        }
+
         logReaderLoad(
             "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
         )

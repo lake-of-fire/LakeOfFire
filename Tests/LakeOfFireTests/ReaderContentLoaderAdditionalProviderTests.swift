@@ -134,7 +134,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
             content: try XCTUnwrap(lookedUp),
             readerFileManager: .shared
         )
-        XCTAssertEqual(navigationURL, contentURL)
+        XCTAssertEqual(navigationURL, loaderURL)
 
         try await Self.updateProviderBookTitle(contentURL: contentURL)
 
