@@ -4838,7 +4838,7 @@ class Reader {
         postNativeLookupHitTargetsForVisibleSegments(doc, result);
         return result;
     }
-    #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2) {
+    #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2, explicitDoc = null) {
         if (this.nativeLookupHitTargetRefreshHandle) {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
@@ -4856,7 +4856,9 @@ class Reader {
                     return;
                 }
                 this.nativeLookupHitTargetRefreshHandle = null;
-                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                const doc = isDocumentLike(explicitDoc)
+                    ? explicitDoc
+                    : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
                 if (!isDocumentLike(doc)) {
                     return;
                 }
@@ -7491,6 +7493,9 @@ class Reader {
             currentPageURL: doc.location.href,
         })
         requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2).catch((error) => console.error(error)));
+        if (!isCacheWarmerDocument(doc)) {
+            this.#scheduleNativeLookupHitTargetRefresh('document-load', 1, doc);
+        }
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
         });

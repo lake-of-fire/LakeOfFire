@@ -226,6 +226,52 @@ public extension Feed {
         }
     }
 
+    public static func setFollowingStatusForFeedGroup(
+        containing feed: Feed,
+        isFollowed: Bool,
+        in realm: Realm,
+        now: Date = Date()
+    ) {
+        setFollowingStatusForFeedGroup(
+            canonicalFeedURLKey: feed.canonicalFollowingFeedURLKey,
+            isFollowed: isFollowed,
+            in: realm,
+            now: now
+        )
+    }
+
+    public static func setFollowingStatusForFeedGroup(
+        canonicalFeedURLKey: String,
+        isFollowed: Bool,
+        in realm: Realm,
+        now: Date = Date()
+    ) {
+        let feeds = Array(realm.objects(Feed.self)
+            .where { !$0.isDeleted }
+        )
+        let plan = FeedFollowingStatusUpdatePlanBuilder.makePlan(
+            allFeeds: feeds.map { feed in
+                FeedFollowingStatusFeedSnapshot(
+                    id: feed.id,
+                    canonicalFeedURLKey: feed.canonicalFollowingFeedURLKey,
+                    followingOrdinal: feed.followingOrdinal
+                )
+            },
+            canonicalFeedURLKey: canonicalFeedURLKey,
+            isFollowed: isFollowed
+        )
+        let feedIDs = Set(plan.feedIDs)
+
+        for feed in feeds where feedIDs.contains(feed.id) {
+            feed.isFollowed = plan.isFollowed
+            if let ordinal = plan.followingOrdinal {
+                feed.followingOrdinal = ordinal
+            }
+            feed.explicitlyModifiedAt = now
+            feed.modifiedAt = now
+        }
+    }
+
     public func effectiveSeenDate(for entry: FeedEntry, latestHistoryLastVisitedAt: Date?) -> Date? {
         let baseline = [lastViewedAt, lastSeenFeedEntriesAt].compactMap { $0 }.max()
         guard let baseline else { return latestHistoryLastVisitedAt }

@@ -466,13 +466,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         + ReaderContentHorizontalListLayout.groupBoxContentInsets.bottom
     }
 
-    private var containerHeight: CGFloat? {
-        if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
-            return estimatedRowHeight
-        }
-        return nil
-    }
-    
     public var body: some View {
         ZStack {
             if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
@@ -497,9 +490,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                         maxHeight: estimatedRowHeight,
                         alignment: .topLeading
                     )
-                    .onAppear {
-                        let estimatedRowHeightString = String(format: "%.1f", estimatedRowHeight)
-                    }
             }
             
             if viewModel.showLoadingIndicator {
@@ -530,7 +520,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
         }
-        .frame(height: containerHeight, alignment: .top)
+        .frame(height: estimatedRowHeight, alignment: .top)
         //.enableInjection()
     }
     
