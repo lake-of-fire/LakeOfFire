@@ -1468,6 +1468,23 @@ extension ReaderMessageHandlersViewModifier {
         let pageURL = readerContent.pageURL
         guard pageURL.isEBookURL else { return }
         let shouldHide = hideNavigationDueToScroll.wrappedValue
+        if reason == "binding", !force, !shouldHide {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            let settledPageURL = readerContent.pageURL
+            let settledShouldHide = hideNavigationDueToScroll.wrappedValue
+            if settledPageURL != pageURL || settledShouldHide != shouldHide {
+                debugPrint("# MAY15 nav.bindingPush.skip", [
+                    "reason": reason,
+                    "shouldHide": shouldHide,
+                    "settledShouldHide": settledShouldHide,
+                    "pageURL": pageURL.absoluteString,
+                    "settledPageURL": settledPageURL.absoluteString,
+                    "skipReason": "staleRevealBindingAfterSettle",
+                    "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
+                ] as [String: Any])
+                return
+            }
+        }
         let nowMs = Date().timeIntervalSince1970 * 1000
         let lastNativeLookupTapAtMs = UserDefaults.standard.double(forKey: "MAY15LastNativeLookupTapAtMs")
         let nativeLookupTapAgeMs = lastNativeLookupTapAtMs > 0 ? nowMs - lastNativeLookupTapAtMs : nil
@@ -1475,10 +1492,8 @@ extension ReaderMessageHandlersViewModifier {
             reason == "binding"
             && shouldHide
             && lastNativeLookupTapAtMs > 0
-            && nowMs - lastNativeLookupTapAtMs < 1_500
+            && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
-            lastPushedHideNavigationDueToScroll = shouldHide
-            lastPushedHideNavigationPageURL = pageURL
             debugPrint("# MAY15 nav.bindingPush.skip", [
                 "reason": reason,
                 "shouldHide": shouldHide,
@@ -1486,19 +1501,6 @@ extension ReaderMessageHandlersViewModifier {
                 "skipReason": "recentNativeLookupTap",
                 "ageMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
                 "lastNativeLookupTapAtMs": lastNativeLookupTapAtMs,
-                "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
-            ] as [String: Any])
-            return
-        }
-        if !force,
-           lastPushedHideNavigationDueToScroll == shouldHide,
-           lastPushedHideNavigationPageURL == pageURL {
-            debugPrint("# MAY15 nav.bindingPush.skip", [
-                "reason": reason,
-                "shouldHide": shouldHide,
-                "pageURL": pageURL.absoluteString,
-                "skipReason": "duplicateState",
-                "nativeLookupTapAgeMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
                 "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
             ] as [String: Any])
             return

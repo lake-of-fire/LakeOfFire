@@ -174,6 +174,29 @@ func requestReaderTrackingSectionGeometryBake(
 }
 
 @MainActor
+func requestReaderTypographyPaginationRefresh(
+    reason: String,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    do {
+        try await evaluateJavaScript(
+            """
+            (async function() {
+                const renderer = globalThis.reader?.view?.renderer;
+                if (renderer?.renderIfTypographyChanged) {
+                    return await renderer.renderIfTypographyChanged('\(reason)');
+                }
+                return { rendered: false, reason: 'missing-renderer' };
+            })();
+            """,
+            true
+        )
+    } catch {
+        print("Typography pagination refresh failed: \(error)")
+    }
+}
+
+@MainActor
 func applyReaderFontSize(
     _ size: Double,
     readerFontSize: Double?,
@@ -235,6 +258,7 @@ func applyReaderFontSize(
             hasAsyncCaller: hasAsyncCaller,
             evaluateJavaScript: evaluateJavaScript
         )
+        await requestReaderTypographyPaginationRefresh(reason: reason, evaluateJavaScript: evaluateJavaScript)
         await requestReaderTrackingSectionGeometryBake(reason: reason, evaluateJavaScript: evaluateJavaScript)
     } catch {
         print("Font size update failed: \(error)")

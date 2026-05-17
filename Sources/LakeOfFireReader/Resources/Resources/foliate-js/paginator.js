@@ -35,6 +35,7 @@ const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
 const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
 const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
+const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiPerfNow = () =>
@@ -981,6 +982,7 @@ export class Paginator extends HTMLElement {
     #cachedSizes = null
     #cachedStart = null
     #lastRenderContainerSize = null
+    #lastTypographyRenderSignature = null
     #visibleRangeCache = null
     #visibleRangeInFlight = null
     #visibleRangeCacheVersion = 0
@@ -1513,6 +1515,75 @@ export class Paginator extends HTMLElement {
         if (container.textContent.trim() !== '') return false;
         return true;
     }
+    #typographyMetrics() {
+        const doc = this.#view?.document;
+        const bodyStyle = doc?.body ? getComputedStyle(doc.body) : null;
+        const containerStyle = this.#container ? getComputedStyle(this.#container) : null;
+        const fontSize =
+            parseFloat(bodyStyle?.fontSize)
+            || parseFloat(containerStyle?.fontSize)
+            || 20;
+        const parsedLineHeight =
+            parseFloat(bodyStyle?.lineHeight)
+            || parseFloat(containerStyle?.lineHeight);
+        const lineHeight = Number.isFinite(parsedLineHeight)
+            ? parsedLineHeight
+            : fontSize * 1.5;
+        const inlineCharacterAdvance = Math.max(fontSize, Math.min(lineHeight, fontSize * 1.8));
+        return {
+            fontSize,
+            lineHeight,
+            inlineCharacterAdvance,
+        };
+    }
+    #typographyRenderSignature({
+        width,
+        height,
+        flow = this.getAttribute('flow'),
+        vertical = this.#vertical,
+        fontSize,
+        lineHeight,
+        inlineCharacterAdvance,
+    } = {}) {
+        const metrics = fontSize == null || lineHeight == null || inlineCharacterAdvance == null
+            ? this.#typographyMetrics()
+            : { fontSize, lineHeight, inlineCharacterAdvance };
+        return [
+            flow ?? '',
+            vertical ? 'vertical' : 'horizontal',
+            Math.round(width ?? this.#container?.clientWidth ?? 0),
+            Math.round(height ?? this.#container?.clientHeight ?? 0),
+            manabiRound(metrics.fontSize, 2),
+            manabiRound(metrics.lineHeight, 2),
+            manabiRound(metrics.inlineCharacterAdvance, 2),
+        ].join('|');
+    }
+    async renderIfTypographyChanged(reason = 'unspecified') {
+        if (MANABI_DISABLE_POST_LOAD_RERENDER) {
+            return { rendered: false, reason: 'post-load-rerender-disabled' };
+        }
+        if (!this.#view || this.#isCacheWarmer) {
+            return { rendered: false, reason: 'unavailable' };
+        }
+        const { width, height } = await this.sizes();
+        const signature = this.#typographyRenderSignature({ width, height });
+        const previousSignature = this.#lastTypographyRenderSignature;
+        if (signature === previousSignature) {
+            return { rendered: false, reason: 'unchanged', signature };
+        }
+        this.#cachedSizes = null;
+        this.#cachedStart = null;
+        this.#view.cachedViewSize = null;
+        this.#view.cachedSizes = null;
+        this.#invalidateVisibleRangeCache();
+        postPaginatorLoadLog('typography.render', {
+            reason,
+            previousSignature,
+            signature,
+        });
+        await this.render();
+        return { rendered: true, reason, previousSignature, signature };
+    }
     async #beforeRender({
         vertical,
         verticalRTL,
@@ -1546,6 +1617,16 @@ export class Paginator extends HTMLElement {
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
+        const typographyMetrics = this.#typographyMetrics()
+        this.#lastTypographyRenderSignature = this.#typographyRenderSignature({
+            width,
+            height,
+            flow,
+            vertical,
+            fontSize: typographyMetrics.fontSize,
+            lineHeight: typographyMetrics.lineHeight,
+            inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
+        })
         this.#top.classList.toggle(
             'mnb-vertical-paginated',
             MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && vertical && flow !== 'scrolled'
@@ -1648,9 +1729,31 @@ export class Paginator extends HTMLElement {
                 && flow !== 'scrolled'
                 && maxColumnCountSpread > 1
                 && (vertical || width > height)
-            divisor = shouldForceSpread
+            const candidateDivisor = Math.max(1, shouldForceSpread
                 ? maxColumnCountSpread
-                : Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+                : Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize)))
+            const candidateColumnWidth = (size / candidateDivisor) - gap
+            const inlineCharsPerColumn = candidateColumnWidth / typographyMetrics.inlineCharacterAdvance
+            const shouldDisableMultiColumnForTypography =
+                MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+                && candidateDivisor > 1
+                && inlineCharsPerColumn < MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN
+            divisor = shouldDisableMultiColumnForTypography ? 1 : candidateDivisor
+            if (shouldDisableMultiColumnForTypography) {
+                postPaginatorLoadLog('layout.multicolumn-disabled', {
+                    reason: 'inline-character-capacity',
+                    inlineCharsPerColumn: manabiRound(inlineCharsPerColumn, 2),
+                    minInlineCharsForMultiColumn: MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN,
+                    candidateDivisor,
+                    size,
+                    gap,
+                    candidateColumnWidth: manabiRound(candidateColumnWidth, 2),
+                    fontSize: manabiRound(typographyMetrics.fontSize, 2),
+                    lineHeight: manabiRound(typographyMetrics.lineHeight, 2),
+                    inlineCharacterAdvance: manabiRound(typographyMetrics.inlineCharacterAdvance, 2),
+                    vertical,
+                })
+            }
             columnWidth = (size / divisor) - gap
         }
 
