@@ -887,9 +887,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             for: item.url,
             externalPresentation: viewModel.syncStatusPresentation
         )
+        let menuSyncStatusLabelPresentation = ReaderContentSyncStatusPresentation(
+            title: "Sync Status: \(menuSyncStatusPresentation.title)",
+            imageName: menuSyncStatusPresentation.imageName,
+            imageIsSystemSymbol: menuSyncStatusPresentation.imageIsSystemSymbol
+        )
 
         Menu {
-            ReaderContentSyncStatusLabel(presentation: menuSyncStatusPresentation, iconOnly: false)
+            ReaderContentSyncStatusLabel(presentation: menuSyncStatusLabelPresentation, iconOnly: false)
             Divider()
 
             AnyView(self.item.bookmarkButtonView())
