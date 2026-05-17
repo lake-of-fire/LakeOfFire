@@ -1099,24 +1099,31 @@ export class NavigationHUD {
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
         const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
-        const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
-            ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
-            ?? null;
+        const lookupPopoverPresented = document.body?.dataset?.mnbLookupPopoverPresented === 'true';
+        const pageReadButton = lookupPopoverPresented
+            ? null
+            : (this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
+                ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
+                ?? null);
         const pageReadRect = pageReadButton?.getBoundingClientRect?.() ?? null;
         const reserveGap = 18;
-        const leftVisible = !!this.navRelocateButtons?.back
+        const leftVisible = !lookupPopoverPresented
+            && !!this.navRelocateButtons?.back
             && !this.navRelocateButtons.back.hidden
             && this.navRelocateButtons.back.offsetWidth > 0
             && this.navRelocateButtons.back.dataset.navEdge === 'left';
-        const rightVisible = !!this.navRelocateButtons?.back
+        const rightVisible = !lookupPopoverPresented
+            && !!this.navRelocateButtons?.back
             && !this.navRelocateButtons.back.hidden
             && this.navRelocateButtons.back.offsetWidth > 0
             && this.navRelocateButtons.back.dataset.navEdge === 'right';
-        const leftForwardVisible = !!this.navRelocateButtons?.forward
+        const leftForwardVisible = !lookupPopoverPresented
+            && !!this.navRelocateButtons?.forward
             && !this.navRelocateButtons.forward.hidden
             && this.navRelocateButtons.forward.offsetWidth > 0
             && this.navRelocateButtons.forward.dataset.navEdge === 'left';
-        const rightForwardVisible = !!this.navRelocateButtons?.forward
+        const rightForwardVisible = !lookupPopoverPresented
+            && !!this.navRelocateButtons?.forward
             && !this.navRelocateButtons.forward.hidden
             && this.navRelocateButtons.forward.offsetWidth > 0
             && this.navRelocateButtons.forward.dataset.navEdge === 'right';

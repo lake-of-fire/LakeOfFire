@@ -561,6 +561,10 @@
                 .nav-relocate-button[hidden] {
                     display: none !important;
                 }
+                body[data-mnb-lookup-popover-presented="true"] #nav-relocate-back,
+                body[data-mnb-lookup-popover-presented="true"] #nav-relocate-forward {
+                    display: none !important;
+                }
                 .nav-relocate-button[aria-hidden="true"] {
                     opacity: 0;
                     pointer-events: none;
@@ -1058,6 +1062,9 @@
                 .page-read-button[hidden] {
                     display: none !important;
                 }
+                body[data-mnb-lookup-popover-presented="true"] #page-tracking-container .page-read-button:not([data-mnb-tracking-section-read="true"]):not([data-completion-action]) {
+                    display: none !important;
+                }
                 #side-bar {
                     visibility: hidden;
                     box-sizing: border-box;
@@ -1409,6 +1416,10 @@
                     opacity: 0 !important;
                     pointer-events: none !important;
                     cursor: default !important;
+                }
+                body[data-mnb-lookup-popover-presented="true"] #btn-scroll-left,
+                body[data-mnb-lookup-popover-presented="true"] #btn-scroll-right {
+                    display: none !important;
                 }
                 #btn-scroll-left {
                     left: 0;
