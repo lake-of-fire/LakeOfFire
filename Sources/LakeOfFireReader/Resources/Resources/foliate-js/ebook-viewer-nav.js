@@ -58,6 +58,30 @@ const logNavHide = (event, detail = {}) => {
     void detail;
 };
 
+const logMay15 = (event, detail = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY15 ${event} ${JSON.stringify({
+            timestamp: Date.now(),
+            performanceNow: Math.round(performance.now() * 100) / 100,
+            ...detail,
+        })}`);
+    } catch (_err) {
+        try { console.log('# MAY15', event, detail); } catch (_) {}
+    }
+};
+
+const may15Stack = () => {
+    try {
+        return String(new Error().stack || '')
+            .split('\n')
+            .slice(2, 9)
+            .map(line => line.trim())
+            .filter(Boolean);
+    } catch (_err) {
+        return [];
+    }
+};
+
 const logHideNavTrace = (event, detail = {}) => {
     globalThis.__manabiHideNavTraceLogCount = globalThis.__manabiHideNavTraceLogCount || 0;
     if (globalThis.__manabiHideNavTraceLogCount >= 240) return;
@@ -392,7 +416,23 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        logMay15('ebook.navHUD.setHide.entered', {
+            sequence,
+            source,
+            previous,
+            requested: next,
+            previousClass,
+            context,
+            stack: may15Stack(),
+        });
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            logMay15('ebook.navHUD.setHide.return', {
+                sequence,
+                source,
+                verdict: 'preservedHiddenNavigation',
+                previous,
+                requested: next,
+            });
             logEPUBNav('nav.visibility.scroll-toggle-preserved', {
                 sequence,
                 source,
@@ -404,6 +444,14 @@ export class NavigationHUD {
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
+            logMay15('ebook.navHUD.setHide.return', {
+                sequence,
+                source,
+                verdict: 'noop',
+                previous,
+                requested: next,
+                previousClass,
+            });
             logEPUBNav('nav.visibility.scroll-toggle-noop', {
                 sequence,
                 source,
@@ -455,8 +503,6 @@ export class NavigationHUD {
             compactLabel: this.navPrimaryTextCompact?.textContent || '',
             hiddenOverlayLabel: this.navHiddenOverlay?.text?.textContent || '',
             hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
-            hiddenOverlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
-            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
@@ -478,10 +524,25 @@ export class NavigationHUD {
             }
         }
         if (this.lastRelocateDetail) {
+            logMay15('ebook.navHUD.setHide.beforePrimaryLine', {
+                sequence,
+                source,
+                hasLastRelocateDetail: true,
+            });
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
         // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
-        this._updateRelocateButtons();
+        logMay15('ebook.navHUD.setHide.beforeRelocateButtons', {
+            sequence,
+            source,
+            shouldHide: this.hideNavigationDueToScroll,
+        });
+        this._updateRelocateButtons(`setHide:${source}`);
+        logMay15('ebook.navHUD.setHide.beforeAuxiliaryInsets', {
+            sequence,
+            source,
+            shouldHide: this.hideNavigationDueToScroll,
+        });
         this._requestAuxiliaryInsetsUpdate();
     }
 
@@ -1065,7 +1126,16 @@ export class NavigationHUD {
     }
 
     _requestAuxiliaryInsetsUpdate() {
-        if (this.auxiliaryInsetsFrame) return;
+        if (this.auxiliaryInsetsFrame) {
+            logMay15('ebook.navHUD.auxiliaryInsets.skipSchedule', {
+                reason: 'alreadyScheduled',
+                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            });
+            return;
+        }
+        logMay15('ebook.navHUD.auxiliaryInsets.schedule', {
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+        });
         this.auxiliaryInsetsFrame = requestAnimationFrame(() => {
             this.auxiliaryInsetsFrame = 0;
             this._updateAuxiliaryInsets();
@@ -1073,8 +1143,16 @@ export class NavigationHUD {
     }
 
     _updateAuxiliaryInsets() {
+        const startedAt = performance.now();
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
+        logMay15('ebook.navHUD.auxiliaryInsets.entered', {
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            hasNavBar: !!this.navBar,
+            hasBackButton: !!this.navRelocateButtons?.back,
+            hasForwardButton: !!this.navRelocateButtons?.forward,
+            stack: may15Stack(),
+        });
         const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
         const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
             ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
@@ -1133,6 +1211,14 @@ export class NavigationHUD {
         this.lastAuxiliaryInsetsState = nextState;
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
+        logMay15('ebook.navHUD.auxiliaryInsets.finished', {
+            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            changed,
+            leftInset,
+            rightInset,
+            backButtonEdge: nextState.backButtonEdge,
+            forwardButtonEdge: nextState.forwardButtonEdge,
+        });
     }
 
     _setButtonEdge(button, edge) {
@@ -1406,16 +1492,20 @@ export class NavigationHUD {
     }
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
+        const startedAt = performance.now();
         const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
         const center = this.navSectionProgress?.center;
-        const labelBefore = {
-            text: center?.textContent ?? null,
-            hidden: center?.hidden ?? null,
-            display: center ? getComputedStyle(center).display : null,
-            opacity: center ? getComputedStyle(center).opacity : null,
-        };
+        logMay15('ebook.navHUD.sectionProgress.entered', {
+            source,
+            refreshSnapshot,
+            requestToken,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            hasCenter: !!center,
+            centerHidden: center?.hidden ?? null,
+            stack: may15Stack(),
+        });
         const setCenterPagesLeftVisible = (visible, label = '') => {
             if (!center) return;
             if (center.__pagesLeftFadeTimer) {
@@ -1427,6 +1517,11 @@ export class NavigationHUD {
                 center.textContent = label;
                 if (center.dataset.pagesLeftVisible !== 'true') {
                     center.dataset.pagesLeftVisible = 'false';
+                    logMay15('ebook.navHUD.sectionProgress.forceLayoutForFade', {
+                        source,
+                        requestToken,
+                        label,
+                    });
                     void center.offsetWidth;
                     requestAnimationFrame(() => {
                         requestAnimationFrame(() => {
@@ -1459,16 +1554,36 @@ export class NavigationHUD {
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) {
                 setCenterPagesLeftVisible(false);
+                logMay15('ebook.navHUD.sectionProgress.return', {
+                    source,
+                    requestToken,
+                    verdict: this.hideNavigationDueToScroll ? 'hiddenNavigation' : 'showingCompletion',
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+                });
                 return;
             }
             if (sectionResolution.index == null) {
                 setCenterPagesLeftVisible(false);
+                logMay15('ebook.navHUD.sectionProgress.return', {
+                    source,
+                    requestToken,
+                    verdict: 'noSectionIndex',
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+                });
                 return;
             }
             if (!pagesLeft || pagesLeft <= 0) {
                 this.lastTerminalPagesLeftSection = sectionResolution.index;
                 this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
                 setCenterPagesLeftVisible(false);
+                logMay15('ebook.navHUD.sectionProgress.return', {
+                    source,
+                    requestToken,
+                    verdict: 'noPagesLeft',
+                    sectionIndex: sectionResolution.index,
+                    currentPageNumber: result?.currentPageNumber ?? null,
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+                });
                 return;
             }
             const isExplicitBackwardRelocate =
@@ -1485,6 +1600,13 @@ export class NavigationHUD {
                 && !isExplicitBackwardRelocate
                 && !movedBeforeTerminalPage
             ) {
+                logMay15('ebook.navHUD.sectionProgress.return', {
+                    source,
+                    requestToken,
+                    verdict: 'terminalSectionCached',
+                    sectionIndex: sectionResolution.index,
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+                });
                 return;
             }
             if (
@@ -1501,7 +1623,22 @@ export class NavigationHUD {
                 ? `1 page left in ${progressScope}`
                 : `${pagesLeft} pages left in ${progressScope}`;
             setCenterPagesLeftVisible(true, label);
+            logMay15('ebook.navHUD.sectionProgress.return', {
+                source,
+                requestToken,
+                verdict: 'visible',
+                sectionIndex: sectionResolution.index,
+                pagesLeft,
+                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            });
         } catch (error) {
+            logMay15('ebook.navHUD.sectionProgress.return', {
+                source,
+                requestToken,
+                verdict: 'error',
+                message: String(error?.message ?? error),
+                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            });
             console.error('Failed to update section progress', error);
         }
     }
@@ -2409,7 +2546,8 @@ export class NavigationHUD {
         return !!(button && !button.hidden && !button.disabled);
     }
 
-    _updateRelocateButtons() {
+    _updateRelocateButtons(source = 'unknown') {
+        const startedAt = performance.now();
         const backStack = this.relocateStacks.back;
         const forwardStack = this.relocateStacks.forward;
         const backBtn = this.navRelocateButtons?.back;
@@ -2420,6 +2558,16 @@ export class NavigationHUD {
         const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
         const disableBack = busy || !showBack;
         const disableForward = busy || !showForward;
+        logMay15('ebook.navHUD.relocateButtons.entered', {
+            source,
+            backDepth: backStack.length,
+            forwardDepth: forwardStack.length,
+            showBack,
+            showForward,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            stack: may15Stack(),
+        });
         if (backBtn) {
             backBtn.hidden = !showBack;
             backBtn.disabled = disableBack;
@@ -2467,18 +2615,16 @@ export class NavigationHUD {
             forwardHidden: forwardBtn?.hidden ?? null,
             backDisabled: backBtn?.disabled ?? null,
             forwardDisabled: forwardBtn?.disabled ?? null,
-            backWidth: backBtn?.offsetWidth ?? null,
-            forwardWidth: forwardBtn?.offsetWidth ?? null,
             backEdge: backBtn?.dataset?.navEdge ?? null,
             forwardEdge: forwardBtn?.dataset?.navEdge ?? null,
-            backOpacity: backBtn ? window.getComputedStyle(backBtn).opacity : null,
-            forwardOpacity: forwardBtn ? window.getComputedStyle(forwardBtn).opacity : null,
-            backDisplay: backBtn ? window.getComputedStyle(backBtn).display : null,
-            forwardDisplay: forwardBtn ? window.getComputedStyle(forwardBtn).display : null,
-            backVisibility: backBtn ? window.getComputedStyle(backBtn).visibility : null,
-            forwardVisibility: forwardBtn ? window.getComputedStyle(forwardBtn).visibility : null,
         });
         this._updateSectionProgress({ source: 'relocate-buttons' });
+        logMay15('ebook.navHUD.relocateButtons.afterSectionProgressDispatch', {
+            source,
+            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            showBack,
+            showForward,
+        });
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;
             this._logJumpDiagnostic('relocate-visibility', {

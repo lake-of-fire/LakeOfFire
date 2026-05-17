@@ -1408,6 +1408,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
+    @State private var lastPushedHideNavigationDueToScroll: Bool?
+    @State private var lastPushedHideNavigationPageURL: URL?
     
     func body(content: Content) -> some View {
         content
@@ -1446,7 +1448,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 }
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
-                await pushHideNavigationStateToWebView()
+                await pushHideNavigationStateToWebView(reason: "binding", force: false)
             }
             .task(id: readerViewModel.state.pageURL) { @MainActor in
                 if !readerViewModel.state.pageURL.isEBookURL {
@@ -1455,18 +1457,66 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 }
             }
             .task(id: readerContent.pageURL) {
-                await pushHideNavigationStateToWebView()
+                await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
     }
 }
 
 extension ReaderMessageHandlersViewModifier {
     @MainActor
-    private func pushHideNavigationStateToWebView() async {
-        guard readerContent.pageURL.isEBookURL else { return }
-        let boolLiteral = hideNavigationDueToScroll.wrappedValue ? "true" : "false"
+    private func pushHideNavigationStateToWebView(reason: String, force: Bool) async {
+        let pageURL = readerContent.pageURL
+        guard pageURL.isEBookURL else { return }
+        let shouldHide = hideNavigationDueToScroll.wrappedValue
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let lastNativeLookupTapAtMs = UserDefaults.standard.double(forKey: "MAY15LastNativeLookupTapAtMs")
+        let nativeLookupTapAgeMs = lastNativeLookupTapAtMs > 0 ? nowMs - lastNativeLookupTapAtMs : nil
+        let isRecentNativeLookupHide =
+            reason == "binding"
+            && shouldHide
+            && lastNativeLookupTapAtMs > 0
+            && nowMs - lastNativeLookupTapAtMs < 1_500
+        if isRecentNativeLookupHide {
+            lastPushedHideNavigationDueToScroll = shouldHide
+            lastPushedHideNavigationPageURL = pageURL
+            debugPrint("# MAY15 nav.bindingPush.skip", [
+                "reason": reason,
+                "shouldHide": shouldHide,
+                "pageURL": pageURL.absoluteString,
+                "skipReason": "recentNativeLookupTap",
+                "ageMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
+                "lastNativeLookupTapAtMs": lastNativeLookupTapAtMs,
+                "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
+            ] as [String: Any])
+            return
+        }
+        if !force,
+           lastPushedHideNavigationDueToScroll == shouldHide,
+           lastPushedHideNavigationPageURL == pageURL {
+            debugPrint("# MAY15 nav.bindingPush.skip", [
+                "reason": reason,
+                "shouldHide": shouldHide,
+                "pageURL": pageURL.absoluteString,
+                "skipReason": "duplicateState",
+                "nativeLookupTapAgeMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
+                "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
+            ] as [String: Any])
+            return
+        }
+        let boolLiteral = shouldHide ? "true" : "false"
         do {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
+            lastPushedHideNavigationDueToScroll = shouldHide
+            lastPushedHideNavigationPageURL = pageURL
+            debugPrint("# MAY15 nav.bindingPush.sent", [
+                "reason": reason,
+                "force": force,
+                "shouldHide": shouldHide,
+                "pageURL": pageURL.absoluteString,
+                "nativeLookupTapAgeMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
+                "lastNativeLookupTapAtMs": lastNativeLookupTapAtMs,
+                "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
+            ] as [String: Any])
         } catch {
             // Ignore boot timing races.
         }

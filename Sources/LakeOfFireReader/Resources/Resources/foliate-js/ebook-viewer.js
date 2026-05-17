@@ -351,6 +351,30 @@ const captureNavVisibilityState = () => {
     };
 };
 
+const logMay15 = (event, detail = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY15 ${event} ${JSON.stringify({
+            timestamp: Date.now(),
+            performanceNow: Math.round(performance.now() * 100) / 100,
+            ...detail,
+        })}`);
+    } catch (_err) {
+        try { console.log('# MAY15', event, detail); } catch (_) {}
+    }
+};
+
+const may15Stack = () => {
+    try {
+        return String(new Error().stack || '')
+            .split('\n')
+            .slice(2, 9)
+            .map(line => line.trim())
+            .filter(Boolean);
+    } catch (_err) {
+        return [];
+    }
+};
+
 const eventClientPoint = (event) => {
     const touch = event?.changedTouches?.[0] || event?.touches?.[0] || null;
     const clientX = Number(touch?.clientX ?? event?.clientX);
@@ -1745,6 +1769,13 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
     const before = captureNavVisibilityState();
+    logMay15('ebook.navBridge.setNative.entered', {
+        sequence,
+        source,
+        requestedHide: normalized,
+        before,
+        stack: may15Stack(),
+    });
     postHideNavLog('js.bridge.begin', {
         sequence,
         source,
@@ -1757,6 +1788,16 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     globalThis.reader?.navHUD?.setHideNavigationDueToScroll?.(normalized, source, {
         bridgeSource: source,
         bodyClassApplied: false,
+    });
+    const afterSetHide = captureNavVisibilityState();
+    logMay15('ebook.navBridge.setNative.afterHUD', {
+        sequence,
+        source,
+        requestedHide: normalized,
+        beforeHudHideNavigationDueToScroll: before.hudHideNavigationDueToScroll ?? null,
+        afterHudHideNavigationDueToScroll: afterSetHide.hudHideNavigationDueToScroll ?? null,
+        afterNavHiddenScrollClass: afterSetHide.navHiddenScrollClass ?? null,
+        afterBodyNavHiddenClass: afterSetHide.bodyNavHiddenClass ?? null,
     });
     const bridgeState = {
         sequence,
@@ -1780,15 +1821,32 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         requestedHide: normalized,
         after: captureNavVisibilityState(),
     });
+    logMay15('ebook.navBridge.setNative.finished', {
+        sequence,
+        source,
+        requestedHide: normalized,
+    });
     return normalized;
 };
 
 window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabiSetHideNavigationDueToScroll') => {
     const requestedHide = !!shouldHide;
+    logMay15('ebook.navBridge.windowRequest', {
+        source,
+        requestedHide,
+        currentState: captureNavVisibilityState(),
+        stack: may15Stack(),
+    });
     if (requestedHide) {
         const ignoreCount = Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0);
         if (ignoreCount > 0) {
             globalThis.__manabiIgnoreNextIncomingHideNavigationCount = ignoreCount - 1;
+            logMay15('ebook.navBridge.windowReturn', {
+                source,
+                requestedHide,
+                verdict: 'ignoredHideCount',
+                remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
+            });
             postHideNavLog('js.bridge.ignored', {
                 source,
                 requestedHide: true,
@@ -1807,6 +1865,14 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
             && now - lastForwardPageTurnHideAtMs < 1500
             && globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
         if (isStaleSwiftRevealAfterForwardPageTurn) {
+            logMay15('ebook.navBridge.windowReturn', {
+                source,
+                requestedHide,
+                verdict: 'staleSwiftRevealAfterForwardPageTurn',
+                now,
+                lastForwardPageTurnHideAtMs,
+                lastBackwardPageTurnRevealAtMs,
+            });
             postHideNavLog('js.bridge.ignored', {
                 source,
                 requestedHide: false,
@@ -1819,6 +1885,11 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
             return true;
         }
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            logMay15('ebook.navBridge.windowReturn', {
+                source,
+                requestedHide,
+                verdict: 'preserveHiddenThroughNextDisplay',
+            });
             postHideNavLog('js.bridge.ignored', {
                 source,
                 requestedHide: false,
@@ -1830,6 +1901,12 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
         const ignoreCount = Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0);
         if (ignoreCount > 0) {
             globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = ignoreCount - 1;
+            logMay15('ebook.navBridge.windowReturn', {
+                source,
+                requestedHide,
+                verdict: 'ignoredRevealCount',
+                remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
+            });
             postHideNavLog('js.bridge.ignored', {
                 source,
                 requestedHide: false,
@@ -1839,7 +1916,14 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
             return true;
         }
     }
-    return setNativeHideNavigationState(requestedHide, source);
+    const result = setNativeHideNavigationState(requestedHide, source);
+    logMay15('ebook.navBridge.windowReturn', {
+        source,
+        requestedHide,
+        verdict: 'applied',
+        result,
+    });
+    return result;
 };
 
 const normalizeChromeInsetCSSValue = (value) => {
