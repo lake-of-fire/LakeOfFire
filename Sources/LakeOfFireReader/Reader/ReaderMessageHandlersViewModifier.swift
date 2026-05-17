@@ -753,6 +753,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
+                if source == "toolbar.blankTap" {
+                    debugPrint(
+                        "# MAY16 toolbarBlank.nativeMessage",
+                        "source=\(source ?? "nil")",
+                        "direction=\(direction ?? "nil")",
+                        "requested=\(shouldHide)",
+                        "current=\(hideNavigationDueToScroll.wrappedValue)"
+                    )
+                }
+                if source == "toolbar.blankTap" {
+                    navigationVisibilityWillChangeHandler?(
+                        ReaderNavigationVisibilityChange(
+                            shouldHide: shouldHide,
+                            reason: nil,
+                            source: source,
+                            direction: direction
+                        )
+                    )
+                    lastNavigationVisibilityEvent = .init(
+                        timestamp: Date(),
+                        shouldHide: shouldHide,
+                        source: source,
+                        direction: direction
+                    )
+                    return
+                }
                 if !shouldHide,
                    source?.contains("page-turn") == true,
                    direction != "backward" {
@@ -1325,6 +1351,18 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
+        let isToolbarBlankTap = source == "toolbar.blankTap"
+        if isToolbarBlankTap {
+            debugPrint(
+                "# MAY16 toolbarBlank.setNative.begin",
+                "source=\(source ?? "nil")",
+                "direction=\(direction ?? "nil")",
+                "reason=\(reason ?? "nil")",
+                "previous=\(previousValue)",
+                "requested=\(shouldHide)",
+                "pageTurn=\(isPageTurnVisibilityChange)"
+            )
+        }
         debugPrint(
             "# EPUB  navigationVisibility.native",
             "source=\(source ?? "nil")",
@@ -1352,6 +1390,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 "value=\(shouldHide)",
                 "pageTurn=\(isPageTurnVisibilityChange)"
             )
+            if isToolbarBlankTap {
+                debugPrint(
+                    "# MAY16 toolbarBlank.setNative.noop",
+                    "source=\(source ?? "nil")",
+                    "value=\(shouldHide)"
+                )
+            }
             return
         }
         navigationVisibilityWillChangeHandler?(
@@ -1368,6 +1413,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             withAnimation(.easeInOut(duration: 0.2)) {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
+        }
+        if isToolbarBlankTap {
+            debugPrint(
+                "# MAY16 toolbarBlank.setNative.end",
+                "source=\(source ?? "nil")",
+                "previous=\(previousValue)",
+                "requested=\(shouldHide)",
+                "current=\(hideNavigationDueToScroll.wrappedValue)"
+            )
         }
     }
 

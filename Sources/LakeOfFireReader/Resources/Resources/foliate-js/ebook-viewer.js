@@ -1039,12 +1039,27 @@ const ignoreNextIncomingRevealNavigation = (source) => {
 
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
     const requestedHide = !!shouldHide;
+    const isMay16ToolbarSource =
+        source === 'toolbar.blankTap'
+        || details?.control === 'nav-bar-background';
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: requestedHide,
             source,
             ...details,
         });
+        if (isMay16ToolbarSource) {
+            const line = `# MAY16 ${JSON.stringify({
+                event: 'toolbarBlank.nativePost.send',
+                timestamp: Date.now(),
+                source,
+                requestedHide,
+                details,
+                state: captureNavVisibilityState(),
+            })}`;
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+            console.log(line);
+        }
         postHideNavLog('nativePost.send', {
             source,
             requestedHide,
@@ -1053,6 +1068,22 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
         });
         return true;
     } catch (error) {
+        if (isMay16ToolbarSource) {
+            const line = `# MAY16 ${JSON.stringify({
+                event: 'toolbarBlank.nativePost.error',
+                timestamp: Date.now(),
+                source,
+                requestedHide,
+                details,
+                message: error?.message || String(error),
+            })}`;
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(line);
+            } catch (_error) {}
+            try {
+                console.log(line);
+            } catch (_error) {}
+        }
         postHideNavLog('nativePost.error', {
             source,
             requestedHide,
@@ -4555,6 +4586,52 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
+        document.getElementById('nav-bar')?.addEventListener('click', (event) => {
+            const target = event.target;
+            const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            const shouldHide = !wasHidden;
+            const logLine = `# MAY16 ${JSON.stringify({
+                event: 'toolbarBlank.click',
+                timestamp: Date.now(),
+                accepted: !excludedTarget,
+                excludedSelector: excludedTarget
+                    ? (excludedTarget.id ? `#${excludedTarget.id}` : (excludedTarget.className ? `.${String(excludedTarget.className).replace(/\s+/g, '.')}` : excludedTarget.tagName))
+                    : null,
+                target: target?.id || target?.tagName || null,
+                targetClass: target?.className || null,
+                wasHidden,
+                shouldHide,
+                state: captureNavVisibilityState(),
+            })}`;
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage?.(logLine);
+            } catch (_error) {}
+            try {
+                console.log(logLine);
+            } catch (_error) {}
+            if (excludedTarget) {
+                return;
+            }
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-bar-background',
+                wasHidden,
+                shouldHide,
+                target: target?.id || target?.tagName || null,
+            });
+            postEbookNavigationVisibilityToNative(
+                shouldHide,
+                'toolbar.blankTap',
+                {
+                    control: 'nav-bar-background',
+                    jsWasHidden: wasHidden,
+                    jsProposedShouldHide: shouldHide,
+                }
+            );
+        });
         $('#side-bar-close-button').addEventListener('click', () => {
             this.closeSideBar()
         })
@@ -4908,13 +4985,17 @@ class Reader {
     }
     #clearVisiblePageReadChrome(reason = 'unspecified') {
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
+        const visibleButtons = Array.from(document.querySelectorAll('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]'));
         if (reason === 'page-turn-start') {
             this.#invalidateVisiblePageSegmentSnapshot();
             this.pageReadMarkerAwaitingPageState = true;
         }
         document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
         document.body?.setAttribute?.('data-page-read-marker-read', 'false');
-        document.querySelectorAll('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]').forEach((button) => {
+        if (reason === 'page-turn-start') {
+            return;
+        }
+        visibleButtons.forEach((button) => {
             button.dataset.mnbTrackingSectionRead = 'false';
             button.dataset.readState = 'ready';
             button.disabled = false;
@@ -5032,10 +5113,10 @@ class Reader {
     }
     #pageTurnDirectionForMove(method) {
         if (method === 'goLeft') {
-            return 'backward';
+            return this.isRTL ? 'forward' : 'backward';
         }
         if (method === 'goRight') {
-            return 'forward';
+            return this.isRTL ? 'backward' : 'forward';
         }
         return null;
     }
@@ -5604,7 +5685,6 @@ class Reader {
         const completionAction = this.completionAction;
         const markReadButtonsVisible = document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
         const shouldShowPageTracking = markReadButtonsVisible && (!!completionAction || hasStates);
-        const renderStartedAt = performance.now();
         const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
         const buttonBefore = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
         container.hidden = !shouldShowPageTracking;
@@ -6022,6 +6102,23 @@ class Reader {
         const contents = this.view?.renderer?.getContents?.() || [];
         const doc = isDocumentLike(explicitDoc) ? explicitDoc : contents[0]?.doc;
         if (!isDocumentLike(doc)) {
+            if (retryCount > 0) {
+                const diagnosticsKey = `no-document-retry:${reason}:${contents.length}:${retryCount}`;
+                if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
+                    this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
+                    this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
+                        reason,
+                        contentsCount: contents.length,
+                        hasView: !!this.view,
+                        hasRenderer: !!this.view?.renderer,
+                        hasExplicitDoc: isDocumentLike(explicitDoc),
+                        retryCount,
+                        pendingReason: 'retry-before-clear',
+                    });
+                }
+                this.#queuePageTrackingRetry(reason, explicitDoc, retryCount);
+                return;
+            }
             this.pageTrackingStates = [];
             this.#renderPageTrackingButtons(reason);
             const diagnosticsKey = `no-document:${reason}:${contents.length}`;
@@ -6092,7 +6189,6 @@ class Reader {
             return;
         }
         this.pageTrackingStates = states;
-        const beforeRenderAt = performance.now();
         this.#renderPageTrackingButtons(reason);
         this.#updatePageReadMarker(reason, visibleScreenState, doc);
         const diagnosticsKey = JSON.stringify({
