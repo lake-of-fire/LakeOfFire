@@ -14,9 +14,6 @@ import LakeKit
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
 private func logDetent(_ message: String) {
-#if DEBUG
-    debugPrint("# DETENT \(message)")
-#endif
 }
 
 private func logFeedFlash(_ message: String) {

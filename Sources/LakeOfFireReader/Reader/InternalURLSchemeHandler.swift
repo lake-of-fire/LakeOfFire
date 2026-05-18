@@ -8,17 +8,6 @@ import WebKit
 
 @inline(__always)
 private func readerLoadSchemeLog(_ stage: String, _ metadata: [String: String] = [:]) {
-#if DEBUG
-    let payload = metadata
-        .sorted { $0.key < $1.key }
-        .map { "\($0.key)=\($0.value)" }
-        .joined(separator: " ")
-    if payload.isEmpty {
-        Swift.debugPrint("# READERLOAD stage=\(stage)")
-    } else {
-        Swift.debugPrint("# READERLOAD stage=\(stage) \(payload)")
-    }
-#endif
 }
 
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {

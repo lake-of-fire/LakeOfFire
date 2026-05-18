@@ -57,32 +57,6 @@ public extension View {
     }
 }
 
-private let readerEPUBLoadVerboseLoggingEnabled =
-    ProcessInfo.processInfo.environment["MANABI_EPUBLOAD_VERBOSE_LOGS"] == "1"
-
-private let readerEPUBLoadDefaultEvents: Set<String> = [
-    "paginator.display.anchor-anomaly",
-]
-
-private func readerEPUBLoadEvent(from line: String) -> String? {
-    guard line.hasPrefix("# EPUBLOAD ") else { return nil }
-    let jsonStart = line.index(line.startIndex, offsetBy: "# EPUBLOAD ".count)
-    let json = line[jsonStart...]
-    guard let data = String(json).data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return nil
-    }
-    return object["event"] as? String
-}
-
-private func shouldLogReaderEPUBLoadLine(_ line: String) -> Bool {
-    if readerEPUBLoadVerboseLoggingEnabled { return true }
-    guard let event = readerEPUBLoadEvent(from: line) else { return false }
-    if event.starts(with: "js.window.") { return true }
-    if event.contains(".error") { return true }
-    return readerEPUBLoadDefaultEvents.contains(event)
-}
-
 private struct ReaderSizeTrackingCacheEntry: Codable {
     let id: String
     let inlineSize: Double
@@ -408,21 +382,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         in: frameInfo
                 )
                 let state = String(describing: result ?? "nil")
-                debugPrint(
-                    "# EPUB  ebookViewerInitialized.fallback",
-                    "mode=single-shot",
-                    "state=\(state)",
-                    "page=\(url.absoluteString)",
-                    "frameURL=\(frameInfo?.request.url?.absoluteString ?? "nil")",
-                    "frameMainDocumentURL=\(frameInfo?.request.mainDocumentURL?.absoluteString ?? "nil")"
-                )
             } catch {
-                debugPrint(
-                    "# EPUB  ebookViewerInitialized.fallback.error",
-                    "mode=single-shot",
-                    "error=\(error)",
-                    "page=\(url.absoluteString)"
-                )
             }
         }
     }
@@ -445,22 +405,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) async throws -> (any ReaderContentProtocol)? {
         if let currentContent = readerContent.content,
            currentContent.url.matchesReaderURL(windowURL) {
-            debugPrint(
-                "# READERLOAD stage=readerMessageHandlers.contentReuseCurrent",
-                "source=\(source)",
-                "windowURL=\(windowURL.absoluteString)",
-                "contentURL=\(currentContent.url.absoluteString)",
-                "readerPageURL=\(readerContent.pageURL.absoluteString)"
-            )
             return currentContent
         }
-        debugPrint(
-            "# READERLOAD stage=readerMessageHandlers.contentFallbackLoad",
-            "source=\(source)",
-            "windowURL=\(windowURL.absoluteString)",
-            "readerPageURL=\(readerContent.pageURL.absoluteString)",
-            "currentContentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
-        )
         return try await ReaderViewModel.getContent(forURL: windowURL, source: source)
     }
     
@@ -496,48 +442,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
                         registerEbookViewerFrame(message.frameInfo)
                     }
-                    let shouldLogEPUBLoad = logMessage.hasPrefix("# EPUBLOAD")
-                        ? shouldLogReaderEPUBLoadLine(logMessage)
-                        : true
-                    let isEBookBugLine = logMessage.hasPrefix("# EBOOKBUG")
-                    if shouldLogEPUBLoad && logMessage.hasPrefix("# EPUBLOAD") {
-                        Logger.shared.logger.info("\(logMessage)")
-                    }
-                    if readerEPUBLoadVerboseLoggingEnabled,
-                       !isEBookBugLine,
-                       (!logMessage.hasPrefix("# EPUBLOAD") || shouldLogEPUBLoad) {
-                        debugPrint(logMessage)
-                    }
                     return
                 }
                 guard let payload = message.body as? [String: Any] else {
 #if DEBUG
-                    debugPrint("# EPUB  readabilityInit.swiftLog", "body=\(String(describing: message.body))")
 #endif
                     return
                 }
-                if let prefix = payload["prefix"] as? String,
-                   let event = payload["event"] as? String,
-                   ["# EPUBLOAD"].contains(prefix) {
-                    let details = payload.keys
-                        .filter { $0 != "message" && $0 != "windowURL" && $0 != "pageURL" && $0 != "prefix" && $0 != "event" }
-                        .sorted()
-                        .compactMap { key -> String? in
-                            guard let value = payload[key] else { return nil }
-                            let printable = value is NSNull ? "<null>" : String(describing: value)
-                            return "\(key)=\(printable)"
-                        }
-                    let line = details.isEmpty ? "\(prefix) \(event)" : "\(prefix) \(event) \(details.joined(separator: " "))"
-                    if shouldLogReaderEPUBLoadLine(line) {
-                        Logger.shared.logger.info("\(line)")
-                    }
-                    if readerEPUBLoadVerboseLoggingEnabled {
-                        debugPrint(line)
-                    }
-                    return
-                }
 
-                let logMessage = payload["message"] as? String ?? "# EPUB  SwiftReadability.print"
+                let logMessage = payload["message"] as? String ?? "SwiftReadability.print"
                 var components: [String] = []
                 if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
                     components.append("windowURL=\(windowURL)")
@@ -555,14 +468,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     components.append("\(key)=\(printable)")
                 }
                 if components.isEmpty {
-                    debugPrint(logMessage)
                 } else {
-                    debugPrint(logMessage, components.joined(separator: " "))
                 }
-                if logMessage.hasPrefix("# EPUB")
-                    || logMessage.hasPrefix("# READER")
+                if logMessage.hasPrefix("# READER")
                     || logMessage.hasPrefix("# REPLACETEXT")
-                    || logMessage.hasPrefix("# EPUBLOAD") {
+                {
                     let line = components.isEmpty
                         ? logMessage
                         : "\(logMessage) \(components.joined(separator: " "))"
@@ -594,16 +504,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     bodyVisibility: bodyVisibility,
                     bodyOpacity: bodyOpacity
                 )
-                debugPrint(
-                    "# READERLOAD stage=readerDocState.ready",
-                    "pageURL=\(pageURL.absoluteString)",
-                    "readyState=\(readyState)",
-                    "hasReaderContent=\(hasReaderContent)",
-                    "manabiFontPending=\(manabiFontPending)",
-                    "bodyVisibility=\(bodyVisibility)",
-                    "bodyOpacity=\(bodyOpacity)",
-                    "reason=\(reason)"
-                )
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
                 }
@@ -633,7 +533,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         in: message.frameInfo
                     )
 #if DEBUG
-                    debugPrint("# EPUB  paginationBookKey.set", "key=\(bookKey.prefix(72))…")
 #endif
                 }
             }),
@@ -669,14 +568,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         )
                         bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
                         trackingSizeCache.setValue(bucket, forKey: bucketKey)
-                        debugPrint(
-                            "# EPUB  trackingSizeCache set",
-                            "bucket=\(bucketKey.prefix(72))…",
-                            "cacheKey=\(key.prefix(72))…",
-                            "entries=\(decoded.count)",
-                            "snapshots=\(bucket.snapshots.count)",
-                            "reason=\(snapshot.reason ?? "<nil>")"
-                        )
                     }
                 case "get":
                     guard let requestId = body["requestId"] as? String else { return }
@@ -694,13 +585,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                     )
                                 }
                             }
-                            debugPrint(
-                                "# EPUB  trackingSizeCache hit",
-                                "bucket=\(bucketKey.prefix(72))…",
-                                "cacheKey=\(key.prefix(72))…",
-                                "entries=\(cached.count)",
-                                "snapshots=\(bucket.snapshots.count)"
-                            )
                         } catch {
                             // Ignore encoding errors.
                         }
@@ -713,7 +597,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             )
                         }
 #if DEBUG
-                        debugPrint("# EPUB  trackingSizeCache miss", "key=\(key.prefix(72))…")
 #endif
                     }
                 default:
@@ -741,9 +624,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let messageText = result.message ?? "unknown message"
                 let errorText = result.error ?? "n/a"
                 Logger.shared.logger.error("[JS] Error: \(messageText) @ \(source):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(errorText)")
-                Logger.shared.logger.error(
-                    "# EPUBLOAD js.error source=\(source) mainDocumentURL=\(mainDocumentURL?.absoluteString ?? "nil") line=\(result.lineno ?? -1) column=\(result.colno ?? -1) message=\(messageText) error=\(errorText)"
-                )
             }),
             ("ebookNavigationVisibility", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -796,12 +676,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         source: source,
                         direction: direction
                     )
-                    debugPrint(
-                        "# EPUB  navigationVisibility.deferPageTurnReveal",
-                        "source=\(source ?? "nil")",
-                        "direction=\(direction ?? "nil")",
-                        "hideNavigationDueToScroll=\(hideNavigationDueToScroll.wrappedValue)"
-                    )
                     return
                 }
                 setHideNavigationDueToScroll(
@@ -839,19 +713,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       url == readerViewModel.state.pageURL else {
                     return
                 }
-                debugPrint(
-                    "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableEvaluating",
-                    "windowURL=\(url.absoluteString)",
-                    "readerPageURL=\(readerContent.pageURL.absoluteString)",
-                    "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
-                    "httpStatus=\(readerViewModel.state.mainFrameHTTPStatusCode.map(String.init) ?? "nil")",
-                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "nil")",
-                    "frameMainDocumentURL=\(message.frameInfo.request.mainDocumentURL?.absoluteString ?? "nil")",
-                    "isMainFrame=\(message.frameInfo.isMainFrame)",
-                    "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
-                    "isHandlingURL=\(readerModeViewModel.isReaderModeHandlingURL(url))",
-                    "hasReadabilityContent=\(readerModeViewModel.readabilityContent != nil)"
-                )
                 if ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
                     isMainFrame: message.frameInfo.isMainFrame,
                     statusCode: readerViewModel.state.mainFrameHTTPStatusCode
@@ -864,23 +725,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "hasReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)",
                         "preservedAvailability=true"
                     )
-                    debugPrint(
-                        "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableSkipped",
-                        "reason=httpError",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "windowURL=\(url.absoluteString)"
-                    )
                     return
                 }
                 if readerModeViewModel.isReaderModeLoading || readerModeViewModel.isReaderModeHandlingURL(url) {
-                    debugPrint(
-                        "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableSkipped",
-                        "reason=readerModeInFlight",
-                        "windowURL=\(url.absoluteString)",
-                        "readerPageURL=\(readerContent.pageURL.absoluteString)",
-                        "isMainFrame=\(message.frameInfo.isMainFrame)",
-                        "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
-                    )
                     return
                 }
                 guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
@@ -1000,13 +847,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "newHTMLBytes=\(result.outputHTML.utf8.count)",
                         "hasReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)",
                         "preservedReadabilityContent=true"
-                    )
-                    debugPrint(
-                        "# READERLOAD stage=readerMessageHandlers.readabilityParsedSkipped",
-                        "reason=httpError",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "windowURL=\(url.absoluteString)",
-                        "preservedReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)"
                     )
                     return
                 }
@@ -1225,11 +1065,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                    url.absoluteString.hasPrefix("\(scheme)://"),
                    url.isEBookURL,
                    let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    debugPrint(
-                        "# EPUB  ebookViewerInitialized",
-                        "page=\(url.absoluteString)",
-                        "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
-                    )
                     _ = try? await scriptCaller.evaluateJavaScript(
                         "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
                         in: message.frameInfo
@@ -1363,15 +1198,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 "pageTurn=\(isPageTurnVisibilityChange)"
             )
         }
-        debugPrint(
-            "# EPUB  navigationVisibility.native",
-            "source=\(source ?? "nil")",
-            "direction=\(direction ?? "nil")",
-            "reason=\(reason ?? "nil")",
-            "previous=\(previousValue)",
-            "requested=\(shouldHide)",
-            "pageTurn=\(isPageTurnVisibilityChange)"
-        )
         guard previousValue != shouldHide else {
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
@@ -1383,13 +1209,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 )
             }
-            debugPrint(
-                "# EPUB  navigationVisibility.nativeNoop",
-                "source=\(source ?? "nil")",
-                "direction=\(direction ?? "nil")",
-                "value=\(shouldHide)",
-                "pageTurn=\(isPageTurnVisibilityChange)"
-            )
             if isToolbarBlankTap {
                 debugPrint(
                     "# MAY16 toolbarBlank.setNative.noop",
@@ -1527,15 +1346,6 @@ extension ReaderMessageHandlersViewModifier {
             let settledPageURL = readerContent.pageURL
             let settledShouldHide = hideNavigationDueToScroll.wrappedValue
             if settledPageURL != pageURL || settledShouldHide != shouldHide {
-                debugPrint("# MAY15 nav.bindingPush.skip", [
-                    "reason": reason,
-                    "shouldHide": shouldHide,
-                    "settledShouldHide": settledShouldHide,
-                    "pageURL": pageURL.absoluteString,
-                    "settledPageURL": settledPageURL.absoluteString,
-                    "skipReason": "staleRevealBindingAfterSettle",
-                    "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
-                ] as [String: Any])
                 return
             }
         }
@@ -1548,15 +1358,6 @@ extension ReaderMessageHandlersViewModifier {
             && lastNativeLookupTapAtMs > 0
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
-            debugPrint("# MAY15 nav.bindingPush.skip", [
-                "reason": reason,
-                "shouldHide": shouldHide,
-                "pageURL": pageURL.absoluteString,
-                "skipReason": "recentNativeLookupTap",
-                "ageMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
-                "lastNativeLookupTapAtMs": lastNativeLookupTapAtMs,
-                "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
-            ] as [String: Any])
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
@@ -1564,15 +1365,6 @@ extension ReaderMessageHandlersViewModifier {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
-            debugPrint("# MAY15 nav.bindingPush.sent", [
-                "reason": reason,
-                "force": force,
-                "shouldHide": shouldHide,
-                "pageURL": pageURL.absoluteString,
-                "nativeLookupTapAgeMs": nativeLookupTapAgeMs.map { Int($0.rounded()) } as Any,
-                "lastNativeLookupTapAtMs": lastNativeLookupTapAtMs,
-                "callStack": Thread.callStackSymbols.prefix(10).map { $0 }
-            ] as [String: Any])
         } catch {
             // Ignore boot timing races.
         }

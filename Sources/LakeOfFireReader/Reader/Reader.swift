@@ -105,7 +105,6 @@ func applyAdaptiveReaderWidth(
 ) async {
     guard hasAsyncCaller else {
 #if DEBUG
-        debugPrint("# EPUB  readerAdaptiveWidth.set.skip", "reason=\(reason)", "info=no asyncCaller")
 #endif
         return
     }
@@ -134,7 +133,6 @@ func syncReaderPaginationTrackingSettingsKey(
 ) async {
     guard hasAsyncCaller else {
 #if DEBUG
-        debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
 #endif
         return
     }
@@ -149,11 +147,9 @@ func syncReaderPaginationTrackingSettingsKey(
             true
         )
 #if DEBUG
-        debugPrint("# EPUB  paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
 #endif
     } catch {
 #if DEBUG
-        debugPrint("# EPUB  paginationSettingsKey.set.error", error.localizedDescription)
 #endif
     }
 }
@@ -208,7 +204,6 @@ func applyReaderFontSize(
 ) async {
     guard hasAsyncCaller else {
 #if DEBUG
-        debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
 #endif
         return
     }
@@ -446,11 +441,6 @@ func syncEbookViewerChromeInsets(
         )
         logMay8("native.lakeReader.syncChromeInsets.end pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     } catch {
-        debugPrint(
-            "# EPUB  ebook.viewer.insets.apply.error",
-            "pageURL=\(pageURL.absoluteString)",
-            "error=\(error.localizedDescription)"
-        )
         logMay8("native.lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
         logEPUBBack("stage=lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
     }
@@ -874,19 +864,10 @@ public extension WebViewNavigator {
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
             let loadSnapshot = debugLoadSnapshot
             let resolvedAt = CFAbsoluteTimeGetCurrent()
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.begin contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault)"
-            )
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.state targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) hasAttachedWebView=\(loadSnapshot.hasAttachedWebView) isLoading=\(loadSnapshot.isLoading)"
-            )
             if let readerModeViewModel {
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                     let isLoading = content.isReaderModeByDefault || url.isReaderURLLoaderURL
                     readerModeViewModel.readerModeLoading(isLoading)
-                    debugPrint(
-                        "# READERLOAD stage=navigator.loadContent.readerModeLoading targetURL=\(url.absoluteString) loading=\(isLoading) source=currentContent contentURL=\(content.url.absoluteString)"
-                    )
 //                    debugPrint("# WebViewNavigator load", isLoading)
                 }
             }
@@ -894,27 +875,12 @@ public extension WebViewNavigator {
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
-                debugPrint(
-                    "# READERLOAD stage=navigator.loadContent.duplicateTarget targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) isLoading=\(loadSnapshot.isLoading)"
-                )
                 if loadSnapshot.isLoading {
-                    debugPrint(
-                        "# READERLOAD stage=navigator.loadContent.skipDuplicateActiveLoad targetURL=\(url.absoluteString)"
-                    )
                     return
                 }
             }
             load(URLRequest(url: url))
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.dispatched targetURL=\(url.absoluteString)"
-            )
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.summary contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) resolveElapsed=\(readerLoadDurationString(resolvedAt - loadStartedAt)) dispatchElapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt)) totalElapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - loadStartedAt)) readerDefault=\(content.isReaderModeByDefault) targetKind=\(url.isReaderURLLoaderURL ? "readerLoader" : (url.isHTTP ? "http" : (url.isFileURL ? "file" : "other")))"
-            )
         } else {
-            debugPrint(
-                "# READERLOAD stage=navigator.loadContent.missingURL contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
-            )
         }
     }
 }
@@ -1114,16 +1080,6 @@ public struct Reader: View {
             guard pageURL.isEBookURL else { return }
             logMay8("native.lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) readerContentPageURL=\(readerContent.pageURL.absoluteString) chromeInsetsTaskID=\(chromeInsetsTaskID) sampledTopInset=\(sampledTopInset) explicitTopInset=\(explicitTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
             logEPUBBack("stage=lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) sampledTopInset=\(sampledTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
-            debugPrint(
-                "# EPUB  ebook.viewer.insets.task",
-                "pageURL=\(pageURL.absoluteString)",
-                "sampledTopInset=\(sampledTopInset)",
-                "explicitTopInset=\(explicitTopInset)",
-                "effectiveTopInset=\(effectiveTopInset)",
-                "effectiveBottomInset=\(effectiveBottomInset)",
-                "effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset)",
-                "viewerLoadedProbeSummary=\(viewerLoadedProbeSummary)"
-            )
             let retryDelaysInNanoseconds: [UInt64] = [
                 0,
                 80_000_000,
@@ -1218,7 +1174,6 @@ public struct Reader: View {
                     )
                 } catch {
 #if DEBUG
-                    debugPrint("# EPUB  title.sync.failed", error.localizedDescription)
 #endif
                 }
             }

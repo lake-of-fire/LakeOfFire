@@ -25,9 +25,6 @@ public extension EnvironmentValues {
 #endif
 
 private func logReaderLoad(_ message: String) {
-#if DEBUG
-    debugPrint("# READERLOAD \(message)")
-#endif
 }
 
 private func logSnippetLoad(_ message: String) {
@@ -37,9 +34,6 @@ private func logSnippetLoad(_ message: String) {
 }
 
 private func logDetent(_ message: String) {
-#if DEBUG
-    debugPrint("# DETENT \(message)")
-#endif
 }
 
 private func logFeedFlash(_ message: String) {

@@ -525,16 +525,6 @@ public extension ReaderContentProtocol {
         let resolvedPageURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         debugPrint(
-            "# READERLOAD",
-            "stage=history.add.begin",
-            "contentURL=\(url.absoluteString)",
-            "contentIsLoaderURL=\(url.isReaderURLLoaderURL)",
-            "pageURL=\(pageURL.absoluteString)",
-            "pageIsLoaderURL=\(pageURL.isReaderURLLoaderURL)",
-            "resolvedContentURL=\(resolvedContentURL.absoluteString)",
-            "resolvedPageURL=\(resolvedPageURL.absoluteString)"
-        )
-        debugPrint(
             "# READERMODE",
             "stage=history.add.begin",
             "sourceType=\(String(describing: type(of: self)))",
@@ -556,13 +546,6 @@ public extension ReaderContentProtocol {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
 //            await realm.asyncRefresh()
-            debugPrint(
-                "# READERLOAD",
-                "stage=history.add.reuse",
-                "recordURL=\(record.url.absoluteString)",
-                "recordIsLoaderURL=\(record.url.isReaderURLLoaderURL)",
-                "pageURL=\(pageURL.absoluteString)"
-            )
             let oldReaderDefault = record.isReaderModeByDefault
             let oldReaderAvailable = record.isReaderModeAvailable
             let oldReaderOfferHidden = record.isReaderModeOfferHidden
@@ -615,13 +598,6 @@ public extension ReaderContentProtocol {
         } else {
             let record = HistoryRecord()
             record.url = pageURL
-            debugPrint(
-                "# READERLOAD",
-                "stage=history.add.create",
-                "recordURL=\(record.url.absoluteString)",
-                "recordIsLoaderURL=\(record.url.isReaderURLLoaderURL)",
-                "pageURL=\(pageURL.absoluteString)"
-            )
             record.title = title
             record.isTitlePrefixOfContent = isTitlePrefixOfContent
             record.imageUrl = imageURL

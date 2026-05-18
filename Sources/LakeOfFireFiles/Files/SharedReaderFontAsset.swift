@@ -12,9 +12,7 @@ private func sharedReaderFontLog(
         .map { "\($0.key)=\($0.value)" }
         .joined(separator: " ")
     if payload.isEmpty {
-        print("# EPUB", "sharedReaderFont.\(stage)")
     } else {
-        print("# EPUB", "sharedReaderFont.\(stage)", payload)
     }
 #endif
 }

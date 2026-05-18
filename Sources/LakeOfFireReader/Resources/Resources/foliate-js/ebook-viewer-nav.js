@@ -59,15 +59,6 @@ const logNavHide = (event, detail = {}) => {
 };
 
 const logMay15 = (event, detail = {}) => {
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY15 ${event} ${JSON.stringify({
-            timestamp: Date.now(),
-            performanceNow: Math.round(performance.now() * 100) / 100,
-            ...detail,
-        })}`);
-    } catch (_err) {
-        try { console.log('# MAY15', event, detail); } catch (_) {}
-    }
 };
 
 const may15Stack = () => {

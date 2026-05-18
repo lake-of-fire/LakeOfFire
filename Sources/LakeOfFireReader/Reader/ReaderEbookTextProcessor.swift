@@ -109,13 +109,6 @@ internal func ebookTextProcessor(
             readabilityProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readabilityProcessStartedAt)
         } else if ebookTextProcessorBypassReaderModeProcessor {
             if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
-                print(
-                    "# EPUB",
-                    "ebookTextProcessor.readerModeProcessor.bypass",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "sectionLocation=\(sectionLocation)",
-                    "isCacheWarmer=\(isCacheWarmer)"
-                )
             }
         }
         
@@ -159,13 +152,6 @@ internal func ebookTextProcessor(
         var htmlBytes = try doc.outerHtmlUTF8()
         serializeElapsedMs = ebookProcessorElapsedMilliseconds(since: serializeStartedAt)
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
-            print(
-                "# EPUB",
-                "ebookTextProcessor.output",
-                "contentURL=\(contentURL.absoluteString)",
-                "sectionLocation=\(sectionLocation)",
-                "isCacheWarmer=\(isCacheWarmer)"
-            )
         }
 
         if let processHTMLBytes {

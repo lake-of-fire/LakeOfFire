@@ -262,7 +262,6 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
 #if DEBUG
-            print("# EPUB", "readerWebView.schemeHandlerBindings", ebookSchemeBindingState)
 #endif
         }
         .readerFileManagerSetup { readerFileManager in

@@ -56,16 +56,6 @@ const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
 const postPaginatorLoadLog = (event, details = {}) => {
-    try {
-        if (typeof globalThis.__manabiPostEPUBLoadLog === 'function') {
-            globalThis.__manabiPostEPUBLoadLog(`paginator.${event}`, details);
-            return;
-        }
-        const payload = { event: `paginator.${event}`, timestamp: Date.now(), ...details };
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EPUBLOAD ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# EPUBLOAD', `paginator.${event}`, details); } catch (_) {}
-    }
 };
 const MANABI_MINIMAL_EBOOKBUG_EVENTS = new Set([
     'paginator-prefetch-wait-start',

@@ -81,9 +81,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             let selection = content.compoundKey
             let isSameContent = content.url.matchesReaderURL(readerContent.pageURL)
             if isSameContent {
-                debugPrint(
-                    "# READERLOAD # SAMECONTENT stage=horizontal.tap selection=\(selection) contentURL=\(content.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString)"
-                )
             }
             contentSelection.wrappedValue = selection
             if let onContentSelected {
@@ -97,14 +94,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             }
             contentSelectionNavigationHint?(content.url, selection)
             guard !isSameContent else {
-                debugPrint(
-                    "# READERLOAD # SAMECONTENT stage=horizontal.skipNavigatorLoad selection=\(selection) contentURL=\(content.url.absoluteString)"
-                )
                 Task { @MainActor in
                     if contentSelection.wrappedValue == selection {
-                        debugPrint(
-                            "# READERLOAD # SAMECONTENT stage=horizontal.clearSelection selection=\(selection)"
-                        )
                         contentSelection.wrappedValue = nil
                     }
                 }

@@ -204,12 +204,6 @@ private struct ReaderLoadingOverlay: View {
         if !latestIsLoading {
             cancelHideWork()
             if displayedMessage != nil || isShowingStatus {
-                debugPrint(
-                    "# READERLOAD stage=overlay.complete",
-                    "context=\(context)",
-                    "messageCleared",
-                    "isLoading=\(latestIsLoading)"
-                )
             }
             displayedMessage = nil
             isShowingStatus = false
@@ -245,13 +239,6 @@ private struct ReaderLoadingOverlay: View {
                       latestIsLoading,
                       isVisible,
                       displayedMessage == message else { return }
-                debugPrint(
-                    "# READERLOAD stage=overlay.status",
-                    "context=\(context)",
-                    "action=show",
-                    "message=\(message)",
-                    "isLoading=\(latestIsLoading)"
-                )
                 isShowingStatus = true
             }
             showWorkItem = workItem
@@ -273,12 +260,6 @@ private struct ReaderLoadingOverlay: View {
         let workItem = DispatchWorkItem {
             isShowingStatus = false
             displayedMessage = nil
-            debugPrint(
-                "# READERLOAD stage=overlay.complete",
-                "context=\(context)",
-                "messageCleared",
-                "isLoading=\(latestIsLoading)"
-            )
         }
         hideWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
@@ -316,13 +297,6 @@ private struct ReaderLoadingOverlay: View {
                 } else {
                     activeMessage = "<none>"
                 }
-                debugPrint(
-                    "# READERLOAD stage=overlay.heartbeat",
-                    "context=\(context)",
-                    "isLoading=\(latestIsLoading)",
-                    "isShowingStatus=\(isShowingStatus)",
-                    "message=\(activeMessage)"
-                )
             }
         }
     }

@@ -21,14 +21,6 @@ const ignoredWindowErrorMessages = new Set([
 const shouldIgnoreWindowError = message => ignoredWindowErrorMessages.has(String(message ?? ''));
 
 const postEarlyEPUBLoadLog = (event, details = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EPUBLOAD ${JSON.stringify(payload)}`);
-    } catch (_error) {}
 };
 
 window.onerror = function(msg, source, lineno, colno, error) {
@@ -352,15 +344,6 @@ const captureNavVisibilityState = () => {
 };
 
 const logMay15 = (event, detail = {}) => {
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY15 ${event} ${JSON.stringify({
-            timestamp: Date.now(),
-            performanceNow: Math.round(performance.now() * 100) / 100,
-            ...detail,
-        })}`);
-    } catch (_err) {
-        try { console.log('# MAY15', event, detail); } catch (_) {}
-    }
 };
 
 const may15Stack = () => {
@@ -843,22 +826,6 @@ const postReaderLog = (event, details = {}) => {
 };
 
 const postEPUBLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = {
-        prefix: '# EPUB',
-        event,
-    };
-    for (const [key, value] of Object.entries(details)) {
-        if (value === undefined || value === null) {
-            continue;
-        }
-        payload[key] = value;
-    }
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# EPUB', event, details, error);
-    }
 };
 
 const postEBookBugLog = (event, details = {}) => {
@@ -896,18 +863,6 @@ const shouldPostEPUBLoadLog = event => {
 };
 
 const postEPUBLoadLog = (event, details = {}) => {
-    if (!shouldPostEPUBLoadLog(event)) return;
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        sessionID: currentEPUBPerfSession?.id ?? null,
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EPUBLOAD ${JSON.stringify(payload)}`);
-    } catch (error) {
-        try { console.log('# EPUBLOAD', event, details, error); } catch (_error) {}
-    }
 };
 globalThis.__manabiPostEPUBLoadLog = postEPUBLoadLog;
 

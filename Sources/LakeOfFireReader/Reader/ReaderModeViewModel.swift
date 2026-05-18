@@ -135,7 +135,6 @@ private enum SwiftReadabilityProcessingOutcome {
 
 private func logTitleTrace(_ message: String) {
 #if DEBUG
-    debugPrint("# TITLE \(message)")
 #endif
 }
 
@@ -230,23 +229,10 @@ internal func readerContentPublicationDateFallback(for url: URL) async -> String
     }()
 
     guard let snapshot else {
-        debugPrint(
-            "# BYLINE publicationDateFallback",
-            "url=\(url.absoluteString)",
-            "source=matches",
-            "result=nil"
-        )
         return nil
     }
 
     let fallback = formattedReaderContentPublicationDate(snapshot)
-    debugPrint(
-        "# BYLINE publicationDateFallback",
-        "url=\(url.absoluteString)",
-        "source=matches",
-        "contentType=\(snapshot.contentType)",
-        "publishedTime=\(fallback)"
-    )
     return fallback
 }
 
@@ -279,19 +265,6 @@ internal func buildCanonicalReadabilityHTML(
     let actionLine = """
         <div id="reader-header-actions"></div>
         """
-    debugPrint(
-        "# BYLINE canonical",
-        "contentURL=\(contentURL.absoluteString)",
-        "rawByline=\(byline.isEmpty ? "nil" : byline)",
-        "resolvedByline=\(resolvedByline.isEmpty ? "nil" : resolvedByline)",
-        "rawBylineBytes=\(byline.utf8.count)",
-        "resolvedBylineBytes=\(resolvedByline.utf8.count)",
-        "publishedTime=\(publishedTime ?? "nil")",
-        "publicationDateText=\(publicationDateText ?? "nil")",
-        "hasBylineLine=\(!bylineLine.isEmpty)",
-        "hasMetaLine=\(!metaLine.isEmpty)",
-        "hasViewOriginal=\(viewOriginal != nil)"
-    )
     let availabilityAttributes = "data-mnb-reader-mode-available=\"true\" data-mnb-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-mnb-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
     let bodyStyle = readerAdaptiveMaxWidthStyleDeclaration(readerFontSize: readerFontSize)
@@ -639,11 +612,6 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
 internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
     try? doc.select("html").first()?.attr("data-mnb-reader-render-ready", "1")
     try? doc.body()?.attr("data-mnb-reader-render-ready", "1")
-    debugPrint(
-        "# READERLOAD stage=readerMode.renderReadyMarkerInserted",
-        "baseURL=\(doc.getBaseUri())",
-        "hasBody=\(doc.body() != nil)"
-    )
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
@@ -786,29 +754,7 @@ func buildSnippetCanonicalReadabilityHTML(
             resolvedTitle,
             sourceHTML: normalizedHTML
         )
-    debugPrint(
-        "# SNIPPETTITLE buildSnippetCanonical",
-        "url=\(contentURL.absoluteString)",
-        "title=\(resolvedTitle)",
-        "hideReaderTitle=\(shouldHideReaderTitle)",
-        "contentBytes=\(rawContent.utf8.count)"
-    )
-    debugPrint(
-        "# SNIPPETS",
-        "buildSnippetCanonical",
-        "url=\(contentURL.absoluteString)",
-        "resolvedTitle=\(resolvedTitle.truncate(80))",
-        "fallbackTitle=\((fallbackTitle ?? "<nil>").truncate(80))",
-        "preferredTitle=\((preferredTitle ?? "<nil>").truncate(80))",
-        "rawContentPreview=\(rawContent.strippingHTML().truncate(120))"
-    )
     guard !sanitizedContent.isEmpty else {
-        debugPrint(
-            "# SNIPPETS",
-            "buildSnippetCanonical",
-            "url=\(contentURL.absoluteString)",
-            "result=emptySanitizedContent"
-        )
         return nil
     }
     return buildCanonicalReadabilityHTML(
@@ -858,40 +804,7 @@ private func rebuildCanonicalSnippetReadabilityHTML(
             resolvedTitle,
             sourceHTML: extractedContent
         )
-    debugPrint(
-        "# SNIPPETTITLE rebuildSnippetCanonical",
-        "url=\(contentURL.absoluteString)",
-        "title=\(resolvedTitle)",
-        "hideReaderTitle=\(shouldHideReaderTitle)",
-        "publishedTime=\(publishedTime ?? "nil")",
-        "extractedPublicationDate=\(extractedPublicationDate ?? "nil")",
-        "resolvedPublishedTime=\(resolvedPublishedTime ?? "nil")",
-        "contentBytes=\(extractedContent.utf8.count)"
-    )
-    debugPrint(
-        "# BYLINE rebuildSnippetCanonical",
-        "contentURL=\(contentURL.absoluteString)",
-        "extractedByline=\((extractedByline ?? "").isEmpty ? "nil" : extractedByline ?? "nil")",
-        "extractedBylineBytes=\((extractedByline ?? "").utf8.count)",
-        "publishedTimeArg=\(publishedTime ?? "nil")",
-        "extractedPublicationDate=\(extractedPublicationDate ?? "nil")",
-        "resolvedPublishedTime=\(resolvedPublishedTime ?? "nil")"
-    )
-    debugPrint(
-        "# SNIPPETS",
-        "rebuildSnippetCanonical",
-        "url=\(contentURL.absoluteString)",
-        "resolvedTitle=\(resolvedTitle.truncate(80))",
-        "extractedTitle=\((extractedTitle ?? "<nil>").truncate(80))",
-        "contentPreview=\(extractedContent.strippingHTML().truncate(120))"
-    )
     guard !sanitizedContent.isEmpty else {
-        debugPrint(
-            "# SNIPPETS",
-            "rebuildSnippetCanonical",
-            "url=\(contentURL.absoluteString)",
-            "result=emptySanitizedContent"
-        )
         return nil
     }
 
@@ -916,23 +829,10 @@ private func locallyRetrievableReaderHTML(
         html = content.html
     }
     guard let html else {
-        debugPrint(
-            "# READERLOAD stage=readerMode.localHTML",
-            "contentURL=\(content.url.absoluteString)",
-            "hasHTML=false",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-        )
         return nil
     }
     let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
     let result = trimmed.isEmpty ? nil : trimmed
-    debugPrint(
-        "# READERLOAD stage=readerMode.localHTML",
-        "contentURL=\(content.url.absoluteString)",
-        "hasHTML=\(result != nil)",
-        "bytes=\(result?.utf8.count ?? 0)",
-        "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-    )
     return result
 }
 
@@ -945,14 +845,6 @@ private func propagateReaderModeDefaults(
 ) async {
     let startedAt = Date()
     if url.isSnippetURL {
-        debugPrint(
-            "# READERLOAD stage=readerMode.propagateDefaults.skipped",
-            "reason=snippetURL"
-        )
-        debugPrint(
-            "# READERLOAD stage=readerMode.propagateDefaults.complete",
-            "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
-        )
         return
     }
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
@@ -964,16 +856,7 @@ private func propagateReaderModeDefaults(
             resolvedTitle: resolvedTitle
         )
     } catch {
-        debugPrint(
-            "# EPUB  readerMode.propagateDefaults.error",
-            url.absoluteString,
-            error.localizedDescription
-        )
     }
-    debugPrint(
-        "# READERLOAD stage=readerMode.propagateDefaults.complete",
-        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
-    )
 }
 
 @RealmBackgroundActor
@@ -985,20 +868,9 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 ) async throws {
     let loadAllStartedAt = Date()
     let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
-    debugPrint(
-        "# READERLOAD stage=readerMode.propagateDefaults.loadAll",
-        "count=\(relatedRecords.count)",
-        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadAllStartedAt)))s"
-    )
 
     let writableRecords = relatedRecords.filter { $0.compoundKey != primaryKey && $0.realm != nil }
     guard !writableRecords.isEmpty else {
-        debugPrint(
-            "# READERLOAD stage=readerMode.propagateDefaults.writes",
-            "updatedCount=0",
-            "elapsed=0.000s",
-            "reason=noSecondaryRecords"
-        )
         return
     }
 
@@ -1023,11 +895,6 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
         }
         updatedCount += 1
     }
-    debugPrint(
-        "# READERLOAD stage=readerMode.propagateDefaults.writes",
-        "updatedCount=\(updatedCount)",
-        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(writesStartedAt)))s"
-    )
 }
 
 @MainActor
@@ -1122,14 +989,6 @@ public class ReaderModeViewModel: ObservableObject {
             isReaderModeLoading = false
         }
         if previousValue != isReaderModeLoading {
-            debugPrint(
-                "# READERLOAD stage=readerMode.loadingState",
-                "previous=\(previousValue)",
-                "next=\(isReaderModeLoading)",
-                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "rendered=\(lastRenderedURL?.absoluteString ?? "nil")"
-            )
         }
     }
 
@@ -1145,25 +1004,9 @@ public class ReaderModeViewModel: ObservableObject {
         if let rendered = lastRenderedURL, !pendingKeysMatch(rendered, canonicalURL) {
             lastRenderedURL = nil
         }
-        debugPrint(
-            "# READERRELOAD beginLoad",
-            "url=\(canonicalURL.absoluteString)",
-            "reason=\(reason ?? "nil")",
-            "suppressSpinner=\(suppressSpinner)",
-            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "rendered=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
         logStateSnapshot("beginLoad", url: canonicalURL)
         logTrace(.begin, url: canonicalURL, captureStart: !pendingMatches, details: reason)
         loadStartTimes[(pendingReaderModeURL ?? canonicalURL).absoluteString] = Date()
-        debugPrint(
-            "# READERLOAD stage=readerMode.beginLoad",
-            "url=\(canonicalURL.absoluteString)",
-            "pendingMatches=\(pendingMatches)",
-            "suppressSpinner=\(suppressSpinner)",
-            "reason=\(reason ?? "nil")",
-            "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
-        )
         if !suppressSpinner {
             readerModeLoading(true)
         }
@@ -1175,13 +1018,6 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
-        debugPrint(
-            "# READERRELOAD cancelLoad",
-            "url=\(url?.absoluteString ?? "nil")",
-            "reason=\(reason)",
-            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "rendered=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
         logStateSnapshot("cancelLoad", url: completedURL)
         if let url {
             cancelActiveRender(for: url, reason: "cancelReaderModeLoad.\(reason)")
@@ -1195,12 +1031,6 @@ public class ReaderModeViewModel: ObservableObject {
         readerModeLoading(false)
         if let completedURL {
             let elapsed = loadStartTimes[completedURL.absoluteString].map { formattedInterval(Date().timeIntervalSince($0)) } ?? "nil"
-            debugPrint(
-                "# READERLOAD stage=readerMode.cancelLoad",
-                "url=\(completedURL.absoluteString)",
-                "reason=\(reason)",
-                "elapsed=\(elapsed)"
-            )
             logTrace(.cancel, url: completedURL, details: reason)
         }
     }
@@ -1231,29 +1061,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
         lastRenderedURL = canonicalURL
         readerModeLoadCompletionHandler?(canonicalURL)
-        debugPrint(
-            "# READERRELOAD completeLoad",
-            "url=\(canonicalURL.absoluteString)",
-            "rendered=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
         let elapsed = loadStartTimes[canonicalURL.absoluteString].map { formattedInterval(Date().timeIntervalSince($0)) } ?? "nil"
-        debugPrint(
-            "# READERLOAD stage=readerMode.markComplete",
-            "url=\(canonicalURL.absoluteString)",
-            "elapsed=\(elapsed)",
-            "renderGeneration=\(renderGenerationDescription(for: renderKey))",
-            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: canonicalURL))",
-            "matchesPending=\(matchesPending)",
-            "matchesLastRendered=\(matchesLastRendered)",
-            "matchesExpected=\(matchesExpected)",
-            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
-        )
         if let startedAt = loadStartTimes[canonicalURL.absoluteString] {
-            debugPrint(
-                "# READERPERF readerMode.complete",
-                "url=\(canonicalURL.absoluteString)",
-                "elapsed=\(formattedInterval(Date().timeIntervalSince(startedAt)))"
-            )
         }
         logStateSnapshot("completeLoad", url: canonicalURL)
         logTrace(.complete, url: canonicalURL, details: "markReaderModeLoadComplete")
@@ -1273,16 +1082,6 @@ public class ReaderModeViewModel: ObservableObject {
         let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
         let isHandling = isReaderModeHandlingURL(canonicalURL)
         let shouldClear = matchesLastRendered || matchesPending || isHandling || readabilityContent != nil
-        debugPrint(
-            "# READERRELOAD cache.clear",
-            "url=\(canonicalURL.absoluteString)",
-            "reason=\(reason)",
-            "matchesLastRendered=\(matchesLastRendered)",
-            "matchesPending=\(matchesPending)",
-            "isHandling=\(isHandling)",
-            "hadReadability=\(readabilityContent != nil)",
-            "lastRendered=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
         guard shouldClear else { return }
         cancelActiveRender(for: canonicalURL, reason: "clearReadabilityCache.\(reason)")
         cancelMetadataRefresh(for: canonicalURL, reason: "clearReadabilityCache.\(reason)")
@@ -1309,15 +1108,6 @@ public class ReaderModeViewModel: ObservableObject {
         let syntheticCompletionInFlight = isReaderModeLoading && !pageURL.isReaderURLLoaderURL
         guard pendingMatches || expectedMatches || syntheticCompletionInFlight else { return }
 
-        debugPrint(
-            "# EPUB  snippet.readerDocumentReady",
-            "pageURL=\(pageURL.absoluteString)",
-            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-            "hasReaderContent=\(hasReaderContent)",
-            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)",
-            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: canonicalURL))"
-        )
         navigator?.forceClearLoadingIndicators(
             reason: "readerMode.syntheticLoad.renderReady",
             pageURL: canonicalURL
@@ -1350,7 +1140,6 @@ public class ReaderModeViewModel: ObservableObject {
 
         if expectedSyntheticReaderLoaderURL != nil {
 #if DEBUG
-            debugPrint("# EPUB  readerMode.complete.defer.emptyReadability.expectedSyntheticCommit", canonicalURL.absoluteString)
 #endif
             return true
         }
@@ -1421,8 +1210,6 @@ public class ReaderModeViewModel: ObservableObject {
             metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
         }
 #if DEBUG
-        print("# EPUB", "sharedReaderFont.inject", metadata)
-        print("# FONT", "sharedReaderFont.inject", metadata)
 #endif
     }
 
@@ -1468,19 +1255,7 @@ public class ReaderModeViewModel: ObservableObject {
             )
             let js = """
             (function() {
-                const postLog = (message) => {
-                    try {
-                        const payload = '# READERLOAD stage=readerMode.fontGate ' + message;
-                        const webkitPrint = window.webkit?.messageHandlers?.print;
-                        if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
-                            webkitPrint.postMessage(payload);
-                            return;
-                        }
-                        if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
-                            print.postMessage(payload);
-                        }
-                    } catch (_) {}
-                };
+                const postLog = (_message) => {};
                 const isLoaderShellDocument = () => {
                     const href = window.location.href || '';
                     return href.startsWith('internal://local/load/reader');
@@ -1627,19 +1402,7 @@ public class ReaderModeViewModel: ObservableObject {
         let fontHash = readerFontPayloadHash(base64)
         let js = """
             (function() {
-                const postLog = (message) => {
-                    try {
-                        const payload = '# READERLOAD stage=readerMode.fontGate ' + message;
-                    const webkitPrint = window.webkit?.messageHandlers?.print;
-                    if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
-                        webkitPrint.postMessage(payload);
-                        return;
-                    }
-                    if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
-                        print.postMessage(payload);
-                        }
-                    } catch (_) {}
-                };
+                const postLog = (_message) => {};
                 const isLoaderShellDocument = () => {
                     const href = window.location.href || '';
                     return href.startsWith('internal://local/load/reader');
@@ -1810,17 +1573,6 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func logStateSnapshot(_ label: String, url: URL?) {
-        debugPrint(
-            "# READERPERF state.snapshot",
-            "label=\(label)",
-            "url=\(url?.absoluteString ?? "nil")",
-            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-            "isReaderModeLoading=\(isReaderModeLoading)",
-            "isReaderMode=\(isReaderMode)",
-            "lastRendered=\(lastRenderedURL?.absoluteString ?? "nil")",
-            "lastFallback=\(lastFallbackLoaderURL?.absoluteString ?? "nil")"
-        )
     }
 
     private func logTrace(
@@ -1842,20 +1594,6 @@ public class ReaderModeViewModel: ObservableObject {
             record.lastEventAt = now
             loadTraceRecords[key] = record
         }
-        var segments: [String] = [
-            "# EPUB  readerMode.trace",
-            "stage=\(stage.rawValue)",
-            "url=\(url.absoluteString)",
-            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "elapsed=\(formattedInterval(elapsedSinceStart))"
-        ]
-        if let elapsedSinceLast {
-            segments.append("delta=\(formattedInterval(elapsedSinceLast))")
-        }
-        if let details, !details.isEmpty {
-            segments.append("details=\(details)")
-        }
-        debugPrint(segments.joined(separator: " "))
         if stage.isTerminal {
             loadTraceRecords.removeValue(forKey: key)
         }
@@ -1863,11 +1601,6 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func expectSyntheticReaderLoaderCommit(for baseURL: URL?) {
         expectedSyntheticReaderLoaderURL = baseURL
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticExpectation.set",
-            "url=\(baseURL?.absoluteString ?? "nil")",
-            "syntheticLoadElapsed=\(baseURL.map { syntheticLoadElapsedString(for: $0) } ?? "nil")"
-        )
     }
 
     @discardableResult
@@ -1875,20 +1608,8 @@ public class ReaderModeViewModel: ObservableObject {
         guard let expectedSyntheticReaderLoaderURL else { return false }
         if urlsMatchWithoutHashForHotfix(expectedSyntheticReaderLoaderURL, url) {
             self.expectedSyntheticReaderLoaderURL = nil
-            debugPrint(
-                "# READERLOAD stage=readerMode.syntheticExpectation.consume",
-                "expectedURL=\(expectedSyntheticReaderLoaderURL.absoluteString)",
-                "actualURL=\(url.absoluteString)",
-                "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: url))"
-            )
             return true
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticExpectation.miss",
-            "expectedURL=\(expectedSyntheticReaderLoaderURL.absoluteString)",
-            "actualURL=\(url.absoluteString)",
-            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: url))"
-        )
         return false
     }
 
@@ -1947,11 +1668,6 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func markSyntheticLoadIssued(for url: URL) {
         syntheticLoadIssuedAtByURL[canonicalRenderKey(url)] = Date()
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticLoad.issued",
-            "url=\(url.absoluteString)",
-            "renderGeneration=\(activeRenderGenerationDescription(for: canonicalRenderKey(url)))"
-        )
     }
 
     private func clearSyntheticLoadIssued(for url: URL) {
@@ -1977,19 +1693,6 @@ public class ReaderModeViewModel: ObservableObject {
         bodyVisibility: String,
         bodyOpacity: String
     ) {
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticDocumentState",
-            "pageURL=\(pageURL.absoluteString)",
-            "readyState=\(readyState)",
-            "hasReaderContent=\(hasReaderContent)",
-            "hasReaderRenderReady=\(hasReaderRenderReady)",
-            "reason=\(reason)",
-            "renderGeneration=\(renderGenerationDescription(for: canonicalRenderKey(pageURL)))",
-            "manabiFontPending=\(manabiFontPending)",
-            "bodyVisibility=\(bodyVisibility)",
-            "bodyOpacity=\(bodyOpacity)",
-            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: pageURL))"
-        )
     }
 
     private func activeRenderGenerationDescription(for key: String) -> String {
@@ -2049,13 +1752,6 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         completedRenderGenerationByURL[key] = generation
-        debugPrint(
-            "# READERLOAD stage=readerMode.renderGenerationHandoff",
-            "url=\(url.absoluteString)",
-            "reason=\(reason)",
-            "generation=\(generation.uuidString)",
-            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: url))"
-        )
         activeRenderTaskByURL.removeValue(forKey: key)
         activeRenderGenerationByURL.removeValue(forKey: key)
         debugPrint(
@@ -2108,13 +1804,6 @@ public class ReaderModeViewModel: ObservableObject {
         }
         metadataRefreshTaskByURL.removeValue(forKey: key)
         metadataRefreshGenerationByURL.removeValue(forKey: key)
-        debugPrint(
-            "# READERLOAD stage=readerMode.metadataRefresh",
-            "state=finished",
-            "url=\(url.absoluteString)",
-            "reason=\(reason)",
-            "generation=\(generation.uuidString)"
-        )
     }
 
     private func cancelMetadataRefresh(for url: URL, reason: String) {
@@ -2127,13 +1816,6 @@ public class ReaderModeViewModel: ObservableObject {
         task.cancel()
         metadataRefreshTaskByURL.removeValue(forKey: key)
         metadataRefreshGenerationByURL.removeValue(forKey: key)
-        debugPrint(
-            "# READERLOAD stage=readerMode.metadataRefresh",
-            "state=cancelled",
-            "url=\(canonicalURL.absoluteString)",
-            "reason=\(reason)",
-            "generation=\(generation)"
-        )
     }
 
     private func cancelOtherMetadataRefreshTasks(except keyToKeep: String? = nil, reason: String) {
@@ -2146,13 +1828,6 @@ public class ReaderModeViewModel: ObservableObject {
             metadataRefreshTaskByURL[staleKey]?.cancel()
             metadataRefreshTaskByURL.removeValue(forKey: staleKey)
             metadataRefreshGenerationByURL.removeValue(forKey: staleKey)
-            debugPrint(
-                "# READERLOAD stage=readerMode.metadataRefresh",
-                "state=cancelled",
-                "reason=\(reason)",
-                "generation=\(generation)",
-                "staleKey=\(staleKey)"
-            )
         }
     }
 
@@ -2185,14 +1860,6 @@ public class ReaderModeViewModel: ObservableObject {
             guard let self else { return }
             let operationInvokeStartedAt = CFAbsoluteTimeGetCurrent()
             await operation(generation)
-            debugPrint(
-                "# READERLOAD stage=readerMode.render.singleFlight.afterOperation",
-                "url=\(canonicalURL.absoluteString)",
-                "reason=\(reason)",
-                "generation=\(generation.uuidString)",
-                "operationElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - operationInvokeStartedAt))s",
-                "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
-            )
             await self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
         }
         activeRenderTaskByURL[key] = task
@@ -2240,14 +1907,6 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
         if let readabilityContent, !readabilityContent.isEmpty {
-            debugPrint(
-                "# READERLOAD stage=readerMode.route.resolve",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "route=\(ReaderModeRoute.capturedReadability.rawValue)",
-                "reason=cachedReadabilityContent",
-                "readabilityHasCanonicalMarkup=\(hasCanonicalReadabilityMarkup(in: readabilityContent))",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
             return ReaderModeRouteDecision(
                 route: .capturedReadability,
                 prefetchedContent: nil,
@@ -2260,26 +1919,12 @@ public class ReaderModeViewModel: ObservableObject {
                 readerFileManager: activeReaderFileManager
            ),
            !html.isEmpty {
-            debugPrint(
-                "# READERLOAD stage=readerMode.route.resolve",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "route=\(ReaderModeRoute.localHTML.rawValue)",
-                "reason=localHTMLAvailable",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
             return ReaderModeRouteDecision(
                 route: .localHTML,
                 prefetchedContent: content,
                 prefetchedLocalHTML: html
             )
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.route.resolve",
-            "pageURL=\(readerContent.pageURL.absoluteString)",
-            "route=\(ReaderModeRoute.unavailable.rawValue)",
-            "reason=noReadabilityOrLocalHTML",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-        )
         return ReaderModeRouteDecision(
             route: .unavailable,
             prefetchedContent: nil,
@@ -2323,13 +1968,6 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
             let route = routeDecision.route
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReaderView.route",
-                "contentURL=\(contentURL.absoluteString)",
-                "route=\(route.rawValue)",
-                "readabilityBytes=\(cachedReadabilityBytes)",
-                "prefetchedLocalHTMLBytes=\(routeDecision.prefetchedLocalHTML?.utf8.count ?? 0)"
-            )
             switch route {
             case .localHTML:
                 await self.showReaderViewUsingSwiftProcessing(
@@ -2386,13 +2024,6 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
         if !startedRenderTask {
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReaderView.skipSingleFlight",
-                "contentURL=\(contentURL.absoluteString)",
-                "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                "lastRenderedURL=\(lastRenderedURL?.absoluteString ?? "nil")",
-                "hasReadability=\(readabilityContent != nil)"
-            )
         }
     }
 
@@ -2403,40 +2034,14 @@ public class ReaderModeViewModel: ObservableObject {
     ) async -> Bool {
         let startedAt = CFAbsoluteTimeGetCurrent()
         guard let content = try? await readerContent.getContent() else {
-            debugPrint(
-                "# READERLOAD stage=readerMode.syntheticEntry",
-                "result=missingContent",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
             return false
         }
         guard content.url.isSnippetURL else {
-            debugPrint(
-                "# READERLOAD stage=readerMode.syntheticEntry",
-                "result=notSnippet",
-                "contentURL=\(content.url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
             return false
         }
         guard readerContent.pageURL.matchesReaderURL(content.url) else {
-            debugPrint(
-                "# READERLOAD stage=readerMode.syntheticEntry",
-                "result=pageMismatch",
-                "contentURL=\(content.url.absoluteString)",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
             return false
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticEntry",
-            "result=starting",
-            "contentURL=\(content.url.absoluteString)",
-            "pageURL=\(readerContent.pageURL.absoluteString)",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-        )
         showReaderView(readerContent: readerContent, scriptCaller: scriptCaller)
         return true
     }
@@ -2467,12 +2072,6 @@ public class ReaderModeViewModel: ObservableObject {
                 content = resolvedContent
                 getContentElapsed = CFAbsoluteTimeGetCurrent() - getContentStart
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.swiftProcessing.getContent",
-                "contentURL=\(content.url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", getContentElapsed))s",
-                "source=\(prefetchedContent == nil ? "fetched" : "prefetched")"
-            )
             let activeReaderFileManager = readerFileManager ?? .shared
             let html: String
             if let prefetchedLocalHTML {
@@ -2489,13 +2088,6 @@ public class ReaderModeViewModel: ObservableObject {
                 html = resolvedHTML
                 localHTMLElapsed = CFAbsoluteTimeGetCurrent() - localHTMLStart
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.swiftProcessing.localHTML",
-                "contentURL=\(content.url.absoluteString)",
-                "bytes=\(html.utf8.count)",
-                "elapsed=\(String(format: "%.3f", localHTMLElapsed))s",
-                "source=\(prefetchedLocalHTML == nil ? "fetched" : "prefetched")"
-            )
 
             let resolvedReadabilityHTML: String?
             if hasCanonicalReadabilityMarkup(in: html) {
@@ -2510,11 +2102,6 @@ public class ReaderModeViewModel: ObservableObject {
                     meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
                 )
                 readabilityResolveElapsed = CFAbsoluteTimeGetCurrent() - readabilityProcessingStart
-                debugPrint(
-                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolved",
-                    "contentURL=\(content.url.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", readabilityResolveElapsed))s"
-                )
                 switch swiftReadability {
                 case .success(let result):
                     resolvedReadabilityHTML = result.outputHTML
@@ -2535,11 +2122,6 @@ public class ReaderModeViewModel: ObservableObject {
                     renderGeneration: renderGeneration
                 )
                 showReadabilityElapsed = CFAbsoluteTimeGetCurrent() - showReadabilityStart
-                debugPrint(
-                    "# READERLOAD stage=readerMode.swiftProcessing.showReadabilityContent",
-                    "contentURL=\(content.url.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", showReadabilityElapsed))s"
-                )
                 let totalElapsed = CFAbsoluteTimeGetCurrent() - swiftProcessingStart
                 let residualElapsed = max(
                     0,
@@ -2549,22 +2131,6 @@ public class ReaderModeViewModel: ObservableObject {
                         - readabilityResolveElapsed
                         - showReadabilityElapsed
                 )
-                debugPrint(
-                    "# READERLOAD stage=readerMode.swiftProcessing.phaseSummary",
-                    "contentURL=\(content.url.absoluteString)",
-                    "getContent=\(String(format: "%.3f", getContentElapsed))s",
-                    "localHTML=\(String(format: "%.3f", localHTMLElapsed))s",
-                    "readabilityResolve=\(String(format: "%.3f", readabilityResolveElapsed))s",
-                    "showReadability=\(String(format: "%.3f", showReadabilityElapsed))s",
-                    "residual=\(String(format: "%.3f", residualElapsed))s",
-                    "total=\(String(format: "%.3f", totalElapsed))s"
-                )
-                debugPrint(
-                    "# READERLOAD stage=readerMode.swiftProcessing.complete",
-                    "contentURL=\(content.url.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", totalElapsed))s",
-                    "mode=readability"
-                )
                 return
             }
 
@@ -2572,14 +2138,6 @@ public class ReaderModeViewModel: ObservableObject {
             let directHTML = prepareHTMLForDirectLoad(html)
             let directHTMLHasBody = directHTML.contains("<body")
             let directHTMLHasArticle = directHTML.contains("<article")
-            debugPrint(
-                "# READERLOAD stage=readerMode.swiftProcessing.directHTML",
-                "contentURL=\(content.url.absoluteString)",
-                "sourceHTMLBytes=\(html.utf8.count)",
-                "directHTMLBytes=\(directHTML.utf8.count)",
-                "hasBody=\(directHTMLHasBody)",
-                "hasArticle=\(directHTMLHasArticle)"
-            )
             if let htmlData = directHTML.data(using: .utf8) {
                 navigator?.load(
                     htmlData,
@@ -2590,12 +2148,6 @@ public class ReaderModeViewModel: ObservableObject {
             } else {
                 navigator?.loadHTML(directHTML, baseURL: content.url)
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.swiftProcessing.complete",
-                "contentURL=\(content.url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - swiftProcessingStart))s",
-                "mode=directHTML"
-            )
         } catch {
             print(error)
             cancelReaderModeLoad(for: readerContent.pageURL, reason: "swiftProcessing.error")
@@ -2738,11 +2290,6 @@ public class ReaderModeViewModel: ObservableObject {
                         }
                     }
                 )
-                debugPrint(
-                    "# READERLOAD stage=readerMode.showReadabilityContent.parse",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
-                    "path=customProcessor"
-                )
             } else {
                 let parseStart = CFAbsoluteTimeGetCurrent()
                 let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
@@ -2753,11 +2300,6 @@ public class ReaderModeViewModel: ObservableObject {
                 if isXML {
                     doc?.outputSettings().escapeMode(.xhtml)
                 }
-                debugPrint(
-                    "# READERLOAD stage=readerMode.showReadabilityContent.parse",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
-                    "path=\(prefersDirectSnippetReadabilityParse ? "snippetCanonical" : "swiftSoup")"
-                )
             }
 
             guard let doc else {
@@ -2873,11 +2415,6 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 let processHTMLBytesElapsed = CFAbsoluteTimeGetCurrent() - processHTMLBytesStart
                 processHTMLElapsed += processHTMLBytesElapsed
-                debugPrint(
-                    "# READERLOAD stage=readerMode.showReadabilityContent.processHTMLBytes",
-                    "elapsed=\(String(format: "%.3f", processHTMLBytesElapsed))s",
-                    "bytes=\(transformedHTMLBytes.count)"
-                )
             }
             if let processHTML {
                 let processHTMLStart = CFAbsoluteTimeGetCurrent()
@@ -2890,24 +2427,8 @@ public class ReaderModeViewModel: ObservableObject {
                 transformedHTMLBytes = Array(processedHTML.utf8)
                 let processHTMLStringElapsed = CFAbsoluteTimeGetCurrent() - processHTMLStart
                 processHTMLElapsed += processHTMLStringElapsed
-                debugPrint(
-                    "# READERLOAD stage=readerMode.showReadabilityContent.processHTML",
-                    "elapsed=\(String(format: "%.3f", processHTMLStringElapsed))s",
-                    "bytes=\(transformedHTMLBytes.count)"
-                )
             }
 
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.transformed",
-                "renderBaseURL=\(renderBaseURL.absoluteString)",
-                "serializedBytes=\(serializedHTMLBytes.count)",
-                "bytes=\(transformedHTMLBytes.count)",
-                "segmentCount=\(processedSegmentCount)",
-                "hasBody=\(processedBodyExists)",
-                "serializeElapsed=\(String(format: "%.3f", serializeElapsed))s",
-                "processHTMLElapsed=\(String(format: "%.3f", processHTMLElapsed))s",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
-            )
             let frameInjectionPrepStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
@@ -2948,28 +2469,10 @@ public class ReaderModeViewModel: ObservableObject {
                 transformedBodyClassesForFrameInjection = nil
                 transformedStyleTextForFrameInjection = nil
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.frameInjectionPrep",
-                "renderBaseURL=\(renderBaseURL.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - frameInjectionPrepStartedAt))s",
-                "hasFrameInfo=\(frameInfo != nil)",
-                "isMainFrame=\(frameInfo?.isMainFrame ?? true)"
-            )
             let dataBuildStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedHTMLData = Data(transformedHTMLBytes)
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.dataBuild",
-                "renderBaseURL=\(renderBaseURL.absoluteString)",
-                "bytes=\(transformedHTMLData.count)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - dataBuildStartedAt))s"
-            )
             let mainActorHandoffStartedAt = CFAbsoluteTimeGetCurrent()
             try await { @MainActor in
-                debugPrint(
-                    "# READERLOAD stage=readerMode.showReadabilityContent.mainActorHandoff",
-                    "renderBaseURL=\(renderBaseURL.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - mainActorHandoffStartedAt))s"
-                )
                 guard url.matchesReaderURL(readerContent.pageURL) else {
                     debugPrint(
                         "# READERTRACE",
@@ -3043,12 +2546,6 @@ public class ReaderModeViewModel: ObservableObject {
                     self?.markSyntheticLoadIssued(for: renderBaseURL)
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedHTMLData.count)")
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.syntheticLoad.data",
-                        "contentURL=\(url.absoluteString)",
-                        "renderBaseURL=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedHTMLData.count)"
-                    )
                     navigator?.load(
                         transformedHTMLData,
                         mimeType: "text/html",
@@ -3069,17 +2566,7 @@ public class ReaderModeViewModel: ObservableObject {
                 content: content,
                 contentURL: canonicalURL
             )
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.metadataRefreshSchedule",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - metadataRefreshStart))s",
-                "contentURL=\(canonicalURL.absoluteString)"
-            )
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReadabilityContent.total",
-            "contentURL=\(canonicalURL.absoluteString)",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
-        )
     }
 
     @MainActor
@@ -3110,12 +2597,6 @@ public class ReaderModeViewModel: ObservableObject {
         guard cachedImageURL == nil else { return false }
         cancelOtherMetadataRefreshTasks(except: refreshKey, reason: "schedulePostRenderMetadataRefreshIfNeeded")
         if let existingTask = metadataRefreshTaskByURL[refreshKey], !existingTask.isCancelled {
-            debugPrint(
-                "# READERLOAD stage=readerMode.metadataRefresh",
-                "state=coalesced",
-                "url=\(canonicalURL.absoluteString)",
-                "generation=\(metadataRefreshGenerationDescription(for: refreshKey))"
-            )
             return false
         }
 
@@ -3128,28 +2609,8 @@ public class ReaderModeViewModel: ObservableObject {
             }
             do {
                 let refreshedImageURL = try await imageLookup()
-                debugPrint(
-                    "# READERLOAD stage=readerMode.metadataRefresh",
-                    "state=completed",
-                    "url=\(canonicalURL.absoluteString)",
-                    "hasImage=\(refreshedImageURL != nil)",
-                    "generation=\(generation.uuidString)"
-                )
             } catch is CancellationError {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.metadataRefresh",
-                    "state=cancelled",
-                    "url=\(canonicalURL.absoluteString)",
-                    "generation=\(generation.uuidString)"
-                )
             } catch {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.metadataRefresh",
-                    "state=failed",
-                    "url=\(canonicalURL.absoluteString)",
-                    "error=\(error.localizedDescription)",
-                    "generation=\(generation.uuidString)"
-                )
             }
         }
         metadataRefreshTaskByURL[refreshKey] = task
@@ -3179,14 +2640,6 @@ public class ReaderModeViewModel: ObservableObject {
                 fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
                 publishedTime: snippetPublishedTime
             ) {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
-                    "contentURL=\(url.absoluteString)",
-                    "path=snippetBypass",
-                    "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
-                    "snippetBuildElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - snippetBypassStart))s",
-                    "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
-                )
                 debugPrint(
                     "# SNIPPETS",
                     "processReadabilityHTMLInSwift",
@@ -3219,26 +2672,8 @@ public class ReaderModeViewModel: ObservableObject {
                     fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
                     publishedTime: snippetPublishedTime
                ) {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
-                    "contentURL=\(url.absoluteString)",
-                    "path=snippetFallbackAfterParseFailure",
-                    "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
-                    "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
-                    "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
-                    "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
-                )
                 return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
-                "contentURL=\(url.absoluteString)",
-                "path=parseFailed",
-                "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
-                "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
-                "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
-                "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
-            )
             return .failed
         }
         let parseElapsed = CFAbsoluteTimeGetCurrent() - parseStart
@@ -3246,16 +2681,6 @@ public class ReaderModeViewModel: ObservableObject {
         let canonicalBuildStart = CFAbsoluteTimeGetCurrent()
         let rawContent = stripTemplateTagsForReadability(result.content)
         guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            debugPrint(
-                "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
-                "contentURL=\(url.absoluteString)",
-                "path=emptyContent",
-                "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
-                "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
-                "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
-                "canonicalBuildElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - canonicalBuildStart))s",
-                "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
-            )
             return .failed
         }
 
@@ -3278,17 +2703,6 @@ public class ReaderModeViewModel: ObservableObject {
             contentURL: url
         )
         let canonicalBuildElapsed = CFAbsoluteTimeGetCurrent() - canonicalBuildStart
-        debugPrint(
-            "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
-            "contentURL=\(url.absoluteString)",
-            "path=success",
-            "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
-            "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
-            "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
-            "canonicalBuildElapsed=\(String(format: "%.3f", canonicalBuildElapsed))s",
-            "outputBytes=\(outputHTML.utf8.count)",
-            "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
-        )
         return .success(SwiftReadabilityProcessingResult(outputHTML: outputHTML))
     }
     
@@ -3324,7 +2738,6 @@ public class ReaderModeViewModel: ObservableObject {
         logStateSnapshot("navCommitted", url: committedURL)
         if !scriptCaller.hasAsyncCaller {
 #if DEBUG
-            debugPrint("# EPUB  paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(newState.pageURL.absoluteString)")
 #endif
         } else {
             do {
@@ -3335,11 +2748,9 @@ public class ReaderModeViewModel: ObservableObject {
                     duplicateInMultiTargetFrames: true
                 )
 #if DEBUG
-                debugPrint("# EPUB  paginationBookKey.set", "key=\(newState.pageURL.absoluteString.prefix(72))…")
 #endif
             } catch {
 #if DEBUG
-                debugPrint("# EPUB  paginationBookKey.set.error", error.localizedDescription)
 #endif
             }
         }
@@ -3363,23 +2774,7 @@ public class ReaderModeViewModel: ObservableObject {
         if newState.pageURL.isReaderURLLoaderURL {
             let loaderStartedAt = Date()
             let duplicateLoaderRender = shouldSkipDuplicateLoaderRender(for: committedURL)
-            debugPrint(
-                "# READERLOAD stage=readerMode.navCommit.loaderBegin",
-                "loaderURL=\(newState.pageURL.absoluteString)",
-                "contentURL=\(committedURL.absoluteString)",
-                "currentPageURL=\(readerContent.pageURL.absoluteString)",
-                "hasReaderFileManager=\(readerFileManager != nil)",
-                "hasExistingReadability=\(readabilityContent != nil)",
-                "skipDuplicateLoaderRender=\(duplicateLoaderRender.skip)",
-                "skipReason=\(duplicateLoaderRender.reason)"
-            )
             if duplicateLoaderRender.skip {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.navCommit.loaderSkipDuplicate",
-                    "contentURL=\(committedURL.absoluteString)",
-                    "reason=\(duplicateLoaderRender.reason)",
-                    "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
-                )
                 return
             }
             if let readerFileManager {
@@ -3423,11 +2818,6 @@ public class ReaderModeViewModel: ObservableObject {
                         scriptCaller: scriptCaller
                     )
                 } else {
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.navCommit.loaderHTMLMissing",
-                        "contentURL=\(committedURL.absoluteString)",
-                        "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
-                    )
                     guard let navigator else {
                         print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
                         return
@@ -3435,11 +2825,6 @@ public class ReaderModeViewModel: ObservableObject {
                     navigator.load(URLRequest(url: committedURL))
                 }
             } else {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.navCommit.loaderNoReaderFileManager",
-                    "contentURL=\(committedURL.absoluteString)",
-                    "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
-                )
                 guard let navigator else {
                     print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
                     return
@@ -3730,10 +3115,6 @@ nonisolated public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-mnb-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-mnb-dark-theme", darkModeTheme.rawValue)
-            debugPrint(
-                "# READERLOAD stage=readerMode.processForReaderMode.bodyAttributes",
-                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(bodyAttributesStartedAt)))s"
-            )
         }
         
         if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
@@ -3742,10 +3123,6 @@ nonisolated public func processForReaderMode(
             do {
                 try existing.html(escapedTitle)
             } catch { }
-            debugPrint(
-                "# READERLOAD stage=readerMode.processForReaderMode.titleFallback",
-                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(titleFallbackStartedAt)))s"
-            )
         }
         
         if !isEBook {
@@ -3753,10 +3130,6 @@ nonisolated public func processForReaderMode(
             do {
                 try fixAnnoyingTitlesWithPipes(doc: doc, url: url)
             } catch { }
-            debugPrint(
-                "# READERLOAD stage=readerMode.processForReaderMode.fixTitles",
-                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(fixTitlesStartedAt)))s"
-            )
         }
         
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
@@ -3764,14 +3137,6 @@ nonisolated public func processForReaderMode(
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
             } catch { }
-            debugPrint(
-                "# READERLOAD stage=readerMode.processForReaderMode.headerImage",
-                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(headerImageStartedAt)))s"
-            )
         }
     }
-    debugPrint(
-        "# READERLOAD stage=readerMode.processForReaderMode.complete",
-        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(processStartedAt)))s"
-    )
 }

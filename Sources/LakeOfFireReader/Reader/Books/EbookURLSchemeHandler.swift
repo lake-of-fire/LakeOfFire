@@ -56,16 +56,6 @@ fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any])
 }
 
 fileprivate func logEbookLoad(_ event: String, _ payload: @autoclosure () -> [String: Any] = [:]) {
-    let payload = payload()
-    guard shouldLogNativeEbookLoad(event: event, payload: payload) else { return }
-    let details = payload
-        .sorted { $0.key < $1.key }
-        .map { "\($0.key)=\(String(describing: $0.value))" }
-        .joined(separator: " ")
-    let line = details.isEmpty
-        ? "# EPUBLOAD native.\(event)"
-        : "# EPUBLOAD native.\(event) \(details)"
-    Logger.shared.logger.info("\(line)")
 }
 
 fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> String {
