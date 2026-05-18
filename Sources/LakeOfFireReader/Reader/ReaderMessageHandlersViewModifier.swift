@@ -637,6 +637,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
+                if source == "toolbar.blankTap" {
+                    UserDefaults.standard.set(Date().timeIntervalSince1970 * 1000, forKey: "ManabiLastToolbarBlankNativeToggleAtMs")
+                }
                 setHideNavigationDueToScroll(
                     shouldHide,
                     reason: nil,

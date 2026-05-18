@@ -200,18 +200,16 @@ public struct FeedView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 if showsToolbar {
-                    Button {
-                        Task { @MainActor in
-                            try? await setFollowed(!isFeedGroupFollowed)
-                        }
-                    } label: {
-                        Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
-                    }
-                }
-            }
-            ToolbarItem(placement: .automatic) {
-                if showsToolbar {
                     Menu {
+                        Section {
+                            Button {
+                                Task { @MainActor in
+                                    try? await setFollowed(!isFeedGroupFollowed)
+                                }
+                            } label: {
+                                Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
+                            }
+                        }
                         if showsMarkAllAsSeenAction {
                             Button("Mark All as Seen") {
                                 Task { @MainActor in

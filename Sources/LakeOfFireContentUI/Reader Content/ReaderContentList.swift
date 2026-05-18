@@ -187,8 +187,25 @@ public extension View {
 
 private extension View {
     @ViewBuilder
-    func readerContentListRowStyle(showSeparators: Bool = false, useDefaultRowInsets: Bool = false) -> some View {
-        if #available(iOS 15, macOS 12, *) {
+    func readerContentListRowStyle(
+        showSeparators: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        zeroHorizontalRowInsets: Bool = false
+    ) -> some View {
+        if #available(iOS 26, macOS 26, *) {
+            if zeroHorizontalRowInsets {
+                self
+                    .listRowInsets(.horizontal, 0)
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            } else if useDefaultRowInsets {
+                self
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            } else {
+                self
+                    .listRowInsets(.init())
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            }
+        } else if #available(iOS 15, macOS 12, *) {
             if useDefaultRowInsets {
                 self.listRowSeparator(showSeparators ? .visible : .hidden)
             } else {
@@ -650,6 +667,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 120
+
+    @MainActor
+    private func selectContent() {
+        entrySelection = content.compoundKey
+    }
     
     @ViewBuilder private func cell(item: C) -> some View {
         HStack(spacing: 0) {
@@ -709,11 +731,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .accessibilityLabel(content.title)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction {
-                        entrySelection = content.compoundKey
+                        selectContent()
                     }
             } else {
                 Button {
-                    entrySelection = content.compoundKey
+                    selectContent()
                 } label: {
                     rowContent(item: content)
                         .multilineTextAlignment(.leading)
@@ -1381,7 +1403,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         )
         .readerContentListRowStyle(
             showSeparators: appearance.showSeparators,
-            useDefaultRowInsets: appearance.usesNativeRowInsets
+            useDefaultRowInsets: appearance.usesNativeRowInsets,
+            zeroHorizontalRowInsets: appearance.clearRowBackground
         )
         .readerContentSelectionSync(
             viewModel: viewModel,

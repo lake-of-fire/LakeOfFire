@@ -4343,6 +4343,33 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
+        document.getElementById('nav-bar')?.addEventListener('click', (event) => {
+            const target = event.target;
+            const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
+            if (excludedTarget) {
+                return;
+            }
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            const shouldHide = !wasHidden;
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-bar-background',
+                wasHidden,
+                shouldHide,
+                target: target?.id || target?.tagName || null,
+            });
+            postEbookNavigationVisibilityToNative(
+                shouldHide,
+                'toolbar.blankTap',
+                {
+                    control: 'nav-bar-background',
+                    jsWasHidden: wasHidden,
+                    jsProposedShouldHide: shouldHide,
+                }
+            );
+        });
         $('#side-bar-close-button').addEventListener('click', () => {
             this.closeSideBar()
         })
