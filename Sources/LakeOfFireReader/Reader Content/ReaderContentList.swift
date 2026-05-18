@@ -219,8 +219,25 @@ public extension View {
 
 private extension View {
     @ViewBuilder
-    func readerContentListRowStyle(showSeparators: Bool = false, useDefaultRowInsets: Bool = false) -> some View {
-        if #available(iOS 15, macOS 12, *) {
+    func readerContentListRowStyle(
+        showSeparators: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        zeroHorizontalRowInsets: Bool = false
+    ) -> some View {
+        if #available(iOS 26, macOS 26, *) {
+            if zeroHorizontalRowInsets {
+                self
+                    .listRowInsets(.horizontal, 0)
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            } else if useDefaultRowInsets {
+                self
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            } else {
+                self
+                    .listRowInsets(.init())
+                    .listRowSeparator(showSeparators ? .visible : .hidden)
+            }
+        } else if #available(iOS 15, macOS 12, *) {
             if useDefaultRowInsets {
                 self.listRowSeparator(showSeparators ? .visible : .hidden)
             } else {
@@ -808,7 +825,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
 
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-    @EnvironmentObject private var readerContent: ReaderContent
 
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 120
 
@@ -822,6 +838,11 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         default:
             return false
         }
+    }
+
+    @MainActor
+    private func selectContent() {
+        entrySelection = content.compoundKey
     }
 
     @ViewBuilder
@@ -878,76 +899,15 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 rowContent(item: content)
                     .tag(content.compoundKey)
                     .contentShape(Rectangle())
-                    .simultaneousGesture(
-                        TapGesture().onEnded {
-                            let wasSelected = (entrySelection == content.compoundKey)
-                            logDetent(
-                                "contentList.rowTap selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString) currentEntrySelection=\(entrySelection ?? "nil") wasSelected=\(wasSelected)"
-                            )
-                            if content.url.isSnippetURL {
-                                logSnippetLoad(
-                                    "rowTap selection=\(content.compoundKey) currentEntrySelection=\(entrySelection ?? "nil") wasSelected=\(wasSelected)"
-                                )
-                            }
-                            if !wasSelected {
-                                logDetent(
-                                    "contentList.rowTap.assignSelection selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString)"
-                                )
-                                entrySelection = content.compoundKey
-                                if content.url.isSnippetURL {
-                                    logSnippetLoad(
-                                        "rowTap.assignSelection selection=\(content.compoundKey)"
-                                    )
-                                }
-                            }
-                        }
-                    )
-                    .simultaneousGesture(
-                        TapGesture().onEnded {
-                            guard entrySelection == content.compoundKey else { return }
-                            logReaderLoad(
-                                "# SAMECONTENT stage=list.reselectGesture selection=\(content.compoundKey) currentReaderURL=\(readerContent.pageURL.absoluteString)"
-                            )
-                            logDetent(
-                                "contentList.reselectGesture.clear selection=\(content.compoundKey) currentReaderURL=\(readerContent.pageURL.absoluteString)"
-                            )
-                            entrySelection = nil
-                            Task { @MainActor in
-                                logReaderLoad(
-                                    "# SAMECONTENT stage=list.reselectGestureRestore selection=\(content.compoundKey)"
-                                )
-                                logDetent(
-                                    "contentList.reselectGesture.restore selection=\(content.compoundKey)"
-                                )
-                                entrySelection = content.compoundKey
-                            }
-                        }
-                    )
                     .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
                     .accessibilityLabel(content.title)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction {
-                        if content.url.isSnippetURL {
-                            logSnippetLoad(
-                                "accessibilityAction selection=\(content.compoundKey)"
-                            )
-                        }
-                        logDetent(
-                            "contentList.accessibilityAction.assignSelection selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString)"
-                        )
-                        entrySelection = content.compoundKey
+                        selectContent()
                     }
             } else {
                 Button {
-                    logDetent(
-                        "contentList.legacyButtonTap.assignSelection selection=\(content.compoundKey) selectedURL=\(content.url.absoluteString) currentEntrySelection=\(entrySelection ?? "nil")"
-                    )
-                    if content.url.isSnippetURL {
-                        logSnippetLoad(
-                            "legacyButtonTap selection=\(content.compoundKey) currentEntrySelection=\(entrySelection ?? "nil")"
-                        )
-                    }
-                    entrySelection = content.compoundKey
+                    selectContent()
                 } label: {
                     rowContent(item: content)
                         .multilineTextAlignment(.leading)
@@ -1253,7 +1213,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         customMenuOptions: customMenuOptions
                     )
                     .readerContentListRowStyle(
-                        useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                        useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
+                        zeroHorizontalRowInsets: clearRowBackground
                     )
                 } header: {
                     if index == viewModel.filteredContents.startIndex,
@@ -1559,7 +1520,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             customMenuOptions: customMenuOptions
         )
         .readerContentListRowStyle(
-            useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+            useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
+            zeroHorizontalRowInsets: clearRowBackground
         )
     }
 
@@ -1602,7 +1564,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 )
             }
             .readerContentListRowStyle(
-                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
+                zeroHorizontalRowInsets: clearRowBackground
             )
         }
     }
@@ -1636,7 +1599,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     } else {
                         listItems
                             .readerContentListRowStyle(
-                                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
+                                useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
+                                zeroHorizontalRowInsets: clearRowBackground
                             )
                     }
                 } header: {
@@ -1931,7 +1895,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         )
         .readerContentListRowStyle(
             showSeparators: appearance.showSeparators,
-            useDefaultRowInsets: appearance.usesNativeRowInsets
+            useDefaultRowInsets: appearance.usesNativeRowInsets,
+            zeroHorizontalRowInsets: appearance.clearRowBackground
         )
         .readerContentSelectionSync(
             viewModel: viewModel,

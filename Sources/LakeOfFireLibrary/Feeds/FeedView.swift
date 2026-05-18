@@ -348,18 +348,16 @@ public struct FeedView: View {
             }
             ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
-                    Button {
-                        Task { @MainActor in
-                            try? await setFollowed(!isFeedGroupFollowed)
-                        }
-                    } label: {
-                        Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
-                    }
-                }
-            }
-            ToolbarItem(placement: toolbarTrailingPlacement) {
-                if showsToolbar {
                     Menu {
+                        Section {
+                            Button {
+                                Task { @MainActor in
+                                    try? await setFollowed(!isFeedGroupFollowed)
+                                }
+                            } label: {
+                                Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
+                            }
+                        }
 #if DEBUG
                         if !isHorizontal && !(currentEntries?.isEmpty ?? true) {
 #if os(iOS)

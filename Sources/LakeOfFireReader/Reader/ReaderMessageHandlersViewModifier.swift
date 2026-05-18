@@ -634,15 +634,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
                 if source == "toolbar.blankTap" {
-                    debugPrint(
-                        "# MAY16 toolbarBlank.nativeMessage",
-                        "source=\(source ?? "nil")",
-                        "direction=\(direction ?? "nil")",
-                        "requested=\(shouldHide)",
-                        "current=\(hideNavigationDueToScroll.wrappedValue)"
-                    )
-                }
-                if source == "toolbar.blankTap" {
                     navigationVisibilityWillChangeHandler?(
                         ReaderNavigationVisibilityChange(
                             shouldHide: shouldHide,
@@ -1186,18 +1177,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
-        let isToolbarBlankTap = source == "toolbar.blankTap"
-        if isToolbarBlankTap {
-            debugPrint(
-                "# MAY16 toolbarBlank.setNative.begin",
-                "source=\(source ?? "nil")",
-                "direction=\(direction ?? "nil")",
-                "reason=\(reason ?? "nil")",
-                "previous=\(previousValue)",
-                "requested=\(shouldHide)",
-                "pageTurn=\(isPageTurnVisibilityChange)"
-            )
-        }
         guard previousValue != shouldHide else {
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
@@ -1207,13 +1186,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         source: source,
                         direction: direction
                     )
-                )
-            }
-            if isToolbarBlankTap {
-                debugPrint(
-                    "# MAY16 toolbarBlank.setNative.noop",
-                    "source=\(source ?? "nil")",
-                    "value=\(shouldHide)"
                 )
             }
             return
@@ -1232,15 +1204,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             withAnimation(.easeInOut(duration: 0.2)) {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
-        }
-        if isToolbarBlankTap {
-            debugPrint(
-                "# MAY16 toolbarBlank.setNative.end",
-                "source=\(source ?? "nil")",
-                "previous=\(previousValue)",
-                "requested=\(shouldHide)",
-                "current=\(hideNavigationDueToScroll.wrappedValue)"
-            )
         }
     }
 

@@ -994,27 +994,12 @@ const ignoreNextIncomingRevealNavigation = (source) => {
 
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
     const requestedHide = !!shouldHide;
-    const isMay16ToolbarSource =
-        source === 'toolbar.blankTap'
-        || details?.control === 'nav-bar-background';
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: requestedHide,
             source,
             ...details,
         });
-        if (isMay16ToolbarSource) {
-            const line = `# MAY16 ${JSON.stringify({
-                event: 'toolbarBlank.nativePost.send',
-                timestamp: Date.now(),
-                source,
-                requestedHide,
-                details,
-                state: captureNavVisibilityState(),
-            })}`;
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-            console.log(line);
-        }
         postHideNavLog('nativePost.send', {
             source,
             requestedHide,
@@ -1023,22 +1008,6 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
         });
         return true;
     } catch (error) {
-        if (isMay16ToolbarSource) {
-            const line = `# MAY16 ${JSON.stringify({
-                event: 'toolbarBlank.nativePost.error',
-                timestamp: Date.now(),
-                source,
-                requestedHide,
-                details,
-                message: error?.message || String(error),
-            })}`;
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(line);
-            } catch (_error) {}
-            try {
-                console.log(line);
-            } catch (_error) {}
-        }
         postHideNavLog('nativePost.error', {
             source,
             requestedHide,
@@ -4546,25 +4515,6 @@ class Reader {
             const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             const shouldHide = !wasHidden;
-            const logLine = `# MAY16 ${JSON.stringify({
-                event: 'toolbarBlank.click',
-                timestamp: Date.now(),
-                accepted: !excludedTarget,
-                excludedSelector: excludedTarget
-                    ? (excludedTarget.id ? `#${excludedTarget.id}` : (excludedTarget.className ? `.${String(excludedTarget.className).replace(/\s+/g, '.')}` : excludedTarget.tagName))
-                    : null,
-                target: target?.id || target?.tagName || null,
-                targetClass: target?.className || null,
-                wasHidden,
-                shouldHide,
-                state: captureNavVisibilityState(),
-            })}`;
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(logLine);
-            } catch (_error) {}
-            try {
-                console.log(logLine);
-            } catch (_error) {}
             if (excludedTarget) {
                 return;
             }
