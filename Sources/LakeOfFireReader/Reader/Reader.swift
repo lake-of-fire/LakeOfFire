@@ -747,9 +747,6 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             )
             return
         }
-        let mediaAvailable = (readerContent.content?.hasAudio ?? false)
-            || readerMediaPlayerViewModel.hasRecordedAudio
-            || readerMediaPlayerViewModel.hasPreparedAITTS
         let isPlaying = readerMediaPlayerViewModel.isPlaying
         let webViewPageURL = readerViewModel.state.pageURL
         let contentURL = readerContent.content?.url ?? readerContent.pageURL
@@ -759,6 +756,14 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             || readerModeViewModel.isReaderMode
             || readerModeViewModel.pendingReaderModeURL != nil
             || renderedCanonicalURL == contentCanonicalURL
+        let hasRecordedAudio = readerMediaPlayerViewModel.hasRecordedAudio || (readerContent.content?.hasAudio ?? false)
+        let ttsAvailable = isReaderModeContent
+            && !hasRecordedAudio
+            && (readerContent.content?.hasHTML ?? false)
+        let usesTTS = readerMediaPlayerViewModel.playbackSource == .aiTextToSpeech || (!hasRecordedAudio && ttsAvailable)
+        let mediaAvailable = hasRecordedAudio
+            || readerMediaPlayerViewModel.hasPreparedAITTS
+            || ttsAvailable
         if isReaderModeContent {
             guard !webViewPageURL.isReaderURLLoaderURL else {
                 debugPrint(
@@ -799,6 +804,8 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             "recordedAudioCount=\(readerMediaPlayerViewModel.audioURLs.count)",
             "hasRecordedAudio=\(readerMediaPlayerViewModel.hasRecordedAudio)",
             "hasPreparedAITTS=\(readerMediaPlayerViewModel.hasPreparedAITTS)",
+            "ttsAvailable=\(ttsAvailable)",
+            "usesTTS=\(usesTTS)",
             "mediaAvailable=\(mediaAvailable)",
             "isPlaying=\(isPlaying)",
             "playbackSource=\(readerMediaPlayerViewModel.playbackSource.rawValue)"
@@ -809,6 +816,7 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
                 window.manabiSyncReaderHeaderMediaButton?.({
                     mediaAvailable: \(mediaAvailable ? "true" : "false"),
                     isPlaying: \(isPlaying ? "true" : "false"),
+                    usesTTS: \(usesTTS ? "true" : "false"),
                     reason: '\(reason)'
                 });
                 """,
