@@ -452,6 +452,7 @@ fileprivate struct ThemeModifier: ViewModifier {
     @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
     @EnvironmentObject var readerViewModel: ReaderViewModel
 
@@ -484,6 +485,37 @@ fileprivate struct ThemeModifier: ViewModifier {
                 js,
                 duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
             )
+        }
+    }
+
+    @MainActor
+    private func applyTheme(reason: String) async {
+        await applyReaderTheme(
+            colorScheme: colorScheme,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme,
+            reason: reason,
+            hasAsyncCaller: scriptCaller.hasAsyncCaller
+        ) { js, duplicateInMultiTargetFrames in
+            _ = try await scriptCaller.evaluateJavaScript(
+                js,
+                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+            )
+        }
+    }
+
+    @MainActor
+    private func applyThemeAfterSceneActivation() async {
+        for delay in [UInt64(0), 120_000_000, 450_000_000] {
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+            }
+            guard scenePhase == .active else { return }
+            await applyTheme(reason: "scene-active")
         }
     }
     
@@ -547,6 +579,12 @@ fileprivate struct ThemeModifier: ViewModifier {
                             duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
                         )
                     }
+                }
+            }
+            .onChange(of: scenePhase) { scenePhase in
+                guard scenePhase == .active else { return }
+                Task { @MainActor in
+                    await applyThemeAfterSceneActivation()
                 }
             }
             .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in

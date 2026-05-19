@@ -336,12 +336,14 @@ public struct FeedView: View {
         .toolbar {
             ToolbarItem(placement: toolbarTrailingPlacement) {
 #if DEBUG
+#if os(iOS)
                 if showsToolbar,
                    !isHorizontal,
                    !(currentEntries?.isEmpty ?? true),
                    showsSelectionToolbarButton {
                     EditButton()
                 }
+#endif
 #else
                 EmptyView()
 #endif

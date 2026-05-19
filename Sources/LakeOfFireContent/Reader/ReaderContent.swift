@@ -9,9 +9,6 @@ private func logReaderLoad(_ message: String) {
 }
 
 private func logTitleTrace(_ message: String) {
-#if DEBUG
-    debugPrint("# TITLE \(message)")
-#endif
 }
 
 @MainActor

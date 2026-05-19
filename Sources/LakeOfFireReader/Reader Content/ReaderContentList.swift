@@ -972,7 +972,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         )
 #endif
         .modifier {
-            if appearance.useCardBackground || appearance.clearRowBackground {
+            if appearance.useCardBackground {
                 $0.listRowBackground(Color.clear)
             } else {
                 $0

@@ -471,7 +471,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 } else {
                 }
                 if logMessage.hasPrefix("# READER")
-                    || logMessage.hasPrefix("# REPLACETEXT")
                 {
                     let line = components.isEmpty
                         ? logMessage
@@ -796,17 +795,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
-                debugPrint(
-                    "# TITLE",
-                    "stage=readerMessage.readabilityParsed.received",
-                    "windowURL=\(result.windowURL?.absoluteString ?? "nil")",
-                    "statePageURL=\(readerViewModel.state.pageURL.absoluteString)",
-                    "title=\(result.title.replacingOccurrences(of: "\n", with: "\\n").truncate(120, trailing: "…"))",
-                    "author=\(result.byline.replacingOccurrences(of: "\n", with: "\\n").truncate(120, trailing: "…"))",
-                    "outputHTMLBytes=\(result.outputHTML.utf8.count)",
-                    "httpStatus=\(readerViewModel.state.mainFrameHTTPStatusCode.map(String.init) ?? "nil")",
-                    "isMainFrame=\(message.frameInfo.isMainFrame)"
-                )
                 guard let url = result.windowURL,
                       url == readerViewModel.state.pageURL,
                       let content = try? await contentForWindowURL(url, source: "readabilityParsed") else {

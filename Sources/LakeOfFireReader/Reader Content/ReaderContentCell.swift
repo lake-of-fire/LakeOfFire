@@ -206,7 +206,7 @@ public struct ReaderContentCellAnnotationStatus: Equatable, Sendable {
             return "circle"
         }
         if finishedTaskCount > 0 {
-            return "circle.checkmark"
+            return "checkmark.circle"
         }
         return nil
     }

@@ -76,6 +76,7 @@
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-obscured-bottom-inset: 0px;
                     --mnb-system-bottom-inset: env(safe-area-inset-bottom, 0px);
+                    --mnb-toolbar-content-gap: 10px;
                     --mnb-toolbar-visual-drop: 6px;
                     --mnb-toolbar-visual-bottom-inset: max(
                         0px,
@@ -253,6 +254,7 @@
                     left: 0;
                     right: 0;
                     bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
+                    transform: translateY(var(--mnb-toolbar-content-gap, 0px));
                     height: var(--mnb-nav-bar-height) !important;
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);

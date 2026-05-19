@@ -182,26 +182,6 @@ internal func ebookTextProcessor(
         responseDecodeElapsedMs = ebookProcessorElapsedMilliseconds(since: responseDecodeStartedAt)
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
             let elapsedMs = ebookProcessorElapsedMilliseconds(since: totalStartedAt)
-            debugPrint(
-                "# REPLACETEXT",
-                "native.ebookTextProcessor.responseSummary",
-                [
-                    "contentURL": String(contentURL.absoluteString.prefix(80)),
-                    "sectionLocation": sectionLocation,
-                    "isCacheWarmer": isCacheWarmer,
-                    "inputBytes": content.utf8.count,
-                    "responseBytes": htmlBytes.count,
-                    "readabilityProcessMs": readabilityProcessElapsedMs,
-                    "fallbackParseMs": fallbackParseElapsedMs,
-                    "readerModeProcessMs": readerModeProcessElapsedMs,
-                    "preprocessEbookMs": preprocessEbookElapsedMs,
-                    "serializeMs": serializeElapsedMs,
-                    "processHTMLBytesMs": processHTMLBytesElapsedMs,
-                    "processHTMLMs": processHTMLElapsedMs,
-                    "responseDecodeMs": responseDecodeElapsedMs,
-                    "elapsedMs": elapsedMs
-                ] as [String: Any]
-            )
         }
         return response
     } catch {
