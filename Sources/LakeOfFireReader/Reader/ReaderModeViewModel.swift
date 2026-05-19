@@ -139,9 +139,6 @@ private enum SwiftReadabilityProcessingOutcome {
 }
 
 private func logTitleTrace(_ message: String) {
-#if DEBUG
-    debugPrint("# TITLE \(message)")
-#endif
 }
 
 private extension String {
@@ -2771,20 +2768,6 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         } else {
             renderBaseURL = url
         }
-
-        debugPrint(
-            "# READERTRACE",
-            "readerMode.showReadabilityContent.start",
-            [
-                "contentURL": url.absoluteString,
-                "renderBaseURL": renderBaseURL.absoluteString,
-                "readerContentPageURL": readerContent.pageURL.absoluteString,
-                "frameMain": frameInfo?.isMainFrame as Any,
-                "hasProcessReadabilityContent": processReadabilityContent != nil,
-                "hasProcessHTMLBytes": processHTMLBytes != nil,
-                "hasProcessHTML": processHTML != nil
-            ] as [String: Any]
-        )
         let shouldStoreReaderHTML = !url.isEBookURL
             && !url.isFileURL
             && !url.isNativeReaderView
@@ -2978,20 +2961,6 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 }
                 return styleHTML.isEmpty ? Readability.shared.css : styleHTML
             }()
-            debugPrint(
-                "# READERTRACE",
-                "readerMode.showReadabilityContent.processed",
-                [
-                    "contentURL": url.absoluteString,
-                    "renderBaseURL": renderBaseURL.absoluteString,
-                    "segmentCount": processedSegmentCount,
-                    "hasBody": processedBodyExists,
-                    "baseUri": doc.getBaseUri(),
-                    "bodyClasses": processedBodyClasses,
-                    "titleStyle": processedTitleDisplayStyle
-                ] as [String: Any]
-            )
-
             if await self?.shouldUseDeferredSharedReaderFontGate(for: url) == true {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
@@ -3107,17 +3076,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     "renderBaseURL=\(renderBaseURL.absoluteString)",
                     "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - mainActorHandoffStartedAt))s"
                 )
-                guard url.matchesReaderURL(readerContent.pageURL) else {
-                    debugPrint(
-                        "# READERTRACE",
-                        "readerMode.showReadabilityContent.skip.urlMismatch",
-                        [
-                            "contentURL": url.absoluteString,
-                            "readerContentPageURL": readerContent.pageURL.absoluteString,
-                            "renderBaseURL": renderBaseURL.absoluteString
-                        ] as [String: Any]
-                    )
-                    self?.cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
+                guard url.matchesReaderURL(readerContent.pageURL) else {                    self?.cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {

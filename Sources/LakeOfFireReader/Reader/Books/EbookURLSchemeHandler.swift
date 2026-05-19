@@ -129,17 +129,6 @@ actor EBookProcessTextRequestDeduper {
                 "contentURL=\(ebookProcessTextSample(key.contentURLString))"
             )
             if ebookReplaceTextDetailedLoggingEnabled {
-                debugPrint(
-                    "# REPLACETEXT",
-                    "native.process.deduper.join",
-                    [
-                        "location": key.location,
-                        "isCacheWarmer": key.isCacheWarmer,
-                        "textFingerprint": key.textFingerprint,
-                        "waiterCountBeforeAppend": waiterCountBeforeAppend,
-                        "contentURL": ebookProcessTextSample(key.contentURLString)
-                    ] as [String: Any]
-                )
             }
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
@@ -155,17 +144,6 @@ actor EBookProcessTextRequestDeduper {
                 "contentURL=\(ebookProcessTextSample(key.contentURLString))"
             )
             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: joinElapsedMs, didCoalesce: true) {
-                debugPrint(
-                    "# REPLACETEXT",
-                    "native.process.deduper.join.resumed",
-                    [
-                        "location": key.location,
-                        "isCacheWarmer": key.isCacheWarmer,
-                        "textFingerprint": key.textFingerprint,
-                        "elapsedMs": joinElapsedMs,
-                        "contentURL": ebookProcessTextSample(key.contentURLString)
-                    ] as [String: Any]
-                )
             }
             return (try resolve(response), true)
         }
@@ -180,16 +158,6 @@ actor EBookProcessTextRequestDeduper {
             "contentURL=\(ebookProcessTextSample(key.contentURLString))"
         )
         if ebookReplaceTextDetailedLoggingEnabled {
-            debugPrint(
-                "# REPLACETEXT",
-                "native.process.deduper.leader",
-                [
-                    "location": key.location,
-                    "isCacheWarmer": key.isCacheWarmer,
-                    "textFingerprint": key.textFingerprint,
-                    "contentURL": ebookProcessTextSample(key.contentURLString)
-                ] as [String: Any]
-            )
         }
         let response: ProcessTextOutcome
         do {
@@ -212,18 +180,6 @@ actor EBookProcessTextRequestDeduper {
             "contentURL=\(ebookProcessTextSample(key.contentURLString))"
         )
         if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: resolveElapsedMs, didCoalesce: !waiters.isEmpty) {
-            debugPrint(
-                "# REPLACETEXT",
-                "native.process.deduper.resolve",
-                [
-                    "location": key.location,
-                    "isCacheWarmer": key.isCacheWarmer,
-                    "textFingerprint": key.textFingerprint,
-                    "waiterCount": waiters.count,
-                    "elapsedMs": resolveElapsedMs,
-                    "contentURL": ebookProcessTextSample(key.contentURLString)
-                ] as [String: Any]
-            )
         }
         for waiter in waiters {
             waiter.resume(returning: response)
@@ -269,16 +225,6 @@ actor EBookProcessingActor {
             "contentURL=\(ebookProcessTextSample(contentURL.absoluteString))"
         )
         if ebookReplaceTextDetailedLoggingEnabled {
-            debugPrint(
-                "# REPLACETEXT",
-                "native.process.actor.start",
-                [
-                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                    "location": location,
-                    "isCacheWarmer": isCacheWarmer,
-                    "textLength": text.utf8.count
-                ] as [String: Any]
-            )
         }
         guard let ebookTextProcessor else {
             debugPrint(
@@ -311,18 +257,6 @@ actor EBookProcessingActor {
             "responseBytes=\(result.utf8.count)",
             "elapsedMs=\(elapsedMs)",
             "contentURL=\(ebookProcessTextSample(contentURL.absoluteString))"
-        )
-        debugPrint(
-            "# REPLACETEXT",
-            "native.process.actor.end",
-            [
-                "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                "location": location,
-                "isCacheWarmer": isCacheWarmer,
-                "textLength": text.utf8.count,
-                "responseLength": result.utf8.count,
-                "elapsedMs": elapsedMs
-            ] as [String: Any]
         )
         return result
     }
@@ -526,17 +460,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             "urlElapsedMs=\(ebookLoadElapsedMs(since: urlRequestStartedAt))"
                         )
                         if ebookReplaceTextDetailedLoggingEnabled {
-                            debugPrint(
-                                "# REPLACETEXT",
-                                "native.process.request.start",
-                                [
-                                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                                    "location": replacedTextLocation,
-                                    "isCacheWarmer": isCacheWarmer,
-                                    "textLength": text.utf8.count,
-                                    "textFingerprint": processRequestKey.textFingerprint
-                                ] as [String: Any]
-                            )
                         }
                         let respText: String
                         let didCoalesce: Bool
@@ -559,19 +482,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 )
                             }
                         } catch {
-                            debugPrint(
-                                "# REPLACETEXT",
-                                "native.process.request.error",
-                                [
-                                    "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                                    "location": replacedTextLocation,
-                                    "isCacheWarmer": isCacheWarmer,
-                                    "textLength": text.utf8.count,
-                                    "textFingerprint": processRequestKey.textFingerprint,
-                                    "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1000),
-                                    "error": String(describing: error)
-                                ] as [String: Any]
-                            )
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     urlSchemeTask.didFailWithError(error)
@@ -585,21 +495,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
                             let responseReadyElapsedMs = ebookLoadElapsedMs(since: requestStartedAt)
                             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
-                                debugPrint(
-                                    "# REPLACETEXT",
-                                    "native.process.request.responseReady",
-                                    [
-                                        "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                                        "location": replacedTextLocation,
-                                        "isCacheWarmer": isCacheWarmer,
-                                        "textLength": text.utf8.count,
-                                        "textFingerprint": processRequestKey.textFingerprint,
-                                        "didCoalesce": didCoalesce,
-                                        "responseLength": respData.count,
-                                        "responseDataEncodeMs": responseDataEncodeElapsedMs,
-                                        "elapsedMs": responseReadyElapsedMs
-                                    ] as [String: Any]
-                                )
                             }
                             let httpResponseBuildStartedAt = Date()
                             let resp = HTTPURLResponse(
@@ -610,18 +505,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             )
                             let httpResponseBuildElapsedMs = Int(Date().timeIntervalSince(httpResponseBuildStartedAt) * 1000)
                             if httpResponseBuildElapsedMs > 0 {
-                                debugPrint(
-                                    "# REPLACETEXT",
-                                    "native.process.request.httpResponseBuilt",
-                                    [
-                                        "contentURL": ebookProcessTextSample(contentURL.absoluteString),
-                                        "location": replacedTextLocation,
-                                        "isCacheWarmer": isCacheWarmer,
-                                        "responseLength": respData.count,
-                                        "httpResponseBuildMs": httpResponseBuildElapsedMs,
-                                        "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1000)
-                                    ] as [String: Any]
-                                )
                             }
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {

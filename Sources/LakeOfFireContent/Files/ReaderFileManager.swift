@@ -1028,21 +1028,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         mimeType: String? = nil,
         reason: String? = nil
     ) {
-        var components = [
-            "# CONTENTFILE",
-            "stage=\(stage)",
-            "path=\(path)",
-        ]
-        if let pathExtension, !pathExtension.isEmpty {
-            components.append("ext=\(pathExtension)")
-        }
-        if let mimeType, !mimeType.isEmpty {
-            components.append("mime=\(mimeType)")
-        }
-        if let reason, !reason.isEmpty {
-            components.append("reason=\(reason)")
-        }
-        debugPrint(components.joined(separator: " "))
     }
 }
 

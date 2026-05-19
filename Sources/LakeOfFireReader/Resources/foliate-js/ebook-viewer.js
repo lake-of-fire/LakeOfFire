@@ -53,13 +53,6 @@ function forwardShadowErrors(root) {
 }
 
 const postReplaceTextPerfLog = (event, details = {}) => {
-    if (window.webkit?.messageHandlers?.print) {
-        window.webkit.messageHandlers.print.postMessage({
-            prefix: '# REPLACETEXT',
-            event,
-            ...details,
-        });
-    }
 };
 
 const postBookRotateLog = (event, details = {}) => {
@@ -6243,19 +6236,6 @@ class Reader {
         if (unreadSegmentCount > 0) {
             const unreadSegmentIdentifiers = segmentIdentifiers
                 .filter((identifier) => !readSegmentIdentifiers.has(identifier));
-            if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
-                event: 'js.currentSectionReadState.unreadSegments',
-                documentURL: doc.URL || doc.location?.href || null,
-                currentPageNumber,
-                totalPages,
-                pagesLeft,
-                segmentCount: segmentIdentifiers.length,
-                readSegmentCount: segmentIdentifiers.length - unreadSegmentCount,
-                unreadSegmentCount,
-                optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
-                persistedReadSegmentCount: normalizeArticleReadingProgress(this.articleReadingProgress).readSegmentIdentifiers.length,
-                unreadSegmentIdentifierSample: unreadSegmentIdentifiers.slice(0, 20),
-            }));
         }
         return {
             allSectionsRead: unreadSegmentCount === 0,
@@ -6274,10 +6254,6 @@ class Reader {
         const contents = this.view?.renderer?.getContents?.() || [];
         const doc = contents[0]?.doc;
         if (!isDocumentLike(doc)) {
-            if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
-                event: 'js.ebookMarkAllSectionsAsReadPayload.skipped',
-                reason: 'missing-document',
-            }));
             return null;
         }
         const segmentNodes = Array.from(doc.querySelectorAll('mnb-seg'))
@@ -6325,17 +6301,6 @@ class Reader {
         const payloadSegmentIdentifiers = payloadSegments
             .map((segment) => segment.segmentIdentifier)
             .filter((segmentIdentifier) => typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0);
-        if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
-            event: 'js.ebookMarkAllSectionsAsRead.dispatch',
-            documentURL: doc.URL || doc.location?.href || null,
-            segmentNodeCount: segmentNodes.length,
-            payloadSegmentCount: payloadSegments.length,
-            sentenceIdentifierCount: payloadSentenceIdentifiers.length,
-            skippedMissingIdentifierCount,
-            skippedMissingSearchStringCount,
-            segmentIdentifierSample: payloadSegmentIdentifiers.slice(0, 20),
-            segmentIdentifierTailSample: payloadSegmentIdentifiers.slice(-20),
-        }));
         if (payloadSegments.length === 0) {
             return null;
         }
@@ -6366,12 +6331,6 @@ class Reader {
             ...payloadSentenceIdentifiers,
         ]));
         this.applyBookReadingProgress(optimisticProgress, 'optimistic-mark-all-read');
-        if (manabiDiagnosticsEnabled()) console.log('# UNREAD', JSON.stringify({
-            event: 'js.ebookMarkAllSectionsAsRead.optimisticApplied',
-            documentURL: doc.URL || doc.location?.href || null,
-            optimisticReadSegmentCount: optimisticProgress.readSegmentIdentifiers.length,
-            optimisticSentenceReadCount: optimisticProgress.sentenceIdentifiersRead.length,
-        }));
         return payloadSegments.length;
     }
     async markAllSectionsAsRead() {
