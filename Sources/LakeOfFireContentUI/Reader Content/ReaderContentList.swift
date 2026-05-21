@@ -662,6 +662,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentAppear: ((C) -> Void)?
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -808,6 +809,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         }
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
+            onContentAppear?(content)
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
@@ -833,6 +835,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentAppear: ((C) -> Void)?
     
     var body: some View {
         let lastIndex = viewModel.filteredContents.indices.last
@@ -849,7 +852,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     isLast: isLast,
                     viewModel: viewModel,
                     onRequestDelete: onRequestDelete,
-                    customMenuOptions: customMenuOptions
+                    customMenuOptions: customMenuOptions,
+                    onContentAppear: onContentAppear
                 )
             }
         }
@@ -862,7 +866,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         appearance: ReaderContentListAppearance,
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
-        customMenuOptions: ((C) -> AnyView)? = nil
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentAppear: ((C) -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
@@ -870,6 +875,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
+        self.onContentAppear = onContentAppear
     }
 }
 
@@ -898,6 +904,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let onContentAppear: ((C) -> Void)?
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
@@ -953,6 +960,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentAppear: onContentAppear,
             useDefaultRowInsets: useDefaultRowInsets,
             showsNewBadges: showsNewBadges,
         )
@@ -986,7 +994,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         isLast: true,
                         viewModel: viewModel,
                         onRequestDelete: onRequestDelete,
-                        customMenuOptions: customMenuOptions
+                        customMenuOptions: customMenuOptions,
+                        onContentAppear: onContentAppear
                     )
                     .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
                 } header: {
@@ -1236,7 +1245,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                         isLast: index == lastIndex,
                                         viewModel: viewModel,
                                         onRequestDelete: onRequestDelete,
-                                        customMenuOptions: customMenuOptions
+                                        customMenuOptions: customMenuOptions,
+                                        onContentAppear: onContentAppear
                                     )
                                 }
                                 .readerContentListRowStyle()
@@ -1264,7 +1274,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                         isLast: index == lastIndex,
                                         viewModel: viewModel,
                                         onRequestDelete: onRequestDelete,
-                                        customMenuOptions: customMenuOptions
+                                        customMenuOptions: customMenuOptions,
+                                        onContentAppear: onContentAppear
                                     )
                                 }
                                 .readerContentListRowStyle()
@@ -1300,6 +1311,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1327,6 +1339,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.headerView = headerView
         self.emptyStateView = emptyStateView
         self.onContentSelected = onContentSelected
+        self.onContentAppear = onContentAppear
         _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: sortOrder))
     }
 }
@@ -1351,6 +1364,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
@@ -1374,6 +1388,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentAppear: onContentAppear,
             postSortTransform: postSortTransform,
             supplementarySections: { EmptyView() },
             headerView: headerView,
@@ -1391,6 +1406,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let onContentAppear: ((C) -> Void)?
     
     public var body: some View {
         ReaderContentInnerListItems(
@@ -1399,7 +1415,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             appearance: appearance,
             viewModel: viewModel,
             onRequestDelete: onRequestDelete,
-            customMenuOptions: customMenuOptions
+            customMenuOptions: customMenuOptions,
+            onContentAppear: onContentAppear
         )
         .readerContentListRowStyle(
             showSeparators: appearance.showSeparators,
@@ -1423,6 +1440,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil,
         showSeparators: Bool = false,
         useCardBackground: Bool = false,
         clearRowBackground: Bool = false,
@@ -1444,6 +1462,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentAppear = onContentAppear
     }
     
 }

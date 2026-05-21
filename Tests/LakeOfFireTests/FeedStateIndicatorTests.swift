@@ -251,6 +251,36 @@ final class FeedStateIndicatorTests: XCTestCase {
         XCTAssertEqual(followingEntries.map(\.title), ["unopened"])
     }
 
+    func testFollowingEntriesCanBeLimitedForPagedFollowingLists() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let firstFeed = Feed()
+        firstFeed.title = "First"
+        firstFeed.rssUrl = URL(string: "https://example.com/first.xml")!
+        firstFeed.iconUrl = firstFeed.rssUrl
+        firstFeed.isFollowed = true
+
+        let secondFeed = Feed()
+        secondFeed.title = "Second"
+        secondFeed.rssUrl = URL(string: "https://example.com/second.xml")!
+        secondFeed.iconUrl = secondFeed.rssUrl
+        secondFeed.isFollowed = true
+
+        try realm.write {
+            realm.add([firstFeed, secondFeed])
+            realm.add(makeEntry(feed: firstFeed, suffix: "first-1", date: baseDate.addingTimeInterval(100)))
+            realm.add(makeEntry(feed: firstFeed, suffix: "first-2", date: baseDate.addingTimeInterval(10)))
+            realm.add(makeEntry(feed: secondFeed, suffix: "second-1", date: baseDate.addingTimeInterval(90)))
+            realm.add(makeEntry(feed: secondFeed, suffix: "second-2", date: baseDate.addingTimeInterval(80)))
+        }
+
+        let followingEntries = Feed.followingEntries(from: [firstFeed, secondFeed], historyRealm: realm, limit: 2)
+
+        XCTAssertEqual(followingEntries.map(\.title), ["first-1", "second-1"])
+    }
+
     func testFollowingEntriesUsesCanonicalEntryURLForHistorySeenState() throws {
         let configuration = makeConfiguration()
         let realm = try Realm(configuration: configuration)

@@ -302,11 +302,9 @@ public extension Feed {
 
     public static func followingEntries(
         from feeds: [Feed],
-        historyRealm: Realm? = nil
+        historyRealm: Realm? = nil,
+        limit: Int? = nil
     ) -> [FeedEntry] {
-        let latestHistoryLastVisitedAtByEntryURL = historyRealm.map {
-            latestHistoryLastVisitedAtByCanonicalEntryURL(in: $0)
-        } ?? [:]
         let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived }) {
             $0.canonicalFollowingFeedURLKey
         }
@@ -335,11 +333,6 @@ public extension Feed {
             for feed in feedGroup {
                 for entry in feed.getEntries() ?? [] {
                     let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
-                    let latestHistoryLastVisitedAt = latestHistoryLastVisitedAtByEntryURL[entryKey]
-                    guard isEntryUnseen(latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) else {
-                        continue
-                    }
-
                     if let current = entriesByURL[entryKey] {
                         if followingEntryRecencySort(lhs: entry, rhs: current) {
                             entriesByURL[entryKey] = entry
@@ -361,7 +354,15 @@ public extension Feed {
                 entries.indices.contains(roundIndex) ? entries[roundIndex] : nil
             }
             guard !round.isEmpty else { break }
-            result.append(contentsOf: round.sorted { followingEntryRecencySort(lhs: $0, rhs: $1) })
+            for entry in round.sorted(by: { followingEntryRecencySort(lhs: $0, rhs: $1) }) {
+                if let historyRealm, hasOpenedCanonicalFollowingEntry(entry, in: historyRealm) {
+                    continue
+                }
+                result.append(entry)
+                if let limit, result.count >= limit {
+                    return result
+                }
+            }
             roundIndex += 1
         }
         return result
@@ -413,15 +414,17 @@ public extension Feed {
         canonicalFollowingFeedURLKey(for: url)
     }
 
-    private static func latestHistoryLastVisitedAtByCanonicalEntryURL(in realm: Realm) -> [String: Date] {
-        var latestByURL = [String: Date]()
-        for historyRecord in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
-            let key = canonicalFollowingEntryURLKey(for: historyRecord.url)
-            if latestByURL[key].map({ $0 < historyRecord.lastVisitedAt }) ?? true {
-                latestByURL[key] = historyRecord.lastVisitedAt
-            }
+    private static func hasOpenedCanonicalFollowingEntry(_ entry: FeedEntry, in realm: Realm) -> Bool {
+        if HistoryRecord.hasOpenedRecord(for: entry.url, in: realm) {
+            return true
         }
-        return latestByURL
+        let canonicalKey = canonicalFollowingEntryURLKey(for: entry.url)
+        guard canonicalKey != entry.url.absoluteString,
+              let canonicalURL = URL(string: canonicalKey)
+        else {
+            return false
+        }
+        return HistoryRecord.hasOpenedRecord(for: canonicalURL, in: realm)
     }
 
     private static func isEntryUnseen(latestHistoryLastVisitedAt: Date?) -> Bool {
