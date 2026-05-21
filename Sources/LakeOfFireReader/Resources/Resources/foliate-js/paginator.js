@@ -1926,7 +1926,22 @@ export class Paginator extends HTMLElement {
     async pages() {
         //        await this.#awaitDirection();
         //        console.log("pages() view size & size:", (await this.viewSize()), (await this.size()))
-        return Math.round((await this.viewSize()) / (await this.size()))
+        const rawPages = Math.round((await this.viewSize()) / (await this.size()))
+        if (
+            MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            && rawPages > 3
+            && this.#isSingleMediaElementWithoutText()
+        ) {
+            try {
+                console.log('# MAY20', {
+                    event: 'paginator.pages.singleMediaClamp',
+                    rawPages,
+                    returnedPages: 3,
+                });
+            } catch {}
+            return 3
+        }
+        return rawPages
     }
     async scrollBy(dx, dy) {
         //        await this.#awaitDirection()

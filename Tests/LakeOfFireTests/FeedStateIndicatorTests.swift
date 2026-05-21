@@ -124,7 +124,7 @@ final class FeedStateIndicatorTests: XCTestCase {
         )
     }
 
-    func testFollowingEntriesIgnoresUnfollowedAndSeenEntries() throws {
+    func testFollowingEntriesIgnoresUnfollowedAndHistorySeenEntries() throws {
         let configuration = makeConfiguration()
         let realm = try Realm(configuration: configuration)
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
@@ -134,21 +134,26 @@ final class FeedStateIndicatorTests: XCTestCase {
         followedFeed.rssUrl = URL(string: "https://example.com/followed.xml")!
         followedFeed.iconUrl = followedFeed.rssUrl
         followedFeed.isFollowed = true
-        followedFeed.lastSeenFeedEntriesAt = baseDate.addingTimeInterval(50)
 
         let unfollowedFeed = Feed()
         unfollowedFeed.title = "Unfollowed"
         unfollowedFeed.rssUrl = URL(string: "https://example.com/unfollowed.xml")!
         unfollowedFeed.iconUrl = unfollowedFeed.rssUrl
 
+        let seenHistory = HistoryRecord()
+        seenHistory.url = URL(string: "https://example.com/articles/\(followedFeed.id.uuidString)/seen")!
+        seenHistory.updateCompoundKey()
+        seenHistory.lastVisitedAt = baseDate.addingTimeInterval(50)
+
         try realm.write {
             realm.add([followedFeed, unfollowedFeed])
             realm.add(makeEntry(feed: followedFeed, suffix: "seen", date: baseDate.addingTimeInterval(40)))
             realm.add(makeEntry(feed: followedFeed, suffix: "new", date: baseDate.addingTimeInterval(60)))
             realm.add(makeEntry(feed: unfollowedFeed, suffix: "ignored", date: baseDate.addingTimeInterval(70)))
+            realm.add(seenHistory)
         }
 
-        let followingEntries = Feed.followingEntries(from: [followedFeed, unfollowedFeed])
+        let followingEntries = Feed.followingEntries(from: [followedFeed, unfollowedFeed], historyRealm: realm)
 
         XCTAssertEqual(followingEntries.map(\.title), ["new"])
     }
@@ -195,7 +200,7 @@ final class FeedStateIndicatorTests: XCTestCase {
         )
     }
 
-    func testFollowingEntriesUsesSharedSeenDateForDuplicateFeedURLs() throws {
+    func testFollowingEntriesDoesNotTreatMarkAllSeenAsArticleSeen() throws {
         let configuration = makeConfiguration()
         let realm = try Realm(configuration: configuration)
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
@@ -221,7 +226,29 @@ final class FeedStateIndicatorTests: XCTestCase {
 
         let followingEntries = Feed.followingEntries(from: [followedFeed, duplicateFeed])
 
-        XCTAssertEqual(followingEntries.map(\.title), ["new-for-group"])
+        XCTAssertEqual(followingEntries.map(\.title), ["new-for-group", "seen-by-group"])
+    }
+
+    func testFollowingEntriesDoesNotTreatFeedViewAsArticleSeen() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let followedFeed = Feed()
+        followedFeed.title = "Followed"
+        followedFeed.rssUrl = URL(string: "https://example.com/followed.xml")!
+        followedFeed.iconUrl = followedFeed.rssUrl
+        followedFeed.isFollowed = true
+        followedFeed.lastViewedAt = baseDate.addingTimeInterval(120)
+
+        try realm.write {
+            realm.add(followedFeed)
+            realm.add(makeEntry(feed: followedFeed, suffix: "unopened", date: baseDate.addingTimeInterval(60)))
+        }
+
+        let followingEntries = Feed.followingEntries(from: [followedFeed], historyRealm: realm)
+
+        XCTAssertEqual(followingEntries.map(\.title), ["unopened"])
     }
 
     func testFollowingEntriesUsesCanonicalEntryURLForHistorySeenState() throws {

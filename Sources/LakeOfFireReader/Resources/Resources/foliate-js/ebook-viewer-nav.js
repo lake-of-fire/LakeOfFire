@@ -53,6 +53,18 @@ const logBug = (event, detail = {}) => {
     }
 };
 
+const logMay20 = (event, detail = {}) => {
+    globalThis.__manabiMay20NavLogCount = globalThis.__manabiMay20NavLogCount || 0;
+    if (globalThis.__manabiMay20NavLogCount >= 600) return;
+    globalThis.__manabiMay20NavLogCount += 1;
+    const payload = { event, timestamp: Date.now(), ...detail };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY20 ${JSON.stringify(payload)}`);
+    } catch (_err) {
+        try { console.log('# MAY20', payload); } catch (_) {}
+    }
+};
+
 const logNavHide = (event, detail = {}) => {
     void event;
     void detail;
@@ -407,6 +419,15 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        logMay20('navHUD.setHide.entered', {
+            sequence,
+            source,
+            previous,
+            requested: next,
+            previousClass,
+            context,
+            state: this._captureHideNavState?.() ?? null,
+        });
         logMay15('ebook.navHUD.setHide.entered', {
             sequence,
             source,
@@ -431,6 +452,14 @@ export class NavigationHUD {
                 shouldHide: next,
                 context,
                 state: this._captureHideNavState(),
+            });
+            logMay20('navHUD.setHide.return', {
+                sequence,
+                source,
+                verdict: 'preservedHiddenNavigation',
+                previous,
+                requested: next,
+                state: this._captureHideNavState?.() ?? null,
             });
             return this.hideNavigationDueToScroll;
         }
@@ -461,6 +490,15 @@ export class NavigationHUD {
                 navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
                 navHiddenScrollClass: previousClass,
                 context,
+            });
+            logMay20('navHUD.setHide.return', {
+                sequence,
+                source,
+                verdict: 'noop',
+                previous,
+                requested: next,
+                previousClass,
+                state: this._captureHideNavState?.() ?? null,
             });
             return this.hideNavigationDueToScroll;
         }
@@ -503,6 +541,17 @@ export class NavigationHUD {
             shouldHide: this.hideNavigationDueToScroll,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        });
+        logMay20('navHUD.setHide.applied', {
+            sequence,
+            source,
+            previous,
+            requested: next,
+            actual: this.hideNavigationDueToScroll,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            context,
+            state: this._captureHideNavState?.() ?? null,
         });
         if (this.progressWrapper) {
             this.progressWrapper.setAttribute('aria-hidden', this.hideNavigationDueToScroll ? 'true' : 'false');

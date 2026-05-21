@@ -335,7 +335,7 @@ public extension Feed {
                 for entry in feed.getEntries() ?? [] {
                     let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
                     let latestHistoryLastVisitedAt = latestHistoryLastVisitedAtByEntryURL[entryKey]
-                    guard isEntryUnseen(entry, in: feedGroup, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) else {
+                    guard isEntryUnseen(latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) else {
                         continue
                     }
 
@@ -423,21 +423,7 @@ public extension Feed {
         return latestByURL
     }
 
-    private static func effectiveSeenDate(for feedGroup: [Feed], latestHistoryLastVisitedAt: Date?) -> Date? {
-        let baseline = feedGroup
-            .flatMap { [$0.lastViewedAt, $0.lastSeenFeedEntriesAt] }
-            .compactMap { $0 }
-            .max()
-        guard let baseline else { return latestHistoryLastVisitedAt }
-        guard let latestHistoryLastVisitedAt else { return baseline }
-        return max(baseline, latestHistoryLastVisitedAt)
-    }
-
-    private static func isEntryUnseen(_ entry: FeedEntry, in feedGroup: [Feed], latestHistoryLastVisitedAt: Date?) -> Bool {
-        guard feedGroup.contains(where: \.showsUnseenBadge) else { return false }
-        if let effectiveSeenDate = effectiveSeenDate(for: feedGroup, latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) {
-            return entry.createdAt > effectiveSeenDate
-        }
+    private static func isEntryUnseen(latestHistoryLastVisitedAt: Date?) -> Bool {
         return latestHistoryLastVisitedAt == nil
     }
 }

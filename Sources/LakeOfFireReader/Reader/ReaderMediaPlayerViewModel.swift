@@ -345,7 +345,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         playbackSource = .aiTextToSpeech
         isMediaPlayerPresented = true
         if autoplay {
-            requestAutoplay()
+            mediaDebugPrint("# LISTEN ai.autoplay.direct")
+            playAITTS()
         }
         mediaDebugPrint(
             "# READALOUD present.ai.ready",

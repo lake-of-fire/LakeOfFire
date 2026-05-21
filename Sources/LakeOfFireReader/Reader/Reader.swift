@@ -1021,6 +1021,8 @@ public struct Reader: View {
             "\(effectiveTopInset)",
             "\(effectiveBottomInset)",
             "\(effectiveToolbarBottomOffset)",
+            "\(scriptCaller.hasAsyncCaller)",
+            "\(readerViewModel.state.hasReaderRenderReady)",
             "\(readerViewModel.ebookChromeInsetsResyncID)",
         ].joined(separator: "|")
         let safeAreaBottomSignature = [

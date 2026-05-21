@@ -236,11 +236,13 @@ public extension View {
 extension ReaderContentProtocol {
     @ViewBuilder public func readerContentCellView(
         appearance: ReaderContentCellAppearance,
+        customLeadingMenuOptions: ((Self) -> AnyView)? = nil,
         customMenuOptions: ((Self) -> AnyView)?
     ) -> some View {
         ReaderContentCell(
             item: self,
             appearance: appearance,
+            customLeadingMenuOptions: customLeadingMenuOptions,
             customMenuOptions: customMenuOptions
         )
     }
@@ -340,6 +342,7 @@ public struct ReaderContentBookCoverRenderedWidthPreferenceKey: PreferenceKey {
 public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
     @ObservedRealmObject var item: C
     var appearance: ReaderContentCellAppearance
+    var customLeadingMenuOptions: ((C) -> AnyView)? = nil
     var customMenuOptions: ((C) -> AnyView)? = nil
 
     static var buttonSize: CGFloat { 26 }
@@ -359,9 +362,15 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     @State private var clearBorderedLabelHeight: CGFloat = 0
     @State private var annotationStatus = ReaderContentCellAnnotationStatus()
 
-    public init(item: C, appearance: ReaderContentCellAppearance, customMenuOptions: ((C) -> AnyView)? = nil) {
+    public init(
+        item: C,
+        appearance: ReaderContentCellAppearance,
+        customLeadingMenuOptions: ((C) -> AnyView)? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil
+    ) {
         self._item = ObservedRealmObject(wrappedValue: item)
         self.appearance = appearance
+        self.customLeadingMenuOptions = customLeadingMenuOptions
         self.customMenuOptions = customMenuOptions
     }
 
@@ -827,6 +836,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         let deletable = item as? (any DeletableReaderContent)
         if #available(iOS 16, macOS 13, *) {
             Menu {
+                if let customLeadingMenuOptions {
+                    customLeadingMenuOptions(self.item)
+                }
+
                 if let item = item as? ContentFile {
                     CloudDriveSyncStatusView(item: item)
                         .labelStyle(.titleAndIcon)
@@ -859,6 +872,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             .menuIndicator(.hidden)
         } else if #available(iOS 15, macOS 12, *) {
             Menu {
+                if let customLeadingMenuOptions {
+                    customLeadingMenuOptions(self.item)
+                }
+
                 if let item = item as? ContentFile {
                     CloudDriveSyncStatusView(item: item)
                         .labelStyle(.titleAndIcon)
@@ -890,6 +907,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             .menuIndicator(.hidden)
         } else {
             Menu {
+                if let customLeadingMenuOptions {
+                    customLeadingMenuOptions(self.item)
+                }
+
                 if let item = item as? ContentFile {
                     CloudDriveSyncStatusView(item: item)
                         .labelStyle(.titleAndIcon)

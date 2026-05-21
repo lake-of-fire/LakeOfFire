@@ -968,6 +968,49 @@ const postHideNavLog = (event, details = {}) => {
     } catch {}
 };
 
+const postMay20Log = (event, details = {}) => {
+    globalThis.__manabiMay20LogCount = globalThis.__manabiMay20LogCount || 0;
+    if (globalThis.__manabiMay20LogCount >= 1000) return;
+    globalThis.__manabiMay20LogCount += 1;
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY20 ' + JSON.stringify(payload));
+    } catch {}
+    try {
+        console.log('# MAY20', payload);
+    } catch {}
+};
+
+const captureMay20ContentSnapshots = (view = globalThis.reader?.view) => {
+    const contents = view?.renderer?.getContents?.() || [];
+    return contents.slice(0, 4).map((content, index) => {
+        const doc = content?.doc || content?.document || null;
+        const body = doc?.body || null;
+        const bodyStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(body);
+        const htmlStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(doc?.documentElement);
+        return {
+            index,
+            href: content?.href ?? body?.dataset?.mnbSourceHref ?? doc?.location?.href ?? null,
+            bodyClass: body?.className || '',
+            htmlClass: doc?.documentElement?.className || '',
+            bodyTextLength: body?.textContent?.trim?.().length ?? null,
+            bodyChildCount: body?.children?.length ?? null,
+            bodyScrollWidth: body?.scrollWidth ?? null,
+            bodyScrollHeight: body?.scrollHeight ?? null,
+            bodyClientWidth: body?.clientWidth ?? null,
+            bodyClientHeight: body?.clientHeight ?? null,
+            bodyWritingMode: bodyStyle?.writingMode ?? null,
+            htmlWritingMode: htmlStyle?.writingMode ?? null,
+            gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() || null,
+            hiddenDataset: body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+        };
+    });
+};
+
 const ignoreNextIncomingHideNavigation = (source) => {
     globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 1;
     postHideNavLog('ignoreNextIncomingHideNavigation', {
@@ -986,11 +1029,23 @@ const ignoreNextIncomingRevealNavigation = (source) => {
 
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
     const requestedHide = !!shouldHide;
+    postMay20Log('ebookNavigationVisibility.post.begin', {
+        source,
+        requestedHide,
+        details,
+        state: captureNavVisibilityState(),
+    });
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: requestedHide,
             source,
             ...details,
+        });
+        postMay20Log('ebookNavigationVisibility.post.sent', {
+            source,
+            requestedHide,
+            details,
+            state: captureNavVisibilityState(),
         });
         postHideNavLog('nativePost.send', {
             source,
@@ -1000,6 +1055,12 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
         });
         return true;
     } catch (error) {
+        postMay20Log('ebookNavigationVisibility.post.error', {
+            source,
+            requestedHide,
+            details,
+            message: error?.message || String(error),
+        });
         postHideNavLog('nativePost.error', {
             source,
             requestedHide,
@@ -1716,6 +1777,12 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
     const before = captureNavVisibilityState();
+    postMay20Log('nativeBridge.set.entered', {
+        sequence,
+        source,
+        requestedHide: normalized,
+        before,
+    });
     logMay15('ebook.navBridge.setNative.entered', {
         sequence,
         source,
@@ -1768,6 +1835,12 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         requestedHide: normalized,
         after: captureNavVisibilityState(),
     });
+    postMay20Log('nativeBridge.set.finished', {
+        sequence,
+        source,
+        requestedHide: normalized,
+        after: captureNavVisibilityState(),
+    });
     logMay15('ebook.navBridge.setNative.finished', {
         sequence,
         source,
@@ -1778,6 +1851,11 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
 
 window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabiSetHideNavigationDueToScroll') => {
     const requestedHide = !!shouldHide;
+    postMay20Log('window.setHideNavigation.entered', {
+        source,
+        requestedHide,
+        currentState: captureNavVisibilityState(),
+    });
     logMay15('ebook.navBridge.windowRequest', {
         source,
         requestedHide,
@@ -1797,6 +1875,13 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
             postHideNavLog('js.bridge.ignored', {
                 source,
                 requestedHide: true,
+                remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
+                currentState: captureNavVisibilityState(),
+            });
+            postMay20Log('window.setHideNavigation.return', {
+                source,
+                requestedHide,
+                verdict: 'ignoredHideCount',
                 remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
                 currentState: captureNavVisibilityState(),
             });
@@ -1829,6 +1914,15 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 lastBackwardPageTurnRevealAtMs,
                 currentState: captureNavVisibilityState(),
             });
+            postMay20Log('window.setHideNavigation.return', {
+                source,
+                requestedHide,
+                verdict: 'staleSwiftRevealAfterForwardPageTurn',
+                now,
+                lastForwardPageTurnHideAtMs,
+                lastBackwardPageTurnRevealAtMs,
+                currentState: captureNavVisibilityState(),
+            });
             return true;
         }
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
@@ -1841,6 +1935,12 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 source,
                 requestedHide: false,
                 reason: 'preserve-hidden-through-next-display',
+                currentState: captureNavVisibilityState(),
+            });
+            postMay20Log('window.setHideNavigation.return', {
+                source,
+                requestedHide,
+                verdict: 'preserveHiddenThroughNextDisplay',
                 currentState: captureNavVisibilityState(),
             });
             return true;
@@ -1860,6 +1960,13 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
                 currentState: captureNavVisibilityState(),
             });
+            postMay20Log('window.setHideNavigation.return', {
+                source,
+                requestedHide,
+                verdict: 'ignoredRevealCount',
+                remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
+                currentState: captureNavVisibilityState(),
+            });
             return true;
         }
     }
@@ -1869,6 +1976,13 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
         requestedHide,
         verdict: 'applied',
         result,
+    });
+    postMay20Log('window.setHideNavigation.return', {
+        source,
+        requestedHide,
+        verdict: 'applied',
+        result,
+        currentState: captureNavVisibilityState(),
     });
     return result;
 };
@@ -3724,6 +3838,10 @@ const getCSSForBookContent = ({
         page-break-inside: avoid !important;
         -webkit-column-break-inside: avoid !important;
     }
+    html.vrtl body,
+    body.reader-vertical-writing {
+        --mnb-highlight-gradient-direction: to right;
+    }
     body.reader-vertical-writing ruby > mnb-sur {
         display: inline !important;
     }
@@ -3840,6 +3958,28 @@ const getCSSForBookContent = ({
 
     body.reader-is-single-media-element-without-text *:not(.mnb-tracking-container *):not(mnb-seg *) {
         max-height: 99vh;
+    }
+    body.reader-is-single-media-element-without-text :is(.h-valign-width, .v-valign-height) {
+        display: none !important;
+        inline-size: 0 !important;
+        block-size: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+    }
+    body.reader-is-single-media-element-without-text :is(.inline-height, .inline-width) {
+        inline-size: auto !important;
+        block-size: auto !important;
+        width: auto !important;
+        height: auto !important;
+    }
+    body.reader-is-single-media-element-without-text :is(img, svg, image, picture, video, object) {
+        max-inline-size: 100% !important;
+        max-block-size: 99vh !important;
+        max-width: 100% !important;
+        max-height: 99vh !important;
+        width: auto !important;
+        height: auto !important;
+        object-fit: contain !important;
     }
 /*
 reader-sentinel {
@@ -4293,7 +4433,13 @@ class Reader {
         return snapshot;
     }
     #applyHideNavigationDueToScrollToBookContent(shouldHide) {
-        if (MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES) return;
+        if (MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES) {
+            postMay20Log('bookContent.hideNavigation.skip', {
+                reason: 'layout-classes-disabled',
+                shouldHide: !!shouldHide,
+            });
+            return;
+        }
         const hidden = !!shouldHide;
         document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
         const contents = this.view?.renderer?.getContents?.() || [];
@@ -4304,6 +4450,12 @@ class Reader {
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
         }
+        postMay20Log('bookContent.hideNavigation.applied', {
+            hidden,
+            contentCount: contents.length,
+            bodyClass: document.body?.className || '',
+            snapshots: captureMay20ContentSnapshots(this.view),
+        });
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
@@ -4507,12 +4659,38 @@ class Reader {
             const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             const shouldHide = !wasHidden;
+            const now = Date.now();
+            const lastContentBlankToggleAt = Number(globalThis.__manabiLastContentDocumentBlankToggleAtMs || 0);
+            if (lastContentBlankToggleAt > 0 && now - lastContentBlankToggleAt >= 0 && now - lastContentBlankToggleAt < 750) {
+                postMay20Log('toolbarBlankTap.ignored', {
+                    reason: 'recent-content-blank-toggle',
+                    elapsedMs: now - lastContentBlankToggleAt,
+                    target: target?.id || target?.tagName || null,
+                    wasHidden,
+                    shouldHide,
+                    state: captureNavVisibilityState(),
+                });
+                return;
+            }
             if (excludedTarget) {
+                postMay20Log('toolbarBlankTap.ignored', {
+                    reason: 'excluded-target',
+                    target: target?.id || target?.tagName || null,
+                    excludedID: excludedTarget?.id || null,
+                    excludedClassName: excludedTarget?.className || null,
+                    wasHidden,
+                });
                 return;
             }
             event.preventDefault?.();
             event.stopPropagation?.();
             event.stopImmediatePropagation?.();
+            postMay20Log('toolbarBlankTap.post', {
+                wasHidden,
+                shouldHide,
+                target: target?.id || target?.tagName || null,
+                state: captureNavVisibilityState(),
+            });
             postHideNavLog('control.click', {
                 control: 'nav-bar-background',
                 wasHidden,
@@ -5020,6 +5198,13 @@ class Reader {
     #applyPageTurnNavigationVisibility(method, source) {
         const direction = this.#pageTurnDirectionForMove(method);
         if (direction !== 'forward' && direction !== 'backward') {
+            postMay20Log('pageTurn.visibility.skip', {
+                method,
+                source,
+                reason: 'unknown-direction',
+                isRTL: this.isRTL,
+                state: captureNavVisibilityState(),
+            });
             postHideNavLog('pageTurn.hideNavigation.skip', {
                 method,
                 source,
@@ -5029,10 +5214,25 @@ class Reader {
             });
             return;
         }
+        postMay20Log('pageTurn.visibility.method', {
+            method,
+            source,
+            direction,
+            isRTL: this.isRTL,
+            state: captureNavVisibilityState(),
+        });
         this.#applyLogicalPageTurnNavigationVisibility(direction, source, { method });
     }
     #applyLogicalPageTurnNavigationVisibility(direction, source, details = {}) {
         if (direction !== 'forward' && direction !== 'backward') {
+            postMay20Log('pageTurn.visibility.skip', {
+                source,
+                direction,
+                reason: 'unknown-logical-direction',
+                isRTL: this.isRTL,
+                state: captureNavVisibilityState(),
+                ...details,
+            });
             postHideNavLog('pageTurn.hideNavigation.skip', {
                 source,
                 direction,
@@ -5044,6 +5244,14 @@ class Reader {
             return;
         }
         const shouldHide = direction === 'forward';
+        postMay20Log('pageTurn.visibility.apply', {
+            source,
+            direction,
+            shouldHide,
+            isRTL: this.isRTL,
+            before: captureNavVisibilityState(),
+            ...details,
+        });
         recordPageTurnNavigationIntent(direction, source, {
             isRTL: this.isRTL,
             ...details,
@@ -5077,6 +5285,13 @@ class Reader {
             ...details,
         });
         postHideNavLog('pageTurn.hideNavigation.finish', {
+            source,
+            direction,
+            shouldHide,
+            after: captureNavVisibilityState(),
+            ...details,
+        });
+        postMay20Log('pageTurn.visibility.finish', {
             source,
             direction,
             shouldHide,
@@ -6582,28 +6797,118 @@ class Reader {
                                             btn.addEventListener('click', this.#onNavButtonClick.bind(this))
                                             );
         // Side-nav scroll handlers
+        const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            postMay20Log('sideButton.activate.begin', {
+                side,
+                method,
+                eventType,
+                disabled: !!button?.disabled,
+                pointerEvents: button ? getComputedStyle(button).pointerEvents : null,
+                opacity: button ? getComputedStyle(button).opacity : null,
+                isRTL: this.isRTL,
+                state: captureNavVisibilityState(),
+                snapshots: captureMay20ContentSnapshots(this.view),
+            });
+            try {
+                this.#clearVisiblePageReadChrome('page-turn-start');
+                this.#applyPageTurnNavigationVisibility(method, 'page-turn.side-button');
+                if (method === 'goLeft') {
+                    await this.view.goLeft();
+                } else {
+                    await this.view.goRight();
+                }
+                postMay20Log('sideButton.activate.end', {
+                    side,
+                    method,
+                    eventType,
+                    lastLocation: this.view?.lastLocation ?? null,
+                    state: captureNavVisibilityState(),
+                    snapshots: captureMay20ContentSnapshots(this.view),
+                });
+            } catch (error) {
+                postMay20Log('sideButton.activate.error', {
+                    side,
+                    method,
+                    eventType,
+                    message: error?.message || String(error),
+                });
+                throw error;
+            }
+        };
         const leftSideBtn = document.getElementById('btn-scroll-left');
         if (leftSideBtn) leftSideBtn.addEventListener('click', async () => {
-            this.#clearVisiblePageReadChrome('page-turn-start');
-            this.#applyPageTurnNavigationVisibility('goLeft', 'page-turn.side-button');
-            await this.view.goLeft();
+            const now = Date.now();
+            if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'left'
+                && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
+                postMay20Log('sideButton.click.suppressedAfterTouch', {
+                    side: 'left',
+                    elapsedMs: now - globalThis.__manabiLastSideButtonTouchActivation.timestamp,
+                });
+                return;
+            }
+            postMay20Log('sideButton.click.begin', {
+                side: 'left',
+                disabled: !!leftSideBtn.disabled,
+                pointerEvents: getComputedStyle(leftSideBtn).pointerEvents,
+                opacity: getComputedStyle(leftSideBtn).opacity,
+                isRTL: this.isRTL,
+                state: captureNavVisibilityState(),
+            });
+            await runSideButtonPageTurn('left', 'goLeft', leftSideBtn, 'click');
         });
         const rightSideBtn = document.getElementById('btn-scroll-right');
         if (rightSideBtn) rightSideBtn.addEventListener('click', async () => {
-            this.#clearVisiblePageReadChrome('page-turn-start');
-            this.#applyPageTurnNavigationVisibility('goRight', 'page-turn.side-button');
-            await this.view.goRight();
+            const now = Date.now();
+            if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'right'
+                && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
+                postMay20Log('sideButton.click.suppressedAfterTouch', {
+                    side: 'right',
+                    elapsedMs: now - globalThis.__manabiLastSideButtonTouchActivation.timestamp,
+                });
+                return;
+            }
+            postMay20Log('sideButton.click.begin', {
+                side: 'right',
+                disabled: !!rightSideBtn.disabled,
+                pointerEvents: getComputedStyle(rightSideBtn).pointerEvents,
+                opacity: getComputedStyle(rightSideBtn).opacity,
+                isRTL: this.isRTL,
+                state: captureNavVisibilityState(),
+            });
+            await runSideButtonPageTurn('right', 'goRight', rightSideBtn, 'click');
         });
         
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
-            nav.addEventListener('touchstart', () => {
+            nav.addEventListener('touchstart', (event) => {
+                postMay20Log('sideButton.touchstart', {
+                    id: nav.id || null,
+                    targetID: event.target?.id || null,
+                    targetClass: event.target?.className || null,
+                    pointerEvents: getComputedStyle(nav).pointerEvents,
+                    opacity: getComputedStyle(nav).opacity,
+                });
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
-            nav.addEventListener('touchend', () => {
+            nav.addEventListener('touchend', (event) => {
+                postMay20Log('sideButton.touchend', {
+                    id: nav.id || null,
+                    targetID: event.target?.id || null,
+                    targetClass: event.target?.className || null,
+                });
                 nav.classList.remove('pressed');
+                const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
+                const method = side === 'left' ? 'goLeft' : (side === 'right' ? 'goRight' : null);
+                if (side && method) {
+                    event.preventDefault?.();
+                    globalThis.__manabiLastSideButtonTouchActivation = {
+                        side,
+                        timestamp: Date.now(),
+                    };
+                    runSideButtonPageTurn(side, method, nav, 'touchend').catch((error) => console.error(error));
+                }
             });
             nav.addEventListener('touchcancel', () => {
                 nav.classList.remove('pressed');
@@ -6742,17 +7047,47 @@ class Reader {
         
         const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
-            if (event.target && event.target.ownerDocument !== document) return
-            if (event.target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]')) return
-                
-                if (window.__manabiLookupPopoverActive === true) {
-                    window.__manabiSuppressUnhandledTapHideNavigationUntil = Date.now() + 750;
-                }
-                window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
-                    touchedEntryWithElementId: null,
-                    wasAlreadySelected: false,
-                })
-                }
+            const target = event.target;
+            const targetSummary = {
+                eventType: event.type,
+                tagName: target?.tagName || target?.nodeName || null,
+                id: target?.id || null,
+                className: target?.className || null,
+                ownerIsMainDocument: !target || target.ownerDocument === document,
+            };
+            if (target && target.ownerDocument !== document) {
+                postMay20Log('blankTouch.ignored', {
+                    ...targetSummary,
+                    reason: 'non-main-document',
+                });
+                return
+            }
+            const excludedTarget = target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]');
+            if (excludedTarget) {
+                postMay20Log('blankTouch.ignored', {
+                    ...targetSummary,
+                    reason: 'excluded-target',
+                    excludedTagName: excludedTarget?.tagName || null,
+                    excludedID: excludedTarget?.id || null,
+                    excludedClassName: excludedTarget?.className || null,
+                });
+                return
+            }
+
+            if (window.__manabiLookupPopoverActive === true) {
+                window.__manabiSuppressUnhandledTapHideNavigationUntil = Date.now() + 750;
+            }
+            postMay20Log('blankTouch.postNoElement', {
+                ...targetSummary,
+                lookupActive: window.__manabiLookupPopoverActive === true,
+                state: captureNavVisibilityState(),
+            });
+            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                touchedEntryWithElementId: null,
+                wasAlreadySelected: false,
+                touchstartAtMs: Date.now(),
+            })
+        }
         document.addEventListener('touchstart', processTouchStart, {
             passive: true
         })
@@ -7176,6 +7511,12 @@ class Reader {
             ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
             before: navVisibilityBefore,
         });
+        postMay20Log('didDisplay.begin', {
+            before: navVisibilityBefore,
+            lastLocation: this.view?.lastLocation ?? null,
+            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
+            snapshots: captureMay20ContentSnapshots(this.view),
+        });
         postEPUBLoadLog('renderer.didDisplay.begin', collectEPUBLoadDiagnostics('renderer.didDisplay.begin', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -7224,6 +7565,13 @@ class Reader {
             before: navVisibilityBefore,
             after: captureNavVisibilityState(),
         });
+        postMay20Log('didDisplay.end', {
+            before: navVisibilityBefore,
+            after: captureNavVisibilityState(),
+            lastLocation: this.view?.lastLocation ?? null,
+            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
+            snapshots: captureMay20ContentSnapshots(this.view),
+        });
         this.#scheduleInitialPaginatorSettle('did-display');
         markEPUBPerf('did-display.first', {
             hasRenderer: !!this.view?.renderer,
@@ -7243,6 +7591,11 @@ class Reader {
                 anchor: 'did-display.first',
             });
             this.#updatePageReadMarker('did-display.raf');
+            postMay20Log('didDisplay.raf', {
+                lastLocation: this.view?.lastLocation ?? null,
+                rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
+                snapshots: captureMay20ContentSnapshots(this.view),
+            });
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
@@ -7293,6 +7646,21 @@ class Reader {
             ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
             ebookInjectedFontFamily: doc?.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
             ebookFontInjected: doc?.documentElement?.dataset?.mnbFontInjected ?? null,
+        });
+        postMay20Log('document.load', {
+            documentURL: doc?.location?.href || null,
+            isCacheWarmerDocument: isCacheWarmerDocument(doc),
+            snapshots: captureMay20ContentSnapshots(this.view),
+            loadedDocument: {
+                bodyClass: doc?.body?.className || '',
+                htmlClass: doc?.documentElement?.className || '',
+                bodyTextLength: doc?.body?.textContent?.trim?.().length ?? null,
+                bodyChildCount: doc?.body?.children?.length ?? null,
+                bodyScrollWidth: doc?.body?.scrollWidth ?? null,
+                bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                bodyClientWidth: doc?.body?.clientWidth ?? null,
+                bodyClientHeight: doc?.body?.clientHeight ?? null,
+            },
         });
         try {
             window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
@@ -7401,6 +7769,56 @@ class Reader {
             }
         });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        if (doc && doc.__manabiMay20BlankTapLoggingInstalled !== true) {
+            doc.__manabiMay20BlankTapLoggingInstalled = true;
+            const logDocumentPointer = (event) => {
+                const target = event.target;
+                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const now = Date.now();
+                postMay20Log('contentDocument.pointer', {
+                    eventType: event.type,
+                    documentURL: doc?.location?.href || null,
+                    tagName: target?.tagName || target?.nodeName || null,
+                    id: target?.id || null,
+                    className: target?.className || null,
+                    excluded: !!excludedTarget,
+                    excludedTagName: excludedTarget?.tagName || null,
+                    excludedID: excludedTarget?.id || null,
+                    excludedClassName: excludedTarget?.className || null,
+                    clientX: event.clientX ?? null,
+                    clientY: event.clientY ?? null,
+                    snapshots: captureMay20ContentSnapshots(this.view),
+                });
+                if (!excludedTarget && (event.type === 'touchstart' || event.type === 'mousedown')) {
+                    const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
+                    if (now - lastPostedAt > 350) {
+                        doc.__manabiLastBlankPointerPostAt = now;
+                        const ebookNavigationHidden =
+                            globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                            || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                            || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+                        globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
+                        postMay20Log('contentDocument.blankTouch.postNoElement', {
+                            eventType: event.type,
+                            documentURL: doc?.location?.href || null,
+                            tagName: target?.tagName || target?.nodeName || null,
+                            id: target?.id || null,
+                            className: target?.className || null,
+                            ebookNavigationHidden,
+                        });
+                        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                            touchedEntryWithElementId: null,
+                            wasAlreadySelected: false,
+                            touchstartAtMs: now,
+                            touchstartEventType: event.type,
+                            ebookNavigationHidden,
+                        });
+                    }
+                }
+            };
+            doc.addEventListener('touchstart', logDocumentPointer, { passive: true, capture: true });
+            doc.addEventListener('mousedown', logDocumentPointer, { passive: true, capture: true });
+        }
         installRestorePositionSaveUserInputTracking(doc, 'reader-document');
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
