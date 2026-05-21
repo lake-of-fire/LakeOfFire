@@ -74,6 +74,14 @@ const postEBookBugLog = (event, details = {}) => {
         try { console.log('# EBOOKBUG', payload); } catch (_) {}
     }
 };
+const postMay21Log = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY21 ${JSON.stringify(payload)}`);
+    } catch (_error) {
+        try { console.log('# MAY21', payload); } catch (_) {}
+    }
+};
 const sectionDebugInfo = section => section
     ? {
         href: section.href ?? null,
@@ -2063,7 +2071,7 @@ export class Paginator extends HTMLElement {
         const dy = state.y - state.startY;
         const minSwipe = 36; // px threshold
 
-        this.#updateSwipeChevron(dx, minSwipe);
+        this.#updateSwipeChevron(dx, minSwipe, { input: 'touch' });
 
         if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
             state.triggered = true;
@@ -2183,9 +2191,9 @@ export class Paginator extends HTMLElement {
 
         if (this.#wheelArmed) {
             if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
-                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD);
+                this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' });
             } else {
-                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD);
+                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD, { input: 'wheel' });
             }
         }
 
@@ -2197,7 +2205,7 @@ export class Paginator extends HTMLElement {
             } else {
                 await this.next();
             }
-            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD)
+            this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' })
             setTimeout(() => {
                 this.#wheelCooldown = false;
             }, 100);
@@ -2603,11 +2611,40 @@ export class Paginator extends HTMLElement {
         }))
 
     }
-    #updateSwipeChevron(dx, minSwipe) {
-        let leftOpacity = 0,
-            rightOpacity = 0;
-        if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
-        else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
+    #logicalDirectionForSwipeDelta(dx, input = 'touch') {
+        if (dx === 0) return null;
+        if (input === 'wheel') return dx > 0 ? 'backward' : 'forward';
+        const swipedLeft = dx < 0;
+        return this.bookDir === 'rtl'
+            ? (swipedLeft ? 'backward' : 'forward')
+            : (swipedLeft ? 'forward' : 'backward');
+    }
+    #chevronSideForLogicalDirection(logicalDirection) {
+        if (logicalDirection === 'forward') {
+            return this.bookDir === 'rtl' ? 'left' : 'right';
+        }
+        if (logicalDirection === 'backward') {
+            return this.bookDir === 'rtl' ? 'right' : 'left';
+        }
+        return null;
+    }
+    #updateSwipeChevron(dx, minSwipe, { input = 'touch' } = {}) {
+        const progress = Math.min(1, Math.abs(dx) / minSwipe);
+        const logicalDirection = this.#logicalDirectionForSwipeDelta(dx, input);
+        const chevronSide = this.#chevronSideForLogicalDirection(logicalDirection);
+        const leftOpacity = chevronSide === 'left' ? progress : 0;
+        const rightOpacity = chevronSide === 'right' ? progress : 0;
+        postMay21Log('paginator.chevron.progress', {
+            dx,
+            input,
+            minSwipe,
+            progress,
+            logicalDirection,
+            chevronSide,
+            bookDir: this.bookDir || null,
+            leftOpacity,
+            rightOpacity,
+        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2616,6 +2653,11 @@ export class Paginator extends HTMLElement {
                 rightOpacity,
                 source: 'paginator',
                 reason: 'paginator.swipe.progress',
+                input,
+                dx,
+                logicalDirection,
+                chevronSide,
+                isRTL: this.bookDir === 'rtl',
             }
         }));
         if (Math.abs(dx) > minSwipe) {

@@ -985,6 +985,78 @@ const postMay20Log = (event, details = {}) => {
     } catch {}
 };
 
+const postMay21Log = (event, details = {}) => {
+    globalThis.__manabiMay21LogCount = globalThis.__manabiMay21LogCount || 0;
+    if (globalThis.__manabiMay21LogCount >= 1000) return;
+    globalThis.__manabiMay21LogCount += 1;
+    const payload = {
+        event,
+        timestamp: Date.now(),
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY21 ' + JSON.stringify(payload));
+    } catch {}
+    try {
+        console.log('# MAY21', payload);
+    } catch {}
+};
+
+const captureMay21MediaLayoutSnapshots = (view = globalThis.reader?.view) => {
+    const contents = view?.renderer?.getContents?.() || [];
+    return contents.slice(0, 4).map((content, index) => {
+        const doc = content?.doc || content?.document || null;
+        const body = doc?.body || null;
+        const html = doc?.documentElement || null;
+        const media = body?.querySelector?.('img, svg, image, picture, video, object') || null;
+        const bodyStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(body);
+        const htmlStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(html);
+        const mediaStyle = media?.ownerDocument?.defaultView?.getComputedStyle?.(media);
+        const bodyRect = body?.getBoundingClientRect?.();
+        const htmlRect = html?.getBoundingClientRect?.();
+        const mediaRect = media?.getBoundingClientRect?.();
+        const round = value => Number.isFinite(value) ? Math.round(value * 10) / 10 : null;
+        const rectPayload = rect => rect ? {
+            left: round(rect.left),
+            top: round(rect.top),
+            right: round(rect.right),
+            bottom: round(rect.bottom),
+            width: round(rect.width),
+            height: round(rect.height),
+        } : null;
+        return {
+            index,
+            href: content?.href ?? body?.dataset?.mnbSourceHref ?? doc?.location?.href ?? null,
+            bodyClass: body?.className || '',
+            htmlClass: html?.className || '',
+            bodyWritingMode: bodyStyle?.writingMode ?? null,
+            htmlWritingMode: htmlStyle?.writingMode ?? null,
+            bodyScrollWidth: body?.scrollWidth ?? null,
+            bodyScrollHeight: body?.scrollHeight ?? null,
+            bodyClientWidth: body?.clientWidth ?? null,
+            bodyClientHeight: body?.clientHeight ?? null,
+            htmlClientWidth: html?.clientWidth ?? null,
+            htmlClientHeight: html?.clientHeight ?? null,
+            bodyRect: rectPayload(bodyRect),
+            htmlRect: rectPayload(htmlRect),
+            mediaTag: media?.tagName || null,
+            mediaNaturalWidth: media?.naturalWidth ?? null,
+            mediaNaturalHeight: media?.naturalHeight ?? null,
+            mediaRect: rectPayload(mediaRect),
+            mediaComputed: media ? {
+                display: mediaStyle?.display || null,
+                objectFit: mediaStyle?.objectFit || null,
+                maxWidth: mediaStyle?.maxWidth || null,
+                maxHeight: mediaStyle?.maxHeight || null,
+                maxInlineSize: mediaStyle?.maxInlineSize || null,
+                maxBlockSize: mediaStyle?.maxBlockSize || null,
+                marginLeft: mediaStyle?.marginLeft || null,
+                marginRight: mediaStyle?.marginRight || null,
+            } : null,
+        };
+    });
+};
+
 const captureMay20ContentSnapshots = (view = globalThis.reader?.view) => {
     const contents = view?.renderer?.getContents?.() || [];
     return contents.slice(0, 4).map((content, index) => {
@@ -3972,13 +4044,30 @@ const getCSSForBookContent = ({
         width: auto !important;
         height: auto !important;
     }
+    body.reader-is-single-media-element-without-text {
+        overflow: hidden !important;
+    }
+    body.reader-is-single-media-element-without-text :is(p, div, figure):has(> img, > svg, > video, > object, > image) {
+        display: grid !important;
+        place-items: center !important;
+        inline-size: 100% !important;
+        block-size: 100% !important;
+        width: 100% !important;
+        height: 100% !important;
+        max-inline-size: 100% !important;
+        max-block-size: 100% !important;
+        max-width: 100% !important;
+        max-height: 100% !important;
+        overflow: hidden !important;
+    }
     body.reader-is-single-media-element-without-text :is(img, svg, image, picture, video, object) {
         max-inline-size: 100% !important;
-        max-block-size: 99vh !important;
+        max-block-size: 100% !important;
         max-width: 100% !important;
-        max-height: 99vh !important;
+        max-height: 100vh !important;
         width: auto !important;
         height: auto !important;
+        margin: auto !important;
         object-fit: contain !important;
     }
 /*
@@ -6125,13 +6214,14 @@ class Reader {
         event.preventDefault();
         const progress = Math.min(1, Math.abs(dx) / minSwipe);
         const swipedLeft = dx < 0;
-        const goForward = swipedLeft;
-        const leftOpacity = goForward
-            ? (this.isRTL ? progress : 0)
-            : (this.isRTL ? 0 : progress);
-        const rightOpacity = goForward
-            ? (this.isRTL ? 0 : progress)
-            : (this.isRTL ? progress : 0);
+        const logicalDirection = this.isRTL
+            ? (swipedLeft ? 'backward' : 'forward')
+            : (swipedLeft ? 'forward' : 'backward');
+        const chevronSide = logicalDirection === 'forward'
+            ? (this.isRTL ? 'left' : 'right')
+            : (this.isRTL ? 'right' : 'left');
+        const leftOpacity = chevronSide === 'left' ? progress : 0;
+        const rightOpacity = chevronSide === 'right' ? progress : 0;
         this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -6140,38 +6230,49 @@ class Reader {
                 rightOpacity,
                 source: 'ebook-viewer',
                 reason: 'mainDocumentSwipe.progress',
+                logicalDirection,
+                chevronSide,
+                swipedLeft,
+                isRTL: this.isRTL,
             },
         }));
         state.chevronActive = progress > 0;
         const progressBucket = Math.floor(progress * 4);
         if (state.lastLoggedProgressBucket !== progressBucket || progress >= 1) {
             state.lastLoggedProgressBucket = progressBucket;
+            postMay21Log('swipe.chevron.progress', {
+                progress,
+                progressBucket,
+                dx,
+                dy,
+                swipedLeft,
+                isRTL: this.isRTL,
+                logicalDirection,
+                chevronSide,
+                leftOpacity,
+                rightOpacity,
+            });
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
-        this.#flashSideNavChevron(goForward
-            ? (this.isRTL ? 'left' : 'right')
-            : (this.isRTL ? 'right' : 'left'));
-        if (goForward) {
-            if (this.isRTL) {
-                this.#clearVisiblePageReadChrome('page-turn-start');
-                this.#applyLogicalPageTurnNavigationVisibility('backward', 'page-turn.swipe', { method: 'prev' });
-                await this.view?.prev?.();
-            } else {
-                this.#clearVisiblePageReadChrome('page-turn-start');
-                this.#applyLogicalPageTurnNavigationVisibility('forward', 'page-turn.swipe', { method: 'next' });
-                await this.view?.next?.();
-            }
+        this.#flashSideNavChevron(chevronSide);
+        postMay21Log('swipe.trigger', {
+            dx,
+            dy,
+            swipedLeft,
+            isRTL: this.isRTL,
+            logicalDirection,
+            chevronSide,
+            method: logicalDirection === 'forward' ? 'next' : 'prev',
+        });
+        if (logicalDirection === 'forward') {
+            this.#clearVisiblePageReadChrome('page-turn-start');
+            this.#applyLogicalPageTurnNavigationVisibility('forward', 'page-turn.swipe', { method: 'next' });
+            await this.view?.next?.();
         } else {
-            if (this.isRTL) {
-                this.#clearVisiblePageReadChrome('page-turn-start');
-                this.#applyLogicalPageTurnNavigationVisibility('forward', 'page-turn.swipe', { method: 'next' });
-                await this.view?.next?.();
-            } else {
-                this.#clearVisiblePageReadChrome('page-turn-start');
-                this.#applyLogicalPageTurnNavigationVisibility('backward', 'page-turn.swipe', { method: 'prev' });
-                await this.view?.prev?.();
-            }
+            this.#clearVisiblePageReadChrome('page-turn-start');
+            this.#applyLogicalPageTurnNavigationVisibility('backward', 'page-turn.swipe', { method: 'prev' });
+            await this.view?.prev?.();
         }
     }
     #onMainDocumentTouchEnd() {
@@ -6919,6 +7020,18 @@ class Reader {
         this.view.addEventListener('sideNavChevronOpacity', e => {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
+            postMay21Log('chevron.opacity.event', {
+                leftOpacity: e.detail.leftOpacity,
+                rightOpacity: e.detail.rightOpacity,
+                source: e.detail.source || null,
+                reason: e.detail.reason || null,
+                logicalDirection: e.detail.logicalDirection || null,
+                chevronSide: e.detail.chevronSide || null,
+                swipedLeft: e.detail.swipedLeft ?? null,
+                isRTL: e.detail.isRTL ?? this.isRTL,
+                leftDisabled: document.getElementById('btn-scroll-left')?.disabled ?? null,
+                rightDisabled: document.getElementById('btn-scroll-right')?.disabled ?? null,
+            });
             
             const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
@@ -7517,6 +7630,11 @@ class Reader {
             rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
             snapshots: captureMay20ContentSnapshots(this.view),
         });
+        postMay21Log('singleMedia.didDisplay.begin', {
+            lastLocation: this.view?.lastLocation ?? null,
+            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
+            snapshots: captureMay21MediaLayoutSnapshots(this.view),
+        });
         postEPUBLoadLog('renderer.didDisplay.begin', collectEPUBLoadDiagnostics('renderer.didDisplay.begin', {
             rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
             rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
@@ -7572,6 +7690,12 @@ class Reader {
             rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
             snapshots: captureMay20ContentSnapshots(this.view),
         });
+        postMay21Log('singleMedia.didDisplay.end', {
+            lastLocation: this.view?.lastLocation ?? null,
+            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
+            settleResult: initialSettleResult ?? null,
+            snapshots: captureMay21MediaLayoutSnapshots(this.view),
+        });
         this.#scheduleInitialPaginatorSettle('did-display');
         markEPUBPerf('did-display.first', {
             hasRenderer: !!this.view?.renderer,
@@ -7595,6 +7719,11 @@ class Reader {
                 lastLocation: this.view?.lastLocation ?? null,
                 rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
                 snapshots: captureMay20ContentSnapshots(this.view),
+            });
+            postMay21Log('singleMedia.didDisplay.raf', {
+                lastLocation: this.view?.lastLocation ?? null,
+                rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
+                snapshots: captureMay21MediaLayoutSnapshots(this.view),
             });
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
@@ -7661,6 +7790,11 @@ class Reader {
                 bodyClientWidth: doc?.body?.clientWidth ?? null,
                 bodyClientHeight: doc?.body?.clientHeight ?? null,
             },
+        });
+        postMay21Log('singleMedia.document.load', {
+            documentURL: doc?.location?.href || null,
+            isCacheWarmerDocument: isCacheWarmerDocument(doc),
+            snapshots: captureMay21MediaLayoutSnapshots(this.view),
         });
         try {
             window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
