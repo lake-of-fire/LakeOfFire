@@ -1,6 +1,7 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
+const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
     ? {
         gapPct: 5,
@@ -33,8 +34,10 @@ const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
 
 const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
-const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
+const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = true;
 const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
+const MANABI_ENABLE_RENDERED_NEIGHBOR_PRERENDER = false;
+const MANABI_RENDERED_NEIGHBOR_PRERENDER_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
@@ -53,7 +56,9 @@ const postPaginatorPageNumLog = (event, details = {}) => {
     void details;
 };
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
-    globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
+    void stage;
+    void details;
+    void options;
 };
 const postPaginatorLoadLog = (event, details = {}) => {
 };
@@ -72,14 +77,6 @@ const postEBookBugLog = (event, details = {}) => {
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
     } catch (_error) {
         try { console.log('# EBOOKBUG', payload); } catch (_) {}
-    }
-};
-const postMay21Log = (event, details = {}) => {
-    const payload = { event, timestamp: Date.now(), ...details };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# MAY21 ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# MAY21', payload); } catch (_) {}
     }
 };
 const sectionDebugInfo = section => section
@@ -720,25 +717,39 @@ class View {
         const verticalMaxWidth = Math.max(1, numericWidth - margin * 2);
         const horizontalMaxHeight = Math.max(1, numericHeight - topMargin - bottomMargin - margin * 2);
         let imageCount = 0;
+        const parentMediaCounts = new WeakMap();
+        const textNodeType = doc?.defaultView?.Node?.TEXT_NODE ?? 3;
+        const hasSubstantiveDirectText = parent => {
+            for (const node of parent?.childNodes || []) {
+                if (node.nodeType === textNodeType && /\S/.test(node.textContent || '')) {
+                    return true;
+                }
+            }
+            return false;
+        };
         for (const el of doc?.body?.querySelectorAll?.('img, svg, video') || []) {
             imageCount += 1;
-            const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el);
+            const inlineMaxHeight = el.style.maxHeight;
+            const inlineMaxWidth = el.style.maxWidth;
             Object.assign(el.style, {
                 maxHeight: vertical
-                    ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
+                    ? (inlineMaxHeight && inlineMaxHeight !== 'none' && inlineMaxHeight !== '0px' ? inlineMaxHeight : '100%')
                     : `${horizontalMaxHeight}px`,
                 maxWidth: vertical
                     ? `${verticalMaxWidth}px`
-                    : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+                    : (inlineMaxWidth && inlineMaxWidth !== 'none' && inlineMaxWidth !== '0px' ? inlineMaxWidth : '100%'),
                 objectFit: 'contain',
                 pageBreakInside: 'avoid',
                 breakInside: 'avoid',
                 boxSizing: 'border-box',
             });
             const parent = el.parentElement;
-            const parentText = (parent?.textContent || '').replace(/\s+/g, '');
-            const parentMediaCount = parent?.querySelectorAll?.('img, svg, video')?.length ?? 0;
-            if (parent && parent !== doc.body && parentText.length === 0 && parentMediaCount === 1) {
+            let parentMediaCount = parentMediaCounts.get(parent);
+            if (parent && parentMediaCount == null) {
+                parentMediaCount = parent.querySelectorAll?.('img, svg, video')?.length ?? 0;
+                parentMediaCounts.set(parent, parentMediaCount);
+            }
+            if (parent && parent !== doc.body && !hasSubstantiveDirectText(parent) && parentMediaCount === 1) {
                 Object.assign(parent.style, {
                     pageBreakInside: 'avoid',
                     breakInside: 'avoid',
@@ -793,11 +804,12 @@ class View {
                     const otherSide = side === 'width' ? 'height' : 'width'
                     if (this.#column) {
                         const contentRect = this.#contentRange.getBoundingClientRect()
-                        const rootRect = documentElement.getBoundingClientRect()
                         // offset caused by column break at the start of the page
                         // which seem to be supported only by WebKit and only for horizontal writing
-                        const contentStart = this.#vertical ? 0
-                            : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                        const contentStart = this.#vertical ? 0 : (() => {
+                            const rootRect = documentElement.getBoundingClientRect()
+                            return this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                        })()
                         const contentSize = contentStart + contentRect[side]
                         const pageCount = Math.ceil(contentSize / this.#size)
                         const expandedSize = pageCount * this.#size
@@ -974,6 +986,7 @@ export class Paginator extends HTMLElement {
     #suspendOnExpandAnchor = false
     #prefetchTimer = null
     #prefetchCache = new Map()
+    #renderedPrefetchCache = new Map()
     #pendingPageTurnDirection = null
     #queuedPageTurn = null
 
@@ -1111,6 +1124,8 @@ export class Paginator extends HTMLElement {
             #container {
                 grid-column: 2 / 5;
                 grid-row: 2;
+                position: relative;
+                isolation: isolate;
                 overflow: hidden;
             }
             :host([flow="scrolled"]) #container {
@@ -1260,7 +1275,107 @@ export class Paginator extends HTMLElement {
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
         this.#container.append(this.#view.element)
+        Object.assign(this.#view.element.style, {
+            position: 'relative',
+            zIndex: '2',
+        })
         return this.#view
+    }
+    #installStyleElementsForDocument(doc) {
+        if (!doc?.head) return
+        if (this.#styleMap.has(doc)) return
+        const $styleBefore = doc.createElement('style')
+        doc.head.prepend($styleBefore)
+        const $style = doc.createElement('style')
+        doc.head.append($style)
+        this.#styleMap.set(doc, [$styleBefore, $style])
+    }
+    #applyStylesToDocument(doc, styles = this.#styles) {
+        const $$styles = this.#styleMap.get(doc)
+        if (!$$styles) return
+        const [$beforeStyle, $style] = $$styles
+        if (Array.isArray(styles)) {
+            const [beforeStyle, style] = styles
+            $beforeStyle.textContent = beforeStyle
+            $style.textContent = style
+        } else {
+            $style.textContent = styles ?? ''
+        }
+    }
+    #createRenderedPrefetchView(index) {
+        let view
+        view = new View({
+            container: this,
+            onBeforeExpand: async () => {
+                view.cachedViewSize = null
+                view.cachedSizes = null
+            },
+            onExpand: async () => {
+                view.cachedViewSize = null
+                view.cachedSizes = null
+            },
+            isCacheWarmer: false,
+        })
+        Object.assign(view.element.style, {
+            position: 'absolute',
+            inset: '0',
+            opacity: '0.001',
+            pointerEvents: 'none',
+            zIndex: '1',
+        })
+        view.element.dataset.manabiRenderedPrefetchIndex = String(index)
+        view.element.setAttribute('aria-hidden', 'true')
+        this.#container.append(view.element)
+        return view
+    }
+    async #beforeRenderForPreparedView(view, options) {
+        const visibleView = this.#view
+        const visibleVertical = this.#vertical
+        const visibleVerticalRTL = this.#verticalRTL
+        const visibleRTL = this.#rtl
+        const visibleTopClass = this.#top.className
+        const visibleTopStyle = this.#top.getAttribute('style')
+        const visibleHeaderStyle = this.#header.getAttribute('style')
+        const visibleFooterStyle = this.#footer.getAttribute('style')
+        const visibleHeaderChildren = Array.from(this.#header.childNodes)
+        const visibleFooterChildren = Array.from(this.#footer.childNodes)
+        const visibleHeads = this.heads
+        const visibleFeet = this.feet
+        const visibleTopMargin = this.#topMargin
+        const visibleBottomMargin = this.#bottomMargin
+        const visibleDir = this.getAttribute('dir')
+        const visibleDirectionReady = this.#directionReady
+        const visibleDirectionReadyResolve = this.#directionReadyResolve
+        const visibleLastRenderContainerSize = this.#lastRenderContainerSize
+        const visibleLastTypographyRenderSignature = this.#lastTypographyRenderSignature
+        try {
+            this.#view = view
+            return await this.#beforeRender(options)
+        } finally {
+            this.#view = visibleView
+            this.#vertical = visibleVertical
+            this.#verticalRTL = visibleVerticalRTL
+            this.#rtl = visibleRTL
+            this.#top.className = visibleTopClass
+            if (visibleTopStyle == null) this.#top.removeAttribute('style')
+            else this.#top.setAttribute('style', visibleTopStyle)
+            if (visibleHeaderStyle == null) this.#header.removeAttribute('style')
+            else this.#header.setAttribute('style', visibleHeaderStyle)
+            if (visibleFooterStyle == null) this.#footer.removeAttribute('style')
+            else this.#footer.setAttribute('style', visibleFooterStyle)
+            this.#header.replaceChildren(...visibleHeaderChildren)
+            this.#footer.replaceChildren(...visibleFooterChildren)
+            this.heads = visibleHeads
+            this.feet = visibleFeet
+            this.#topMargin = visibleTopMargin
+            this.#bottomMargin = visibleBottomMargin
+            if (visibleDir == null) this.removeAttribute('dir')
+            else this.setAttribute('dir', visibleDir)
+            this.#directionReady = visibleDirectionReady
+            this.#directionReadyResolve = visibleDirectionReadyResolve
+            this.#lastRenderContainerSize = visibleLastRenderContainerSize
+            this.#lastTypographyRenderSignature = visibleLastTypographyRenderSignature
+        }
     }
     #setLoading(isLoading, reason = 'unknown') {
         if (this.#isLoading === isLoading) return
@@ -1297,6 +1412,7 @@ export class Paginator extends HTMLElement {
     }
     #releaseNeighborPrefetch(index, entry = this.#prefetchCache.get(index), remove = true) {
         if (!entry || entry.released) return
+        this.#destroyRenderedNeighborPrefetch(index, 'prefetch-release', { releasePrefetch: false })
         if (remove && this.#prefetchCache.get(index) === entry) {
             this.#prefetchCache.delete(index)
         }
@@ -1306,6 +1422,178 @@ export class Paginator extends HTMLElement {
         }
         entry.released = true
         this.sections[index]?.unload?.()
+    }
+    #consumeNeighborPrefetch(index, entry = this.#prefetchCache.get(index)) {
+        if (!entry || entry.released) return
+        this.#destroyRenderedNeighborPrefetch(index, 'prefetch-consume', { releasePrefetch: false })
+        if (this.#prefetchCache.get(index) === entry) {
+            this.#prefetchCache.delete(index)
+        }
+        entry.released = true
+        entry.consumed = true
+    }
+    #destroyRenderedNeighborPrefetch(index, reason = 'unknown', { releasePrefetch = true } = {}) {
+        const entry = this.#renderedPrefetchCache.get(index)
+        if (!entry) return
+        this.#renderedPrefetchCache.delete(index)
+        entry.dropped = true
+        try {
+            entry.view?.destroy?.()
+            entry.view?.element?.remove?.()
+        } catch (_error) {}
+        if (releasePrefetch && entry.prefetchEntry && !entry.prefetchEntry.released) {
+            this.#releaseNeighborPrefetch(index, entry.prefetchEntry)
+        }
+    }
+    #consumeRenderedNeighborPrefetch(index) {
+        const entry = this.#renderedPrefetchCache.get(index)
+        if (!entry?.ready || !entry.view || entry.dropped) return null
+        this.#renderedPrefetchCache.delete(index)
+        entry.consumed = true
+        if (entry.prefetchEntry) this.#consumeNeighborPrefetch(index, entry.prefetchEntry)
+        return entry
+    }
+    #destroyRenderedNeighborPrefetchesExcept(indexes, reason = 'outside-render-window') {
+        const keep = new Set(indexes.filter(index => typeof index === 'number'))
+        for (const [index] of this.#renderedPrefetchCache) {
+            if (!keep.has(index)) {
+                this.#destroyRenderedNeighborPrefetch(index, reason, { releasePrefetch: false })
+            }
+        }
+    }
+    async #isWithinRenderedNeighborPrerenderWindow() {
+        if (!this.#view || this.#isCacheWarmer) return false
+        try {
+            const page = await this.page()
+            const pages = await this.pages()
+            const lastReadablePage = Math.max(1, pages - 2)
+            const remainingPages = Math.max(0, lastReadablePage - page)
+            return remainingPages <= MANABI_RENDERED_NEIGHBOR_PRERENDER_END_PAGE_THRESHOLD
+        } catch (_error) {
+            return false
+        }
+    }
+    async #startRenderedNeighborPrerender(index, prefetchEntry = this.#prefetchCache.get(index), { currentIndex = this.#index } = {}) {
+        if (
+            !MANABI_ENABLE_RENDERED_NEIGHBOR_PRERENDER ||
+            this.#isCacheWarmer ||
+            !prefetchEntry?.promise ||
+            prefetchEntry.released ||
+            index !== this.#adjacentIndex(1) ||
+            currentIndex !== this.#index ||
+            this.#renderedPrefetchCache.has(index)
+        ) {
+            return
+        }
+        if (!await this.#isWithinRenderedNeighborPrerenderWindow()) {
+            return
+        }
+        const entry = {
+            index,
+            prefetchEntry,
+            view: null,
+            src: null,
+            layoutContext: null,
+            preparedLayout: null,
+            resourcePrewarm: null,
+            ready: false,
+            dropped: false,
+            consumed: false,
+            promise: null,
+        }
+        this.#renderedPrefetchCache.set(index, entry)
+        entry.promise = (async () => {
+            const startedAt = manabiPerfNow()
+            const src = await prefetchEntry.promise
+            if (
+                entry.dropped ||
+                prefetchEntry.released ||
+                this.#prefetchCache.get(index) !== prefetchEntry ||
+                index !== this.#adjacentIndex(1) ||
+                currentIndex !== this.#index
+            ) {
+                return null
+            }
+            if (!await this.#isWithinRenderedNeighborPrerenderWindow()) {
+                if (this.#renderedPrefetchCache.get(index) === entry) {
+                    this.#renderedPrefetchCache.delete(index)
+                }
+                entry.dropped = true
+                return null
+            }
+            const view = this.#createRenderedPrefetchView(index)
+            entry.view = view
+            entry.src = src
+            await view.load(
+                src,
+                async (doc) => {
+                    this.#installStyleElementsForDocument(doc)
+                    this.#applyStylesToDocument(doc)
+                },
+                async (layoutContext) => {
+                    entry.layoutContext = layoutContext
+                    entry.preparedLayout = await this.#beforeRenderForPreparedView(view, layoutContext)
+                    return entry.preparedLayout
+                }
+            )
+            if (entry.dropped || this.#renderedPrefetchCache.get(index) !== entry) {
+                view.destroy()
+                view.element.remove()
+                return null
+            }
+            entry.ready = true
+            return entry
+        })().catch((error) => {
+            if (this.#renderedPrefetchCache.get(index) === entry) {
+                this.#renderedPrefetchCache.delete(index)
+            }
+            entry.dropped = true
+            try {
+                entry.view?.destroy?.()
+                entry.view?.element?.remove?.()
+            } catch (_error) {}
+            return null
+        })
+    }
+    #scheduleNeighborPrefetch(reason = 'unknown', delayMs = MANABI_NEIGHBOR_PREFETCH_DELAY_MS) {
+        if (!MANABI_ENABLE_NEIGHBOR_PREFETCH || this.#isCacheWarmer) return
+        const index = this.#index
+        clearTimeout(this.#prefetchTimer)
+        this.#prefetchTimer = setTimeout(() => {
+            void this.#refreshNeighborPrefetch(index, reason).catch(error => {
+            })
+        }, delayMs)
+    }
+    async #refreshNeighborPrefetch(index, reason = 'unknown') {
+        if (this.#index !== index) return
+
+        const nextIndex = this.#adjacentIndex(1)
+        const withinRenderedWindow = await this.#isWithinRenderedNeighborPrerenderWindow()
+        const wanted = withinRenderedWindow && nextIndex != null ? [nextIndex] : []
+        const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)))
+        for (const [i, entry] of this.#prefetchCache) {
+            if (!keep.has(i)) this.#releaseNeighborPrefetch(i, entry)
+        }
+
+        this.#destroyRenderedNeighborPrefetchesExcept(
+            wanted,
+            withinRenderedWindow ? 'not-next-section' : 'outside-render-window'
+        )
+
+        wanted.forEach(i => {
+            if (
+                i >= 0 &&
+                i < this.sections.length &&
+                this.sections[i].linear !== 'no'
+            ) {
+                const entry = this.#prefetchCache.get(i)
+                    ?? this.#cacheNeighborPrefetch(i, this.sections[i].load())
+                entry.promise.catch(() => { })
+                if (withinRenderedWindow && i === nextIndex) {
+                    void this.#startRenderedNeighborPrerender(i, entry, { currentIndex: index })
+                }
+            }
+        })
     }
     async #waitForNeighborPrefetch(index) {
         const entry = this.#prefetchCache.get(index)
@@ -1512,6 +1800,107 @@ export class Paginator extends HTMLElement {
         // Must have no non-whitespace text nodes
         if (container.textContent.trim() !== '') return false;
         return true;
+    }
+    #parsedDocumentHasSingleMediaElementWithoutText(doc) {
+        const container = doc?.getElementById?.('reader-content') || doc?.body
+        if (!container) return false
+        const mediaTags = ['img', 'image', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed']
+        const selector = mediaTags.join(',')
+        const mediaElements = container.querySelectorAll?.(selector) || []
+        if (mediaElements.length !== 1) return false
+        return (container.textContent || '').trim() === ''
+    }
+    #imageDecode(src) {
+        if (!src || typeof Image !== 'function') return Promise.resolve({ src, decoded: false, reason: 'unavailable' })
+        return new Promise(resolve => {
+            const image = new Image()
+            let settled = false
+            const finish = result => {
+                if (settled) return
+                settled = true
+                resolve({ src, ...result })
+            }
+            image.decoding = 'async'
+            image.onload = () => {
+                const decode = typeof image.decode === 'function'
+                    ? image.decode()
+                    : Promise.resolve()
+                decode
+                    .then(() => finish({ decoded: true, reason: 'loaded' }))
+                    .catch(error => finish({
+                        decoded: false,
+                        reason: 'decode-failed-after-load',
+                        message: error?.message || String(error),
+                    }))
+            }
+            image.onerror = () => finish({ decoded: false, reason: 'load-failed' })
+            image.src = src
+        })
+    }
+    #collectMediaPrewarmSources(doc) {
+        const sources = new Set()
+        const add = value => {
+            if (!value) return
+            String(value).split(',').forEach(part => {
+                const source = part.trim().split(/\s+/)[0]
+                if (source && !source.startsWith('data:')) sources.add(source)
+            })
+        }
+        doc?.querySelectorAll?.('img[src], image[href], image[*|href], video[poster], object[data]')?.forEach(el => {
+            add(el.getAttribute('src'))
+            add(el.getAttribute('href'))
+            add(el.getAttributeNS?.('http://www.w3.org/1999/xlink', 'href'))
+            add(el.getAttribute('poster'))
+            add(el.getAttribute('data'))
+        })
+        doc?.querySelectorAll?.('source[src], source[srcset], img[srcset]')?.forEach(el => {
+            add(el.getAttribute('src'))
+            add(el.getAttribute('srcset'))
+        })
+        return [...sources]
+    }
+    async #prewarmRenderedPrefetchResourcesForSource(src, index) {
+        const startedAt = manabiPerfNow()
+        try {
+            const response = await fetch(src)
+            const contentType = response.headers.get('content-type') || ''
+            if (contentType && !/html|xml|xhtml/i.test(contentType)) {
+                return {
+                    reason: 'non-html-source',
+                    contentType,
+                    mediaCount: 0,
+                    decodedCount: 0,
+                }
+            }
+            const text = await response.text()
+            const parserType = /xml|xhtml/i.test(contentType)
+                ? 'application/xhtml+xml'
+                : 'text/html'
+            const doc = new DOMParser().parseFromString(text, parserType)
+            const sources = this.#collectMediaPrewarmSources(doc)
+            const imageSources = sources.filter(source => /^blob:|^data:|^https?:|^ebook:/.test(source))
+            const results = await Promise.allSettled(imageSources.map(source => this.#imageDecode(source)))
+            const decodedResults = results
+                .map(result => result.status === 'fulfilled' ? result.value : null)
+                .filter(Boolean)
+            const decodedCount = decodedResults.filter(result => result.decoded).length
+            const singleMedia = /\bp-image\b/.test(doc.body?.className || '')
+                || this.#parsedDocumentHasSingleMediaElementWithoutText(doc)
+            return {
+                reason: singleMedia ? 'single-media-prewarmed' : 'media-prewarmed',
+                contentType,
+                mediaCount: imageSources.length,
+                decodedCount,
+                singleMedia,
+                index,
+            }
+        } catch (error) {
+            return {
+                reason: 'media-prewarm-failed',
+                message: error?.message || String(error),
+                index,
+            }
+        }
     }
     #typographyMetrics() {
         const doc = this.#view?.document;
@@ -1940,13 +2329,6 @@ export class Paginator extends HTMLElement {
             && rawPages > 3
             && this.#isSingleMediaElementWithoutText()
         ) {
-            try {
-                console.log('# MAY20', {
-                    event: 'paginator.pages.singleMediaClamp',
-                    rawPages,
-                    returnedPages: 3,
-                });
-            } catch {}
             return 3
         }
         return rawPages
@@ -1998,27 +2380,8 @@ export class Paginator extends HTMLElement {
         const target = touch.target;
         const inHost = this.#container.contains(target);
         const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
-        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchStart', JSON.stringify({
-            hasTouch: !!touch,
-            clientX: touch?.clientX ?? null,
-            clientY: touch?.clientY ?? null,
-            screenX: touch?.screenX ?? null,
-            screenY: touch?.screenY ?? null,
-            inHost,
-            inIframe,
-            scrolled: this.scrolled,
-            targetTag: target?.tagName ?? null,
-            targetId: target?.id ?? null,
-            targetClass: target?.className ? String(target.className) : null,
-            ownerIsViewDocument: target?.ownerDocument === this.#view?.document,
-            containerHeight: this.#container?.clientHeight ?? null,
-            distanceFromContainerBottom: typeof touch?.clientY === 'number' && typeof this.#container?.clientHeight === 'number'
-                ? this.#container.clientHeight - touch.clientY
-                : null,
-        }));
         if (!inHost && !inIframe) {
             this.#touchState = null;
-            if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchStart.skip', JSON.stringify({ reason: 'outside-host-and-iframe' }));
             return;
         }
         this.#touchState = {
@@ -2075,6 +2438,10 @@ export class Paginator extends HTMLElement {
 
         if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
             state.triggered = true;
+            this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(dx, 'touch'), {
+                input: 'touch',
+                source: 'paginator.touchmove',
+            });
 
             if (dx < 0) {
                 (this.bookDir === 'rtl') ? await this.prev() : await this.next();
@@ -2086,17 +2453,6 @@ export class Paginator extends HTMLElement {
     #onTouchEnd(e) {
         const touch = e.changedTouches?.[0] ?? null;
         const touchState = this.#touchState;
-        if (manabiDiagnosticsEnabled()) console.log('# HIDENAV js.paginator.touchEnd', JSON.stringify({
-            hadTouchState: !!touchState,
-            triggered: touchState?.triggered ?? null,
-            clientX: touch?.clientX ?? null,
-            clientY: touch?.clientY ?? null,
-            containerHeight: this.#container?.clientHeight ?? null,
-            distanceFromContainerBottom: typeof touch?.clientY === 'number' && typeof this.#container?.clientHeight === 'number'
-                ? this.#container.clientHeight - touch.clientY
-                : null,
-            skipOpacity: !!this.#skipTouchEndOpacity,
-        }));
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
         if (this.#skipTouchEndOpacity) {
@@ -2200,6 +2556,10 @@ export class Paginator extends HTMLElement {
         if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
             this.#wheelArmed = false;
             this.#wheelCooldown = true;
+            this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(e.deltaX, 'wheel'), {
+                input: 'wheel',
+                source: 'paginator.wheel',
+            });
             if (e.deltaX > 0) {
                 await this.prev();
             } else {
@@ -2628,23 +2988,26 @@ export class Paginator extends HTMLElement {
         }
         return null;
     }
+    #dispatchForegroundPageTurnActivity(logicalDirection, { input = 'touch', source = 'paginator' } = {}) {
+        if (logicalDirection !== 'forward' && logicalDirection !== 'backward') return;
+        this.dispatchEvent(new CustomEvent('foregroundPageTurnActivity', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                input,
+                source,
+                logicalDirection,
+                chevronSide: this.#chevronSideForLogicalDirection(logicalDirection),
+                isRTL: this.bookDir === 'rtl',
+            },
+        }));
+    }
     #updateSwipeChevron(dx, minSwipe, { input = 'touch' } = {}) {
         const progress = Math.min(1, Math.abs(dx) / minSwipe);
         const logicalDirection = this.#logicalDirectionForSwipeDelta(dx, input);
         const chevronSide = this.#chevronSideForLogicalDirection(logicalDirection);
         const leftOpacity = chevronSide === 'left' ? progress : 0;
         const rightOpacity = chevronSide === 'right' ? progress : 0;
-        postMay21Log('paginator.chevron.progress', {
-            dx,
-            input,
-            minSwipe,
-            progress,
-            logicalDirection,
-            chevronSide,
-            bookDir: this.bookDir || null,
-            leftOpacity,
-            rightOpacity,
-        });
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2733,11 +3096,7 @@ export class Paginator extends HTMLElement {
                     })
                 } else {
                     if (doc.head) {
-                        const $styleBefore = doc.createElement('style')
-                        doc.head.prepend($styleBefore)
-                        const $style = doc.createElement('style')
-                        doc.head.append($style)
-                        this.#styleMap.set(doc, [$styleBefore, $style])
+                        this.#installStyleElementsForDocument(doc)
                     }
                     //                    console.log("#display... await onLoad")
                     await onLoad?.({
@@ -2761,14 +3120,21 @@ export class Paginator extends HTMLElement {
             } else {
                 this.#skipTouchEndOpacity = true
                 this.#suspendOnExpandAnchor = true
-                const view = this.#createView()
-                const beforeRender = this.#beforeRender.bind(this)
 
                 this.#cachedSizes = null
                 this.#cachedStart = null
                 this.#invalidateVisibleRangeCache()
 
                 //                console.log("#display... await load")
+                let renderedPrefetch = this.#consumeRenderedNeighborPrefetch(index)
+                if (!renderedPrefetch && this.#renderedPrefetchCache.has(index)) {
+                    this.#destroyRenderedNeighborPrefetch(index, 'target-navigation-before-ready', {
+                        releasePrefetch: false,
+                    })
+                }
+                const view = renderedPrefetch?.view ?? this.#createView()
+                const beforeRender = this.#beforeRender.bind(this)
+
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.start', {
                         targetIndex: index,
@@ -2779,9 +3145,52 @@ export class Paginator extends HTMLElement {
                 postPaginatorLoadLog('display.view-load.start', {
                     targetIndex: index,
                     src,
+                    usingRenderedPrefetch: !!renderedPrefetch?.ready,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 });
-                await view.load(src, afterLoad, beforeRender)
+                if (renderedPrefetch?.ready && renderedPrefetch.view) {
+                    const oldView = this.#view
+                    try {
+                        oldView?.destroy?.()
+                        oldView?.element?.remove?.()
+                    } catch (_error) {}
+                    this.#view = view
+                    view.onBeforeExpand = this.#onBeforeExpand.bind(this)
+                    view.onExpand = this.#onExpand.bind(this)
+                    globalThis.manabiApplyNavigationHiddenStateToEbookDocument?.(
+                        'rendered-prefetch.activate-before-visible',
+                        view.document
+                    )
+                    Object.assign(view.element.style, {
+                        position: 'relative',
+                        inset: '',
+                        visibility: '',
+                        opacity: '',
+                        pointerEvents: '',
+                        zIndex: '2',
+                    })
+                    view.element.removeAttribute('data-manabi-rendered-prefetch-index')
+                    if (!view.element.isConnected) this.#container.append(view.element)
+                    view.element.removeAttribute('aria-hidden')
+                    const activationLayout = await this.#beforeRender(renderedPrefetch.layoutContext)
+                    const preparedLayout = renderedPrefetch.preparedLayout || {}
+                    const layoutStillCurrent =
+                        activationLayout &&
+                        preparedLayout &&
+                        activationLayout.width === preparedLayout.width &&
+                        activationLayout.height === preparedLayout.height &&
+                        activationLayout.gap === preparedLayout.gap &&
+                        activationLayout.columnWidth === preparedLayout.columnWidth &&
+                        activationLayout.divisor === preparedLayout.divisor &&
+                        activationLayout.flow === preparedLayout.flow
+                    if (!layoutStillCurrent) {
+                        await view.render(activationLayout)
+                    }
+                    await afterLoad(view.document)
+                } else {
+                    await view.load(src, afterLoad, beforeRender)
+                    this.#view = view
+                }
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
@@ -2793,9 +3202,9 @@ export class Paginator extends HTMLElement {
                 postPaginatorLoadLog('display.view-load.end', {
                     targetIndex: index,
                     src,
+                    usingRenderedPrefetch: !!renderedPrefetch?.ready,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 });
-                this.#view = view
 
                 // Reset chevrons when loading new section
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons', {
@@ -2948,6 +3357,7 @@ export class Paginator extends HTMLElement {
             }
         } else {
             let prefetchEntry = null
+            let usedPrefetchPromise = false
             if (MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT) {
                 prefetchEntry = await this.#waitForNeighborPrefetch(index)
             }
@@ -2971,8 +3381,13 @@ export class Paginator extends HTMLElement {
 
             try {
                 let sectionLoadPromise;
-                if (MANABI_ENABLE_PREFETCH_PROMISE_REUSE && this.#prefetchCache.has(index)) {
-                    sectionLoadPromise = this.#prefetchCache.get(index)?.promise;
+                if (
+                    MANABI_ENABLE_PREFETCH_PROMISE_REUSE
+                    && prefetchEntry?.promise
+                    && this.#prefetchCache.get(index) === prefetchEntry
+                ) {
+                    usedPrefetchPromise = true;
+                    sectionLoadPromise = prefetchEntry.promise;
                 } else {
                     const sectionLoadStartedAt = Date.now()
                     postEBookBugLog('paginator-section-load-start', {
@@ -3041,33 +3456,11 @@ export class Paginator extends HTMLElement {
                 throw error;
             } finally {
                 if (prefetchEntry) {
-                    this.#releaseNeighborPrefetch(index, prefetchEntry)
+                    if (usedPrefetchPromise) this.#consumeNeighborPrefetch(index, prefetchEntry)
+                    else this.#releaseNeighborPrefetch(index, prefetchEntry)
                 }
             }
-            if (MANABI_ENABLE_NEIGHBOR_PREFETCH) {
-                clearTimeout(this.#prefetchTimer);
-                this.#prefetchTimer = setTimeout(() => {
-                    if (this.#index !== index) return;
-
-                    const wanted = [index - 1, index + 1];
-                    const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)));
-                    for (const [i, entry] of this.#prefetchCache) {
-                        if (!keep.has(i)) this.#releaseNeighborPrefetch(i, entry)
-                    }
-
-                    wanted.forEach(i => {
-                        if (
-                            i >= 0 &&
-                            i < this.sections.length &&
-                            this.sections[i].linear !== 'no' &&
-                            !this.#prefetchCache.has(i)
-                        ) {
-                            const entry = this.#cacheNeighborPrefetch(i, this.sections[i].load());
-                            entry.promise.catch(() => { });
-                        }
-                    });
-                }, 500);
-            }
+            this.#scheduleNeighborPrefetch('section-display')
         }
     }
     async goTo(target) {
@@ -3136,6 +3529,7 @@ export class Paginator extends HTMLElement {
                 anchor: prev ? () => 1 : () => 0,
             })
             if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+            if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
             this.#pendingPageTurnDirection = null
             this.#locked = false
@@ -3186,14 +3580,10 @@ export class Paginator extends HTMLElement {
     }
     setStyles(styles) {
         this.#styles = styles
-        const $$styles = this.#styleMap.get(this.#view?.document)
-        if (!$$styles) return
-        const [$beforeStyle, $style] = $$styles
-        if (Array.isArray(styles)) {
-            const [beforeStyle, style] = styles
-            $beforeStyle.textContent = beforeStyle
-            $style.textContent = style
-        } else $style.textContent = styles
+        this.#applyStylesToDocument(this.#view?.document, styles)
+        for (const entry of this.#renderedPrefetchCache.values()) {
+            this.#applyStylesToDocument(entry.view?.document, styles)
+        }
 
         //        // NOTE: needs `requestAnimationFrame` in Chromium
         //        requestAnimationFrame(() =>
@@ -3211,11 +3601,15 @@ export class Paginator extends HTMLElement {
         this.#setLoading(false, 'paginator.destroy')
         clearTimeout(this.#prefetchTimer)
         this.#prefetchTimer = null
+        for (const [index] of this.#renderedPrefetchCache) {
+            this.#destroyRenderedNeighborPrefetch(index, 'paginator.destroy', { releasePrefetch: false })
+        }
         for (const [index, entry] of this.#prefetchCache) {
             this.#releaseNeighborPrefetch(index, entry)
         }
         this.#prefetchCache = new Map()
-        this.#view.destroy()
+        this.#renderedPrefetchCache = new Map()
+        this.#view?.destroy?.()
         this.#view = null
         this.sections[this.#index]?.unload?.()
     }

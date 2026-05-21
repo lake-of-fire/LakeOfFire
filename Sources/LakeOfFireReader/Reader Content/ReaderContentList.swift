@@ -37,9 +37,6 @@ private func logDetent(_ message: String) {
 }
 
 private func logFeedFlash(_ message: String) {
-#if DEBUG
-    debugPrint("# FEEDFLASH \(message)")
-#endif
 }
 
 public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {

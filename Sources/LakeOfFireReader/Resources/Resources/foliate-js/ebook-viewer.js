@@ -10,7 +10,7 @@ import {
 
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiEPUBLoadVerboseLoggingEnabled = () => !!globalThis.manabi_epubLoadVerboseLoggingEnabled;
-const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = true;
+const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 
@@ -373,6 +373,10 @@ const isEventInsideElementCircle = (event, element, slop = 2) => {
 };
 
 const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
+const CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS = 1800;
+const CACHE_WARMER_IDLE_RETRY_MS = 250;
+const CACHE_WARMER_MAX_SECTIONS_AHEAD = 2;
+const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
 const replaceTextResultCache = new Map();
 const replaceTextInFlightCache = new Map();
 
@@ -432,15 +436,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             : adaptReplaceTextHTMLForMode(cachedSourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
         replaceTextResultCache.delete(resultCacheKey);
         replaceTextResultCache.set(resultCacheKey, cachedSourceHTML);
-        postEPUBLog('ebook.perf.replace-text.cache-hit', {
-            href,
-            mediaType,
-            isCacheWarmer: !!isCacheWarmer,
-            cacheKey,
-            sourceCacheKey: resultCacheKey,
-            responseTextLength: typeof cachedHTML === 'string' ? cachedHTML.length : null,
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('cache-hit', {
             href,
             mediaType,
@@ -462,14 +457,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             : null;
     if (inFlightCacheKey) {
         const cacheWaitStartedAt = performanceNowMs();
-        postEPUBLog('ebook.perf.replace-text.cache-wait', {
-            href,
-            mediaType,
-            isCacheWarmer: !!isCacheWarmer,
-            cacheKey,
-            sourceCacheKey: inFlightCacheKey,
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('cache-wait', {
             href,
             mediaType,
@@ -501,13 +488,10 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const replaceTextStartedAt = performanceNowMs();
     globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
     if (!isCacheWarmer) {
+        globalThis.__manabiInflightLiveReplaceTextCount = (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
         const normalizedHref = normalizeSpineHref(href);
         if (normalizedHref && !firstLiveSectionHref()) {
             globalThis.__manabiFirstLiveSectionHref = normalizedHref;
-            postEPUBLog('ebook.perf.live-first-section.recorded', {
-                href: normalizedHref,
-                ...captureEPUBOverlapState(),
-            });
             postReplaceTextPerfLog('live-first-section.recorded', {
                 href: normalizedHref,
                 ...captureEPUBOverlapState(),
@@ -517,13 +501,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (isCacheWarmer) {
         globalThis.__manabiInflightCacheWarmerReplaceTextCount = (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
     }
-    postEPUBLog('ebook.perf.replace-text.start', {
-        href,
-        mediaType,
-        isCacheWarmer: !!isCacheWarmer,
-        requestTextLength: typeof text === 'string' ? text.length : null,
-        ...captureEPUBOverlapState(),
-    });
     postReplaceTextPerfLog('start', {
         href,
         mediaType,
@@ -548,16 +525,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         body: text
     })
     try {
-        postEPUBLog('ebook.perf.replace-text.response', {
-            href,
-            mediaType,
-            isCacheWarmer: !!isCacheWarmer,
-            status: response.status,
-            responseOk: response.ok,
-            headersElapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
-            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('response', {
             href,
             mediaType,
@@ -606,25 +573,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 segmentCount,
             },
         );
-        postEPUBLog('ebook.perf.replace-text.end', {
-            href,
-            mediaType,
-            isCacheWarmer: !!isCacheWarmer,
-            status: response.status,
-            sentenceCount,
-            segmentCount,
-            responseTextLength: html.length,
-            responseBodyReadMs: bodyReadElapsedMs,
-            responseTransformMs: transformElapsedMs,
-            inputToOutputRatio: typeof text === 'string' && text.length > 0
-                ? safeRound(html.length / text.length, 3)
-                : null,
-            responseExpansionRatio: responseTextLength > 0
-                ? safeRound(html.length / responseTextLength, 3)
-                : null,
-            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('end', {
             href,
             mediaType,
@@ -648,21 +596,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             window.manabi_recordLiveProcessedSection?.(href);
         }
         if (!isCacheWarmer) {
-            markEPUBPerf('replace-text.first-non-cache', {
-                href,
-                sentenceCount,
-                segmentCount,
-                responseBodyReadMs: bodyReadElapsedMs,
-                responseTransformMs: transformElapsedMs,
-                responseTextLength,
-                inputToOutputRatio: typeof text === 'string' && text.length > 0
-                    ? safeRound(html.length / text.length, 3)
-                    : null,
-                elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
-                ...captureEPUBOverlapState(),
-            }, {
-                once: true,
-            });
         }
         rememberReplaceTextResult(cacheKey, html);
         return html
@@ -672,14 +605,6 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             mediaType: mediaType || 'nil',
             isCacheWarmer: !!isCacheWarmer,
             reason: error?.message || String(error),
-        });
-        postEPUBLog('ebook.perf.replace-text.error', {
-            href,
-            mediaType,
-            isCacheWarmer: !!isCacheWarmer,
-            elapsedMs: safeRound(performanceNowMs() - replaceTextStartedAt, 1),
-            message: error?.message || String(error),
-            ...captureEPUBOverlapState(),
         });
         postReplaceTextPerfLog('error', {
             href,
@@ -694,6 +619,9 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         return text
     } finally {
         globalThis.__manabiInflightReplaceTextCount = Math.max(0, (globalThis.__manabiInflightReplaceTextCount ?? 1) - 1);
+        if (!isCacheWarmer) {
+            globalThis.__manabiInflightLiveReplaceTextCount = Math.max(0, (globalThis.__manabiInflightLiveReplaceTextCount ?? 1) - 1);
+        }
         if (isCacheWarmer) {
             globalThis.__manabiInflightCacheWarmerReplaceTextCount = Math.max(0, (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 1) - 1);
         }
@@ -817,9 +745,6 @@ const postReaderLog = (event, details = {}) => {
     }
 };
 
-const postEPUBLog = (event, details = {}) => {
-};
-
 const postEBookBugLog = (event, details = {}) => {
     if (!manabiDiagnosticsEnabled()) return;
     const payload = {
@@ -833,30 +758,6 @@ const postEBookBugLog = (event, details = {}) => {
         if (manabiDiagnosticsEnabled()) console.debug('# EBOOKBUG', payload, error);
     }
 };
-
-const epubLoadLogDefaultEvents = new Set([
-    'viewer.load.start',
-    'viewer.load.native-source.ready',
-    'viewer.load.blob.ready',
-    'viewer.reader-open.dispatch',
-    'viewer.load.error',
-    'reader.open.begin',
-    'reader.open.view.ready',
-    'reader.open.end',
-    'paginator.display.anchor-anomaly',
-]);
-
-const shouldPostEPUBLoadLog = event => {
-    if (manabiEPUBLoadVerboseLoggingEnabled()) return true;
-    if (typeof event !== 'string') return false;
-    if (event.startsWith('js.window.')) return true;
-    if (event.includes('.error')) return true;
-    return epubLoadLogDefaultEvents.has(event);
-};
-
-const postEPUBLoadLog = (event, details = {}) => {
-};
-globalThis.__manabiPostEPUBLoadLog = postEPUBLoadLog;
 
 const loadRectSnapshot = element => {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null;
@@ -886,7 +787,6 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
     return {
         reason,
         href: location.href,
-        sessionID: currentEPUBPerfSession?.id ?? null,
         bodyLoading: !!body?.classList?.contains?.('loading'),
         hasReader: !!globalThis.reader,
         hasView: !!globalThis.reader?.view,
@@ -916,11 +816,8 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
         readerBodyClass: readerBody?.className || null,
         readerBodySegmentCount: readerDoc?.querySelectorAll?.('mnb-seg')?.length ?? null,
         readerBodySentenceCount: readerDoc?.querySelectorAll?.('mnb-sen')?.length ?? null,
-        readerBodyTextLength: readerBody?.textContent?.length ?? null,
         readerDocumentClientWidth: readerRoot?.clientWidth ?? null,
         readerDocumentClientHeight: readerRoot?.clientHeight ?? null,
-        readerDocumentScrollWidth: readerRoot?.scrollWidth ?? null,
-        readerDocumentScrollHeight: readerRoot?.scrollHeight ?? null,
         ...extra,
     };
 };
@@ -929,6 +826,7 @@ const isCacheWarmerDocument = (doc) => doc?.body?.dataset?.isCacheWarmer === 'tr
 
 const captureEPUBOverlapState = () => ({
     inflightReplaceTextCount: globalThis.__manabiInflightReplaceTextCount ?? 0,
+    inflightLiveReplaceTextCount: globalThis.__manabiInflightLiveReplaceTextCount ?? 0,
     inflightCacheWarmerReplaceTextCount: globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0,
     cacheWarmerOpenInFlight: !!globalThis.__manabiCacheWarmerOpenInFlight,
     cacheWarmerReady: !!globalThis.__manabiCacheWarmerReady,
@@ -936,209 +834,178 @@ const captureEPUBOverlapState = () => ({
     cacheWarmerHighestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
 });
 
+const markCacheWarmerForegroundActivity = (reason = 'unspecified', cooldownMs = CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS) => {
+    const now = performanceNowMs();
+    const previousPausedUntil = Number(globalThis.__manabiCacheWarmerPausedUntilMs || 0);
+    const nextPausedUntil = Math.max(previousPausedUntil, now + Math.max(0, Number(cooldownMs) || 0));
+    globalThis.__manabiCacheWarmerPausedUntilMs = nextPausedUntil;
+};
+
+const cacheWarmerForegroundBusyState = () => {
+    const now = performanceNowMs();
+    const pauseRemainingMs = Math.max(0, Number(globalThis.__manabiCacheWarmerPausedUntilMs || 0) - now);
+    const liveReplaceTextCount = globalThis.__manabiInflightLiveReplaceTextCount ?? 0;
+    if (liveReplaceTextCount > 0) {
+        return {
+            busy: true,
+            reason: 'live-replace-text',
+            retryMs: CACHE_WARMER_IDLE_RETRY_MS,
+            pauseRemainingMs: safeRound(pauseRemainingMs, 1),
+            liveReplaceTextCount,
+        };
+    }
+    if (pauseRemainingMs > 0) {
+        return {
+            busy: true,
+            reason: 'foreground-cooldown',
+            retryMs: Math.min(Math.max(80, pauseRemainingMs), CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS),
+            pauseRemainingMs: safeRound(pauseRemainingMs, 1),
+            liveReplaceTextCount,
+        };
+    }
+    return {
+        busy: false,
+        reason: null,
+        retryMs: 0,
+        pauseRemainingMs: 0,
+        liveReplaceTextCount,
+    };
+};
+
+const cacheWarmerWindowLimitState = (targetIndex) => {
+    const activeIndex = activeForegroundSectionIndex();
+    const maxTargetIndex = Number.isInteger(activeIndex)
+        ? activeIndex + CACHE_WARMER_MAX_SECTIONS_AHEAD
+        : null;
+    const minTargetIndex = Number.isInteger(activeIndex)
+        ? activeIndex
+        : null;
+    const limited =
+        Number.isInteger(targetIndex)
+        && Number.isInteger(maxTargetIndex)
+        && targetIndex > maxTargetIndex;
+    return {
+        limited,
+        activeIndex,
+        minTargetIndex,
+        maxTargetIndex,
+        maxSectionsAhead: CACHE_WARMER_MAX_SECTIONS_AHEAD,
+    };
+};
+
+const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified') => {
+    if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
+        return;
+    }
+    const busyState = cacheWarmerForegroundBusyState();
+    if (busyState.busy) {
+        clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
+        globalThis.__manabiCacheWarmerLoadNextTimer = setTimeout(() => {
+            globalThis.__manabiCacheWarmerLoadNextTimer = null;
+            scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.retry`);
+        }, busyState.retryMs);
+        return;
+    }
+    const now = performanceNowMs();
+    const lastAdvanceStartedAt = Number(globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs || 0);
+    const spacingRemainingMs = Math.max(0, lastAdvanceStartedAt + CACHE_WARMER_ADVANCE_SPACING_MS - now);
+    if (spacingRemainingMs > 0) {
+        clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
+        globalThis.__manabiCacheWarmerLoadNextTimer = setTimeout(() => {
+            globalThis.__manabiCacheWarmerLoadNextTimer = null;
+            scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.spacing`);
+        }, spacingRemainingMs);
+        return;
+    }
+    const activeIndex = activeForegroundSectionIndex();
+    const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, activeIndex);
+    const windowLimit = cacheWarmerWindowLimitState(targetIndex);
+    if (windowLimit.limited) {
+        return;
+    }
+    globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
+    window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, activeIndex)
+        ?.catch?.((error) => console.error(error));
+};
+
 const summarizeDocumentFontState = (doc) => ({
     fontStatus: doc?.fonts?.status ?? 'unsupported',
     hasFontsAPI: !!doc?.fonts,
     readyState: doc?.readyState ?? 'nil',
     isCacheWarmerDocument: isCacheWarmerDocument(doc),
 });
-
-
-const postFontLog = (event, details = {}) => {
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            ...details,
-        }));
-    } catch {}
-};
-
-
-const postHideNavLog = (event, details = {}) => {
-    globalThis.__manabiHideNavLogCount = globalThis.__manabiHideNavLogCount || 0;
-    if (globalThis.__manabiHideNavLogCount >= 600) return;
-    globalThis.__manabiHideNavLogCount += 1;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# HIDENAV ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            ...details,
-        }));
-    } catch {}
-};
-
-const postMay20Log = (event, details = {}) => {
-    globalThis.__manabiMay20LogCount = globalThis.__manabiMay20LogCount || 0;
-    if (globalThis.__manabiMay20LogCount >= 1000) return;
-    globalThis.__manabiMay20LogCount += 1;
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY20 ' + JSON.stringify(payload));
-    } catch {}
-    try {
-        console.log('# MAY20', payload);
-    } catch {}
-};
-
-const postMay21Log = (event, details = {}) => {
-    globalThis.__manabiMay21LogCount = globalThis.__manabiMay21LogCount || 0;
-    if (globalThis.__manabiMay21LogCount >= 1000) return;
-    globalThis.__manabiMay21LogCount += 1;
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# MAY21 ' + JSON.stringify(payload));
-    } catch {}
-    try {
-        console.log('# MAY21', payload);
-    } catch {}
-};
-
-const captureMay21MediaLayoutSnapshots = (view = globalThis.reader?.view) => {
-    const contents = view?.renderer?.getContents?.() || [];
-    return contents.slice(0, 4).map((content, index) => {
-        const doc = content?.doc || content?.document || null;
-        const body = doc?.body || null;
-        const html = doc?.documentElement || null;
-        const media = body?.querySelector?.('img, svg, image, picture, video, object') || null;
-        const bodyStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(body);
-        const htmlStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(html);
-        const mediaStyle = media?.ownerDocument?.defaultView?.getComputedStyle?.(media);
-        const bodyRect = body?.getBoundingClientRect?.();
-        const htmlRect = html?.getBoundingClientRect?.();
-        const mediaRect = media?.getBoundingClientRect?.();
-        const round = value => Number.isFinite(value) ? Math.round(value * 10) / 10 : null;
-        const rectPayload = rect => rect ? {
-            left: round(rect.left),
-            top: round(rect.top),
-            right: round(rect.right),
-            bottom: round(rect.bottom),
-            width: round(rect.width),
-            height: round(rect.height),
-        } : null;
+const classifySingleMediaDocumentForInitialLayout = (doc, reason = 'unknown') => {
+    const body = doc?.body;
+    if (!body || body.dataset?.mnbSingleMediaInitialLayoutChecked === 'true') {
         return {
-            index,
-            href: content?.href ?? body?.dataset?.mnbSourceHref ?? doc?.location?.href ?? null,
-            bodyClass: body?.className || '',
-            htmlClass: html?.className || '',
-            bodyWritingMode: bodyStyle?.writingMode ?? null,
-            htmlWritingMode: htmlStyle?.writingMode ?? null,
-            bodyScrollWidth: body?.scrollWidth ?? null,
-            bodyScrollHeight: body?.scrollHeight ?? null,
-            bodyClientWidth: body?.clientWidth ?? null,
-            bodyClientHeight: body?.clientHeight ?? null,
-            htmlClientWidth: html?.clientWidth ?? null,
-            htmlClientHeight: html?.clientHeight ?? null,
-            bodyRect: rectPayload(bodyRect),
-            htmlRect: rectPayload(htmlRect),
-            mediaTag: media?.tagName || null,
-            mediaNaturalWidth: media?.naturalWidth ?? null,
-            mediaNaturalHeight: media?.naturalHeight ?? null,
-            mediaRect: rectPayload(mediaRect),
-            mediaComputed: media ? {
-                display: mediaStyle?.display || null,
-                objectFit: mediaStyle?.objectFit || null,
-                maxWidth: mediaStyle?.maxWidth || null,
-                maxHeight: mediaStyle?.maxHeight || null,
-                maxInlineSize: mediaStyle?.maxInlineSize || null,
-                maxBlockSize: mediaStyle?.maxBlockSize || null,
-                marginLeft: mediaStyle?.marginLeft || null,
-                marginRight: mediaStyle?.marginRight || null,
-            } : null,
+            applied: false,
+            reason: body ? 'already-checked' : 'missing-body',
         };
-    });
-};
-
-const captureMay20ContentSnapshots = (view = globalThis.reader?.view) => {
-    const contents = view?.renderer?.getContents?.() || [];
-    return contents.slice(0, 4).map((content, index) => {
-        const doc = content?.doc || content?.document || null;
-        const body = doc?.body || null;
-        const bodyStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(body);
-        const htmlStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(doc?.documentElement);
+    }
+    body.dataset.mnbSingleMediaInitialLayoutChecked = 'true';
+    const mediaSelector = 'img, svg, image, picture, video, object';
+    const mediaElements = Array.from(body.querySelectorAll?.(mediaSelector) ?? []);
+    const textLength = body.textContent?.trim?.().length ?? 0;
+    const textNodeType = doc.defaultView?.Node?.TEXT_NODE ?? 3;
+    const substantiveElements = Array.from(body.querySelectorAll?.('*') ?? [])
+        .filter((element) => {
+            if (element?.nodeType !== 1) return false;
+            if (element.matches(mediaSelector)) return false;
+            if (element.closest('mnb-seg, .mnb-tracking-container')) return false;
+            if (element.matches('.h-valign-width, .v-valign-height, .inline-width, .inline-height')) return false;
+            const tagName = element.tagName?.toLowerCase?.() ?? '';
+            if (tagName === 'br' || tagName === 'script' || tagName === 'style') return false;
+            const ownText = Array.from(element.childNodes ?? [])
+                .filter((node) => node.nodeType === textNodeType)
+                .map((node) => node.textContent ?? '')
+                .join('')
+                .trim();
+            return ownText.length > 0;
+        });
+    const shouldApply = textLength === 0 && mediaElements.length === 1 && substantiveElements.length === 0;
+    if (!shouldApply) {
         return {
-            index,
-            href: content?.href ?? body?.dataset?.mnbSourceHref ?? doc?.location?.href ?? null,
-            bodyClass: body?.className || '',
-            htmlClass: doc?.documentElement?.className || '',
-            bodyTextLength: body?.textContent?.trim?.().length ?? null,
-            bodyChildCount: body?.children?.length ?? null,
-            bodyScrollWidth: body?.scrollWidth ?? null,
-            bodyScrollHeight: body?.scrollHeight ?? null,
-            bodyClientWidth: body?.clientWidth ?? null,
-            bodyClientHeight: body?.clientHeight ?? null,
-            bodyWritingMode: bodyStyle?.writingMode ?? null,
-            htmlWritingMode: htmlStyle?.writingMode ?? null,
-            gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() || null,
-            hiddenDataset: body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+            applied: false,
+            reason: 'not-single-media',
+            textLength,
+            mediaCount: mediaElements.length,
+            substantiveElementCount: substantiveElements.length,
         };
-    });
+    }
+    const htmlWritingMode = doc.defaultView?.getComputedStyle?.(doc.documentElement)?.writingMode || '';
+    const bodyWritingMode = doc.defaultView?.getComputedStyle?.(body)?.writingMode || '';
+    if (htmlWritingMode.startsWith('vertical') || bodyWritingMode.startsWith('vertical')) {
+        body.classList.add('reader-vertical-writing');
+    }
+    body.classList.add('reader-is-single-media-element-without-text');
+    return {
+        applied: true,
+        reason: 'single-media',
+        textLength,
+        mediaCount: mediaElements.length,
+        htmlWritingMode,
+        bodyWritingMode,
+    };
 };
 
 const ignoreNextIncomingHideNavigation = (source) => {
     globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 1;
-    postHideNavLog('ignoreNextIncomingHideNavigation', {
-        source,
-        count: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
-    });
 };
 
 const ignoreNextIncomingRevealNavigation = (source) => {
     globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 1;
-    postHideNavLog('ignoreNextIncomingRevealNavigation', {
-        source,
-        count: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
-    });
 };
 
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
     const requestedHide = !!shouldHide;
-    postMay20Log('ebookNavigationVisibility.post.begin', {
-        source,
-        requestedHide,
-        details,
-        state: captureNavVisibilityState(),
-    });
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: requestedHide,
             source,
             ...details,
         });
-        postMay20Log('ebookNavigationVisibility.post.sent', {
-            source,
-            requestedHide,
-            details,
-            state: captureNavVisibilityState(),
-        });
-        postHideNavLog('nativePost.send', {
-            source,
-            requestedHide,
-            details,
-            state: captureNavVisibilityState(),
-        });
         return true;
     } catch (error) {
-        postMay20Log('ebookNavigationVisibility.post.error', {
-            source,
-            requestedHide,
-            details,
-            message: error?.message || String(error),
-        });
-        postHideNavLog('nativePost.error', {
-            source,
-            requestedHide,
-            details,
-            message: error?.message || String(error),
-        });
         return false;
     }
 };
@@ -1150,15 +1017,6 @@ const recordPageTurnNavigationIntent = (direction, source, details = {}) => {
     } else if (direction === 'backward') {
         globalThis.__manabiLastBackwardPageTurnRevealAtMs = now;
     }
-    postHideNavLog('pageTurn.visibilityIntent', {
-        direction,
-        source,
-        now,
-        lastForwardPageTurnHideAtMs: globalThis.__manabiLastForwardPageTurnHideAtMs ?? null,
-        lastBackwardPageTurnRevealAtMs: globalThis.__manabiLastBackwardPageTurnRevealAtMs ?? null,
-        state: captureNavVisibilityState(),
-        ...details,
-    });
 };
 
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
@@ -1214,18 +1072,41 @@ const getLoadedEbookDocuments = (explicitDoc = null) => {
     return docs;
 };
 
+const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
+    const body = doc?.body;
+    if (!body || doc === document) {
+        return {
+            applied: false,
+            reason: body ? 'outer-document' : 'missing-body',
+        };
+    }
+    const hidden = globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
+    body.classList.toggle('nav-hidden', hidden);
+    body.classList.toggle('nav-hidden-due-to-scroll', hidden);
+    body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+    return {
+        applied: true,
+        hidden,
+    };
+};
+
+window.manabiApplyNavigationHiddenStateToEbookDocument = (reason = 'manual', explicitDoc = null) => {
+    const docs = getLoadedEbookDocuments(explicitDoc);
+    let appliedCount = 0;
+    for (const doc of docs) {
+        if (applyNavigationHiddenStateToEbookDocument(doc, reason).applied) {
+            appliedCount += 1;
+        }
+    }
+    return {
+        documentCount: docs.length,
+        appliedCount,
+    };
+};
+
 const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unknown') => {
     if (!doc || doc === document) return false;
     if (!sourceFontStyle) {
-        postFontLog('ebook.document.fonts.forward.skip', {
-            reason: 'missing-outer-custom-font-style',
-            forwardReason: reason,
-            documentURL: doc?.location?.href || null,
-            outerLocation: document?.location?.href || null,
-            ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
-            ebookInjectedFontFamily: doc?.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
-            ebookFontInjected: doc?.documentElement?.dataset?.mnbFontInjected ?? null,
-        });
         return false;
     }
     let targetFontStyle = doc.getElementById('mnb-custom-fonts-inline');
@@ -1253,14 +1134,6 @@ const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unk
         doc.documentElement.dataset.mnbInjectedFontFamily = sourceFontStyle.dataset.mnbInjectedFontFamily;
         doc.documentElement.dataset.mnbFontInjected = '1';
     }
-    postFontLog('ebook.document.fonts.forwarded', {
-        reason,
-        documentURL: doc?.location?.href || null,
-        sourceTag: sourceFontStyle.tagName || null,
-        targetTag: targetFontStyle.tagName || null,
-        href: targetFontStyle.href || null,
-        family: targetFontStyle.dataset?.mnbInjectedFontFamily || null,
-    });
     return true;
 };
 
@@ -1275,13 +1148,6 @@ window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc
             forwardedCount += 1;
         }
     }
-    postFontLog('ebook.document.fonts.forward.summary', {
-        reason,
-        documentCount: docs.length,
-        forwardedCount,
-        outerHasCustomFontStyle: !!sourceFontStyle,
-        outerLocation: document?.location?.href || null,
-    });
     return {
         documentCount: docs.length,
         forwardedCount,
@@ -1349,6 +1215,8 @@ const activeForegroundSectionHref = () => {
     return activeHref || firstLiveSectionHref();
 };
 
+const activeForegroundSectionIndex = () => sectionIndexForHref(activeForegroundSectionHref());
+
 const activeForegroundSectionHrefSet = () => {
     const href = activeForegroundSectionHref();
     return href ? new Set([href]) : new Set();
@@ -1378,6 +1246,7 @@ window.manabi_recordLiveProcessedSection = (href) => {
             isFirstLiveSection: normalizedHref === firstLiveHref,
             ...captureEPUBOverlapState(),
         });
+        scheduleLoadNextCacheWarmerSection(Array.from(liveSettledSectionHrefSet()).sort(), 'live-section.processed');
     }
     if (globalThis.__manabiInitialForegroundNextSectionPending && processedSet.size >= 2) {
         globalThis.__manabiInitialForegroundNextSectionPending = false;
@@ -1403,6 +1272,7 @@ window.manabi_recordLiveSettledSection = (href) => {
             isFirstLiveSection: normalizedHref === firstLiveHref,
             ...captureEPUBOverlapState(),
         });
+        scheduleLoadNextCacheWarmerSection(Array.from(settledSet).sort(), 'live-section.settled');
     }
     if (normalizedHref === firstLiveHref) {
         postReplaceTextPerfLog('first-live-section.settled', {
@@ -1539,14 +1409,6 @@ const maybeOpenDeferredCacheWarmer = async () => {
         const firstLiveSettled = !!firstLiveHref && liveSettledSectionHrefSet().has(firstLiveHref);
         if (!globalThis.__manabiDeferredCacheWarmerLogged) {
             globalThis.__manabiDeferredCacheWarmerLogged = true;
-            postEPUBLog('ebook.perf.cache-warmer.deferred', {
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                firstLiveHref: firstLiveHref ?? null,
-                firstLiveSettled,
-                processedSectionCount: liveProcessedSectionHrefSet().size,
-                settledSectionCount: liveSettledSectionHrefSet().size,
-                ...captureEPUBOverlapState(),
-            });
             postReplaceTextPerfLog('cache-warmer.deferred', {
                 bodyLoading: !!document.body?.classList?.contains?.('loading'),
                 firstLiveHref: firstLiveHref ?? null,
@@ -1572,6 +1434,7 @@ const maybeOpenDeferredCacheWarmer = async () => {
         });
         return;
     }
+    const windowLimit = cacheWarmerWindowLimitState(nextUsefulIndex);
     postReplaceTextPerfLog('cache-warmer.preflight.scan', {
         firstLiveHref: firstLiveSectionHref(),
         processedSectionCount: liveProcessedSectionHrefSet().size,
@@ -1584,6 +1447,9 @@ const maybeOpenDeferredCacheWarmer = async () => {
         activeForegroundHref: preflightScan.activeForegroundHref,
         sectionCount: preflightScan.sectionCount,
         sectionSample: preflightScan.sample,
+        activeForegroundIndex: windowLimit.activeIndex,
+        maxTargetIndex: windowLimit.maxTargetIndex,
+        maxSectionsAhead: windowLimit.maxSectionsAhead,
         ...captureEPUBOverlapState(),
     });
     if (!Number.isInteger(nextUsefulIndex)) {
@@ -1603,6 +1469,20 @@ const maybeOpenDeferredCacheWarmer = async () => {
         });
         return;
     }
+    if (windowLimit.limited) {
+        postReplaceTextPerfLog('cache-warmer.deferred', {
+            reason: 'foreground-window-limit',
+            targetSectionIndex: nextUsefulIndex,
+            targetSectionHref: preflightScan.targetHref,
+            activeForegroundIndex: windowLimit.activeIndex,
+            maxTargetIndex: windowLimit.maxTargetIndex,
+            maxSectionsAhead: windowLimit.maxSectionsAhead,
+            processedSectionCount: liveProcessedSectionHrefSet().size,
+            settledSectionCount: liveSettledSectionHrefSet().size,
+            ...captureEPUBOverlapState(),
+        });
+        return;
+    }
     const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
     globalThis.__manabiCacheWarmerOpenRequested = false;
     postReplaceTextPerfLog('cache-warmer.unblocked', {
@@ -1615,9 +1495,6 @@ const maybeOpenDeferredCacheWarmer = async () => {
     });
     const openPromise = (async () => {
         await window.cacheWarmer.open(cacheWarmerSource);
-        markEPUBPerf('cache-warmer.opened', {
-            sourceKind: cacheWarmerSource?.kind || 'nil',
-        });
     })();
     globalThis.__manabiCacheWarmerOpenPromise = openPromise;
     try {
@@ -1636,30 +1513,28 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 0) => {
         globalThis.__manabiInitialForegroundNextSectionPending = true;
     }
     globalThis.__manabiDeferredCacheWarmerLogged = false;
-    postEPUBLog('ebook.perf.cache-warmer.schedule', {
-        reason,
-        delayMs,
-        initialForegroundNextSectionPending: !!globalThis.__manabiInitialForegroundNextSectionPending,
-        ...captureEPUBOverlapState(),
-    });
     postReplaceTextPerfLog('cache-warmer.schedule', {
         reason,
         delayMs,
         initialForegroundNextSectionPending: !!globalThis.__manabiInitialForegroundNextSectionPending,
         ...captureEPUBOverlapState(),
     });
-    void maybeOpenDeferredCacheWarmer();
+    clearTimeout(globalThis.__manabiCacheWarmerOpenTimer);
+    const normalizedDelay = Math.max(0, Number(delayMs) || 0);
+    globalThis.__manabiCacheWarmerOpenTimer = setTimeout(() => {
+        globalThis.__manabiCacheWarmerOpenTimer = null;
+        const busyState = cacheWarmerForegroundBusyState();
+        if (busyState.busy) {
+            scheduleDeferredCacheWarmerOpen(`${reason}.retry`, busyState.retryMs);
+            return;
+        }
+        void maybeOpenDeferredCacheWarmer();
+    }, normalizedDelay);
 };
 
 const postOpenReaderGoToSheetRequest = (source, targetID = null, options = {}) => {
     const preserveHiddenNavigation = !!options.preserveHiddenNavigation;
     const preserveVisibleNavigation = !!options.preserveVisibleNavigation;
-    postEPUBLog('ebook.goToSheet.request', {
-        source,
-        targetID,
-        preserveHiddenNavigation,
-        preserveVisibleNavigation,
-    });
     try {
         window.webkit?.messageHandlers?.openReaderGoToSheet?.postMessage?.({
             source,
@@ -1668,11 +1543,6 @@ const postOpenReaderGoToSheetRequest = (source, targetID = null, options = {}) =
             preserveVisibleNavigation,
         });
     } catch (error) {
-        postEPUBLog('ebook.goToSheet.request.error', {
-            source,
-            targetID,
-            message: error?.message || String(error),
-        });
     }
 };
 
@@ -1849,24 +1719,12 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     const normalized = !!shouldHide;
     const body = document.body;
     const before = captureNavVisibilityState();
-    postMay20Log('nativeBridge.set.entered', {
-        sequence,
-        source,
-        requestedHide: normalized,
-        before,
-    });
     logMay15('ebook.navBridge.setNative.entered', {
         sequence,
         source,
         requestedHide: normalized,
         before,
         stack: may15Stack(),
-    });
-    postHideNavLog('js.bridge.begin', {
-        sequence,
-        source,
-        requestedHide: normalized,
-        before,
     });
     if (body?.classList?.contains?.('nav-hidden')) {
         body.classList.remove('nav-hidden');
@@ -1901,18 +1759,6 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         before,
         after: captureNavVisibilityState(),
     });
-    postHideNavLog('js.bridge.finish', {
-        sequence,
-        source,
-        requestedHide: normalized,
-        after: captureNavVisibilityState(),
-    });
-    postMay20Log('nativeBridge.set.finished', {
-        sequence,
-        source,
-        requestedHide: normalized,
-        after: captureNavVisibilityState(),
-    });
     logMay15('ebook.navBridge.setNative.finished', {
         sequence,
         source,
@@ -1923,11 +1769,6 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
 
 window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabiSetHideNavigationDueToScroll') => {
     const requestedHide = !!shouldHide;
-    postMay20Log('window.setHideNavigation.entered', {
-        source,
-        requestedHide,
-        currentState: captureNavVisibilityState(),
-    });
     logMay15('ebook.navBridge.windowRequest', {
         source,
         requestedHide,
@@ -1943,19 +1784,6 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 requestedHide,
                 verdict: 'ignoredHideCount',
                 remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
-            });
-            postHideNavLog('js.bridge.ignored', {
-                source,
-                requestedHide: true,
-                remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
-                currentState: captureNavVisibilityState(),
-            });
-            postMay20Log('window.setHideNavigation.return', {
-                source,
-                requestedHide,
-                verdict: 'ignoredHideCount',
-                remainingHideIgnoreCount: globalThis.__manabiIgnoreNextIncomingHideNavigationCount,
-                currentState: captureNavVisibilityState(),
             });
             return false;
         }
@@ -1977,24 +1805,6 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 lastForwardPageTurnHideAtMs,
                 lastBackwardPageTurnRevealAtMs,
             });
-            postHideNavLog('js.bridge.ignored', {
-                source,
-                requestedHide: false,
-                reason: 'stale-swift-reveal-after-forward-page-turn',
-                now,
-                lastForwardPageTurnHideAtMs,
-                lastBackwardPageTurnRevealAtMs,
-                currentState: captureNavVisibilityState(),
-            });
-            postMay20Log('window.setHideNavigation.return', {
-                source,
-                requestedHide,
-                verdict: 'staleSwiftRevealAfterForwardPageTurn',
-                now,
-                lastForwardPageTurnHideAtMs,
-                lastBackwardPageTurnRevealAtMs,
-                currentState: captureNavVisibilityState(),
-            });
             return true;
         }
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
@@ -2002,18 +1812,6 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 source,
                 requestedHide,
                 verdict: 'preserveHiddenThroughNextDisplay',
-            });
-            postHideNavLog('js.bridge.ignored', {
-                source,
-                requestedHide: false,
-                reason: 'preserve-hidden-through-next-display',
-                currentState: captureNavVisibilityState(),
-            });
-            postMay20Log('window.setHideNavigation.return', {
-                source,
-                requestedHide,
-                verdict: 'preserveHiddenThroughNextDisplay',
-                currentState: captureNavVisibilityState(),
             });
             return true;
         }
@@ -2026,19 +1824,6 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
                 verdict: 'ignoredRevealCount',
                 remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
             });
-            postHideNavLog('js.bridge.ignored', {
-                source,
-                requestedHide: false,
-                remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
-                currentState: captureNavVisibilityState(),
-            });
-            postMay20Log('window.setHideNavigation.return', {
-                source,
-                requestedHide,
-                verdict: 'ignoredRevealCount',
-                remainingRevealIgnoreCount: globalThis.__manabiIgnoreNextIncomingRevealNavigationCount,
-                currentState: captureNavVisibilityState(),
-            });
             return true;
         }
     }
@@ -2048,13 +1833,6 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
         requestedHide,
         verdict: 'applied',
         result,
-    });
-    postMay20Log('window.setHideNavigation.return', {
-        source,
-        requestedHide,
-        verdict: 'applied',
-        result,
-        currentState: captureNavVisibilityState(),
     });
     return result;
 };
@@ -2374,8 +2152,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         const overwriteKey = JSON.stringify(overwriteLog);
         if (globalThis.__manabiLastChromeInsetsOverwriteLogKey !== overwriteKey) {
             globalThis.__manabiLastChromeInsetsOverwriteLogKey = overwriteKey;
-            postEPUBLog('ebook.chromeInsets.zeroOverwriteSummary', shortOverwriteLog);
-            postEPUBLog('ebook.chromeInsets.zeroOverwriteAttempt', overwriteLog);
         }
     }
 
@@ -2457,7 +2233,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
     const chromeInsetsKey = shouldLogChromeInsets ? JSON.stringify(chromeInsetsLog) : null;
     if (shouldLogChromeInsets && globalThis.__manabiLastChromeInsetsLogKey !== chromeInsetsKey) {
         globalThis.__manabiLastChromeInsetsLogKey = chromeInsetsKey;
-        postEPUBLog('ebook.chromeInsets.reapplied', chromeInsetsLog);
     }
     return nextState;
 };
@@ -2516,63 +2291,6 @@ const performanceNowMs = () =>
         ? performance.now()
         : Date.now();
 
-let currentEPUBPerfSession = null;
-let nextEPUBPerfSessionID = 1;
-
-const beginEPUBPerfSession = (details = {}) => {
-    const startedAt = performanceNowMs();
-    currentEPUBPerfSession = {
-        id: nextEPUBPerfSessionID++,
-        startedAt,
-        lastAt: startedAt,
-        marks: new Map([['start', startedAt]]),
-        onceKeys: new Set(),
-    };
-    postEPUBLog('ebook.perf.session.begin', {
-        sessionID: currentEPUBPerfSession.id,
-        ...details,
-    });
-    return currentEPUBPerfSession;
-};
-
-const markEPUBPerf = (stage, details = {}, options = {}) => {
-    const session = currentEPUBPerfSession;
-    if (!session || typeof stage !== 'string' || stage.length === 0) {
-        return;
-    }
-    const {
-        once = false,
-        key = stage,
-        anchor = null,
-    } = options;
-    const onceKey = `${session.id}:${key}`;
-    if (once && session.onceKeys.has(onceKey)) {
-        return;
-    }
-    const now = performanceNowMs();
-    const anchorAt = typeof anchor === 'string'
-        ? (session.marks.get(anchor) ?? null)
-        : null;
-    const payload = {
-        sessionID: session.id,
-        sinceStartMs: safeRound(now - session.startedAt, 1),
-        sinceLastMs: safeRound(now - session.lastAt, 1),
-        ...details,
-    };
-    if (anchorAt !== null) {
-        payload.anchorStage = anchor;
-        payload.sinceAnchorMs = safeRound(now - anchorAt, 1);
-    }
-    postEPUBLog(`ebook.perf.${stage}`, payload);
-    session.lastAt = now;
-    session.marks.set(stage, now);
-    if (once) {
-        session.onceKeys.add(onceKey);
-    }
-};
-
-globalThis.__manabiPostEPUBLog = postEPUBLog;
-globalThis.__manabiMarkEPUBPerf = markEPUBPerf;
 globalThis.__manabiPerformanceNowMs = performanceNowMs;
 globalThis.__manabiSafeRound = safeRound;
 
@@ -3580,12 +3298,6 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
         filename: entry.path,
         uncompressedSize: entry.size ?? 0,
     }))
-    postEPUBLog('ebook.perf.native-loader.ready', {
-        sourceURL: url,
-        isCacheWarmer: !!isCacheWarmer,
-        entryCount: entries.length,
-        elapsedMs: safeRound(performanceNowMs() - loaderStartedAt, 1),
-    });
     const sizeMap = new Map(entries.map(entry => [entry.filename, entry.uncompressedSize]))
     const entryNames = new Set(entries.map(entry => entry.filename))
     const replaceText = makeReplaceText(isCacheWarmer)
@@ -3626,12 +3338,6 @@ const makeZipLoader = async (file, isCacheWarmer) => {
     })
     const reader = new ZipReader(new BlobReader(file))
     const entries = await reader.getEntries()
-    postEPUBLog('ebook.perf.zip-loader.ready', {
-        fileName: file?.name || 'nil',
-        isCacheWarmer: !!isCacheWarmer,
-        entryCount: entries.length,
-        elapsedMs: safeRound(performanceNowMs() - loaderStartedAt, 1),
-    });
     const map = new Map(entries.map(entry => [entry.filename, entry]))
     const load = f => (name, ...args) =>
     map.has(name) ? f(map.get(name), ...args) : null
@@ -4150,10 +3856,6 @@ class Reader {
             loadingIndicator?.setAttribute?.('hidden', '');
         }
         if (previousVisible !== nextVisible) {
-            postEPUBLoadLog('loading.class.changed', collectEPUBLoadDiagnostics('loading.class.changed', {
-                previous: previousVisible,
-                next: nextVisible,
-            }));
         }
     }
     #tocView
@@ -4180,6 +3882,10 @@ class Reader {
     lastPageTrackingDiagnosticsKey = null;
     lastBookReadingProgressKey = null;
     pageTrackingRetryHandle = null;
+    pageTrackingDeferredHandle = null;
+    pageTrackingDeferredFrameHandle = null;
+    pageTrackingDeferredRequest = null;
+    pageReadMarkerDeferredHandle = null;
     initialPaginatorSettleHandle = null;
     hasSettledInitialPaginatorLayout = false;
     hasFlashedInitialForwardSideNavChevron = false;
@@ -4303,10 +4009,6 @@ class Reader {
             return false;
         }
         this.navHUD?.requestExplicitRelocateHistoryMutation?.('goToHref');
-        postEPUBLog('ebook.goTo.href.request', {
-            source,
-            href,
-        });
         await runWithNavigationIntent({
             source: 'goToHref',
             target: 'view.goTo',
@@ -4326,11 +4028,6 @@ class Reader {
             return false;
         }
         const fraction = clampedPercent / 100;
-        postEPUBLog('ebook.goTo.percent.request', {
-            source,
-            percent: clampedPercent,
-            fraction,
-        });
         await runWithNavigationIntent({
             source: 'goToPercent',
             target: 'view.goToFraction',
@@ -4523,10 +4220,6 @@ class Reader {
     }
     #applyHideNavigationDueToScrollToBookContent(shouldHide) {
         if (MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES) {
-            postMay20Log('bookContent.hideNavigation.skip', {
-                reason: 'layout-classes-disabled',
-                shouldHide: !!shouldHide,
-            });
             return;
         }
         const hidden = !!shouldHide;
@@ -4539,12 +4232,6 @@ class Reader {
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
         }
-        postMay20Log('bookContent.hideNavigation.applied', {
-            hidden,
-            contentCount: contents.length,
-            bodyClass: document.body?.className || '',
-            snapshots: captureMay20ContentSnapshots(this.view),
-        });
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
@@ -4664,11 +4351,6 @@ class Reader {
             event.preventDefault?.();
             event.stopPropagation?.();
             event.stopImmediatePropagation?.();
-            postHideNavLog('control.click', {
-                control: 'nav-primary-text',
-                wasHidden,
-                target: event.target?.id || event.target?.tagName || null,
-            });
             if (wasHidden) {
                 ignoreNextIncomingRevealNavigation('nav-primary-text.click');
                 postEbookNavigationVisibilityToNative(true, 'nav-primary-text.click.preserve-hidden', {
@@ -4692,11 +4374,6 @@ class Reader {
             event.preventDefault?.();
             event.stopPropagation?.();
             event.stopImmediatePropagation?.();
-            postHideNavLog('control.click', {
-                control: 'nav-hidden-primary-text',
-                wasHidden,
-                target: event.target?.id || event.target?.tagName || null,
-            });
             if (wasHidden) {
                 ignoreNextIncomingRevealNavigation('nav-hidden-primary-text.click');
                 postEbookNavigationVisibilityToNative(true, 'nav-hidden-primary-text.click.preserve-hidden', {
@@ -4720,11 +4397,6 @@ class Reader {
             event.preventDefault?.();
             event.stopPropagation?.();
             event.stopImmediatePropagation?.();
-            postHideNavLog('control.click', {
-                control: 'nav-section-progress-center',
-                wasHidden,
-                target: event.target?.id || event.target?.tagName || null,
-            });
             if (wasHidden) {
                 ignoreNextIncomingRevealNavigation('nav-section-progress-center.click');
                 postEbookNavigationVisibilityToNative(true, 'nav-section-progress-center.click.preserve-hidden', {
@@ -4751,41 +4423,14 @@ class Reader {
             const now = Date.now();
             const lastContentBlankToggleAt = Number(globalThis.__manabiLastContentDocumentBlankToggleAtMs || 0);
             if (lastContentBlankToggleAt > 0 && now - lastContentBlankToggleAt >= 0 && now - lastContentBlankToggleAt < 750) {
-                postMay20Log('toolbarBlankTap.ignored', {
-                    reason: 'recent-content-blank-toggle',
-                    elapsedMs: now - lastContentBlankToggleAt,
-                    target: target?.id || target?.tagName || null,
-                    wasHidden,
-                    shouldHide,
-                    state: captureNavVisibilityState(),
-                });
                 return;
             }
             if (excludedTarget) {
-                postMay20Log('toolbarBlankTap.ignored', {
-                    reason: 'excluded-target',
-                    target: target?.id || target?.tagName || null,
-                    excludedID: excludedTarget?.id || null,
-                    excludedClassName: excludedTarget?.className || null,
-                    wasHidden,
-                });
                 return;
             }
             event.preventDefault?.();
             event.stopPropagation?.();
             event.stopImmediatePropagation?.();
-            postMay20Log('toolbarBlankTap.post', {
-                wasHidden,
-                shouldHide,
-                target: target?.id || target?.tagName || null,
-                state: captureNavVisibilityState(),
-            });
-            postHideNavLog('control.click', {
-                control: 'nav-bar-background',
-                wasHidden,
-                shouldHide,
-                target: target?.id || target?.tagName || null,
-            });
             postEbookNavigationVisibilityToNative(
                 shouldHide,
                 'toolbar.blankTap',
@@ -4819,16 +4464,6 @@ class Reader {
             const circle = button.querySelector?.('.mnb-tracking-button-status') || button;
             const accepted = isEventInsideElementCircle(event, circle);
             if (!accepted) {
-                postHideNavLog('pageTrackingButton.hitReject', {
-                    type: event.type,
-                    target: event.target?.tagName || null,
-                    targetID: event.target?.id || null,
-                    stateID: button.dataset?.pageTrackingId ?? null,
-                    buttonRect: this.#formatRect(button.getBoundingClientRect?.()),
-                    circleRect: this.#formatRect(circle?.getBoundingClientRect?.()),
-                    point: eventClientPoint(event),
-                    state: captureNavVisibilityState(),
-                });
             }
             return accepted;
         };
@@ -4844,15 +4479,6 @@ class Reader {
                 return true;
             }
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
-            postHideNavLog('pageTrackingButton.absorb', {
-                type: event.type,
-                eventPhase: event.eventPhase,
-                wasHidden,
-                target: event.target?.tagName || null,
-                targetID: event.target?.id || null,
-                stateID: button.dataset?.pageTrackingId ?? null,
-                completionAction: button.dataset?.completionAction ?? null,
-            });
             if (wasHidden) {
                 globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
                 ignoreNextIncomingRevealNavigation(`page-tracking-button.${event.type}`);
@@ -4904,20 +4530,8 @@ class Reader {
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             const completionAction = button.dataset?.completionAction;
             const stateID = button?.dataset?.pageTrackingId;
-            postHideNavLog('pageTrackingButton.click', {
-                wasHidden,
-                completionAction: completionAction ?? null,
-                stateID: stateID ?? null,
-                readState: button.dataset?.readState ?? null,
-                trackingSectionRead: button.dataset?.mnbTrackingSectionRead ?? null,
-            });
             if (wasHidden) {
                 globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
-                postHideNavLog('pageTrackingButton.preserveHiddenThroughNextDisplay', {
-                    source: 'page-tracking-button.click',
-                    stateID: stateID ?? null,
-                    completionAction: completionAction ?? null,
-                });
                 postEbookNavigationVisibilityToNative(true, 'page-tracking-button.click.preserve-hidden', {
                     stateID: stateID ?? null,
                     completionAction: completionAction ?? null,
@@ -4926,12 +4540,6 @@ class Reader {
             } else {
                 if (!completionAction && stateID) {
                     globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = true;
-                    postHideNavLog('pageTrackingButton.deferHideUntilAdvance', {
-                        source: 'page-tracking-button.click',
-                        stateID,
-                        completionAction: null,
-                        state: captureNavVisibilityState(),
-                    });
                 }
                 ignoreNextIncomingHideNavigation('page-tracking-button.click');
             }
@@ -5042,6 +4650,7 @@ class Reader {
         return 'animated';
     }
     #updatePageReadMarker(reason = 'unspecified', explicitState = null, explicitDoc = null) {
+        const updateStartedAt = performanceNowMs();
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
         const state = explicitState || (this.pageTrackingStates || []).find((candidate) => candidate.id === 'visible-screen') || null;
         const rawIsRead = !!state?.isRead && !this.completionAction;
@@ -5057,8 +4666,12 @@ class Reader {
             : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
         const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
         const readerStage = document.getElementById('reader-stage');
-        const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
-            .find((element) => element?.isConnected && element.offsetParent !== null) || this.view || null;
+        const preferredFoliateView = this.view?.isConnected ? this.view : null;
+        const liveFoliateView =
+            (preferredFoliateView && preferredFoliateView.offsetParent !== null ? preferredFoliateView : null)
+            || document.querySelector('foliate-view:not([hidden])')
+            || preferredFoliateView
+            || null;
         if (readerStage instanceof HTMLElement) {
             readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
             readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
@@ -5112,39 +4725,9 @@ class Reader {
             const leftButton = document.getElementById('btn-scroll-left');
             const rightButton = document.getElementById('btn-scroll-right');
             const logPaginator = resolveFoliatePaginator(liveFoliateView);
-            postHideNavLog('pageReadMarker.layout', {
-                reason,
-                transitionMode,
-                axis: isVertical ? 'block' : 'inline',
-                sourceRect: 'css-side-nav-width',
-                topMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-left') || null,
-                topMarkerWidth: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-top-width') || null,
-                sideMarkerLeft: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-left') || null,
-                sideMarkerHeight: readerStage?.style?.getPropertyValue?.('--mnb-ebook-read-marker-side-height') || null,
-                computedTopMarkerWidth: topStyle?.width ?? null,
-                computedTopMarkerHeight: topStyle?.height ?? null,
-                computedTopMarkerMarginLeft: topStyle?.marginLeft ?? null,
-                computedTopMarkerMarginRight: topStyle?.marginRight ?? null,
-                computedTopMarkerMaxWidth: topStyle?.maxWidth ?? null,
-                computedTopMarkerTransform: topStyle?.transform ?? null,
-                computedTopMarkerJustifySelf: topStyle?.justifySelf ?? null,
-                computedTopMarkerPlaceSelf: topStyle?.placeSelf ?? null,
-                computedTopMarkerLeft: topStyle?.left ?? null,
-                computedTopMarkerRight: topStyle?.right ?? null,
-                topMarkerOffsetLeft: topMarker instanceof HTMLElement ? topMarker.offsetLeft : null,
-                topMarkerOffsetWidth: topMarker instanceof HTMLElement ? topMarker.offsetWidth : null,
-                cssSideNavWidthRoot: rootStyle.getPropertyValue('--side-nav-width')?.trim() || null,
-                cssSideNavWidthStage: stageStyle?.getPropertyValue?.('--side-nav-width')?.trim() || null,
-                cssTopMarkerLeft: topStyle?.getPropertyValue?.('--mnb-ebook-read-marker-top-left')?.trim() || null,
-                cssTopMarkerRight: topStyle?.getPropertyValue?.('--mnb-ebook-read-marker-top-right')?.trim() || null,
-                cssTopMarkerWidth: topStyle?.getPropertyValue?.('--mnb-ebook-read-marker-top-width')?.trim() || null,
-                stageRect: this.#formatRect(readerStage?.getBoundingClientRect?.()),
-                topMarkerRect: this.#formatRect(topMarker?.getBoundingClientRect?.()),
-                leftButtonRect: this.#formatRect(leftButton?.getBoundingClientRect?.()),
-                rightButtonRect: this.#formatRect(rightButton?.getBoundingClientRect?.()),
-                containerRect: this.#formatRect(logPaginator?.shadowRoot?.getElementById?.('container')?.getBoundingClientRect?.()),
-                state: captureNavVisibilityState(),
-            });
+        }
+        const elapsedMs = performanceNowMs() - updateStartedAt;
+        if (elapsedMs >= 8 || String(reason || '').includes('display') || String(reason || '').includes('document-load')) {
         }
     }
     #clearVisiblePageReadChrome(reason = 'unspecified') {
@@ -5185,6 +4768,8 @@ class Reader {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
             this.pageTrackingRetryHandle = null;
         }
+        this.#clearScheduledPageTrackingSync();
+        this.#clearDeferredPageReadMarkerUpdate();
         if (this.nativeLookupHitTargetRefreshHandle) {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
@@ -5287,70 +4872,18 @@ class Reader {
     #applyPageTurnNavigationVisibility(method, source) {
         const direction = this.#pageTurnDirectionForMove(method);
         if (direction !== 'forward' && direction !== 'backward') {
-            postMay20Log('pageTurn.visibility.skip', {
-                method,
-                source,
-                reason: 'unknown-direction',
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-            });
-            postHideNavLog('pageTurn.hideNavigation.skip', {
-                method,
-                source,
-                reason: 'unknown-direction',
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-            });
             return;
         }
-        postMay20Log('pageTurn.visibility.method', {
-            method,
-            source,
-            direction,
-            isRTL: this.isRTL,
-            state: captureNavVisibilityState(),
-        });
         this.#applyLogicalPageTurnNavigationVisibility(direction, source, { method });
     }
     #applyLogicalPageTurnNavigationVisibility(direction, source, details = {}) {
         if (direction !== 'forward' && direction !== 'backward') {
-            postMay20Log('pageTurn.visibility.skip', {
-                source,
-                direction,
-                reason: 'unknown-logical-direction',
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-                ...details,
-            });
-            postHideNavLog('pageTurn.hideNavigation.skip', {
-                source,
-                direction,
-                reason: 'unknown-logical-direction',
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-                ...details,
-            });
             return;
         }
+        markCacheWarmerForegroundActivity(`page-turn.${source}`);
         const shouldHide = direction === 'forward';
-        postMay20Log('pageTurn.visibility.apply', {
-            source,
-            direction,
-            shouldHide,
-            isRTL: this.isRTL,
-            before: captureNavVisibilityState(),
-            ...details,
-        });
         recordPageTurnNavigationIntent(direction, source, {
             isRTL: this.isRTL,
-            ...details,
-        });
-        postHideNavLog('pageTurn.hideNavigation.apply', {
-            source,
-            direction,
-            shouldHide,
-            isRTL: this.isRTL,
-            before: captureNavVisibilityState(),
             ...details,
         });
         if (shouldHide) {
@@ -5360,31 +4893,10 @@ class Reader {
                 ...details,
             });
         } else {
-            postHideNavLog('pageTurn.hideNavigation.deferRevealToNative', {
-                source,
-                direction,
-                isRTL: this.isRTL,
-                before: captureNavVisibilityState(),
-                ...details,
-            });
         }
         postEbookNavigationVisibilityToNative(shouldHide, source, {
             direction,
             isRTL: this.isRTL,
-            ...details,
-        });
-        postHideNavLog('pageTurn.hideNavigation.finish', {
-            source,
-            direction,
-            shouldHide,
-            after: captureNavVisibilityState(),
-            ...details,
-        });
-        postMay20Log('pageTurn.visibility.finish', {
-            source,
-            direction,
-            shouldHide,
-            after: captureNavVisibilityState(),
             ...details,
         });
     }
@@ -5416,6 +4928,63 @@ class Reader {
             this.pageTrackingRetryHandle = null;
             this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1).catch((error) => console.error(error));
         });
+    }
+    #clearScheduledPageTrackingSync() {
+        if (this.pageTrackingDeferredHandle) {
+            clearTimeout(this.pageTrackingDeferredHandle);
+            this.pageTrackingDeferredHandle = null;
+        }
+        if (this.pageTrackingDeferredFrameHandle) {
+            cancelAnimationFrame(this.pageTrackingDeferredFrameHandle);
+            this.pageTrackingDeferredFrameHandle = null;
+        }
+        this.pageTrackingDeferredRequest = null;
+    }
+    #schedulePageTrackingSync(reason = 'unspecified', explicitDoc = null, retryCount = 0, delayMs = 0) {
+        this.#clearScheduledPageTrackingSync();
+        const requestedAt = performanceNowMs();
+        const request = {
+            reason,
+            explicitDoc,
+            retryCount,
+            delayMs: Math.max(0, Number(delayMs) || 0),
+        };
+        this.pageTrackingDeferredRequest = request;
+        const scheduleFrame = () => {
+            this.pageTrackingDeferredHandle = null;
+            this.pageTrackingDeferredFrameHandle = requestAnimationFrame(() => {
+                this.pageTrackingDeferredFrameHandle = null;
+                if (this.pageTrackingDeferredRequest !== request) {
+                    return;
+                }
+                this.pageTrackingDeferredRequest = null;
+                const currentDoc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                if (isDocumentLike(explicitDoc) && isDocumentLike(currentDoc) && explicitDoc !== currentDoc) {
+                    return;
+                }
+                this.#syncPageTrackingButtons(reason, explicitDoc, retryCount).catch((error) => console.error(error));
+            });
+        };
+        if (request.delayMs > 0) {
+            this.pageTrackingDeferredHandle = setTimeout(scheduleFrame, request.delayMs);
+        } else {
+            scheduleFrame();
+        }
+    }
+    #clearDeferredPageReadMarkerUpdate() {
+        if (this.pageReadMarkerDeferredHandle) {
+            clearTimeout(this.pageReadMarkerDeferredHandle);
+            this.pageReadMarkerDeferredHandle = null;
+        }
+    }
+    #schedulePageReadMarkerUpdate(reason = 'unspecified', delayMs = 0) {
+        this.#clearDeferredPageReadMarkerUpdate();
+        const requestedAt = performanceNowMs();
+        const normalizedDelay = Math.max(0, Number(delayMs) || 0);
+        this.pageReadMarkerDeferredHandle = setTimeout(() => {
+            this.pageReadMarkerDeferredHandle = null;
+            this.#updatePageReadMarker(reason);
+        }, normalizedDelay);
     }
     async #settleInitialPaginatorLayout(reason = 'unknown', { allowWhileLoading = false } = {}) {
         if (MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE) {
@@ -5947,13 +5516,6 @@ class Reader {
                 this.pageTrackingAnimateReadStateIDs.delete(state.id);
             }
             if (shouldAnimateRead) {
-                postHideNavLog('markReadButton.animateRead', {
-                    reason,
-                    stateID: state.id,
-                    existingReadAttr,
-                    readState,
-                    state: captureNavVisibilityState(),
-                });
             }
             return `
                 <button
@@ -6001,23 +5563,8 @@ class Reader {
                     mode: 'next-section',
                 });
                 globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 0;
-                postHideNavLog('pageTrackingButton.clearHideIgnoreForAdvance', {
-                    mode: 'next-section',
-                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                    state: captureNavVisibilityState(),
-                });
                 this.#applyDeferredHideNavigationForMarkReadAdvance('next-section');
-                postHideNavLog('pageTrackingButton.advance.beforeMove', {
-                    method: 'nextButton.click',
-                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                    state: captureNavVisibilityState(),
-                });
                 this.buttons.next.click();
-                postHideNavLog('pageTrackingButton.advance.afterMove', {
-                    method: 'nextButton.click',
-                    preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                    state: captureNavVisibilityState(),
-                });
                 this.#completeMarkReadAdvancePreserveHidden('next-section');
                 return;
             }
@@ -6026,79 +5573,32 @@ class Reader {
             mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
         });
         globalThis.__manabiIgnoreNextIncomingHideNavigationCount = 0;
-        postHideNavLog('pageTrackingButton.clearHideIgnoreForAdvance', {
-            mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
-            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-            state: captureNavVisibilityState(),
-        });
         this.#applyDeferredHideNavigationForMarkReadAdvance(this.isRTL ? 'previous-visual-page' : 'next-visual-page');
         this.#flashForwardSideNavChevron();
         this.#clearVisiblePageReadChrome('page-turn-start');
         if (this.isRTL) {
-            postHideNavLog('pageTrackingButton.advance.beforeMove', {
-                method: 'goLeft',
-                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                state: captureNavVisibilityState(),
-            });
             await this.view.goLeft();
-            postHideNavLog('pageTrackingButton.advance.afterMove', {
-                method: 'goLeft',
-                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                state: captureNavVisibilityState(),
-            });
         } else {
-            postHideNavLog('pageTrackingButton.advance.beforeMove', {
-                method: 'goRight',
-                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                state: captureNavVisibilityState(),
-            });
             await this.view.goRight();
-            postHideNavLog('pageTrackingButton.advance.afterMove', {
-                method: 'goRight',
-                preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-                state: captureNavVisibilityState(),
-            });
         }
         this.#completeMarkReadAdvancePreserveHidden('visual-page');
     }
     #applyDeferredHideNavigationForMarkReadAdvance(mode) {
         if (globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance !== true) {
-            postHideNavLog('pageTrackingButton.deferredHide.skip', {
-                mode,
-                reason: 'not-deferred',
-                state: captureNavVisibilityState(),
-            });
             return;
         }
         globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = false;
-        postHideNavLog('pageTrackingButton.deferredHide.apply.begin', {
-            mode,
-            state: captureNavVisibilityState(),
-        });
         this.navHUD?.setHideNavigationDueToScroll?.(true, 'page-tracking-button.advance.deferred-hide', {
             mode,
         });
         postEbookNavigationVisibilityToNative(true, 'page-tracking-button.advance.deferred-hide', {
             mode,
         });
-        postHideNavLog('pageTrackingButton.deferredHide.apply.finish', {
-            mode,
-            state: captureNavVisibilityState(),
-        });
     }
     #completeMarkReadAdvancePreserveHidden(mode) {
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay !== true) {
-            postHideNavLog('pageTrackingButton.preserveHidden.complete.skip', {
-                mode,
-                reason: 'not-preserving',
-                state: captureNavVisibilityState(),
-            });
             return;
         }
-        postHideNavLog('pageTrackingButton.preserveHidden.complete.begin', {
-            mode,
-            state: captureNavVisibilityState(),
-        });
         this.navHUD?.setHideNavigationDueToScroll?.(true, 'page-tracking-button.advance.complete', {
             mode,
         });
@@ -6107,10 +5607,6 @@ class Reader {
         });
         globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
         globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
-        postHideNavLog('pageTrackingButton.preserveHidden.complete.finish', {
-            mode,
-            state: captureNavVisibilityState(),
-        });
     }
     #flashForwardSideNavChevron() {
         const direction = this.isRTL ? 'left' : 'right';
@@ -6240,31 +5736,10 @@ class Reader {
         const progressBucket = Math.floor(progress * 4);
         if (state.lastLoggedProgressBucket !== progressBucket || progress >= 1) {
             state.lastLoggedProgressBucket = progressBucket;
-            postMay21Log('swipe.chevron.progress', {
-                progress,
-                progressBucket,
-                dx,
-                dy,
-                swipedLeft,
-                isRTL: this.isRTL,
-                logicalDirection,
-                chevronSide,
-                leftOpacity,
-                rightOpacity,
-            });
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
         this.#flashSideNavChevron(chevronSide);
-        postMay21Log('swipe.trigger', {
-            dx,
-            dy,
-            swipedLeft,
-            isRTL: this.isRTL,
-            logicalDirection,
-            chevronSide,
-            method: logicalDirection === 'forward' ? 'next' : 'prev',
-        });
         if (logicalDirection === 'forward') {
             this.#clearVisiblePageReadChrome('page-turn-start');
             this.#applyLogicalPageTurnNavigationVisibility('forward', 'page-turn.swipe', { method: 'next' });
@@ -6354,19 +5829,25 @@ class Reader {
             this.pageTrackingRetryHandle = null;
         }
         const syncGeneration = this.visiblePageCollectionGeneration;
+        const visibleRangeStartedAt = performanceNowMs();
         const visibleRange = this.#visibleRangeForDocument(doc);
+        const visibleRangeElapsedMs = performanceNowMs() - visibleRangeStartedAt;
         if (visibleRange?.collapsed === true && retryCount > 0) {
             this.#queuePageTrackingRetry(reason, doc, retryCount);
             return;
         }
+        const visibleSegmentsStartedAt = performanceNowMs();
         const visibleSegmentsResult = this.#visiblePageSegmentResult(doc, visibleRange);
+        const visibleSegmentsElapsedMs = performanceNowMs() - visibleSegmentsStartedAt;
         if (syncGeneration !== this.visiblePageCollectionGeneration) {
             return;
         }
+        const buildStatesStartedAt = performanceNowMs();
         const {
             states,
             diagnostics,
         } = await buildVisiblePageTrackingStates(doc, this.articleReadingProgress, visibleRange, visibleSegmentsResult);
+        const buildStatesElapsedMs = performanceNowMs() - buildStatesStartedAt;
         if (syncGeneration !== this.visiblePageCollectionGeneration) {
             return;
         }
@@ -6402,8 +5883,13 @@ class Reader {
             return;
         }
         this.pageTrackingStates = states;
+        const renderStartedAt = performanceNowMs();
         this.#renderPageTrackingButtons(reason);
+        const renderElapsedMs = performanceNowMs() - renderStartedAt;
         this.#updatePageReadMarker(reason, visibleScreenState, doc);
+        const syncElapsedMs = performanceNowMs() - syncStartedAt;
+        if (syncElapsedMs >= 12 || String(reason || '').includes('display') || String(reason || '').includes('document-load') || String(reason || '').includes('nav-buttons')) {
+        }
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -6757,18 +6243,10 @@ class Reader {
         await this.#advanceAfterMarkRead();
     }
     async open(file) {
-        postEPUBLoadLog('reader.open.begin', collectEPUBLoadDiagnostics('reader.open.begin', {
-            fileKind: file?.kind || 'nil',
-            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
-        }));
         this.setLoadingIndicator(true);
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
             : Date.now();
-        markEPUBPerf('reader.open.begin', {
-            fileKind: file?.kind || 'nil',
-            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
-        });
         postReaderLog('ebook.readerOpen.begin', {
             fileKind: file?.kind || 'nil',
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
@@ -6783,14 +6261,6 @@ class Reader {
         }
         this.hasSettledInitialPaginatorLayout = false;
         this.view = await getView(file, false)
-        postEPUBLoadLog('reader.open.view.ready', collectEPUBLoadDiagnostics('reader.open.view.ready', {
-            hasRenderer: !!this.view?.renderer,
-            hasBook: !!this.view?.book,
-        }));
-        markEPUBPerf('view.ready', {
-            hasRenderer: !!this.view?.renderer,
-            hasBook: !!this.view?.book,
-        });
         postReaderVisibilityProbe('reader.open:view-assigned', this.view, null);
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
@@ -6801,9 +6271,6 @@ class Reader {
         this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
-        postEPUBLoadLog('reader.open.listeners.ready', collectEPUBLoadDiagnostics('reader.open.listeners.ready', {
-            rendererFlow: this.view.renderer?.getAttribute?.('flow') || null,
-        }));
         
         const {
             book
@@ -6817,18 +6284,6 @@ class Reader {
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         applyStoredChromeInsets('reader.open');
-        postEPUBLoadLog('reader.open.before-view-open', collectEPUBLoadDiagnostics('reader.open.before-view-open', {
-            bookDir: this.bookDir,
-            isRTL: this.isRTL,
-            sectionCount: Array.isArray(book.sections) ? book.sections.length : null,
-            pageListCount: Array.isArray(book.pageList) ? book.pageList.length : null,
-        }));
-        markEPUBPerf('renderer.ready', {
-            bookDir: this.bookDir,
-            isRTL: !!this.isRTL,
-            sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
-            pageTargetCount: Array.isArray(book?.pageList) ? book.pageList.length : null,
-        });
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
@@ -6899,17 +6354,6 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
-            postMay20Log('sideButton.activate.begin', {
-                side,
-                method,
-                eventType,
-                disabled: !!button?.disabled,
-                pointerEvents: button ? getComputedStyle(button).pointerEvents : null,
-                opacity: button ? getComputedStyle(button).opacity : null,
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-                snapshots: captureMay20ContentSnapshots(this.view),
-            });
             try {
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility(method, 'page-turn.side-button');
@@ -6918,21 +6362,7 @@ class Reader {
                 } else {
                     await this.view.goRight();
                 }
-                postMay20Log('sideButton.activate.end', {
-                    side,
-                    method,
-                    eventType,
-                    lastLocation: this.view?.lastLocation ?? null,
-                    state: captureNavVisibilityState(),
-                    snapshots: captureMay20ContentSnapshots(this.view),
-                });
             } catch (error) {
-                postMay20Log('sideButton.activate.error', {
-                    side,
-                    method,
-                    eventType,
-                    message: error?.message || String(error),
-                });
                 throw error;
             }
         };
@@ -6941,20 +6371,8 @@ class Reader {
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'left'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
-                postMay20Log('sideButton.click.suppressedAfterTouch', {
-                    side: 'left',
-                    elapsedMs: now - globalThis.__manabiLastSideButtonTouchActivation.timestamp,
-                });
                 return;
             }
-            postMay20Log('sideButton.click.begin', {
-                side: 'left',
-                disabled: !!leftSideBtn.disabled,
-                pointerEvents: getComputedStyle(leftSideBtn).pointerEvents,
-                opacity: getComputedStyle(leftSideBtn).opacity,
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-            });
             await runSideButtonPageTurn('left', 'goLeft', leftSideBtn, 'click');
         });
         const rightSideBtn = document.getElementById('btn-scroll-right');
@@ -6962,43 +6380,19 @@ class Reader {
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'right'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
-                postMay20Log('sideButton.click.suppressedAfterTouch', {
-                    side: 'right',
-                    elapsedMs: now - globalThis.__manabiLastSideButtonTouchActivation.timestamp,
-                });
                 return;
             }
-            postMay20Log('sideButton.click.begin', {
-                side: 'right',
-                disabled: !!rightSideBtn.disabled,
-                pointerEvents: getComputedStyle(rightSideBtn).pointerEvents,
-                opacity: getComputedStyle(rightSideBtn).opacity,
-                isRTL: this.isRTL,
-                state: captureNavVisibilityState(),
-            });
             await runSideButtonPageTurn('right', 'goRight', rightSideBtn, 'click');
         });
         
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
             nav.addEventListener('touchstart', (event) => {
-                postMay20Log('sideButton.touchstart', {
-                    id: nav.id || null,
-                    targetID: event.target?.id || null,
-                    targetClass: event.target?.className || null,
-                    pointerEvents: getComputedStyle(nav).pointerEvents,
-                    opacity: getComputedStyle(nav).opacity,
-                });
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
             nav.addEventListener('touchend', (event) => {
-                postMay20Log('sideButton.touchend', {
-                    id: nav.id || null,
-                    targetID: event.target?.id || null,
-                    targetClass: event.target?.className || null,
-                });
                 nav.classList.remove('pressed');
                 const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
                 const method = side === 'left' ? 'goLeft' : (side === 'right' ? 'goRight' : null);
@@ -7020,18 +6414,6 @@ class Reader {
         this.view.addEventListener('sideNavChevronOpacity', e => {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
-            postMay21Log('chevron.opacity.event', {
-                leftOpacity: e.detail.leftOpacity,
-                rightOpacity: e.detail.rightOpacity,
-                source: e.detail.source || null,
-                reason: e.detail.reason || null,
-                logicalDirection: e.detail.logicalDirection || null,
-                chevronSide: e.detail.chevronSide || null,
-                swipedLeft: e.detail.swipedLeft ?? null,
-                isRTL: e.detail.isRTL ?? this.isRTL,
-                leftDisabled: document.getElementById('btn-scroll-left')?.disabled ?? null,
-                rightDisabled: document.getElementById('btn-scroll-right')?.disabled ?? null,
-            });
             
             const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
@@ -7076,6 +6458,11 @@ class Reader {
             
             fadeWithHold(l, e.detail.leftOpacity, 'l');
             fadeWithHold(r, e.detail.rightOpacity, 'r');
+        });
+        this.view.addEventListener('foregroundPageTurnActivity', e => {
+            const detail = e?.detail ?? {};
+            const source = detail.source || 'paginator';
+            markCacheWarmerForegroundActivity(source);
         });
         // Listen for resetSideNavChevrons custom event to reset chevrons
         document.addEventListener('resetSideNavChevrons', e => {
@@ -7169,32 +6556,16 @@ class Reader {
                 ownerIsMainDocument: !target || target.ownerDocument === document,
             };
             if (target && target.ownerDocument !== document) {
-                postMay20Log('blankTouch.ignored', {
-                    ...targetSummary,
-                    reason: 'non-main-document',
-                });
                 return
             }
             const excludedTarget = target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]');
             if (excludedTarget) {
-                postMay20Log('blankTouch.ignored', {
-                    ...targetSummary,
-                    reason: 'excluded-target',
-                    excludedTagName: excludedTarget?.tagName || null,
-                    excludedID: excludedTarget?.id || null,
-                    excludedClassName: excludedTarget?.className || null,
-                });
                 return
             }
 
             if (window.__manabiLookupPopoverActive === true) {
                 window.__manabiSuppressUnhandledTapHideNavigationUntil = Date.now() + 750;
             }
-            postMay20Log('blankTouch.postNoElement', {
-                ...targetSummary,
-                lookupActive: window.__manabiLookupPopoverActive === true,
-                state: captureNavVisibilityState(),
-            });
             window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
@@ -7260,19 +6631,11 @@ class Reader {
         postReaderLog('ebook.readerOpen.toc.end', {
             hasTOCView: !!this.#tocView,
         });
-        markEPUBPerf('toc.ready', {
-            hasTOC: !!toc,
-            tocCount: Array.isArray(toc) ? toc.length : 'nil',
-            hasTOCView: !!this.#tocView,
-        });
         
         // load and show highlights embedded in the file by Calibre
         postReaderLog('ebook.readerOpen.calibreBookmarks.start', {
             hasMethod: typeof book.getCalibreBookmarks === 'function',
         });
-        postEPUBLoadLog('reader.open.calibre-bookmarks.start', collectEPUBLoadDiagnostics('reader.open.calibre-bookmarks.start', {
-            hasMethod: typeof book.getCalibreBookmarks === 'function',
-        }));
         let calibreBookmarksPendingLogged = false;
         const calibreBookmarksPendingTimer = setTimeout(() => {
             calibreBookmarksPendingLogged = true;
@@ -7289,25 +6652,13 @@ class Reader {
             bookmarks = await book.getCalibreBookmarks?.()
         } catch (error) {
             clearTimeout(calibreBookmarksPendingTimer);
-            postEPUBLoadLog('reader.open.calibre-bookmarks.error', collectEPUBLoadDiagnostics('reader.open.calibre-bookmarks.error', {
-                message: error?.message || String(error),
-                stack: error?.stack || null,
-            }));
             postReaderLog('ebook.readerOpen.calibreBookmarks.error', {
                 message: error?.message || String(error),
             });
             throw error;
         }
         clearTimeout(calibreBookmarksPendingTimer);
-        postEPUBLoadLog('reader.open.calibre-bookmarks.end', collectEPUBLoadDiagnostics('reader.open.calibre-bookmarks.end', {
-            pendingLogged: calibreBookmarksPendingLogged,
-            bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
-        }));
         postReaderLog('ebook.readerOpen.calibreBookmarks.end', {
-            pendingLogged: calibreBookmarksPendingLogged,
-            bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
-        });
-        markEPUBPerf('bookmarks.ready', {
             pendingLogged: calibreBookmarksPendingLogged,
             bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
         });
@@ -7368,25 +6719,6 @@ class Reader {
                 (typeof performance !== 'undefined' && typeof performance.now === 'function'
                     ? performance.now()
                     : Date.now()) - readerOpenStartedAt
-            ),
-            hasRenderer: !!this.view?.renderer,
-            bodyClassName: document.body?.className || 'nil',
-        });
-        postEPUBLoadLog('reader.open.end', collectEPUBLoadDiagnostics('reader.open.end', {
-            elapsedMs: Math.round(
-                (typeof performance !== 'undefined' && typeof performance.now === 'function'
-                    ? performance.now()
-                    : Date.now()) - readerOpenStartedAt
-            ),
-            hasRenderer: !!this.view?.renderer,
-            bodyClassName: document.body?.className || 'nil',
-        }));
-        markEPUBPerf('reader.open.end', {
-            elapsedMs: safeRound(
-                (typeof performance !== 'undefined' && typeof performance.now === 'function'
-                    ? performance.now()
-                    : Date.now()) - readerOpenStartedAt,
-                1,
             ),
             hasRenderer: !!this.view?.renderer,
             bodyClassName: document.body?.className || 'nil',
@@ -7533,11 +6865,12 @@ class Reader {
             before: navVisibilityBefore,
             after: captureNavVisibilityState(),
         });
-        this.#syncPageTrackingButtons('nav-buttons', null, 1).catch((error) => console.error(error));
+        this.#schedulePageTrackingSync('nav-buttons', null, 1, 96);
     }
     async #handleKeydown(event) {
         const k = event.key;
-        const renderer = this.view.renderer;
+        const renderer = this.view?.renderer;
+        if (!renderer) return;
         const isRTL = this.isRTL;
         
         if (k === 'ArrowLeft' || k === 'h') {
@@ -7561,6 +6894,16 @@ class Reader {
                 await this.view.goRight();
             }
         }
+    }
+    async handlePhysicalArrowKey(direction) {
+        const key = direction === 'left'
+            ? 'ArrowLeft'
+            : direction === 'right'
+                ? 'ArrowRight'
+                : null;
+        if (!key) return false;
+        await this.#handleKeydown({ key });
+        return true;
     }
     #installVisibleRendererGoToGuard() {
         const renderer = this.view?.renderer;
@@ -7618,27 +6961,6 @@ class Reader {
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
             && !document.body?.classList?.contains?.('loading');
-        postHideNavLog('didDisplay.begin', {
-            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-            ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
-            ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
-            before: navVisibilityBefore,
-        });
-        postMay20Log('didDisplay.begin', {
-            before: navVisibilityBefore,
-            lastLocation: this.view?.lastLocation ?? null,
-            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
-            snapshots: captureMay20ContentSnapshots(this.view),
-        });
-        postMay21Log('singleMedia.didDisplay.begin', {
-            lastLocation: this.view?.lastLocation ?? null,
-            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
-            snapshots: captureMay21MediaLayoutSnapshots(this.view),
-        });
-        postEPUBLoadLog('renderer.didDisplay.begin', collectEPUBLoadDiagnostics('renderer.didDisplay.begin', {
-            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-        }));
         if (shouldSkipSameIndexDidDisplay) {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
             return;
@@ -7651,22 +6973,12 @@ class Reader {
         try {
             globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
         } catch (_error) {}
-        postEPUBLoadLog('renderer.didDisplay.loading-cleared', collectEPUBLoadDiagnostics('renderer.didDisplay.loading-cleared', {
-            rendererPageCurrent: this.navHUD?.rendererPageSnapshot?.current ?? null,
-            rendererPageTotal: this.navHUD?.rendererPageSnapshot?.total ?? null,
-        }));
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
-            postHideNavLog('didDisplay.preserveHidden.apply', {
-                before: captureNavVisibilityState(),
-            });
             this.navHUD?.setHideNavigationDueToScroll?.(true, 'mark-read.didDisplay.preserve-hidden', {
                 stage: 'before-raf',
             });
             globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
             globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
-            postHideNavLog('didDisplay.preserveHidden.finish', {
-                after: captureNavVisibilityState(),
-            });
         }
         if (this.navHUD?.hideNavigationDueToScroll) {
             this.navHUD.setHideNavigationDueToScroll(true, 'reader.didDisplay.reapply', {
@@ -7678,53 +6990,11 @@ class Reader {
             before: navVisibilityBefore,
             after: captureNavVisibilityState(),
         });
-        postHideNavLog('didDisplay.end', {
-            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-            before: navVisibilityBefore,
-            after: captureNavVisibilityState(),
-        });
-        postMay20Log('didDisplay.end', {
-            before: navVisibilityBefore,
-            after: captureNavVisibilityState(),
-            lastLocation: this.view?.lastLocation ?? null,
-            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
-            snapshots: captureMay20ContentSnapshots(this.view),
-        });
-        postMay21Log('singleMedia.didDisplay.end', {
-            lastLocation: this.view?.lastLocation ?? null,
-            rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
-            settleResult: initialSettleResult ?? null,
-            snapshots: captureMay21MediaLayoutSnapshots(this.view),
-        });
         this.#scheduleInitialPaginatorSettle('did-display');
-        markEPUBPerf('did-display.first', {
-            hasRenderer: !!this.view?.renderer,
-        }, {
-            once: true,
-            anchor: 'document.animation-frame.first',
-        });
         requestAnimationFrame(() => {
             const livePaginator = resolveFoliatePaginator(this.view);
             const livePaginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
-            markEPUBPerf('did-display.raf.first', {
-                paginatorClientWidth: livePaginatorContainer?.clientWidth ?? null,
-                paginatorClientHeight: livePaginatorContainer?.clientHeight ?? null,
-                ...captureEPUBOverlapState(),
-            }, {
-                once: true,
-                anchor: 'did-display.first',
-            });
-            this.#updatePageReadMarker('did-display.raf');
-            postMay20Log('didDisplay.raf', {
-                lastLocation: this.view?.lastLocation ?? null,
-                rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
-                snapshots: captureMay20ContentSnapshots(this.view),
-            });
-            postMay21Log('singleMedia.didDisplay.raf', {
-                lastLocation: this.view?.lastLocation ?? null,
-                rendererPageSnapshot: this.navHUD?.rendererPageSnapshot ?? null,
-                snapshots: captureMay21MediaLayoutSnapshots(this.view),
-            });
+            this.#schedulePageReadMarkerUpdate('did-display.raf', 64);
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
@@ -7734,20 +7004,11 @@ class Reader {
         }
     }) {
         applyStoredChromeInsets('reader.documentLoad');
-        markEPUBPerf('document.load.first', {
-            documentURL: doc?.location?.href || null,
-            isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
-        }, {
-            once: true,
-        });
+        applyNavigationHiddenStateToEbookDocument(doc, 'document-load');
+        const singleMediaInitialLayout = !isCacheWarmerDocument(doc)
+            ? classifySingleMediaDocumentForInitialLayout(doc, 'document-load')
+            : { applied: false, reason: 'cache-warmer-document' };
         if (!isCacheWarmerDocument(doc)) {
-            markEPUBPerf('document.load.first-non-cache', {
-                documentURL: doc?.location?.href || null,
-                ...summarizeDocumentFontState(doc),
-                ...captureEPUBOverlapState(),
-            }, {
-                once: true,
-            });
             postReplaceTextPerfLog('document.load.first-non-cache', {
                 documentURL: doc?.location?.href || null,
                 ...summarizeDocumentFontState(doc),
@@ -7763,50 +7024,9 @@ class Reader {
                 ...captureEPUBOverlapState(),
             });
         }
-        postEPUBLog('ebook.perf.document.fonts.state', {
-            documentURL: doc?.location?.href || null,
-            ...summarizeDocumentFontState(doc),
-            ...captureEPUBOverlapState(),
-        });
-        postFontLog('ebook.document.fonts.state', {
-            documentURL: doc?.location?.href || null,
-            ...summarizeDocumentFontState(doc),
-            outerHasCustomFontStyle: !!document.getElementById('mnb-custom-fonts-inline'),
-            ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
-            ebookInjectedFontFamily: doc?.documentElement?.dataset?.mnbInjectedFontFamily ?? null,
-            ebookFontInjected: doc?.documentElement?.dataset?.mnbFontInjected ?? null,
-        });
-        postMay20Log('document.load', {
-            documentURL: doc?.location?.href || null,
-            isCacheWarmerDocument: isCacheWarmerDocument(doc),
-            snapshots: captureMay20ContentSnapshots(this.view),
-            loadedDocument: {
-                bodyClass: doc?.body?.className || '',
-                htmlClass: doc?.documentElement?.className || '',
-                bodyTextLength: doc?.body?.textContent?.trim?.().length ?? null,
-                bodyChildCount: doc?.body?.children?.length ?? null,
-                bodyScrollWidth: doc?.body?.scrollWidth ?? null,
-                bodyScrollHeight: doc?.body?.scrollHeight ?? null,
-                bodyClientWidth: doc?.body?.clientWidth ?? null,
-                bodyClientHeight: doc?.body?.clientHeight ?? null,
-            },
-        });
-        postMay21Log('singleMedia.document.load', {
-            documentURL: doc?.location?.href || null,
-            isCacheWarmerDocument: isCacheWarmerDocument(doc),
-            snapshots: captureMay21MediaLayoutSnapshots(this.view),
-        });
         try {
             window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
         } catch (error) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
-                    event: 'ebook.document.fonts.forward.error',
-                    timestamp: Date.now(),
-                    documentURL: doc?.location?.href || null,
-                    message: error?.message || String(error),
-                }));
-            } catch {}
         }
         try {
             window.manabiApplyReaderThemeToEbookDocuments?.('document-load', doc);
@@ -7814,90 +7034,32 @@ class Reader {
         try {
             window.manabiApplyReaderFontSizeToEbookDocuments?.('document-load', doc);
         } catch (error) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
-                    event: 'ebook.document.fontSize.forward.error',
-                    timestamp: Date.now(),
-                    documentURL: doc?.location?.href || null,
-                    message: error?.message || String(error),
-                }));
-            } catch {}
         }
         if (doc?.fonts?.ready?.then) {
             const fontsReadyStartedAt = performanceNowMs();
             doc.fonts.ready.then(() => {
-                postEPUBLog('ebook.perf.document.fonts.ready', {
-                    documentURL: doc?.location?.href || null,
-                    elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
-                    ...summarizeDocumentFontState(doc),
-                    bodyTextLength: doc?.body?.textContent?.length ?? null,
-                });
-                try {
-                    window.webkit?.messageHandlers?.print?.postMessage?.('# FONT ' + JSON.stringify({
-                        event: 'ebook.document.fonts.ready',
-                        timestamp: Date.now(),
-                        documentURL: doc?.location?.href || null,
-                        elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
-                        ...summarizeDocumentFontState(doc),
-                        bodyTextLength: doc?.body?.textContent?.length ?? null,
-                    }));
-                } catch {}
+
                 if (!isCacheWarmerDocument(doc)) {
-                    markEPUBPerf('document.fonts.ready.first', {
-                        documentURL: doc?.location?.href || null,
-                        elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
-                        bodyTextLength: doc?.body?.textContent?.length ?? null,
-                        ...captureEPUBOverlapState(),
-                    }, {
-                        once: true,
-                    });
                     postReplaceTextPerfLog('document.fonts.ready.first', {
                         documentURL: doc?.location?.href || null,
                         elapsedMs: safeRound(performanceNowMs() - fontsReadyStartedAt, 1),
-                        bodyTextLength: doc?.body?.textContent?.length ?? null,
-                        bodyScrollHeight: doc?.body?.scrollHeight ?? null,
                         outerHasCustomFontStyle: !!document.getElementById('mnb-custom-fonts-inline'),
                         ebookHasCustomFontStyle: !!doc?.getElementById?.('mnb-custom-fonts-inline'),
                         ebookCustomFontTag: doc?.getElementById?.('mnb-custom-fonts-inline')?.tagName || null,
                         ebookCustomFontHref: doc?.getElementById?.('mnb-custom-fonts-inline')?.href || null,
-                        ...summarizeDocumentFontState(doc),
                         ...captureEPUBOverlapState(),
                     });
                 }
             }).catch((error) => {
-                postEPUBLog('ebook.perf.document.fonts.ready.error', {
-                    documentURL: doc?.location?.href || null,
-                    message: error?.message || String(error),
-                    ...summarizeDocumentFontState(doc),
-                });
             });
         }
         requestAnimationFrame(() => {
             const sourceHref = doc?.body?.dataset?.mnbSourceHref || null;
-            postEPUBLog('ebook.perf.document.animation-frame', {
-                documentURL: doc?.location?.href || null,
-                sourceHref,
-                bodyTextLength: doc?.body?.textContent?.length ?? null,
-                bodyScrollHeight: doc?.body?.scrollHeight ?? null,
-                ...summarizeDocumentFontState(doc),
-                ...captureEPUBOverlapState(),
-            });
             if (!isCacheWarmerDocument(doc)) {
                 window.manabi_recordLiveSettledSection?.(sourceHref);
-                markEPUBPerf('document.animation-frame.first', {
-                    documentURL: doc?.location?.href || null,
-                    sourceHref,
-                    bodyTextLength: doc?.body?.textContent?.length ?? null,
-                    bodyScrollHeight: doc?.body?.scrollHeight ?? null,
-                    ...captureEPUBOverlapState(),
-                }, {
-                    once: true,
-                });
                 postReplaceTextPerfLog('document.animation-frame.first', {
                     documentURL: doc?.location?.href || null,
                     sourceHref,
-                    bodyTextLength: doc?.body?.textContent?.length ?? null,
-                    bodyScrollHeight: doc?.body?.scrollHeight ?? null,
                     ...captureEPUBOverlapState(),
                 });
             }
@@ -7909,20 +7071,6 @@ class Reader {
                 const target = event.target;
                 const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
                 const now = Date.now();
-                postMay20Log('contentDocument.pointer', {
-                    eventType: event.type,
-                    documentURL: doc?.location?.href || null,
-                    tagName: target?.tagName || target?.nodeName || null,
-                    id: target?.id || null,
-                    className: target?.className || null,
-                    excluded: !!excludedTarget,
-                    excludedTagName: excludedTarget?.tagName || null,
-                    excludedID: excludedTarget?.id || null,
-                    excludedClassName: excludedTarget?.className || null,
-                    clientX: event.clientX ?? null,
-                    clientY: event.clientY ?? null,
-                    snapshots: captureMay20ContentSnapshots(this.view),
-                });
                 if (!excludedTarget && (event.type === 'touchstart' || event.type === 'mousedown')) {
                     const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
                     if (now - lastPostedAt > 350) {
@@ -7932,14 +7080,6 @@ class Reader {
                             || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                             || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
                         globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
-                        postMay20Log('contentDocument.blankTouch.postNoElement', {
-                            eventType: event.type,
-                            documentURL: doc?.location?.href || null,
-                            tagName: target?.tagName || target?.nodeName || null,
-                            id: target?.id || null,
-                            className: target?.className || null,
-                            ebookNavigationHidden,
-                        });
                         window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                             touchedEntryWithElementId: null,
                             wasAlreadySelected: false,
@@ -7958,7 +7098,7 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
-        requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2).catch((error) => console.error(error)));
+        this.#schedulePageTrackingSync('document-load', doc, 2, isCacheWarmerDocument(doc) ? 0 : 128);
         if (!isCacheWarmerDocument(doc)) {
             this.#scheduleNativeLookupHitTargetRefresh('document-load', 1, doc);
         }
@@ -8217,16 +7357,6 @@ class Reader {
         }
         
         await this.updateNavButtons();
-        markEPUBPerf('relocate.first', {
-            reason: detail?.reason || null,
-            fraction: safeRound(detail?.fraction),
-            currentPercent,
-            currentLocation: detail?.location?.current ?? null,
-            totalLocation: detail?.location?.total ?? null,
-        }, {
-            once: true,
-            anchor: 'did-display.first',
-        });
         if (typeof currentPercent === 'number') {
             postReplaceTextPerfLog('relocate.first', {
                 reason: detail?.reason || null,
@@ -8356,7 +7486,7 @@ class CacheWarmer {
         }
         return Array.from(this.settledSectionHrefs).sort()
     }
-    #nextUnsettledSectionIndex(settledSectionHrefs = []) {
+    #nextUnsettledSectionIndex(settledSectionHrefs = [], minimumIndex = 0) {
         const sections = Array.isArray(this.view?.book?.sections) ? this.view.book.sections : []
         const settled = new Set(
             Array.isArray(settledSectionHrefs)
@@ -8366,7 +7496,8 @@ class CacheWarmer {
         const activeHref = activeForegroundSectionHref()
         if (activeHref) settled.add(activeHref)
         const currentIndex = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex : -1
-        for (let index = currentIndex + 1; index < sections.length; index += 1) {
+        const startIndex = Math.max(currentIndex + 1, Number.isInteger(minimumIndex) ? minimumIndex : 0)
+        for (let index = startIndex; index < sections.length; index += 1) {
             const section = sections[index]
             if (section?.linear === 'no') continue
             const normalizedHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
@@ -8375,9 +7506,13 @@ class CacheWarmer {
         }
         return null
     }
+    nextUnsettledSectionIndexSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
+        return this.#nextUnsettledSectionIndex(this.#mergeSettledSectionHrefs(settledSectionHrefs), minimumIndex)
+    }
     async #openFirstUnsettledSection() {
         const settledSectionHrefs = this.#mergeSettledSectionHrefs()
-        const firstUnsettledIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        const minimumIndex = activeForegroundSectionIndex()
+        const firstUnsettledIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         const settled = new Set(settledSectionHrefs)
         const activeHref = activeForegroundSectionHref()
         if (activeHref) settled.add(activeHref)
@@ -8401,6 +7536,7 @@ class CacheWarmer {
                 ? this.#normalizeSectionHref(this.view?.book?.sections?.[firstUnsettledIndex]?.href ?? this.view?.book?.sections?.[firstUnsettledIndex]?.id ?? null)
                 : null,
             activeForegroundHref: activeHref,
+            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
             settledSectionCount: settledSectionHrefs.length,
             settledSectionHrefs,
             sectionCount: this.view?.book?.sections?.length ?? 0,
@@ -8409,14 +7545,6 @@ class CacheWarmer {
         })
         if (!Number.isInteger(firstUnsettledIndex)) {
             globalThis.__manabiCacheWarmerFinished = true
-            postEPUBLog('ebook.perf.cache-warmer.finished', {
-                sectionURL: null,
-                sectionIndex: null,
-                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
-                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
-                trigger: 'open-no-unsettled',
-                ...captureEPUBOverlapState(),
-            })
             postReplaceTextPerfLog('cache-warmer.finished', {
                 sectionURL: null,
                 sectionIndex: null,
@@ -8433,14 +7561,6 @@ class CacheWarmer {
             ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
         if (firstUnsettledIndex > 0) {
             const targetSection = this.view?.book?.sections?.[firstUnsettledIndex] ?? null
-            postEPUBLog('ebook.perf.cache-warmer.skip-settled', {
-                trigger: 'open',
-                skippedToSectionIndex: firstUnsettledIndex,
-                skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
-                skippedSettledSectionHrefs,
-                settledSectionCount: settledSectionHrefs.length,
-                ...captureEPUBOverlapState(),
-            })
             postReplaceTextPerfLog('cache-warmer.skip-settled', {
                 trigger: 'open',
                 skippedToSectionIndex: firstUnsettledIndex,
@@ -8461,25 +7581,18 @@ class CacheWarmer {
         })
         await this.view.renderer.goTo({ index: firstUnsettledIndex })
     }
-    async loadNextSectionSkippingSettled(settledSectionHrefs = []) {
+    async loadNextSectionSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
-        const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs)
+        const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         if (!Number.isInteger(targetIndex)) {
             globalThis.__manabiCacheWarmerFinished = true
-            postEPUBLog('ebook.perf.cache-warmer.finished', {
-                sectionURL: this.lastLoadedSectionHref,
-                sectionIndex: this.lastLoadedSectionIndex,
-                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
-                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
-                trigger: 'skip-settled',
-                ...captureEPUBOverlapState(),
-            })
             postReplaceTextPerfLog('cache-warmer.finished', {
                 sectionURL: this.lastLoadedSectionHref,
                 sectionIndex: this.lastLoadedSectionIndex,
                 highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
                 uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
                 trigger: 'skip-settled',
+                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
                 ...captureEPUBOverlapState(),
             })
             return
@@ -8493,6 +7606,7 @@ class CacheWarmer {
                 targetSectionIndex: targetIndex,
                 targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
                 activeForegroundHref: activeForegroundSectionHref(),
+                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
                 skippedSettledSectionHrefs: [],
                 settledSectionCount: settledSectionHrefs.length,
                 ...captureEPUBOverlapState(),
@@ -8506,17 +7620,6 @@ class CacheWarmer {
             ?.slice(sectionSliceStart, targetIndex)
             ?.map((section) => this.#normalizeSectionHref(section?.href ?? section?.id ?? null))
             ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
-        postEPUBLog('ebook.perf.cache-warmer.skip-settled', {
-            trigger: 'advance',
-            currentSectionIndex: this.lastLoadedSectionIndex,
-            currentSectionHref: this.lastLoadedSectionHref,
-            skippedToSectionIndex: targetIndex,
-            skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
-            activeForegroundHref: activeForegroundSectionHref(),
-            skippedSettledSectionHrefs,
-            settledSectionCount: settledSectionHrefs.length,
-            ...captureEPUBOverlapState(),
-        })
         postReplaceTextPerfLog('cache-warmer.skip-settled', {
             trigger: 'advance',
             currentSectionIndex: this.lastLoadedSectionIndex,
@@ -8524,6 +7627,7 @@ class CacheWarmer {
             skippedToSectionIndex: targetIndex,
             skippedToSectionHref: targetSection?.href ?? targetSection?.id ?? null,
             activeForegroundHref: activeForegroundSectionHref(),
+            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
             skippedSettledSectionHrefs,
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
@@ -8535,6 +7639,7 @@ class CacheWarmer {
             targetSectionIndex: targetIndex,
             targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
             activeForegroundHref: activeForegroundSectionHref(),
+            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
             skippedSettledSectionHrefs,
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
@@ -8564,10 +7669,6 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
         globalThis.__manabiDeferredCacheWarmerLogged = false;
-        postEPUBLog('ebook.perf.cache-warmer.open.begin', {
-            sourceKind: file?.kind || 'nil',
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('cache-warmer.open.begin', {
             sourceKind: file?.kind || 'nil',
             ...captureEPUBOverlapState(),
@@ -8583,20 +7684,11 @@ class CacheWarmer {
             await this.#openFirstUnsettledSection()
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
-            postEPUBLog('ebook.perf.cache-warmer.open.end', {
-                sourceKind: file?.kind || 'nil',
-                ...captureEPUBOverlapState(),
-            });
             postReplaceTextPerfLog('cache-warmer.open.end', {
                 sourceKind: file?.kind || 'nil',
                 ...captureEPUBOverlapState(),
             });
         } catch (error) {
-            postEPUBLog('ebook.perf.cache-warmer.open.error', {
-                sourceKind: file?.kind || 'nil',
-                message: error?.message || String(error),
-                ...captureEPUBOverlapState(),
-            });
             postReplaceTextPerfLog('cache-warmer.open.error', {
                 sourceKind: file?.kind || 'nil',
                 message: error?.message || String(error),
@@ -8625,23 +7717,9 @@ class CacheWarmer {
                 sectionIndex,
                 sectionHref,
             });
-            postEPUBLog('ebook.perf.cache-warmer.readyToLoadNextSection.post', {
-                trigger,
-                sectionIndex,
-                sectionHref,
-                ...captureEPUBOverlapState(),
-            });
             return;
         }
         globalThis.__manabiCacheWarmerFinished = true;
-        postEPUBLog('ebook.perf.cache-warmer.finished', {
-            sectionURL: location,
-            sectionIndex,
-            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
-            uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
-            trigger,
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('cache-warmer.finished', {
             sectionURL: location,
             sectionIndex,
@@ -8690,17 +7768,6 @@ class CacheWarmer {
             segmentCount: segmentNodes.length,
             navHUDReady: !!globalThis.reader?.navHUD,
         });
-        postEPUBLog('ebook.perf.cache-warmer.onLoad.begin', {
-            sectionIndex: Number.isInteger(index) ? index : null,
-            location,
-            indexedSectionHref,
-            sourceHref,
-            sectionHref,
-            sentenceCount: sentenceNodes.length,
-            segmentCount: segmentNodes.length,
-            navHUDReady: !!globalThis.reader?.navHUD,
-            ...captureEPUBOverlapState(),
-        });
         postReaderLog('ebook.cacheWarmer.sectionLoaded', {
             sectionURL: location,
             documentURL: doc?.location?.href || 'nil',
@@ -8712,17 +7779,6 @@ class CacheWarmer {
             isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
             isLikelyTitlePage,
         });
-        postEPUBLog('ebook.perf.cache-warmer.section', {
-            sectionURL: location,
-            sectionIndex: Number.isInteger(index) ? index : null,
-            highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
-            sourceHref: sourceHref || null,
-            sentenceCount: sentenceNodes.length,
-            segmentCount: segmentNodes.length,
-            isLikelyTitlePage,
-            ...summarizeDocumentFontState(doc),
-            ...captureEPUBOverlapState(),
-        });
         postReplaceTextPerfLog('cache-warmer.section', {
             sectionURL: location,
             sectionIndex: Number.isInteger(index) ? index : null,
@@ -8733,15 +7789,6 @@ class CacheWarmer {
             isLikelyTitlePage,
             ...summarizeDocumentFontState(doc),
             ...captureEPUBOverlapState(),
-        });
-        markEPUBPerf('cache-warmer.section.first', {
-            sectionURL: location,
-            sectionIndex: Number.isInteger(index) ? index : null,
-            sourceHref: sourceHref || null,
-            sentenceCount: sentenceNodes.length,
-            segmentCount: segmentNodes.length,
-        }, {
-            once: true,
         });
         for (const sentenceNode of sentenceNodes) {
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
@@ -8780,24 +7827,12 @@ class CacheWarmer {
             location,
             sectionHref,
         });
-        postEPUBLog('ebook.perf.cache-warmer.loadedSection.post', {
-            sectionIndex: Number.isInteger(index) ? index : null,
-            location,
-            sectionHref,
-            ...captureEPUBOverlapState(),
-        });
         
         const atEnd = await this.view.renderer.atEnd();
         postPageNumLog('cacheWarmer.atEnd', {
             sectionIndex: Number.isInteger(index) ? index : null,
             sectionHref,
             atEnd,
-        });
-        postEPUBLog('ebook.perf.cache-warmer.atEnd', {
-            sectionIndex: Number.isInteger(index) ? index : null,
-            sectionHref,
-            atEnd,
-            ...captureEPUBOverlapState(),
         });
         const sectionAdvance = {
             sectionIndex: Number.isInteger(index) ? index : null,
@@ -8845,35 +7880,61 @@ window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 
-window.loadNextCacheWarmerSection = async () => {
-    await window.cacheWarmer.loadNextSectionSkippingSettled()
+window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
+    scheduleLoadNextCacheWarmerSection(settledSectionHrefs, 'native-ready');
 }
 
 window.loadEBook = ({
     url,
     layoutMode,
 }) => {
+    const requestedURL = typeof url === 'string' ? url : '';
+    if (
+        requestedURL.length > 0
+        && globalThis.manabiLoadEBookURL === requestedURL
+        && globalThis.manabiLoadEBookInFlight === true
+    ) {
+        const existingStartedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
+        const existingStartedAgeMs = existingStartedAt > 0 ? Date.now() - existingStartedAt : 0;
+        if (globalThis.reader?.view?.renderer || existingStartedAgeMs < 2500) {
+            globalThis.manabiLoadEBookLastState = 'duplicate-inflight';
+            globalThis.manabiPendingLoadEBookArgs = null;
+            return globalThis.manabiLoadEBookPromise;
+        }
+        globalThis.manabiLoadEBookLastState = 'duplicate-inflight-stale-restart';
+    }
+    if (
+        requestedURL.length > 0
+        && globalThis.manabiLoadEBookURL === requestedURL
+        && globalThis.manabiLoadEBookReady === true
+        && globalThis.reader?.view?.renderer
+    ) {
+        globalThis.manabiLoadEBookLastState = 'duplicate-ready';
+        globalThis.manabiPendingLoadEBookArgs = null;
+        return;
+    }
+    const loadToken = (globalThis.manabiLoadEBookToken ?? 0) + 1;
+    globalThis.manabiLoadEBookToken = loadToken;
+    globalThis.manabiLoadEBookURL = requestedURL;
+    globalThis.manabiLoadEBookInFlight = true;
+    globalThis.manabiLoadEBookStarted = true;
+    globalThis.manabiLoadEBookStartedAt = Date.now();
+    globalThis.manabiLoadEBookReady = false;
+    globalThis.manabiLoadEBookLastState = 'start';
+    globalThis.manabiPendingLoadEBookArgs = {
+        hasURL: typeof url === 'string' && url.length > 0,
+        layoutMode: layoutMode || null,
+    };
     try {
         globalThis.__manabiFinishEPUBLoadWatchdogs?.('new-load');
     } catch (_error) {}
     globalThis.__manabiLiveProcessedSectionHrefs = new Set();
     globalThis.__manabiLiveSettledSectionHrefs = new Set();
     globalThis.__manabiFirstLiveSectionHref = null;
-    beginEPUBPerfSession({
-        hasURL: typeof url === 'string' && url.length > 0,
-        layoutMode: layoutMode || 'default',
-        sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
-    });
     let loadSettled = false;
     const loadWatchdogTimers = [1000, 3000, 8000, 20000, 45000].map(delayMs =>
         setTimeout(() => {
             if (loadSettled) return;
-            postEPUBLoadLog('viewer.load.pending', collectEPUBLoadDiagnostics('viewer.load.pending', {
-                delayMs,
-                hasURL: typeof url === 'string' && url.length > 0,
-                layoutMode: layoutMode || 'default',
-                sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
-            }));
         }, delayMs)
     );
     const finishLoadWatchdogs = () => {
@@ -8881,15 +7942,11 @@ window.loadEBook = ({
         for (const timer of loadWatchdogTimers) clearTimeout(timer);
     };
     globalThis.__manabiFinishEPUBLoadWatchdogs = finishLoadWatchdogs;
-    postEPUBLoadLog('viewer.load.start', collectEPUBLoadDiagnostics('viewer.load.start', {
-        hasURL: typeof url === 'string' && url.length > 0,
-        layoutMode: layoutMode || 'default',
-        sourceKind: typeof url === 'string' && url.startsWith('ebook://') ? 'native' : 'remote',
-    }));
     postReaderLog('ebook.viewer.load.start', {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || 'default',
     });
+    const previousReader = globalThis.reader?.view?.renderer ? globalThis.reader : null;
     try {
         globalThis.reader?.view?.close?.()
     } catch (_error) {}
@@ -8908,6 +7965,7 @@ window.loadEBook = ({
         : null
     
     if (url) {
+        globalThis.manabiLoadEBookLastState = 'source-start';
         const sourcePromise = window.ebookSource
             ? Promise.resolve(window.ebookSource)
             : fetch(url, {
@@ -8918,17 +7976,6 @@ window.loadEBook = ({
                 .then(res => res.blob())
                 .then((blob) => {
                     window.blob = blob
-                    postEPUBLoadLog('viewer.load.blob.ready', collectEPUBLoadDiagnostics('viewer.load.blob.ready', {
-                        blobSize: blob.size,
-                        blobType: blob.type || 'nil',
-                    }));
-                    markEPUBPerf('source.ready', {
-                        sourceKind: 'blob',
-                        blobSize: blob.size,
-                        blobType: blob.type || 'nil',
-                    }, {
-                        once: true,
-                    });
                     postReaderLog('ebook.viewer.load.blobReady', {
                         blobSize: blob.size,
                         blobType: blob.type || 'nil',
@@ -8936,18 +7983,12 @@ window.loadEBook = ({
                     return makeFileSource(new File([blob], new URL(url).pathname))
                 })
 
-        sourcePromise
+        const openPromise = sourcePromise
         .then(async (source) => {
+            if (globalThis.manabiLoadEBookToken !== loadToken) return;
+            globalThis.manabiLoadEBookLastState = 'source-ready';
+            globalThis.manabiPendingLoadEBookArgs = null;
             if (source?.kind === 'native') {
-                postEPUBLoadLog('viewer.load.native-source.ready', collectEPUBLoadDiagnostics('viewer.load.native-source.ready', {
-                    sourceURL: source.url,
-                }));
-                markEPUBPerf('source.ready', {
-                    sourceKind: 'native',
-                    sourceURL: source.url,
-                }, {
-                    once: true,
-                });
                 postReaderLog('ebook.viewer.load.nativeSource', {
                     sourceURL: source.url,
                 });
@@ -8955,31 +7996,23 @@ window.loadEBook = ({
             if (layoutMode) {
                 window.initialLayoutMode = layoutMode
             }
-            markEPUBPerf('reader.open.dispatch', {
-                fileKind: source?.kind || 'nil',
-            });
-            postEPUBLoadLog('viewer.reader-open.dispatch', collectEPUBLoadDiagnostics('viewer.reader-open.dispatch', {
-                fileKind: source?.kind || 'nil',
-            }));
+            globalThis.manabiLoadEBookLastState = 'reader-open-dispatch';
             await reader.open(source)
+            if (!reader?.view?.renderer) {
+                throw new Error('reader-open-missing-renderer');
+            }
         })
         .then(async () => {
-            markEPUBPerf('reader.open.resolved', {
-                hasRenderer: !!globalThis.reader?.view?.renderer,
-                bookDir: globalThis.reader?.bookDir || 'nil',
-                isRTL: !!globalThis.reader?.isRTL,
-            });
-            postEPUBLoadLog('viewer.reader-open.resolved', collectEPUBLoadDiagnostics('viewer.reader-open.resolved', {
-                hasRenderer: !!globalThis.reader?.view?.renderer,
-                bookDir: globalThis.reader?.bookDir || 'nil',
-                isRTL: !!globalThis.reader?.isRTL,
-            }));
+            if (globalThis.manabiLoadEBookToken !== loadToken) return;
+            globalThis.reader = reader;
+            finishLoadWatchdogs();
+            globalThis.manabiLoadEBookReady = true;
+            globalThis.manabiLoadEBookLastState = 'reader-open-resolved';
             postReaderLog('ebook.viewer.load.opened', {
                 hasRenderer: !!globalThis.reader?.view?.renderer,
                 bookDir: globalThis.reader?.bookDir || 'nil',
                 isRTL: !!globalThis.reader?.isRTL,
             });
-            markEPUBPerf('viewer.loaded.callback');
             const probe = globalThis.reader?.collectLayoutGapProbe?.('ebookViewerLoaded', {
                 bookDir: globalThis.reader?.bookDir || null,
                 isRTL: !!globalThis.reader?.isRTL,
@@ -8989,24 +8022,37 @@ window.loadEBook = ({
             })
         })
         .catch((error) => {
+            if (globalThis.manabiLoadEBookToken !== loadToken) {
+                return;
+            }
             finishLoadWatchdogs();
+            globalThis.manabiLoadEBookReady = false;
+            globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
+            if (globalThis.reader === reader || !globalThis.reader?.view?.renderer) {
+                globalThis.reader = previousReader ?? null;
+            }
             try {
                 reader?.setLoadingIndicator?.(false);
             } catch (_error) {}
-            postEPUBLoadLog('viewer.load.error', collectEPUBLoadDiagnostics('viewer.load.error', {
-                message: error?.message || String(error),
-                stack: error?.stack || null,
-            }));
-            markEPUBPerf('load.error', {
-                message: error?.message || String(error),
-            }, {
-                once: true,
-            });
             postReaderLog('ebook.viewer.load.error', {
                 message: error?.message || String(error),
             });
             throw error;
         })
+        .finally(() => {
+            if (globalThis.manabiLoadEBookToken !== loadToken) return;
+            globalThis.manabiLoadEBookInFlight = false;
+            globalThis.manabiLoadEBookPromise = null;
+        })
+        globalThis.manabiLoadEBookPromise = openPromise;
+        return openPromise;
+    } else {
+        finishLoadWatchdogs();
+        globalThis.manabiLoadEBookReady = false;
+        globalThis.manabiLoadEBookLastState = 'no-url';
+        globalThis.manabiPendingLoadEBookArgs = null;
+        globalThis.manabiLoadEBookInFlight = false;
+        globalThis.manabiLoadEBookPromise = null;
     }
     //.catch(e => console.error(e))
 }
@@ -9113,10 +8159,6 @@ window.loadLastPosition = async ({
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         cfiLength: typeof cfi === 'string' ? cfi.length : 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-    });
-    markEPUBPerf('restore.start', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 4) : 'nil',
     });
     const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
     const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
@@ -9340,16 +8382,13 @@ window.loadLastPosition = async ({
         postReaderLog('ebook.viewer.loadLastPosition.done', {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
         });
-        markEPUBPerf('restore.done', {
-            hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        });
         postReplaceTextPerfLog('restore.done', {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
             ...captureEPUBOverlapState(),
         });
 
         // Let the visible section finish rendering before warming secondary sections.
-        scheduleDeferredCacheWarmerOpen('load-last-position-done', 600);
+        scheduleDeferredCacheWarmerOpen('load-last-position-done', 2200);
     } finally {
         globalThis.__manabiRestoreInProgress = false;
         globalThis.__manabiSuppressNextRestoreRelocateSave = false;
@@ -9377,6 +8416,10 @@ window.refreshBookReadingProgress = async (articleReadingProgress) => {
 
 window.manabiToggleReaderTableOfContents = () => {
     globalThis.reader?.toggleTableOfContents?.();
+}
+
+window.manabiHandlePhysicalArrowKey = async (direction) => {
+    return await globalThis.reader?.handlePhysicalArrowKey?.(direction) ?? false;
 }
 
 window.manabiGetReaderGoToSheetSnapshot = async () => {
