@@ -7113,6 +7113,16 @@ class Reader {
             }
         }
     }
+    async handlePhysicalArrowKey(direction) {
+        const key = direction === 'left'
+            ? 'ArrowLeft'
+            : direction === 'right'
+                ? 'ArrowRight'
+                : null;
+        if (!key) return false;
+        await this.#handleKeydown({ key });
+        return true;
+    }
     #installVisibleRendererGoToGuard() {
         const renderer = this.view?.renderer;
         if (!renderer || renderer.__manabiVisibleGoToGuardInstalled) return;
@@ -9054,6 +9064,10 @@ window.refreshBookReadingProgress = async (articleReadingProgress) => {
 
 window.manabiToggleReaderTableOfContents = () => {
     globalThis.reader?.toggleTableOfContents?.();
+}
+
+window.manabiHandlePhysicalArrowKey = async (direction) => {
+    return await globalThis.reader?.handlePhysicalArrowKey?.(direction) ?? false;
 }
 
 window.manabiGetReaderGoToSheetSnapshot = async () => {
