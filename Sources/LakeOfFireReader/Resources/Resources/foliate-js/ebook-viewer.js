@@ -3042,7 +3042,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     };
 };
 
-const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult) => {
+const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
     const viewportWidth = visibleSegmentsResult?.viewportWidth
@@ -3061,6 +3061,8 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     if (typeof builder !== 'function') {
         messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
+            reason,
+            isExplicitReset: false,
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth,
             viewportHeight,
@@ -3090,6 +3092,8 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     }
     messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
+        reason,
+        isExplicitReset: false,
         visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
         viewportWidth,
         viewportHeight,
@@ -4756,6 +4760,8 @@ class Reader {
         this.visiblePageSegmentSnapshot = null;
         window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
+            reason: 'visible-page-segment-snapshot.invalidated',
+            isExplicitReset: true,
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
             viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
@@ -4782,7 +4788,7 @@ class Reader {
             ? range
             : null;
     }
-    #visiblePageSegmentResult(doc, visibleRange = null) {
+    #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result') {
         const snapshot = this.visiblePageSegmentSnapshot;
         if (
             snapshot
@@ -4799,7 +4805,7 @@ class Reader {
             visibleRange,
             result,
         };
-        postNativeLookupHitTargetsForVisibleSegments(doc, result);
+        postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
         return result;
     }
     #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2, explicitDoc = null) {
@@ -4834,10 +4840,34 @@ class Reader {
                     hasVisibleRange: !!visibleRange,
                     rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
                 });
-                this.#visiblePageSegmentResult(doc, visibleRange);
+                this.visiblePageSegmentSnapshot = null;
+                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`);
             });
         };
         runAfterFrame(remainingFrames);
+    }
+    #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
+        this.#scheduleNativeLookupHitTargetRefresh(`${reason}.raf`, 1, explicitDoc);
+        const scheduleLater = (delayMs, label, frameDelay = 1) => {
+            setTimeout(() => {
+                const doc = isDocumentLike(explicitDoc)
+                    ? explicitDoc
+                    : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
+                if (!isDocumentLike(doc) || isCacheWarmerDocument(doc)) {
+                    return;
+                }
+                this.#scheduleNativeLookupHitTargetRefresh(`${reason}.${label}`, frameDelay, doc);
+            }, delayMs);
+        };
+        scheduleLater(120, 'settled-120ms', 1);
+        scheduleLater(360, 'settled-360ms', 1);
+        try {
+            explicitDoc?.fonts?.ready?.then?.(() => {
+                if (!isCacheWarmerDocument(explicitDoc)) {
+                    this.#scheduleNativeLookupHitTargetRefresh(`${reason}.fonts-ready`, 1, explicitDoc);
+                }
+            });
+        } catch (_error) {}
     }
     #updateEbookSubscriptionPreviewPageState({
         sectionIndex = null,
@@ -5836,7 +5866,7 @@ class Reader {
             return;
         }
         const visibleSegmentsStartedAt = performanceNowMs();
-        const visibleSegmentsResult = this.#visiblePageSegmentResult(doc, visibleRange);
+        const visibleSegmentsResult = this.#visiblePageSegmentResult(doc, visibleRange, `page-tracking:${reason}`);
         const visibleSegmentsElapsedMs = performanceNowMs() - visibleSegmentsStartedAt;
         if (syncGeneration !== this.visiblePageCollectionGeneration) {
             return;
@@ -7099,7 +7129,7 @@ class Reader {
         })
         this.#schedulePageTrackingSync('document-load', doc, 2, isCacheWarmerDocument(doc) ? 0 : 128);
         if (!isCacheWarmerDocument(doc)) {
-            this.#scheduleNativeLookupHitTargetRefresh('document-load', 1, doc);
+            this.#scheduleNativeLookupHitTargetRefreshSettle('document-load', doc);
         }
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
@@ -7139,7 +7169,7 @@ class Reader {
         const doc = contents[0]?.doc || contents[0]?.document || null;
         const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;
         const visibleSegmentsResult = isDocumentLike(doc)
-            ? this.#visiblePageSegmentResult(doc, visibleRange)
+            ? this.#visiblePageSegmentResult(doc, visibleRange, 'reading-progress')
             : null;
         const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(
             this.view?.renderer,
@@ -7179,7 +7209,7 @@ class Reader {
             totalLocation: location?.total ?? null,
         });
         await this.navHUD?.handleRelocate(detail);
-        this.#scheduleNativeLookupHitTargetRefresh('relocate', 2);
+        this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({
             navHUD: this.navHUD,
