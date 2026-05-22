@@ -36,8 +36,7 @@ const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
 const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = true;
 const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
-const MANABI_ENABLE_RENDERED_NEIGHBOR_PRERENDER = false;
-const MANABI_RENDERED_NEIGHBOR_PRERENDER_END_PAGE_THRESHOLD = 5;
+const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
@@ -77,6 +76,15 @@ const postEBookBugLog = (event, details = {}) => {
         window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
     } catch (_error) {
         try { console.log('# EBOOKBUG', payload); } catch (_) {}
+    }
+};
+const postBlankPageLog = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    const line = `# BLANKPAGE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
     }
 };
 const sectionDebugInfo = section => section
@@ -739,8 +747,8 @@ class View {
                     ? `${verticalMaxWidth}px`
                     : (inlineMaxWidth && inlineMaxWidth !== 'none' && inlineMaxWidth !== '0px' ? inlineMaxWidth : '100%'),
                 objectFit: 'contain',
-                pageBreakInside: 'avoid',
-                breakInside: 'avoid',
+                pageBreakInside: vertical ? 'auto' : 'avoid',
+                breakInside: vertical ? 'auto' : 'avoid',
                 boxSizing: 'border-box',
             });
             const parent = el.parentElement;
@@ -751,9 +759,9 @@ class View {
             }
             if (parent && parent !== doc.body && !hasSubstantiveDirectText(parent) && parentMediaCount === 1) {
                 Object.assign(parent.style, {
-                    pageBreakInside: 'avoid',
-                    breakInside: 'avoid',
-                    webkitColumnBreakInside: 'avoid',
+                    pageBreakInside: vertical ? 'auto' : 'avoid',
+                    breakInside: vertical ? 'auto' : 'avoid',
+                    webkitColumnBreakInside: vertical ? 'auto' : 'avoid',
                     boxSizing: 'border-box',
                 });
             }
@@ -986,7 +994,6 @@ export class Paginator extends HTMLElement {
     #suspendOnExpandAnchor = false
     #prefetchTimer = null
     #prefetchCache = new Map()
-    #renderedPrefetchCache = new Map()
     #pendingPageTurnDirection = null
     #queuedPageTurn = null
 
@@ -1125,7 +1132,6 @@ export class Paginator extends HTMLElement {
                 grid-column: 2 / 5;
                 grid-row: 2;
                 position: relative;
-                isolation: isolate;
                 overflow: hidden;
             }
             :host([flow="scrolled"]) #container {
@@ -1275,10 +1281,6 @@ export class Paginator extends HTMLElement {
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
         this.#container.append(this.#view.element)
-        Object.assign(this.#view.element.style, {
-            position: 'relative',
-            zIndex: '2',
-        })
         return this.#view
     }
     #installStyleElementsForDocument(doc) {
@@ -1300,81 +1302,6 @@ export class Paginator extends HTMLElement {
             $style.textContent = style
         } else {
             $style.textContent = styles ?? ''
-        }
-    }
-    #createRenderedPrefetchView(index) {
-        let view
-        view = new View({
-            container: this,
-            onBeforeExpand: async () => {
-                view.cachedViewSize = null
-                view.cachedSizes = null
-            },
-            onExpand: async () => {
-                view.cachedViewSize = null
-                view.cachedSizes = null
-            },
-            isCacheWarmer: false,
-        })
-        Object.assign(view.element.style, {
-            position: 'absolute',
-            inset: '0',
-            opacity: '0.001',
-            pointerEvents: 'none',
-            zIndex: '1',
-        })
-        view.element.dataset.manabiRenderedPrefetchIndex = String(index)
-        view.element.setAttribute('aria-hidden', 'true')
-        this.#container.append(view.element)
-        return view
-    }
-    async #beforeRenderForPreparedView(view, options) {
-        const visibleView = this.#view
-        const visibleVertical = this.#vertical
-        const visibleVerticalRTL = this.#verticalRTL
-        const visibleRTL = this.#rtl
-        const visibleTopClass = this.#top.className
-        const visibleTopStyle = this.#top.getAttribute('style')
-        const visibleHeaderStyle = this.#header.getAttribute('style')
-        const visibleFooterStyle = this.#footer.getAttribute('style')
-        const visibleHeaderChildren = Array.from(this.#header.childNodes)
-        const visibleFooterChildren = Array.from(this.#footer.childNodes)
-        const visibleHeads = this.heads
-        const visibleFeet = this.feet
-        const visibleTopMargin = this.#topMargin
-        const visibleBottomMargin = this.#bottomMargin
-        const visibleDir = this.getAttribute('dir')
-        const visibleDirectionReady = this.#directionReady
-        const visibleDirectionReadyResolve = this.#directionReadyResolve
-        const visibleLastRenderContainerSize = this.#lastRenderContainerSize
-        const visibleLastTypographyRenderSignature = this.#lastTypographyRenderSignature
-        try {
-            this.#view = view
-            return await this.#beforeRender(options)
-        } finally {
-            this.#view = visibleView
-            this.#vertical = visibleVertical
-            this.#verticalRTL = visibleVerticalRTL
-            this.#rtl = visibleRTL
-            this.#top.className = visibleTopClass
-            if (visibleTopStyle == null) this.#top.removeAttribute('style')
-            else this.#top.setAttribute('style', visibleTopStyle)
-            if (visibleHeaderStyle == null) this.#header.removeAttribute('style')
-            else this.#header.setAttribute('style', visibleHeaderStyle)
-            if (visibleFooterStyle == null) this.#footer.removeAttribute('style')
-            else this.#footer.setAttribute('style', visibleFooterStyle)
-            this.#header.replaceChildren(...visibleHeaderChildren)
-            this.#footer.replaceChildren(...visibleFooterChildren)
-            this.heads = visibleHeads
-            this.feet = visibleFeet
-            this.#topMargin = visibleTopMargin
-            this.#bottomMargin = visibleBottomMargin
-            if (visibleDir == null) this.removeAttribute('dir')
-            else this.setAttribute('dir', visibleDir)
-            this.#directionReady = visibleDirectionReady
-            this.#directionReadyResolve = visibleDirectionReadyResolve
-            this.#lastRenderContainerSize = visibleLastRenderContainerSize
-            this.#lastTypographyRenderSignature = visibleLastTypographyRenderSignature
         }
     }
     #setLoading(isLoading, reason = 'unknown') {
@@ -1412,7 +1339,6 @@ export class Paginator extends HTMLElement {
     }
     #releaseNeighborPrefetch(index, entry = this.#prefetchCache.get(index), remove = true) {
         if (!entry || entry.released) return
-        this.#destroyRenderedNeighborPrefetch(index, 'prefetch-release', { releasePrefetch: false })
         if (remove && this.#prefetchCache.get(index) === entry) {
             this.#prefetchCache.delete(index)
         }
@@ -1425,135 +1351,23 @@ export class Paginator extends HTMLElement {
     }
     #consumeNeighborPrefetch(index, entry = this.#prefetchCache.get(index)) {
         if (!entry || entry.released) return
-        this.#destroyRenderedNeighborPrefetch(index, 'prefetch-consume', { releasePrefetch: false })
         if (this.#prefetchCache.get(index) === entry) {
             this.#prefetchCache.delete(index)
         }
         entry.released = true
         entry.consumed = true
     }
-    #destroyRenderedNeighborPrefetch(index, reason = 'unknown', { releasePrefetch = true } = {}) {
-        const entry = this.#renderedPrefetchCache.get(index)
-        if (!entry) return
-        this.#renderedPrefetchCache.delete(index)
-        entry.dropped = true
-        try {
-            entry.view?.destroy?.()
-            entry.view?.element?.remove?.()
-        } catch (_error) {}
-        if (releasePrefetch && entry.prefetchEntry && !entry.prefetchEntry.released) {
-            this.#releaseNeighborPrefetch(index, entry.prefetchEntry)
-        }
-    }
-    #consumeRenderedNeighborPrefetch(index) {
-        const entry = this.#renderedPrefetchCache.get(index)
-        if (!entry?.ready || !entry.view || entry.dropped) return null
-        this.#renderedPrefetchCache.delete(index)
-        entry.consumed = true
-        if (entry.prefetchEntry) this.#consumeNeighborPrefetch(index, entry.prefetchEntry)
-        return entry
-    }
-    #destroyRenderedNeighborPrefetchesExcept(indexes, reason = 'outside-render-window') {
-        const keep = new Set(indexes.filter(index => typeof index === 'number'))
-        for (const [index] of this.#renderedPrefetchCache) {
-            if (!keep.has(index)) {
-                this.#destroyRenderedNeighborPrefetch(index, reason, { releasePrefetch: false })
-            }
-        }
-    }
-    async #isWithinRenderedNeighborPrerenderWindow() {
+    async #isWithinNeighborPrefetchWindow() {
         if (!this.#view || this.#isCacheWarmer) return false
         try {
             const page = await this.page()
             const pages = await this.pages()
             const lastReadablePage = Math.max(1, pages - 2)
             const remainingPages = Math.max(0, lastReadablePage - page)
-            return remainingPages <= MANABI_RENDERED_NEIGHBOR_PRERENDER_END_PAGE_THRESHOLD
+            return remainingPages <= MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD
         } catch (_error) {
             return false
         }
-    }
-    async #startRenderedNeighborPrerender(index, prefetchEntry = this.#prefetchCache.get(index), { currentIndex = this.#index } = {}) {
-        if (
-            !MANABI_ENABLE_RENDERED_NEIGHBOR_PRERENDER ||
-            this.#isCacheWarmer ||
-            !prefetchEntry?.promise ||
-            prefetchEntry.released ||
-            index !== this.#adjacentIndex(1) ||
-            currentIndex !== this.#index ||
-            this.#renderedPrefetchCache.has(index)
-        ) {
-            return
-        }
-        if (!await this.#isWithinRenderedNeighborPrerenderWindow()) {
-            return
-        }
-        const entry = {
-            index,
-            prefetchEntry,
-            view: null,
-            src: null,
-            layoutContext: null,
-            preparedLayout: null,
-            resourcePrewarm: null,
-            ready: false,
-            dropped: false,
-            consumed: false,
-            promise: null,
-        }
-        this.#renderedPrefetchCache.set(index, entry)
-        entry.promise = (async () => {
-            const startedAt = manabiPerfNow()
-            const src = await prefetchEntry.promise
-            if (
-                entry.dropped ||
-                prefetchEntry.released ||
-                this.#prefetchCache.get(index) !== prefetchEntry ||
-                index !== this.#adjacentIndex(1) ||
-                currentIndex !== this.#index
-            ) {
-                return null
-            }
-            if (!await this.#isWithinRenderedNeighborPrerenderWindow()) {
-                if (this.#renderedPrefetchCache.get(index) === entry) {
-                    this.#renderedPrefetchCache.delete(index)
-                }
-                entry.dropped = true
-                return null
-            }
-            const view = this.#createRenderedPrefetchView(index)
-            entry.view = view
-            entry.src = src
-            await view.load(
-                src,
-                async (doc) => {
-                    this.#installStyleElementsForDocument(doc)
-                    this.#applyStylesToDocument(doc)
-                },
-                async (layoutContext) => {
-                    entry.layoutContext = layoutContext
-                    entry.preparedLayout = await this.#beforeRenderForPreparedView(view, layoutContext)
-                    return entry.preparedLayout
-                }
-            )
-            if (entry.dropped || this.#renderedPrefetchCache.get(index) !== entry) {
-                view.destroy()
-                view.element.remove()
-                return null
-            }
-            entry.ready = true
-            return entry
-        })().catch((error) => {
-            if (this.#renderedPrefetchCache.get(index) === entry) {
-                this.#renderedPrefetchCache.delete(index)
-            }
-            entry.dropped = true
-            try {
-                entry.view?.destroy?.()
-                entry.view?.element?.remove?.()
-            } catch (_error) {}
-            return null
-        })
     }
     #scheduleNeighborPrefetch(reason = 'unknown', delayMs = MANABI_NEIGHBOR_PREFETCH_DELAY_MS) {
         if (!MANABI_ENABLE_NEIGHBOR_PREFETCH || this.#isCacheWarmer) return
@@ -1568,17 +1382,12 @@ export class Paginator extends HTMLElement {
         if (this.#index !== index) return
 
         const nextIndex = this.#adjacentIndex(1)
-        const withinRenderedWindow = await this.#isWithinRenderedNeighborPrerenderWindow()
-        const wanted = withinRenderedWindow && nextIndex != null ? [nextIndex] : []
+        const withinPrefetchWindow = await this.#isWithinNeighborPrefetchWindow()
+        const wanted = withinPrefetchWindow && nextIndex != null ? [nextIndex] : []
         const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)))
         for (const [i, entry] of this.#prefetchCache) {
             if (!keep.has(i)) this.#releaseNeighborPrefetch(i, entry)
         }
-
-        this.#destroyRenderedNeighborPrefetchesExcept(
-            wanted,
-            withinRenderedWindow ? 'not-next-section' : 'outside-render-window'
-        )
 
         wanted.forEach(i => {
             if (
@@ -1589,9 +1398,6 @@ export class Paginator extends HTMLElement {
                 const entry = this.#prefetchCache.get(i)
                     ?? this.#cacheNeighborPrefetch(i, this.sections[i].load())
                 entry.promise.catch(() => { })
-                if (withinRenderedWindow && i === nextIndex) {
-                    void this.#startRenderedNeighborPrerender(i, entry, { currentIndex: index })
-                }
             }
         })
     }
@@ -1801,107 +1607,6 @@ export class Paginator extends HTMLElement {
         if (container.textContent.trim() !== '') return false;
         return true;
     }
-    #parsedDocumentHasSingleMediaElementWithoutText(doc) {
-        const container = doc?.getElementById?.('reader-content') || doc?.body
-        if (!container) return false
-        const mediaTags = ['img', 'image', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed']
-        const selector = mediaTags.join(',')
-        const mediaElements = container.querySelectorAll?.(selector) || []
-        if (mediaElements.length !== 1) return false
-        return (container.textContent || '').trim() === ''
-    }
-    #imageDecode(src) {
-        if (!src || typeof Image !== 'function') return Promise.resolve({ src, decoded: false, reason: 'unavailable' })
-        return new Promise(resolve => {
-            const image = new Image()
-            let settled = false
-            const finish = result => {
-                if (settled) return
-                settled = true
-                resolve({ src, ...result })
-            }
-            image.decoding = 'async'
-            image.onload = () => {
-                const decode = typeof image.decode === 'function'
-                    ? image.decode()
-                    : Promise.resolve()
-                decode
-                    .then(() => finish({ decoded: true, reason: 'loaded' }))
-                    .catch(error => finish({
-                        decoded: false,
-                        reason: 'decode-failed-after-load',
-                        message: error?.message || String(error),
-                    }))
-            }
-            image.onerror = () => finish({ decoded: false, reason: 'load-failed' })
-            image.src = src
-        })
-    }
-    #collectMediaPrewarmSources(doc) {
-        const sources = new Set()
-        const add = value => {
-            if (!value) return
-            String(value).split(',').forEach(part => {
-                const source = part.trim().split(/\s+/)[0]
-                if (source && !source.startsWith('data:')) sources.add(source)
-            })
-        }
-        doc?.querySelectorAll?.('img[src], image[href], image[*|href], video[poster], object[data]')?.forEach(el => {
-            add(el.getAttribute('src'))
-            add(el.getAttribute('href'))
-            add(el.getAttributeNS?.('http://www.w3.org/1999/xlink', 'href'))
-            add(el.getAttribute('poster'))
-            add(el.getAttribute('data'))
-        })
-        doc?.querySelectorAll?.('source[src], source[srcset], img[srcset]')?.forEach(el => {
-            add(el.getAttribute('src'))
-            add(el.getAttribute('srcset'))
-        })
-        return [...sources]
-    }
-    async #prewarmRenderedPrefetchResourcesForSource(src, index) {
-        const startedAt = manabiPerfNow()
-        try {
-            const response = await fetch(src)
-            const contentType = response.headers.get('content-type') || ''
-            if (contentType && !/html|xml|xhtml/i.test(contentType)) {
-                return {
-                    reason: 'non-html-source',
-                    contentType,
-                    mediaCount: 0,
-                    decodedCount: 0,
-                }
-            }
-            const text = await response.text()
-            const parserType = /xml|xhtml/i.test(contentType)
-                ? 'application/xhtml+xml'
-                : 'text/html'
-            const doc = new DOMParser().parseFromString(text, parserType)
-            const sources = this.#collectMediaPrewarmSources(doc)
-            const imageSources = sources.filter(source => /^blob:|^data:|^https?:|^ebook:/.test(source))
-            const results = await Promise.allSettled(imageSources.map(source => this.#imageDecode(source)))
-            const decodedResults = results
-                .map(result => result.status === 'fulfilled' ? result.value : null)
-                .filter(Boolean)
-            const decodedCount = decodedResults.filter(result => result.decoded).length
-            const singleMedia = /\bp-image\b/.test(doc.body?.className || '')
-                || this.#parsedDocumentHasSingleMediaElementWithoutText(doc)
-            return {
-                reason: singleMedia ? 'single-media-prewarmed' : 'media-prewarmed',
-                contentType,
-                mediaCount: imageSources.length,
-                decodedCount,
-                singleMedia,
-                index,
-            }
-        } catch (error) {
-            return {
-                reason: 'media-prewarm-failed',
-                message: error?.message || String(error),
-                index,
-            }
-        }
-    }
     #typographyMetrics() {
         const doc = this.#view?.document;
         const bodyStyle = doc?.body ? getComputedStyle(doc.body) : null;
@@ -1922,6 +1627,208 @@ export class Paginator extends HTMLElement {
             lineHeight,
             inlineCharacterAdvance,
         };
+    }
+    #intersectsPageRange(mappedRect, pageStart, pageEnd) {
+        if (!mappedRect) return false;
+        const left = Number(mappedRect.left);
+        const right = Number(mappedRect.right);
+        if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+        return right > pageStart && left < pageEnd;
+    }
+    #describeNodeForBlankPage(node) {
+        const element = node?.nodeType === Node.ELEMENT_NODE
+            ? node
+            : node?.parentElement;
+        if (!element) return null;
+        const id = element.id ? `#${element.id}` : '';
+        const className = typeof element.className === 'string' && element.className.trim()
+            ? `.${element.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+            : '';
+        return `${element.localName || element.nodeName}${id}${className}`;
+    }
+    async #blankPageContentSummary(page, size, rectMapper) {
+        const doc = this.#view?.document;
+        if (!doc?.body || !Number.isFinite(page) || !Number.isFinite(size) || size <= 0) {
+            return null;
+        }
+        const pageStart = Math.max(0, (page - 1) * size);
+        const pageEnd = pageStart + size;
+        const summary = {
+            page,
+            pageStart: manabiRound(pageStart, 1),
+            pageEnd: manabiRound(pageEnd, 1),
+            textNodeCount: 0,
+            textCharCount: 0,
+            mediaCount: 0,
+            elementBoxCount: 0,
+            textSamples: [],
+            mediaSamples: [],
+            elementSamples: [],
+        };
+
+        const walker = doc.createTreeWalker(doc.body, SHOW_TEXT, {
+            acceptNode: node => /\S/.test(node.nodeValue || '') ? FILTER_ACCEPT : FILTER_REJECT,
+        });
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const range = doc.createRange();
+            try {
+                range.selectNodeContents(node);
+                const rects = Array.from(range.getClientRects?.() || []);
+                if (!rects.some(rect => this.#intersectsPageRange(rectMapper(rect), pageStart, pageEnd))) {
+                    continue;
+                }
+                const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                summary.textNodeCount += 1;
+                summary.textCharCount += text.length;
+                if (summary.textSamples.length < 3 && text) {
+                    summary.textSamples.push(text.slice(0, 80));
+                }
+            } finally {
+                range.detach?.();
+            }
+        }
+
+        const mediaSelector = 'img,image,svg,video,picture,object,iframe,canvas,embed';
+        for (const element of doc.body.querySelectorAll?.(mediaSelector) || []) {
+            const rects = Array.from(element.getClientRects?.() || []);
+            if (!rects.some(rect => this.#intersectsPageRange(rectMapper(rect), pageStart, pageEnd))) {
+                continue;
+            }
+            summary.mediaCount += 1;
+            if (summary.mediaSamples.length < 5) {
+                summary.mediaSamples.push({
+                    node: this.#describeNodeForBlankPage(element),
+                    src: element.currentSrc || element.src || element.href?.baseVal || element.getAttribute?.('src') || element.getAttribute?.('href') || null,
+                    alt: element.getAttribute?.('alt') || null,
+                    naturalWidth: element.naturalWidth ?? null,
+                    naturalHeight: element.naturalHeight ?? null,
+                    complete: element.complete ?? null,
+                });
+            }
+        }
+
+        if (summary.textCharCount === 0 && summary.mediaCount === 0) {
+            for (const element of doc.body.querySelectorAll?.('body *') || []) {
+                const rects = Array.from(element.getClientRects?.() || []);
+                const mappedRects = rects
+                    .map(rectMapper)
+                    .filter(rect => this.#intersectsPageRange(rect, pageStart, pageEnd));
+                if (mappedRects.length > 0) {
+                    summary.elementBoxCount += 1;
+                    if (summary.elementSamples.length < 5) {
+                        summary.elementSamples.push({
+                            node: this.#describeNodeForBlankPage(element),
+                            display: doc.defaultView?.getComputedStyle?.(element)?.display || null,
+                            blockSize: doc.defaultView?.getComputedStyle?.(element)?.blockSize || null,
+                            inlineSize: doc.defaultView?.getComputedStyle?.(element)?.inlineSize || null,
+                            rects: mappedRects.slice(0, 3).map(rect => ({
+                                left: manabiRound(rect.left, 1),
+                                right: manabiRound(rect.right, 1),
+                                top: manabiRound(rect.top, 1),
+                                bottom: manabiRound(rect.bottom, 1),
+                            })),
+                        });
+                    }
+                }
+            }
+        }
+
+        return summary;
+    }
+    #blankPageMediaPlacements(size, rectMapper, centerPage) {
+        const doc = this.#view?.document;
+        if (!doc?.body || !Number.isFinite(size) || size <= 0) return [];
+        const mediaSelector = 'img,image,svg,video,picture,object,iframe,canvas,embed';
+        const placements = [];
+        for (const element of doc.body.querySelectorAll?.(mediaSelector) || []) {
+            const mappedRects = Array.from(element.getClientRects?.() || [])
+                .map(rectMapper)
+                .filter(rect =>
+                    rect
+                    && Number.isFinite(Number(rect.left))
+                    && Number.isFinite(Number(rect.right))
+                    && Number(rect.right) > Number(rect.left)
+                );
+            if (mappedRects.length === 0) continue;
+            const minLeft = Math.min(...mappedRects.map(rect => Number(rect.left)));
+            const maxRight = Math.max(...mappedRects.map(rect => Number(rect.right)));
+            const firstPage = Math.floor(minLeft / size) + 1;
+            const lastPage = Math.max(firstPage, Math.ceil(maxRight / size));
+            if (Number.isFinite(centerPage) && (lastPage < centerPage - 2 || firstPage > centerPage + 2)) {
+                continue;
+            }
+            placements.push({
+                node: this.#describeNodeForBlankPage(element),
+                firstPage,
+                lastPage,
+                left: manabiRound(minLeft, 1),
+                right: manabiRound(maxRight, 1),
+                src: element.currentSrc || element.src || element.href?.baseVal || element.getAttribute?.('src') || element.getAttribute?.('href') || null,
+                naturalWidth: element.naturalWidth ?? null,
+                naturalHeight: element.naturalHeight ?? null,
+                complete: element.complete ?? null,
+            });
+            if (placements.length >= 12) break;
+        }
+        return placements;
+    }
+    async #logBlankPageCandidate(reason) {
+        if (this.#isCacheWarmer || this.scrolled || !this.#view?.document) return;
+        try {
+            const page = await this.page();
+            const pages = await this.pages();
+            const size = await this.size();
+            if (!Number.isFinite(page) || !Number.isFinite(pages) || pages <= 2 || page <= 0 || page >= pages - 1) {
+                return;
+            }
+            const rectMapper = await this.#getRectMapper();
+            const current = await this.#blankPageContentSummary(page, size, rectMapper);
+            if (!current || current.textCharCount > 0 || current.mediaCount > 0) {
+                return;
+            }
+            const previousPage = page > 1 ? await this.#blankPageContentSummary(page - 1, size, rectMapper) : null;
+            const nextPage = page < pages - 2 ? await this.#blankPageContentSummary(page + 1, size, rectMapper) : null;
+            postBlankPageLog('candidate', {
+                reason: reason ?? null,
+                index: this.#index,
+                section: sectionDebugInfo(this.sections?.[this.#index]),
+                page,
+                pages,
+                size: manabiRound(size, 1),
+                start: manabiRound(await this.start(), 1),
+                viewSize: manabiRound(await this.viewSize(), 1),
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+                flow: this.getAttribute('flow') || null,
+                layout: {
+                    width: this.#view.layout?.width ?? null,
+                    height: this.#view.layout?.height ?? null,
+                    gap: this.#view.layout?.gap ?? null,
+                    columnWidth: this.#view.layout?.columnWidth ?? null,
+                    divisor: this.#view.layout?.divisor ?? null,
+                },
+                container: {
+                    clientWidth: this.#container?.clientWidth ?? null,
+                    clientHeight: this.#container?.clientHeight ?? null,
+                    scrollLeft: this.#container?.scrollLeft ?? null,
+                    scrollTop: this.#container?.scrollTop ?? null,
+                    scrollWidth: this.#container?.scrollWidth ?? null,
+                    scrollHeight: this.#container?.scrollHeight ?? null,
+                },
+                previousPage,
+                currentPage: current,
+                nextPage,
+                nearbyMediaPlacements: this.#blankPageMediaPlacements(size, rectMapper, page),
+            });
+        } catch (error) {
+            postBlankPageLog('probe-error', {
+                reason: reason ?? null,
+                index: this.#index,
+                section: sectionDebugInfo(this.sections?.[this.#index]),
+                message: error?.message || String(error),
+                stack: error?.stack || null,
+            });
+        }
     }
     #typographyRenderSignature({
         width,
@@ -2969,6 +2876,7 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
+        void this.#logBlankPageCandidate(reason)
 
     }
     #logicalDirectionForSwipeDelta(dx, input = 'touch') {
@@ -3126,13 +3034,7 @@ export class Paginator extends HTMLElement {
                 this.#invalidateVisibleRangeCache()
 
                 //                console.log("#display... await load")
-                let renderedPrefetch = this.#consumeRenderedNeighborPrefetch(index)
-                if (!renderedPrefetch && this.#renderedPrefetchCache.has(index)) {
-                    this.#destroyRenderedNeighborPrefetch(index, 'target-navigation-before-ready', {
-                        releasePrefetch: false,
-                    })
-                }
-                const view = renderedPrefetch?.view ?? this.#createView()
+                const view = this.#createView()
                 const beforeRender = this.#beforeRender.bind(this)
 
                 if (!this.#isCacheWarmer) {
@@ -3145,52 +3047,10 @@ export class Paginator extends HTMLElement {
                 postPaginatorLoadLog('display.view-load.start', {
                     targetIndex: index,
                     src,
-                    usingRenderedPrefetch: !!renderedPrefetch?.ready,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 });
-                if (renderedPrefetch?.ready && renderedPrefetch.view) {
-                    const oldView = this.#view
-                    try {
-                        oldView?.destroy?.()
-                        oldView?.element?.remove?.()
-                    } catch (_error) {}
-                    this.#view = view
-                    view.onBeforeExpand = this.#onBeforeExpand.bind(this)
-                    view.onExpand = this.#onExpand.bind(this)
-                    globalThis.manabiApplyNavigationHiddenStateToEbookDocument?.(
-                        'rendered-prefetch.activate-before-visible',
-                        view.document
-                    )
-                    Object.assign(view.element.style, {
-                        position: 'relative',
-                        inset: '',
-                        visibility: '',
-                        opacity: '',
-                        pointerEvents: '',
-                        zIndex: '2',
-                    })
-                    view.element.removeAttribute('data-manabi-rendered-prefetch-index')
-                    if (!view.element.isConnected) this.#container.append(view.element)
-                    view.element.removeAttribute('aria-hidden')
-                    const activationLayout = await this.#beforeRender(renderedPrefetch.layoutContext)
-                    const preparedLayout = renderedPrefetch.preparedLayout || {}
-                    const layoutStillCurrent =
-                        activationLayout &&
-                        preparedLayout &&
-                        activationLayout.width === preparedLayout.width &&
-                        activationLayout.height === preparedLayout.height &&
-                        activationLayout.gap === preparedLayout.gap &&
-                        activationLayout.columnWidth === preparedLayout.columnWidth &&
-                        activationLayout.divisor === preparedLayout.divisor &&
-                        activationLayout.flow === preparedLayout.flow
-                    if (!layoutStillCurrent) {
-                        await view.render(activationLayout)
-                    }
-                    await afterLoad(view.document)
-                } else {
-                    await view.load(src, afterLoad, beforeRender)
-                    this.#view = view
-                }
+                await view.load(src, afterLoad, beforeRender)
+                this.#view = view
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
                     markPaginatorPerf('view.load.end', {
@@ -3202,7 +3062,6 @@ export class Paginator extends HTMLElement {
                 postPaginatorLoadLog('display.view-load.end', {
                     targetIndex: index,
                     src,
-                    usingRenderedPrefetch: !!renderedPrefetch?.ready,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 });
 
@@ -3581,9 +3440,6 @@ export class Paginator extends HTMLElement {
     setStyles(styles) {
         this.#styles = styles
         this.#applyStylesToDocument(this.#view?.document, styles)
-        for (const entry of this.#renderedPrefetchCache.values()) {
-            this.#applyStylesToDocument(entry.view?.document, styles)
-        }
 
         //        // NOTE: needs `requestAnimationFrame` in Chromium
         //        requestAnimationFrame(() =>
@@ -3601,14 +3457,10 @@ export class Paginator extends HTMLElement {
         this.#setLoading(false, 'paginator.destroy')
         clearTimeout(this.#prefetchTimer)
         this.#prefetchTimer = null
-        for (const [index] of this.#renderedPrefetchCache) {
-            this.#destroyRenderedNeighborPrefetch(index, 'paginator.destroy', { releasePrefetch: false })
-        }
         for (const [index, entry] of this.#prefetchCache) {
             this.#releaseNeighborPrefetch(index, entry)
         }
         this.#prefetchCache = new Map()
-        this.#renderedPrefetchCache = new Map()
         this.#view?.destroy?.()
         this.#view = null
         this.sections[this.#index]?.unload?.()

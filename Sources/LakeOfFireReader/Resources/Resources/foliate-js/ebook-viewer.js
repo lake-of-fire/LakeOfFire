@@ -3634,15 +3634,14 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing #reader-content :is(p, div, figure):has(> img, > svg, > video, > object, > image) {
         /*
-           WebKit can size a vertical image block to the media's physical block
-           size, then place later vertical text in the remaining horizontal band.
-           Reserve the full page block axis for media-only blocks so native
-           sentence/segment wrappers cannot flow text over the image.
+           Let vertical ebook media wrappers size to their media. Forcing these
+           wrappers to one full page can leave an empty page-sized wrapper before
+           the image itself when consecutive media pages are columnized.
         */
-        block-size: 100% !important;
-        break-inside: avoid !important;
-        page-break-inside: avoid !important;
-        -webkit-column-break-inside: avoid !important;
+        block-size: auto !important;
+        break-inside: auto !important;
+        page-break-inside: auto !important;
+        -webkit-column-break-inside: auto !important;
     }
     body.reader-vertical-writing:not([data-is-ebook="true"]) mnb-seg:not(:has(rt)) {
         /*
