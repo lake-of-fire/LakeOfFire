@@ -12,6 +12,21 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
+fileprivate func lakeReaderLoadDebugLog(_ message: String) {
+    let line = "# LOAD \(message)\n"
+    print(line, terminator: "")
+    guard let data = line.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/tmp/manabi-reader-load.log")
+    if FileManager.default.fileExists(atPath: url.path),
+       let handle = try? FileHandle(forWritingTo: url) {
+        defer { try? handle.close() }
+        try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    } else {
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 private func readerLoadDurationString(_ interval: TimeInterval) -> String {
     let milliseconds = Int64((max(0, Double(interval)) * 1_000).rounded())
     let seconds = milliseconds / 1_000
@@ -905,7 +920,9 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
         let loadStartedAt = CFAbsoluteTimeGetCurrent()
+        lakeReaderLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            lakeReaderLoadDebugLog("navigator.content.resolved contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             let loadSnapshot = debugLoadSnapshot
             let resolvedAt = CFAbsoluteTimeGetCurrent()
             if let readerModeViewModel {
@@ -920,11 +937,14 @@ public extension WebViewNavigator {
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
                 if loadSnapshot.isLoading {
+                    lakeReaderLoadDebugLog("navigator.content.skipAlreadyLoading targetURL=\(url.absoluteString)")
                     return
                 }
             }
+            lakeReaderLoadDebugLog("navigator.content.dispatch targetURL=\(url.absoluteString)")
             load(URLRequest(url: url))
         } else {
+            lakeReaderLoadDebugLog("navigator.content.nilTarget contentURL=\(content.url.absoluteString)")
         }
     }
 }

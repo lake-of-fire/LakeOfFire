@@ -150,6 +150,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
         }
         .buttonStyle(.borderless)
+        .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
+        .accessibilityLabel(content.titleForDisplay)
         .tint(.secondary)
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
