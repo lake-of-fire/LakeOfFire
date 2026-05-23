@@ -907,6 +907,14 @@
                 body #nav-bar * {
                     font-family: var(--mnb-ui-font-family) !important;
                 }
+                body #page-tracking-container,
+                body #page-tracking-container *,
+                body #nav-hidden-buttons button,
+                body #nav-hidden-buttons button * {
+                    writing-mode: horizontal-tb !important;
+                    text-orientation: mixed !important;
+                    direction: ltr !important;
+                }
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button {
                     width: fit-content;
                     height: var(--page-read-button-height);

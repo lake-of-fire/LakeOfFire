@@ -744,6 +744,16 @@ public struct ReaderContentLoader {
         logReaderLoad(
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
+
+        if contentURL.isReaderBookURL,
+           !contentURL.isEBookURL,
+           let loaderURL = readerLoaderURL(for: contentURL) {
+            logReaderLoad(
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=readerBookLoaderDeferred elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+            )
+            return loaderURL
+        }
+
         let htmlProbeStartedAt = Date()
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
@@ -799,16 +809,6 @@ public struct ReaderContentLoader {
            let loaderURL = readerLoaderURL(for: contentURL) {
             logReaderLoad(
                 "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-            )
-            return loaderURL
-        }
-
-        if contentURL.isReaderBookURL,
-           !contentURL.isEBookURL,
-           contentHasLocallyRetrievableHTML,
-           let loaderURL = readerLoaderURL(for: contentURL) {
-            logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=readerBookLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
             return loaderURL
         }

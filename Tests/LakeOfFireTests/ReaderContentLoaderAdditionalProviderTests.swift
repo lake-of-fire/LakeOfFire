@@ -143,6 +143,34 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
     }
 
     @MainActor
+    func testReaderBookRoutingDoesNotRequireEagerHTMLProbe() async throws {
+        let (configuration, restore) = try makeConfiguration()
+        defer { restore() }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let contentURL = try XCTUnwrap(URL(string: "ttsu:///book/provider-test-no-cache"))
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: contentURL))
+
+        let realm = try await Realm(configuration: configuration)
+        try realm.write {
+            let content = ExternalBookContent()
+            content.url = contentURL
+            content.title = "Provider Test Book Without Local HTML"
+            content.externalHTML = nil
+            content.updateCompoundKey()
+            realm.add(content, update: .modified)
+        }
+
+        let content = try XCTUnwrap(try await ReaderContentLoader.lookupStoredContent(url: contentURL))
+        XCTAssertFalse(content.hasHTML)
+        let navigationURL = try await ReaderContentLoader.load(
+            content: content,
+            readerFileManager: .shared
+        )
+        XCTAssertEqual(navigationURL, loaderURL)
+    }
+
+    @MainActor
     func testCustomPayloadHooksKeepBookmarksAndHistoryLightweight() async throws {
         let (configuration, restore) = try makeConfiguration()
         defer { restore() }
