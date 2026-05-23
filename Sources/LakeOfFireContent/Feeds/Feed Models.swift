@@ -301,11 +301,9 @@ public extension Feed {
 
     public static func followingEntries(
         from feeds: [Feed],
-        historyRealm: Realm? = nil
+        historyRealm: Realm? = nil,
+        limit: Int? = nil
     ) -> [FeedEntry] {
-        let latestHistoryLastVisitedAtByEntryURL = historyRealm.map {
-            latestHistoryLastVisitedAtByCanonicalEntryURL(in: $0)
-        } ?? [:]
         let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived }) {
             $0.canonicalFollowingFeedURLKey
         }
@@ -329,27 +327,7 @@ public extension Feed {
 
         let entriesByFeed = orderedFeedGroups.compactMap { feedGroup -> [FeedEntry]? in
             guard feedGroup.contains(where: \.isFollowed) else { return nil }
-            var entriesByURL = [String: FeedEntry]()
-
-            for feed in feedGroup {
-                for entry in feed.getEntries() ?? [] {
-                    let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
-                    let latestHistoryLastVisitedAt = latestHistoryLastVisitedAtByEntryURL[entryKey]
-                    guard isEntryUnseen(latestHistoryLastVisitedAt: latestHistoryLastVisitedAt) else {
-                        continue
-                    }
-
-                    if let current = entriesByURL[entryKey] {
-                        if followingEntryRecencySort(lhs: entry, rhs: current) {
-                            entriesByURL[entryKey] = entry
-                        }
-                    } else {
-                        entriesByURL[entryKey] = entry
-                    }
-                }
-            }
-
-            let entries = entriesByURL.values.sorted { followingEntryRecencySort(lhs: $0, rhs: $1) }
+            let entries = followingEntries(in: Array(feedGroup), historyRealm: historyRealm, limit: limit)
             return entries.isEmpty ? nil : entries
         }
 
@@ -360,7 +338,12 @@ public extension Feed {
                 entries.indices.contains(roundIndex) ? entries[roundIndex] : nil
             }
             guard !round.isEmpty else { break }
-            result.append(contentsOf: round.sorted { followingEntryRecencySort(lhs: $0, rhs: $1) })
+            for entry in round.sorted(by: { followingEntryRecencySort(lhs: $0, rhs: $1) }) {
+                result.append(entry)
+                if let limit, result.count >= limit {
+                    return result
+                }
+            }
             roundIndex += 1
         }
         return result
@@ -408,19 +391,140 @@ public extension Feed {
         return candidate.modifiedAt > current.modifiedAt
     }
 
-    private static func canonicalFollowingEntryURLKey(for url: URL) -> String {
+    public static func canonicalFollowingEntryURLKey(for url: URL) -> String {
         canonicalFollowingFeedURLKey(for: url)
     }
 
-    private static func latestHistoryLastVisitedAtByCanonicalEntryURL(in realm: Realm) -> [String: Date] {
-        var latestByURL = [String: Date]()
-        for historyRecord in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
-            let key = canonicalFollowingEntryURLKey(for: historyRecord.url)
-            if latestByURL[key].map({ $0 < historyRecord.lastVisitedAt }) ?? true {
-                latestByURL[key] = historyRecord.lastVisitedAt
+    public static func openedFollowingEntryURLKeys(for candidateEntryURLs: [URL], in historyRealm: Realm?) -> Set<String> {
+        guard let historyRealm else { return [] }
+
+        var candidateURLStrings = Set<String>()
+        candidateURLStrings.reserveCapacity(candidateEntryURLs.count * 2)
+        for url in candidateEntryURLs {
+            candidateURLStrings.insert(url.absoluteString)
+            candidateURLStrings.insert(canonicalFollowingEntryURLKey(for: url))
+        }
+        guard !candidateURLStrings.isEmpty else { return [] }
+
+        return Set(
+            historyRealm.objects(HistoryRecord.self)
+                .where { !$0.isDeleted }
+                .filter(NSPredicate(format: "url IN %@", Array(candidateURLStrings)))
+                .map { canonicalFollowingEntryURLKey(for: $0.url) }
+        )
+    }
+
+    private static func followingEntries(in feedGroup: [Feed], historyRealm: Realm?, limit: Int?) -> [FeedEntry] {
+        var entries: [FeedEntry] = []
+        var seenEntryKeys = Set<String>()
+        entries.reserveCapacity(limit ?? 0)
+
+        if let realm = feedGroup.first?.realm {
+            let feedIDs = feedGroup.map(\.id)
+            let baseEntries = realm.objects(FeedEntry.self)
+                .where { !$0.isDeleted && $0.feedID.in(feedIDs) }
+
+            let datedEntries = baseEntries
+                .filter("publicationDate != nil")
+                .sorted(by: [
+                    SortDescriptor(keyPath: "publicationDate", ascending: false),
+                    SortDescriptor(keyPath: "createdAt", ascending: false)
+                ])
+            if appendFollowingEntries(
+                datedEntries,
+                historyRealm: historyRealm,
+                seenEntryKeys: &seenEntryKeys,
+                entries: &entries,
+                limit: limit
+            ) {
+                return entries
+            }
+
+            let undatedEntries = baseEntries
+                .filter("publicationDate == nil")
+                .sorted(by: [SortDescriptor(keyPath: "createdAt", ascending: false)])
+            if appendFollowingEntries(
+                undatedEntries,
+                historyRealm: historyRealm,
+                seenEntryKeys: &seenEntryKeys,
+                entries: &entries,
+                limit: limit
+            ) {
+                return entries
+            }
+
+            return entries
+        }
+
+        let sortedEntries = feedGroup.flatMap { $0.getEntries() ?? [] }
+            .sorted(by: { followingEntryRecencySort(lhs: $0, rhs: $1) })
+        if appendFollowingEntries(
+            sortedEntries,
+            historyRealm: historyRealm,
+            seenEntryKeys: &seenEntryKeys,
+            entries: &entries,
+            limit: limit
+        ) {
+            return entries
+        }
+        return entries
+    }
+
+    private static func appendFollowingEntries<Candidates: Sequence>(
+        _ candidates: Candidates,
+        historyRealm: Realm?,
+        seenEntryKeys: inout Set<String>,
+        entries: inout [FeedEntry],
+        limit: Int?
+    ) -> Bool where Candidates.Element == FeedEntry {
+        let batchSize = 128
+        var batch: [FeedEntry] = []
+        batch.reserveCapacity(batchSize)
+
+        func appendBatch() -> Bool {
+            let openedEntryURLKeys = openedFollowingEntryURLKeys(
+                for: batch.map(\.url),
+                in: historyRealm
+            )
+            for entry in batch {
+                if appendFollowingEntry(
+                    entry,
+                    openedEntryURLKeys: openedEntryURLKeys,
+                    seenEntryKeys: &seenEntryKeys,
+                    entries: &entries,
+                    limit: limit
+                ) {
+                    return true
+                }
+            }
+            batch.removeAll(keepingCapacity: true)
+            return false
+        }
+
+        for entry in candidates {
+            batch.append(entry)
+            if batch.count >= batchSize, appendBatch() {
+                return true
             }
         }
-        return latestByURL
+
+        return !batch.isEmpty && appendBatch()
+    }
+
+    private static func appendFollowingEntry(
+        _ entry: FeedEntry,
+        openedEntryURLKeys: Set<String>,
+        seenEntryKeys: inout Set<String>,
+        entries: inout [FeedEntry],
+        limit: Int?
+    ) -> Bool {
+        let entryKey = canonicalFollowingEntryURLKey(for: entry.url)
+        guard seenEntryKeys.insert(entryKey).inserted else { return false }
+        if openedEntryURLKeys.contains(entryKey) {
+            return false
+        }
+        entries.append(entry)
+        return limit.map { entries.count >= $0 } ?? false
     }
 
     private static func isEntryUnseen(latestHistoryLastVisitedAt: Date?) -> Bool {
@@ -439,7 +543,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         return feedID?.uuidString
     }
     
-    @Persisted public var feedID: UUID?
+    @Persisted(indexed: true) public var feedID: UUID?
     
     @Persisted public var url: URL
     @Persisted public var title = ""
@@ -447,7 +551,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
-    @Persisted public var publicationDate: Date?
+    @Persisted(indexed: true) public var publicationDate: Date?
     @Persisted public var isPhysicalMedia = false
     
     @Persisted public var isReaderModeOfferHidden = false

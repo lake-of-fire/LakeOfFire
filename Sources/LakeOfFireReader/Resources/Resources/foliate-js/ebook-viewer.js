@@ -111,6 +111,16 @@ const postBookRotateLog = (event, details = {}) => {
     }
 };
 
+const postBookInsetLog = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    const line = `# BOOKINSET ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 const PAGE_NUM_DEDUP_EVENTS = new Set([
     'goto.snapshot',
     'nav.sections.handoff',
@@ -1965,9 +1975,7 @@ const getNextChromeInsetRevision = () => {
 
 const applyResolvedChromeInsetState = (state) => {
     for (const target of [document.documentElement, document.body].filter(Boolean)) {
-        target.style.setProperty('--mnb-obscured-top-inset', state.obscuredTopInset);
         target.style.setProperty('--mnb-toolbar-bottom-offset', state.toolbarBottomOffset);
-        target.style.setProperty('--mnb-obscured-bottom-inset', state.obscuredBottomInset);
     }
 };
 
@@ -2017,7 +2025,6 @@ const captureLandscapeInsetLayoutProbe = () => {
         windowInner: `${window.innerWidth ?? 0}x${window.innerHeight ?? 0}`,
         visualViewport: window.visualViewport ? `${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)}` : null,
         bodyCssToolbarBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
-        bodyCssObscuredBottom: bodyStyle?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || null,
         bodyCssSystemBottom: bodyStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
         bodyCssToolbarPhysicalBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
         bodyCssStageBottom: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
@@ -3636,13 +3643,17 @@ const getCSSForBookContent = ({
         */
         line-height: inherit !important;
     }
-    body.reader-vertical-writing #reader-content :is(p, div, figure):has(> img, > svg, > video, > object, > image) {
+    body.reader-vertical-writing #reader-content :is(p, figure):has(img, svg, video, object, image),
+    body.reader-vertical-writing #reader-content div:not(#reader-content):has(> :is(img, svg, video, object, image)),
+    body.reader-vertical-writing #reader-content div:not(#reader-content):has(> a > :is(img, svg, video, object, image)) {
         /*
            Let vertical ebook media wrappers size to their media. Forcing these
            wrappers to one full page can leave an empty page-sized wrapper before
            the image itself when consecutive media pages are columnized.
         */
-        block-size: auto !important;
+        block-size: fit-content !important;
+        width: fit-content !important;
+        max-block-size: 100% !important;
         break-inside: auto !important;
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
@@ -5015,11 +5026,17 @@ class Reader {
             this.#updatePageReadMarker(reason);
         }, normalizedDelay);
     }
-    async #settleInitialPaginatorLayout(reason = 'unknown', { allowWhileLoading = false } = {}) {
+    async #waitForAnimationFrames(count = 1) {
+        const frameCount = Math.max(0, Number(count) || 0);
+        for (let index = 0; index < frameCount; index += 1) {
+            await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        }
+    }
+    async #settleInitialPaginatorLayout(reason = 'unknown', { allowWhileLoading = false, force = false, forceRender = false } = {}) {
         if (MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE) {
             return { rendered: false, reason: 'initial-paginator-settle-disabled' };
         }
-        if (this.hasSettledInitialPaginatorLayout) {
+        if (this.hasSettledInitialPaginatorLayout && !force) {
             return { rendered: false, reason: 'already-settled' };
         }
         const renderer = this.view?.renderer;
@@ -5027,6 +5044,13 @@ class Reader {
             return { rendered: false, reason: 'unavailable' };
         }
         try {
+            this.#postBookInsetSnapshot('settle.begin', {
+                reason,
+                allowWhileLoading,
+                force,
+                forceRender,
+                hasSettledInitialPaginatorLayout: this.hasSettledInitialPaginatorLayout,
+            });
             applyStoredChromeInsets(`initial-paginator-settle.${reason}`);
             const result = await renderer.renderIfContainerSizeChanged(`initial-paginator-settle.${reason}`);
             const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
@@ -5043,18 +5067,47 @@ class Reader {
                 && typeof snapshot.currentPercent === 'number'
                 && snapshot.livePaginatorBox != null;
             if (!isReady) {
+                this.#postBookInsetSnapshot('settle.not-ready', {
+                    reason,
+                    allowWhileLoading,
+                    force,
+                    forceRender,
+                    result,
+                    isReady,
+                    hasGap,
+                });
                 return result;
             }
-            if (hasGap && typeof renderer.render === 'function') {
+            const shouldForceRender = forceRender && !result?.rendered;
+            if ((hasGap || shouldForceRender) && typeof renderer.render === 'function') {
                 await renderer.render();
-                this.#updatePageReadMarker('initial-paginator-settle.forced-render');
+                this.#updatePageReadMarker(shouldForceRender ? 'initial-paginator-settle.post-frame-forced-render' : 'initial-paginator-settle.forced-render');
                 this.hasSettledInitialPaginatorLayout = true;
-                return { ...result, forcedRender: true };
+                const forcedResult = { ...result, forcedRender: true, forceRender: shouldForceRender };
+                this.#postBookInsetSnapshot('settle.forced-rendered', {
+                    reason,
+                    allowWhileLoading,
+                    force,
+                    forceRender,
+                    result: forcedResult,
+                    hasGap,
+                    shouldForceRender,
+                });
+                return forcedResult;
             }
             if (result?.rendered) {
                 this.#updatePageReadMarker('initial-paginator-settle.rendered');
             }
             this.hasSettledInitialPaginatorLayout = true;
+            this.#postBookInsetSnapshot('settle.finished', {
+                reason,
+                allowWhileLoading,
+                force,
+                forceRender,
+                result,
+                hasGap,
+                shouldForceRender,
+            });
             return result;
         } catch (error) {
             console.error(error);
@@ -5353,17 +5406,13 @@ class Reader {
             extra,
             currentPercent: typeof primaryLabelDiagnostics?.currentPercent === 'number' ? primaryLabelDiagnostics.currentPercent : null,
             cssInsets: [
-                `top=${computedStyle?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || 'nil'}`,
                 `toolbar=${computedStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || 'nil'}`,
-                `obscured=${computedStyle?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || 'nil'}`,
                 `system=${computedStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || 'nil'}`,
                 `physical=${computedStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || 'nil'}`,
                 `stage=${computedStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || 'nil'}`,
             ].join(' '),
             htmlCssInsets: [
-                `top=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-obscured-top-inset')?.trim() || 'nil'}`,
                 `toolbar=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || 'nil'}`,
-                `obscured=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-obscured-bottom-inset')?.trim() || 'nil'}`,
                 `system=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || 'nil'}`,
                 `physical=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || 'nil'}`,
                 `stage=${window.getComputedStyle(docEl)?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || 'nil'}`,
@@ -5457,6 +5506,22 @@ class Reader {
     }
     collectLayoutGapProbe(reason = 'unknown', extra = null) {
         return this.#buildLayoutSnapshot(reason, extra);
+    }
+    #postBookInsetSnapshot(event, extra = {}) {
+        let snapshot = null;
+        try {
+            snapshot = this.#buildLayoutSnapshot(`book-inset.${event}`, extra);
+        } catch (error) {
+            postBookInsetLog(event, {
+                ...extra,
+                snapshotError: error?.message ?? String(error),
+            });
+            return;
+        }
+        postBookInsetLog(event, {
+            ...extra,
+            snapshot,
+        });
     }
     refreshPageTrackingVisibility(reason = 'settings-changed') {
         this.#renderPageTrackingButtons(reason);
@@ -6994,11 +7059,40 @@ class Reader {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
             return;
         }
+        this.#postBookInsetSnapshot('didDisplay.begin', {
+            beforeNavigationVisibility: navVisibilityBefore,
+        });
         applyStoredChromeInsets('reader.didDisplay');
         const initialSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear', {
             allowWhileLoading: true,
         });
+        this.#postBookInsetSnapshot('didDisplay.after-initial-settle', {
+            initialSettleResult,
+        });
+        await this.#waitForAnimationFrames(2);
+        this.#postBookInsetSnapshot('didDisplay.after-two-frames-before-force', {
+            initialSettleResult,
+        });
+        const postFrameSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear.post-frame', {
+            allowWhileLoading: true,
+            force: true,
+            forceRender: true,
+        });
+        this.#postBookInsetSnapshot('didDisplay.after-post-frame-settle', {
+            initialSettleResult,
+            postFrameSettleResult,
+        });
         this.setLoadingIndicator(false);
+        this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
+            initialSettleResult,
+            postFrameSettleResult,
+        });
+        setTimeout(() => {
+            this.#postBookInsetSnapshot('didDisplay.loading-cleared.plus-250ms', {
+                initialSettleResult,
+                postFrameSettleResult,
+            });
+        }, 250);
         try {
             globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
         } catch (_error) {}

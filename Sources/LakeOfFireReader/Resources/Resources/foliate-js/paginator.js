@@ -727,6 +727,7 @@ class View {
         let imageCount = 0;
         const parentMediaCounts = new WeakMap();
         const textNodeType = doc?.defaultView?.Node?.TEXT_NODE ?? 3;
+        const mediaSelector = 'img, svg, image, picture, video, object, iframe, canvas, embed';
         const hasSubstantiveDirectText = parent => {
             for (const node of parent?.childNodes || []) {
                 if (node.nodeType === textNodeType && /\S/.test(node.textContent || '')) {
@@ -734,6 +735,25 @@ class View {
                 }
             }
             return false;
+        };
+        const hasSubstantiveTextExcludingMedia = element => {
+            const clone = element?.cloneNode?.(true);
+            for (const media of clone?.querySelectorAll?.(mediaSelector) || []) {
+                media.remove();
+            }
+            return /\S/.test(clone?.textContent || '');
+        };
+        const applyVerticalMediaWrapperSizing = element => {
+            if (!vertical || !element || element === doc.body || element === doc.documentElement) return;
+            setStylesImportant(element, {
+                'block-size': 'fit-content',
+                'width': 'fit-content',
+                'max-block-size': '100%',
+                'break-inside': 'auto',
+                'page-break-inside': 'auto',
+                '-webkit-column-break-inside': 'auto',
+                'box-sizing': 'border-box',
+            });
         };
         for (const el of doc?.body?.querySelectorAll?.('img, svg, video') || []) {
             imageCount += 1;
@@ -764,6 +784,16 @@ class View {
                     webkitColumnBreakInside: vertical ? 'auto' : 'avoid',
                     boxSizing: 'border-box',
                 });
+            }
+            let ancestor = parent;
+            while (vertical && ancestor && ancestor !== doc.body && ancestor !== doc.documentElement) {
+                if (ancestor.matches?.('p, figure, div')) {
+                    const ancestorMediaCount = ancestor.querySelectorAll?.(mediaSelector)?.length ?? 0;
+                    if (ancestorMediaCount === 1 && !hasSubstantiveTextExcludingMedia(ancestor)) {
+                        applyVerticalMediaWrapperSizing(ancestor);
+                    }
+                }
+                ancestor = ancestor.parentElement;
             }
         }
         if (globalThis.manabiVerboseImageLayout === true) {
@@ -1721,6 +1751,8 @@ export class Paginator extends HTMLElement {
                             display: doc.defaultView?.getComputedStyle?.(element)?.display || null,
                             blockSize: doc.defaultView?.getComputedStyle?.(element)?.blockSize || null,
                             inlineSize: doc.defaultView?.getComputedStyle?.(element)?.inlineSize || null,
+                            mediaDescendantCount: element.querySelectorAll?.(mediaSelector)?.length ?? 0,
+                            textLength: (element.textContent || '').replace(/\s+/g, '').length,
                             rects: mappedRects.slice(0, 3).map(rect => ({
                                 left: manabiRound(rect.left, 1),
                                 right: manabiRound(rect.right, 1),

@@ -430,9 +430,7 @@ func syncEbookViewerChromeInsets(
               }
               const targets = [document.documentElement, document.body].filter(Boolean);
               for (const target of targets) {
-                target.style.setProperty('--mnb-obscured-top-inset', obscuredTopInset);
                 target.style.setProperty('--mnb-toolbar-bottom-offset', toolbarBottomOffset);
-                target.style.setProperty('--mnb-obscured-bottom-inset', obscuredBottomInset);
               }
               postMay8('after.fallbackStyle', { appliedInsets });
             })();

@@ -3,7 +3,7 @@ import LakeOfFireCore
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 61
+    public static let schemaVersion: UInt64 = 62
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -95,6 +95,9 @@ public enum DefaultRealmConfiguration {
             }
             if oldSchemaVersion < 61 {
                 migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+            }
+            if oldSchemaVersion < 62 {
+                migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
             }
         }
     }

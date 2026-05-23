@@ -819,6 +819,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentAppear: ((C) -> Void)?
 
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -977,6 +978,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         }
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
+            onContentAppear?(content)
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
@@ -1002,6 +1004,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentAppear: ((C) -> Void)?
 
     var body: some View {
         let lastIndex = viewModel.filteredContents.indices.last
@@ -1018,7 +1021,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     isLast: isLast,
                     viewModel: viewModel,
                     onRequestDelete: onRequestDelete,
-                    customMenuOptions: customMenuOptions
+                    customMenuOptions: customMenuOptions,
+                    onContentAppear: onContentAppear
                 )
             }
         }
@@ -1031,7 +1035,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         appearance: ReaderContentListAppearance,
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
-        customMenuOptions: ((C) -> AnyView)? = nil
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentAppear: ((C) -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
@@ -1039,6 +1044,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
+        self.onContentAppear = onContentAppear
     }
 }
 
@@ -1068,6 +1074,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let onContentAppear: ((C) -> Void)?
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 #if DEBUG
@@ -1175,7 +1182,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             showsNewBadges: showsNewBadges,
             onRequestDelete: onRequestDeleteSingle,
             customMenuOptions: customMenuOptions,
-            onContentSelected: onContentSelected
+            onContentSelected: onContentSelected,
+            onContentAppear: onContentAppear
         )
     }
 
@@ -1207,7 +1215,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         isLast: true,
                         viewModel: viewModel,
                         onRequestDelete: onRequestDeleteSingle,
-                        customMenuOptions: customMenuOptions
+                        customMenuOptions: customMenuOptions,
+                        onContentAppear: onContentAppear
                     )
                     .readerContentListRowStyle(
                         useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
@@ -1514,7 +1523,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             isLast: index == lastIndex,
             viewModel: viewModel,
             onRequestDelete: onRequestDeleteSingle,
-            customMenuOptions: customMenuOptions
+            customMenuOptions: customMenuOptions,
+            onContentAppear: onContentAppear
         )
         .readerContentListRowStyle(
             useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
@@ -1557,7 +1567,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     isLast: index == lastIndex,
                     viewModel: viewModel,
                     onRequestDelete: onRequestDeleteSingle,
-                    customMenuOptions: customMenuOptions
+                    customMenuOptions: customMenuOptions,
+                    onContentAppear: onContentAppear
                 )
             }
             .readerContentListRowStyle(
@@ -1673,6 +1684,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
         @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1699,6 +1711,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.customGrouping = customGrouping
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentAppear = onContentAppear
         self.postSortTransform = postSortTransform
         self.supplementarySections = supplementarySections
         self.headerView = headerView
@@ -1755,6 +1768,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             customGrouping: nil,
             customMenuOptions: nil,
             onContentSelected: nil,
+            onContentAppear: nil,
             postSortTransform: nil,
             supplementarySections: { EmptyView() },
             headerView: { EmptyView() },
@@ -1783,6 +1797,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) {
         self.init(
@@ -1806,6 +1821,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentAppear: onContentAppear,
             postSortTransform: postSortTransform,
             supplementarySections: { EmptyView() },
             headerView: { EmptyView() },
@@ -1863,6 +1879,63 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
+            onContentAppear: nil,
+            postSortTransform: postSortTransform,
+            headerView: headerView,
+            emptyStateView: emptyStateView
+        )
+    }
+
+    init(
+        contents: [C],
+        contentFilter: ((Int, C) async throws -> Bool)? = nil,
+        sortOrder: ReaderContentSortOrder,
+        includeSource: Bool,
+        entrySelection: Binding<String?>,
+        contentSortAscending: Bool = false,
+        alwaysShowThumbnails: Bool = true,
+        useCardBackground: Bool = false,
+        clearRowBackground: Bool = false,
+        useDefaultRowInsets: Bool = false,
+        showsNewBadges: Bool = true,
+        separateRowsIntoSections: Bool = false,
+        listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
+        contentSectionTitle: String? = nil,
+        rendersHeaderViewInSectionHeader: Bool = false,
+        allowEditing: Bool = false,
+        onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
+        customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil,
+        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
+        @ViewBuilder headerView: @escaping () -> Header,
+        @ViewBuilder emptyStateView: @escaping () -> EmptyState
+    ) {
+        self.init(
+            contents: contents,
+            contentFilter: contentFilter,
+            sortOrder: sortOrder,
+            includeSource: includeSource,
+            entrySelection: entrySelection,
+            contentSortAscending: contentSortAscending,
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
+            useDefaultRowInsets: useDefaultRowInsets,
+            showsNewBadges: showsNewBadges,
+            separateRowsIntoSections: separateRowsIntoSections,
+            listRowSpacing: listRowSpacing,
+            listSectionSpacing: listSectionSpacing,
+            contentSectionTitle: contentSectionTitle,
+            rendersHeaderViewInSectionHeader: rendersHeaderViewInSectionHeader,
+            allowEditing: allowEditing,
+            onDelete: onDelete,
+            customGrouping: customGrouping,
+            customMenuOptions: customMenuOptions,
+            onContentSelected: onContentSelected,
+            onContentAppear: onContentAppear,
             postSortTransform: postSortTransform,
             supplementarySections: { EmptyView() },
             headerView: headerView,
@@ -1880,6 +1953,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let onContentAppear: ((C) -> Void)?
 
     public var body: some View {
         ReaderContentInnerListItems(
@@ -1888,7 +1962,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             appearance: appearance,
             viewModel: viewModel,
             onRequestDelete: onRequestDelete,
-            customMenuOptions: customMenuOptions
+            customMenuOptions: customMenuOptions,
+            onContentAppear: onContentAppear
         )
         .readerContentListRowStyle(
             showSeparators: appearance.showSeparators,
@@ -1926,7 +2001,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         showsNewBadges: Bool = true,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
-        onContentSelected: ((C) -> Void)? = nil
+        onContentSelected: ((C) -> Void)? = nil,
+        onContentAppear: ((C) -> Void)? = nil
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -1943,6 +2019,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.onContentAppear = onContentAppear
     }
 }
 
