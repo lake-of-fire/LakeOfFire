@@ -126,19 +126,13 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 
     func body(content: Content) -> some View {
-        let hostID = ObjectIdentifier(readerContentListModalsModel)
-        let logPrefix = "# DELETEMODAL [\(origin)] host=\(hostID)"
         content
-            .onReceive(readerContentListModalsModel.$deleteDialog) { newValue in
-                debugPrint("\(logPrefix) deleteDialog updated \(String(describing: newValue))")
-            }
             .alert(item: Binding<ReaderContentListDeleteDialog?>(
                 get: {
                     guard isActive else { return nil }
                     return readerContentListModalsModel.deleteDialog
                 },
                 set: { newValue in
-                    debugPrint("\(logPrefix) SHEET SET \(String(describing: newValue))")
                     if isActive {
                         readerContentListModalsModel.deleteDialog = newValue
                     }
@@ -150,7 +144,6 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         title: Text(title),
                         message: Text(message),
                         primaryButton: .destructive(Text(actionTitle)) {
-                            debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
                             Task { @MainActor in
                                 do {
                                     try await preflightDeleteBatch(items)
@@ -159,13 +152,11 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                                     }
                                     readerContentListModalsModel.clearDeleteDialog()
                                 } catch {
-                                    debugPrint("\(logPrefix) delete failed \(error.localizedDescription)")
                                     readerContentListModalsModel.presentDeleteError(for: error)
                                 }
                             }
                         },
                         secondaryButton: .cancel {
-                            debugPrint("\(logPrefix) cancel tapped")
                             readerContentListModalsModel.clearDeleteDialog()
                         }
                     )
@@ -178,9 +169,6 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         }
                     )
                 }
-            }
-            .onAppear {
-                debugPrint("\(logPrefix) sheets modifier appear isActive=\(isActive)")
             }
     }
 }

@@ -95,7 +95,7 @@ struct LibraryCategoryViewContainer: View {
 public struct LibraryManagerView: View {
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
-    @State private var columnVisibility = NavigationSplitViewVisibility.doubleColumn
+    @State private var columnVisibility = LibraryManagerView.initialColumnVisibility
     @State private var compactColumn = CompactLibraryColumn.sidebar
     
 #if os(iOS)
@@ -148,6 +148,9 @@ public struct LibraryManagerView: View {
             }
         }
         .task { @MainActor in
+#if os(macOS)
+            columnVisibility = .all
+#endif
             if viewModel.selectedFeed != nil || viewModel.selectedScript != nil {
                 compactColumn = .detail
             } else if viewModel.selectedSidebarDestination == nil {
@@ -156,6 +159,14 @@ public struct LibraryManagerView: View {
                 compactColumn = .content
             }
         }
+    }
+
+    private static var initialColumnVisibility: NavigationSplitViewVisibility {
+#if os(macOS)
+        .all
+#else
+        .doubleColumn
+#endif
     }
 
     @ViewBuilder
