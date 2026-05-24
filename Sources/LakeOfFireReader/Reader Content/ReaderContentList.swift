@@ -278,6 +278,7 @@ struct ReaderContentListAppearance: Sendable {
     var clearRowBackground: Bool = false
     var useDefaultRowInsets: Bool = false
     var showsNewBadges: Bool = true
+    var wrapsContentInGroupBox: Bool = false
 
     var usesNativeRowInsets: Bool {
         useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
@@ -874,6 +875,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                             }
                         }
                 )
+        } else if appearance.wrapsContentInGroupBox {
+            GroupBox {
+                cell(item: item)
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } else {
             cell(item: item)
         }
@@ -958,7 +965,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         )
 #endif
         .modifier {
-            if appearance.useCardBackground {
+            if appearance.useCardBackground || appearance.wrapsContentInGroupBox {
                 $0.listRowBackground(Color.clear)
             } else {
                 $0
@@ -1156,6 +1163,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         return min(listSectionSpacing ?? 10, 10)
     }
 
+    private var separatedRowsUseGroupBox: Bool {
+#if os(macOS)
+        separateRowsIntoSections && !useCardBackground && !clearRowBackground
+#else
+        false
+#endif
+    }
+
     @ViewBuilder
     private var listItems: some View {
         ReaderContentListItems(
@@ -1197,7 +1212,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                             useCardBackground: useCardBackground,
                             clearRowBackground: clearRowBackground,
                             useDefaultRowInsets: useDefaultRowInsets,
-                            showsNewBadges: showsNewBadges
+                            showsNewBadges: showsNewBadges,
+                            wrapsContentInGroupBox: separatedRowsUseGroupBox
                         ),
                         isFirst: true,
                         isLast: true,
@@ -1505,7 +1521,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 useCardBackground: useCardBackground,
                 clearRowBackground: clearRowBackground,
                 useDefaultRowInsets: useDefaultRowInsets,
-                showsNewBadges: showsNewBadges
+                showsNewBadges: showsNewBadges,
+                wrapsContentInGroupBox: separatedRowsUseGroupBox
             ),
             isFirst: index == section.items.startIndex,
             isLast: index == lastIndex,
@@ -1549,7 +1566,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         useCardBackground: useCardBackground,
                         clearRowBackground: clearRowBackground,
                         useDefaultRowInsets: useDefaultRowInsets,
-                        showsNewBadges: showsNewBadges
+                        showsNewBadges: showsNewBadges,
+                        wrapsContentInGroupBox: false
                     ),
                     isFirst: index == section.items.startIndex,
                     isLast: index == lastIndex,
@@ -2002,7 +2020,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
             useDefaultRowInsets: useDefaultRowInsets,
-            showsNewBadges: showsNewBadges
+            showsNewBadges: showsNewBadges,
+            wrapsContentInGroupBox: false
         )
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
