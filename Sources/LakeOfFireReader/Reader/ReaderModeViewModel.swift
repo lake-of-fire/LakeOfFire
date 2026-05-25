@@ -2491,6 +2491,10 @@ public class ReaderModeViewModel: ObservableObject {
                             style.textContent = css
                             document.head.appendChild(style)
                         }
+                        const manabiStyle = document.getElementById('mnb-readability-styles')
+                        if (manabiStyle && document.head) {
+                            document.head.appendChild(manabiStyle)
+                        }
                         if (document.body) {
                             document.body.className = bodyClassNames || 'readability-mode'
                         }

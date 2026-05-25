@@ -95,7 +95,7 @@ public class ReaderContentListModalsModel: ObservableObject {
 
     public init() { }
 
-    func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
+    public func presentDeleteConfirmation(for items: [any DeletableReaderContent]) {
         guard let first = items.first else {
             deleteDialog = nil
             return
@@ -1062,6 +1062,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     let contentSectionTitle: String?
     let rendersHeaderViewInSectionHeader: Bool
     let allowEditing: Bool
+    let externalMultiSelection: Binding<Set<String>>?
+    let showsDeletionToolbarItem: Bool
     let onDelete: (@MainActor ([C]) async throws -> Void)?
     let customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])?
     @ViewBuilder let supplementarySections: () -> SupplementarySections
@@ -1084,7 +1086,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #if os(iOS)
     @Environment(\.editMode) private var editMode
 #endif
-    @State private var multiSelection = Set<String>()
+    @State private var internalMultiSelection = Set<String>()
     @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
     @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
 
@@ -1093,7 +1095,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     private var showDeletionToolbarButton: Bool {
-        if allowEditing, C.self is DeletableReaderContent.Type {
+        if showsDeletionToolbarItem, allowEditing, C.self is DeletableReaderContent.Type {
 #if os(iOS)
             return editMode?.wrappedValue != .inactive
 #else
@@ -1120,6 +1122,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         return selectedContentFiles.contains {
             deleteEligibilityByContentKey[$0.compoundKey] != .allowed
         }
+    }
+
+    private var multiSelection: Set<String> {
+        multiSelectionBinding.wrappedValue
+    }
+
+    private var multiSelectionBinding: Binding<Set<String>> {
+        externalMultiSelection ?? $internalMultiSelection
     }
 
 #if DEBUG
@@ -1267,7 +1277,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         ZStack {
 #if os(iOS)
             if allowEditing && editMode?.wrappedValue != .inactive {
-                List(selection: $multiSelection) {
+                List(selection: multiSelectionBinding) {
                     listContent
                 }
             } else {
@@ -1278,7 +1288,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #else
 #if DEBUG
             if allowEditing {
-                List(selection: $multiSelection) {
+                List(selection: multiSelectionBinding) {
                     listContent
                 }
             } else {
@@ -1686,6 +1696,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         contentSectionTitle: String? = nil,
         rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
@@ -1713,6 +1725,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.contentSectionTitle = contentSectionTitle
         self.rendersHeaderViewInSectionHeader = rendersHeaderViewInSectionHeader
         self.allowEditing = allowEditing
+        self.externalMultiSelection = multiSelection
+        self.showsDeletionToolbarItem = showsDeletionToolbarItem
         self.onDelete = onDelete
         self.customGrouping = customGrouping
         self.customMenuOptions = customMenuOptions
@@ -1743,6 +1757,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         sortOrder: ReaderContentSortOrder,
         contentFilter: ((C) async throws -> Bool)? = nil,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (([C]) -> Void)? = nil
     ) {
         self.init(
@@ -1766,6 +1782,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: nil,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete.map { onDelete in
                 { @MainActor contents in
                     onDelete(contents)
@@ -1799,6 +1817,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
@@ -1823,6 +1843,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete,
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
@@ -1855,6 +1877,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         contentSectionTitle: String? = nil,
         rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
@@ -1881,6 +1905,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             contentSectionTitle: contentSectionTitle,
             rendersHeaderViewInSectionHeader: rendersHeaderViewInSectionHeader,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete,
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
@@ -1910,6 +1936,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         contentSectionTitle: String? = nil,
         rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
@@ -1937,6 +1965,8 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             contentSectionTitle: contentSectionTitle,
             rendersHeaderViewInSectionHeader: rendersHeaderViewInSectionHeader,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete,
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
@@ -2045,6 +2075,8 @@ public extension ReaderContentProtocol {
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
         customGrouping: (([Self]) -> [ReaderContentGroupingSection<Self>])? = nil,
         customMenuOptions: ((Self) -> AnyView)? = nil,
@@ -2066,6 +2098,8 @@ public extension ReaderContentProtocol {
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete,
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
@@ -2091,6 +2125,8 @@ public extension ReaderContentProtocol {
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
         customGrouping: (([Self]) -> [ReaderContentGroupingSection<Self>])? = nil,
         customMenuOptions: ((Self) -> AnyView)? = nil,
@@ -2111,6 +2147,8 @@ public extension ReaderContentProtocol {
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete,
             customGrouping: customGrouping,
             customMenuOptions: customMenuOptions,
@@ -2126,6 +2164,8 @@ public extension ReaderContentProtocol {
         sortOrder: ReaderContentSortOrder,
         contentFilter: ((Self) async throws -> Bool)? = nil,
         allowEditing: Bool = false,
+        multiSelection: Binding<Set<String>>? = nil,
+        showsDeletionToolbarItem: Bool = true,
         onDelete: (([Self]) -> Void)? = nil
     ) -> some View {
         ReaderContentList(
@@ -2134,6 +2174,8 @@ public extension ReaderContentProtocol {
             sortOrder: sortOrder,
             contentFilter: contentFilter,
             allowEditing: allowEditing,
+            multiSelection: multiSelection,
+            showsDeletionToolbarItem: showsDeletionToolbarItem,
             onDelete: onDelete
         )
     }
