@@ -130,42 +130,35 @@ private struct ContentRouteSwitcher: View {
 @available(iOS 16.0, macOS 13.0, *)
 private struct ContentColumn: View {
     @Binding var contentRoute: ContentPaneRoute?
-    @Binding var middlePath: NavigationPath
-    @Binding var detailPath: NavigationPath
-    @EnvironmentObject private var viewModel: LibraryManagerViewModel
-    
-    var body: some View {
-        NavigationStack(path: $middlePath) {
-            ContentRouteSwitcher(contentRoute: $contentRoute)
-        }
-    }
-}
-
-@available(iOS 16.0, macOS 13.0, *)
-private struct DetailColumn: View {
     @Binding var detailPath: NavigationPath
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
     var body: some View {
         NavigationStack(path: $detailPath) {
-            Group {
-                if let feed = viewModel.selectedFeed {
-#if os(macOS)
-                    ScrollView { LibraryFeedView(feed: feed) }
-#else
-                    LibraryFeedView(feed: feed)
-#endif
-                } else if let script = viewModel.selectedScript {
-#if os(macOS)
-                    ScrollView { LibraryScriptForm(script: script) }
-#else
-                    LibraryScriptForm(script: script)
-#endif
-                } else {
-                    SelectDetailPlaceholderView()
+            ContentRouteSwitcher(contentRoute: $contentRoute)
+                .navigationDestination(for: Feed.self) { feed in
+                    detailFormContainer {
+                        LibraryFeedView(feed: feed)
+                    }
                 }
-            }
+                .navigationDestination(for: UserScript.self) { script in
+                    detailFormContainer {
+                        LibraryScriptForm(script: script)
+                    }
+                }
         }
+    }
+
+    @ViewBuilder
+    private func detailFormContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+#if os(macOS)
+        ScrollView {
+            content()
+        }
+        .textFieldStyle(.roundedBorder)
+#else
+        content()
+#endif
     }
 }
 
@@ -174,7 +167,6 @@ public struct LibraryManagerView: View {
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
     @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var middlePath = NavigationPath()
     @State private var detailPath = NavigationPath()
     @State private var contentRoute: ContentPaneRoute? = nil
     @State private var sidebarPath = NavigationPath()
@@ -187,16 +179,22 @@ public struct LibraryManagerView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarColumn(contentRoute: $contentRoute, sidebarPath: $sidebarPath)
-        } content: {
-            ContentColumn(contentRoute: $contentRoute, middlePath: $middlePath, detailPath: $detailPath)
         } detail: {
-            DetailColumn(detailPath: $detailPath)
+            ContentColumn(contentRoute: $contentRoute, detailPath: $detailPath)
         }
         .navigationSplitViewStyle(.balanced)
+        .onChange(of: contentRoute) { _ in
+            detailPath = NavigationPath()
+            viewModel.selectedFeed = nil
+            viewModel.selectedScript = nil
+        }
         .onChange(of: viewModel.selectedFeed) { feed in
             Task { @MainActor in
                 if feed != nil {
                     viewModel.selectedScript = nil
+                    syncDetailNavigationPath()
+                } else if viewModel.selectedScript == nil {
+                    detailPath = NavigationPath()
                 }
             }
         }
@@ -204,9 +202,22 @@ public struct LibraryManagerView: View {
             Task { @MainActor in
                 if script != nil {
                     viewModel.selectedFeed = nil
+                    syncDetailNavigationPath()
+                } else if viewModel.selectedFeed == nil {
+                    detailPath = NavigationPath()
                 }
             }
         }
+    }
+
+    private func syncDetailNavigationPath() {
+        var path = NavigationPath()
+        if let feed = viewModel.selectedFeed {
+            path.append(feed)
+        } else if let script = viewModel.selectedScript {
+            path.append(script)
+        }
+        detailPath = path
     }
     
     public init() {

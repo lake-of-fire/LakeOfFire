@@ -309,19 +309,50 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     importOPMLTask?.cancel()
                     importOPMLTask = Task { @RealmBackgroundActor [weak self] in
                         let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.opml.downloadsChanged",
+                            "finishedDownloadCount=\(feedDownloads.count)",
+                            "opmlDownloadCount=\(opmlDownloads.count)"
+                        )
                         //                    let libraryConfiguration = try await LibraryConfiguration.get()
                         for download in opmlDownloads {
                             try Task.checkCancellation()
                             //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
                             // ^ Re-enable reloading on every launch:
+                            debugPrint(
+                                "# LIBRARY",
+                                "stage=library.opml.download.consider",
+                                "url=\(download.url.absoluteString)",
+                                "localDestination=\(download.localDestination.path)",
+                                "finishedDownloadingDuringCurrentLaunchAt=\(String(describing: download.finishedDownloadingDuringCurrentLaunchAt))",
+                                "finishedLoadingDuringCurrentLaunchAt=\(String(describing: download.finishedLoadingDuringCurrentLaunchAt))"
+                            )
                             if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
                                 do {
+                                    debugPrint(
+                                        "# LIBRARY",
+                                        "stage=library.opml.download.importStart",
+                                        "url=\(download.url.absoluteString)"
+                                    )
                                     try await self?.importOPML(download: download)
                                 } catch {
                                     if error as? CancellationError == nil {
-                                        print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                                        debugPrint(
+                                            "# LIBRARY",
+                                            "stage=library.opml.download.importFailed",
+                                            "url=\(download.url.absoluteString)",
+                                            "error=\(error.localizedDescription)"
+                                        )
                                     }
                                 }
+                            } else {
+                                debugPrint(
+                                    "# LIBRARY",
+                                    "stage=library.opml.download.skip",
+                                    "reason=alreadyLoadedThisLaunch",
+                                    "url=\(download.url.absoluteString)"
+                                )
                             }
                         }
                     }
@@ -540,6 +571,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     public func syncFromServers(isWaiting: Bool) async throws {
         Task { @MainActor in
             let downloadables = try await LibraryConfiguration.getConsolidatedOrCreate().downloadables
+            debugPrint(
+                "# LIBRARY",
+                "stage=library.opml.syncFromServers.ensureDownloaded",
+                "downloadableCount=\(downloadables.count)",
+                "urls=\(downloadables.map { $0.url.absoluteString }.sorted().joined(separator: ","))"
+            )
             await Self.downloadController.ensureDownloaded(downloadables)
         }
     }
@@ -558,6 +595,14 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     public func importOPML(fileURL: URL, fromDownload download: Downloadable? = nil) async throws {
         let text = try String(contentsOf: fileURL)
         let opml = try OPML(Data(text.utf8))
+        debugPrint(
+            "# LIBRARY",
+            "stage=library.opml.file.parse",
+            "fileURL=\(fileURL.path)",
+            "downloadURL=\(download?.url.absoluteString ?? "nil")",
+            "entryCount=\(opml.entries.count)",
+            "ownerName=\(opml.ownerName ?? "nil")"
+        )
         var allImportedCategories = OrderedSet<FeedCategory>()
         var allImportedFeeds = OrderedSet<Feed>()
         var allImportedScripts = OrderedSet<UserScript>()
@@ -654,6 +699,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     try await realm.asyncWrite {
                         category.isDeleted = true
                         category.refreshChangeMetadata(explicitlyModified: true)
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.opml.category.deleteOrphan",
+                            "categoryID=\(category.id.uuidString)",
+                            "title=\(category.title)",
+                            "opmlURL=\(downloadURL.absoluteString)"
+                        )
                     }
                 }
             }
@@ -688,6 +740,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                 try await realm.asyncWrite {
                     configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
                     configuration.refreshChangeMetadata(explicitlyModified: true)
+                    debugPrint(
+                        "# LIBRARY",
+                        "stage=library.opml.category.addToConfiguration",
+                        "categoryID=\(category.id.uuidString)",
+                        "title=\(category.title)",
+                        "insertIndex=\(lastNeighborIdx + 1)"
+                    )
                 }
             }
             try Task.checkCancellation()
@@ -704,6 +763,14 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     try await realm.asyncWrite {
                         configuration.categoryIDs.move(from: fromIdx, to: idx)
                         configuration.refreshChangeMetadata(explicitlyModified: true)
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.opml.category.moveInConfiguration",
+                            "categoryID=\(desiredCategory.id.uuidString)",
+                            "title=\(desiredCategory.title)",
+                            "fromIndex=\(fromIdx)",
+                            "toIndex=\(idx)"
+                        )
                     }
                 }
             }
@@ -726,13 +793,33 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             try await realm.asyncWrite {
                 configuration.categoryIDs.remove(atOffsets: toRemove)
                 configuration.refreshChangeMetadata(explicitlyModified: true)
+                debugPrint(
+                    "# LIBRARY",
+                    "stage=library.opml.category.dedupeConfiguration",
+                    "removedOffsets=\(Array(toRemove))"
+                )
             }
         }
+        debugPrint(
+            "# LIBRARY",
+            "stage=library.opml.file.complete",
+            "fileURL=\(fileURL.path)",
+            "downloadURL=\(download?.url.absoluteString ?? "nil")",
+            "importedCategoryCount=\(allImportedCategoryIDs.count)",
+            "importedFeedCount=\(allImportedFeedIDs.count)",
+            "importedScriptCount=\(allImportedScriptIDs.count)"
+        )
     }
     
     @RealmBackgroundActor
     public func importOPML(download: Downloadable) async throws {
         try Task.checkCancellation()
+        debugPrint(
+            "# LIBRARY",
+            "stage=library.opml.download.importBegin",
+            "url=\(download.url.absoluteString)",
+            "localDestination=\(download.localDestination.path)"
+        )
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
         await { @MainActor in
             download.finishedLoadingDuringCurrentLaunchAt = Date()
@@ -743,6 +830,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             try await realm.asyncWrite {
                 libraryConfiguration.opmlLastImportedAt = Date()
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
+                debugPrint(
+                    "# LIBRARY",
+                    "stage=library.opml.download.importComplete",
+                    "url=\(download.url.absoluteString)",
+                    "opmlLastImportedAt=\(String(describing: libraryConfiguration.opmlLastImportedAt))"
+                )
             }
         }
     }
@@ -825,7 +918,22 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             if category == nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
                 if let uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
                     category = existingCategory
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: existingCategory) {
+                    let hasChanges = Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: existingCategory)
+                    debugPrint(
+                        "# LIBRARY",
+                        "stage=library.opml.category.reconcile",
+                        "categoryID=\(uuid.uuidString)",
+                        "downloadURL=\(download?.url.absoluteString ?? "nil")",
+                        "categoryOpmlURL=\(existingCategory.opmlURL?.absoluteString ?? "nil")",
+                        "currentTitle=\(existingCategory.title)",
+                        "opmlTitle=\(opmlEntry.title ?? opmlEntry.text)",
+                        "currentBackgroundImageUrl=\(existingCategory.backgroundImageUrl.absoluteString)",
+                        "opmlBackgroundImageUrl=\(opmlEntry.attributeStringValue("backgroundImageUrl") ?? "nil")",
+                        "isDeleted=\(existingCategory.isDeleted)",
+                        "isArchived=\(existingCategory.isArchived)",
+                        "hasChanges=\(hasChanges)"
+                    )
+                    if hasChanges {
                         //                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
 //                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
@@ -845,6 +953,14 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
 //                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             realm.add(category, update: .modified)
+                            debugPrint(
+                                "# LIBRARY",
+                                "stage=library.opml.category.create",
+                                "categoryID=\(category.id.uuidString)",
+                                "title=\(category.title)",
+                                "backgroundImageUrl=\(category.backgroundImageUrl.absoluteString)",
+                                "opmlURL=\(category.opmlURL?.absoluteString ?? "nil")"
+                            )
                         }
                         importedCategories.append(category)
                     }
@@ -1039,6 +1155,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         let newBackgroundImageURL = opmlEntry.attributeStringValue("backgroundImageUrl")
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
+        let oldTitle = category.title
+        let oldBackgroundImageURL = category.backgroundImageUrl.absoluteString
+        let oldOpmlOwnerName = category.opmlOwnerName
+        let oldIsDeleted = category.isDeleted
+        let oldIsArchived = category.isArchived
         
         if category.title != newOpmlTitle {
             category.title = newOpmlTitle
@@ -1052,6 +1173,13 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if let newBackgroundImageURL = newBackgroundImageURL, let newURL = URL(string: newBackgroundImageURL), category.backgroundImageUrl != newURL {
             category.backgroundImageUrl = newURL
             didChange = true
+        } else if let newBackgroundImageURL, URL(string: newBackgroundImageURL) == nil {
+            debugPrint(
+                "# LIBRARY",
+                "stage=library.opml.category.invalidBackgroundImageUrl",
+                "categoryID=\(category.id.uuidString)",
+                "rawURL=\(newBackgroundImageURL)"
+            )
         }
         
         if category.isDeleted {
@@ -1070,6 +1198,21 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         
         if didChange {
             category.refreshChangeMetadata(explicitlyModified: true)
+            debugPrint(
+                "# LIBRARY",
+                "stage=library.opml.category.persist",
+                "categoryID=\(category.id.uuidString)",
+                "oldTitle=\(oldTitle)",
+                "newTitle=\(category.title)",
+                "oldBackgroundImageUrl=\(oldBackgroundImageURL)",
+                "newBackgroundImageUrl=\(category.backgroundImageUrl.absoluteString)",
+                "oldOpmlOwnerName=\(oldOpmlOwnerName ?? "nil")",
+                "newOpmlOwnerName=\(category.opmlOwnerName ?? "nil")",
+                "oldIsDeleted=\(oldIsDeleted)",
+                "newIsDeleted=\(category.isDeleted)",
+                "oldIsArchived=\(oldIsArchived)",
+                "newIsArchived=\(category.isArchived)"
+            )
         }
     }
     

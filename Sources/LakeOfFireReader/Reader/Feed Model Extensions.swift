@@ -33,6 +33,16 @@ public extension Feed {
         getEntries()?.first?.hasAudio ?? false
     }
 
+    var anyEntryHasAudio: Bool {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return false
+        }
+        return realm.objects(FeedEntry.self)
+            .where { $0.feedID == id && !$0.isDeleted }
+            .contains { $0.hasAudio }
+    }
+
     var latestEntryCreatedAt: Date? {
         getEntries()?.map(\.createdAt).max()
     }

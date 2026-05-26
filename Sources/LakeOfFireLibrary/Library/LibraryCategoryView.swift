@@ -60,6 +60,8 @@ class LibraryCategoryViewModel: ObservableObject {
         self.category = category
         self.libraryConfiguration = libraryConfiguration
         _selectedFeed = selectedFeed
+        categoryTitle = category.title
+        categoryBackgroundImageURL = category.backgroundImageUrl.absoluteString == "about:blank" ? "" : category.backgroundImageUrl.absoluteString
         
         let ref = ThreadSafeReference(to: category)
         Task { @RealmBackgroundActor [weak self] in
@@ -83,30 +85,88 @@ class LibraryCategoryViewModel: ObservableObject {
         }
         
         $categoryTitle
+            .dropFirst()
             .removeDuplicates()
             .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { categoryTitle in
-                Task { @MainActor in
-                    try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
+            .sink { [weak self] categoryTitle in
+                guard let self else { return }
+                let categoryID = category.id
+                Task { @RealmBackgroundActor in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
+                    guard category.isUserEditable else {
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.category.editBlocked",
+                            "field=title",
+                            "categoryID=\(categoryID.uuidString)",
+                            "opmlURL=\(category.opmlURL?.absoluteString ?? "nil")"
+                        )
+                        await self.refresh()
+                        return
+                    }
+                    guard category.title != categoryTitle else { return }
+                    try await realm.asyncWrite {
                         category.title = categoryTitle
                         category.refreshChangeMetadata(explicitlyModified: true)
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.category.userEditPersist",
+                            "field=title",
+                            "categoryID=\(categoryID.uuidString)",
+                            "title=\(category.title)"
+                        )
                     }
                 }
             }
             .store(in: &cancellables)
         $categoryBackgroundImageURL
+            .dropFirst()
             .removeDuplicates()
             .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { categoryBackgroundImageURL in
-                Task { @MainActor in
-                    try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
-                        if categoryBackgroundImageURL.isEmpty {
-                            category.backgroundImageUrl = URL(string: "about:blank")!
-                            category.refreshChangeMetadata(explicitlyModified: true)
-                        } else if let url = URL(string: categoryBackgroundImageURL) {
-                            category.backgroundImageUrl = url
-                            category.refreshChangeMetadata(explicitlyModified: true)
-                        }
+            .sink { [weak self] categoryBackgroundImageURL in
+                guard let self else { return }
+                let categoryID = category.id
+                Task { @RealmBackgroundActor in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
+                    guard category.isUserEditable else {
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.category.editBlocked",
+                            "field=backgroundImageUrl",
+                            "categoryID=\(categoryID.uuidString)",
+                            "opmlURL=\(category.opmlURL?.absoluteString ?? "nil")"
+                        )
+                        await self.refresh()
+                        return
+                    }
+                    let newURL: URL?
+                    if categoryBackgroundImageURL.isEmpty {
+                        newURL = URL(string: "about:blank")!
+                    } else {
+                        newURL = URL(string: categoryBackgroundImageURL)
+                    }
+                    guard let newURL else {
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.category.userEditInvalidImageURL",
+                            "categoryID=\(categoryID.uuidString)",
+                            "rawURL=\(categoryBackgroundImageURL)"
+                        )
+                        return
+                    }
+                    guard category.backgroundImageUrl != newURL else { return }
+                    try await realm.asyncWrite {
+                        category.backgroundImageUrl = newURL
+                        category.refreshChangeMetadata(explicitlyModified: true)
+                        debugPrint(
+                            "# LIBRARY",
+                            "stage=library.category.userEditPersist",
+                            "field=backgroundImageUrl",
+                            "categoryID=\(categoryID.uuidString)",
+                            "backgroundImageUrl=\(category.backgroundImageUrl.absoluteString)"
+                        )
                     }
                 }
             }

@@ -8,6 +8,9 @@ import Combine
 import RealmSwiftGaps
 import LakeOfFireContent
 import LakeOfFireFiles
+#if os(iOS)
+import UIKit
+#endif
 
 fileprivate let blockedHosts = Set([
     "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
@@ -17,6 +20,16 @@ fileprivate let blockedHosts = Set([
     "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
 ])
+
+#if os(iOS)
+private func currentWindowTopSafeAreaInset() -> CGFloat {
+    UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap(\.windows)
+        .first { $0.isKeyWindow }?
+        .safeAreaInsets.top ?? 0
+}
+#endif
 
 // To avoid redraws...
 @MainActor
@@ -160,6 +173,7 @@ public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
+    var ignoresSampledTopObscuredInset = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
@@ -199,6 +213,7 @@ public struct ReaderWebView: View {
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         usesEBookChromeInsets: Bool = false,
+        ignoresSampledTopObscuredInset: Bool = false,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
@@ -214,6 +229,7 @@ public struct ReaderWebView: View {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.usesEBookChromeInsets = usesEBookChromeInsets
+        self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
@@ -245,6 +261,7 @@ public struct ReaderWebView: View {
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
             usesEBookChromeInsets: usesEBookChromeInsets,
+            ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
@@ -284,6 +301,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var usesEBookChromeInsets = false
+    var ignoresSampledTopObscuredInset = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
@@ -332,9 +350,22 @@ fileprivate struct ReaderWebViewInternal: View {
 
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
-        let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
-            ? 0
-            : (obscuredInsets?.top ?? 0)
+        let rawSampledTop = obscuredInsets?.top ?? 0
+        let sampledTop: CGFloat = {
+            if additionalInsets.top > 0 || usesEBookChromeInsets {
+                return 0
+            }
+            guard ignoresSampledTopObscuredInset else {
+                return rawSampledTop
+            }
+#if os(iOS)
+            let fallbackTopInset = max(0, currentWindowTopSafeAreaInset())
+            let clampedSampledInset = rawSampledTop > 0 ? min(rawSampledTop, 88) : 0
+            return max(fallbackTopInset, clampedSampledInset)
+#else
+            return 0
+#endif
+        }()
         let sampledBottom = usesEBookChromeInsets
             ? 0
             : (obscuredInsets?.bottom ?? 0)
@@ -365,6 +396,8 @@ fileprivate struct ReaderWebViewInternal: View {
                 backgroundColor: readerThemeBackgroundColor,
                 usesSampledPageTopColorForUnderPageBackground: true,
                 usesConfiguredBackgroundForReaderDocuments: true,
+                adjustsScrollViewContentInsetsForSafeArea: false,
+                nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
                 userScripts: userScripts),
             navigator: navigator,
             state: $state,
