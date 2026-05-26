@@ -148,9 +148,7 @@ public struct LibraryManagerView: View {
             }
         }
         .task { @MainActor in
-#if os(macOS)
             columnVisibility = .all
-#endif
             if viewModel.selectedFeed != nil || viewModel.selectedScript != nil {
                 compactColumn = .detail
             } else if viewModel.selectedSidebarDestination == nil {
@@ -162,11 +160,7 @@ public struct LibraryManagerView: View {
     }
 
     private static var initialColumnVisibility: NavigationSplitViewVisibility {
-#if os(macOS)
         .all
-#else
-        .doubleColumn
-#endif
     }
 
     @ViewBuilder

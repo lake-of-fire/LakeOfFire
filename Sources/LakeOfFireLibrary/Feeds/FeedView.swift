@@ -251,28 +251,36 @@ public struct FeedView: View {
                 .id("feed-horizontal-\(feed.id.uuidString)")
                 .animation(.easeInOut(duration: 0.25), value: entryIDs)
             } else {
-                ReaderContentList(
-                    contents: entries,
-                    sortOrder: .publicationDate,
-                    includeSource: false,
-                    entrySelection: contentSelection,
-                    useDefaultRowInsets: true,
-                    showsNewBadges: showsReaderContentNewBadges,
-                    separateRowsIntoSections: true,
-                    allowEditing: allowsVideoMakerSelection
-                ) {
-                } emptyStateView: {
-                    EmptyStateBoxView(
-                        title: Text("No Entries Available"),
-                        text: Text("This feed is empty. Try refreshing or checking back later."),
-                        systemImageName: "newspaper.fill"
-                    )
-                }
-                .id("feed-vertical-\(feed.id.uuidString)")
-                .animation(.easeInOut(duration: 0.25), value: entryIDs)
+                ScrollViewReader { proxy in
+                    ReaderContentList(
+                        contents: entries,
+                        sortOrder: .publicationDate,
+                        includeSource: false,
+                        entrySelection: contentSelection,
+                        useDefaultRowInsets: true,
+                        showsNewBadges: showsReaderContentNewBadges,
+                        separateRowsIntoSections: true,
+                        allowEditing: allowsVideoMakerSelection
+                    ) {
+                    } emptyStateView: {
+                        EmptyStateBoxView(
+                            title: Text("No Entries Available"),
+                            text: Text("This feed is empty. Try refreshing or checking back later."),
+                            systemImageName: "newspaper.fill"
+                        )
+                    }
+                    .id("feed-vertical-\(feed.id.uuidString)")
+                    .animation(.easeInOut(duration: 0.25), value: entryIDs)
+                    .task(id: contentSelection.wrappedValue) { @MainActor in
+                        scrollToSelectedEntry(with: proxy)
+                    }
+                    .onChange(of: entryIDs) { _ in
+                        scrollToSelectedEntry(with: proxy)
+                    }
 #if os(iOS)
-                .listStyle(.insetGrouped)
+                    .listStyle(.insetGrouped)
 #endif
+                }
             }
         }
         .onAppear {
@@ -280,6 +288,17 @@ public struct FeedView: View {
         }
         .onDisappear {
             logFeedViewFlash("contentDisappear", entries: entries)
+        }
+    }
+
+    @MainActor
+    private func scrollToSelectedEntry(with proxy: ScrollViewProxy) {
+        guard let selection = contentSelection.wrappedValue,
+              entries.contains(where: { $0.compoundKey == selection }) else {
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(selection, anchor: .center)
         }
     }
 
