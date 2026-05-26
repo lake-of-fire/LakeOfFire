@@ -11,6 +11,9 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
+#if os(iOS)
+import UIKit
+#endif
 
 fileprivate func lakeReaderLoadDebugLog(_ message: String) {
     let line = "# LOAD \(message)\n"
@@ -26,6 +29,16 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
         try? data.write(to: url, options: .atomic)
     }
 }
+
+#if os(iOS)
+private func currentWindowTopSafeAreaInset() -> CGFloat {
+    UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap(\.windows)
+        .first { $0.isKeyWindow }?
+        .safeAreaInsets.top ?? 0
+}
+#endif
 
 private func readerLoadDurationString(_ interval: TimeInterval) -> String {
     let milliseconds = Int64((max(0, Double(interval)) * 1_000).rounded())
@@ -85,6 +98,17 @@ private extension View {
     func readerStatusBarFade(top: CGFloat, backgroundColor: Color) -> some View {
         modifier(ReaderStatusBarFadeOverlay(topFadeHeight: top, backgroundColor: backgroundColor))
     }
+
+#if os(iOS)
+    @ViewBuilder
+    func readerStatusBarFadeOnPhone(top: CGFloat, backgroundColor: Color) -> some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            readerStatusBarFade(top: top, backgroundColor: backgroundColor)
+        } else {
+            self
+        }
+    }
+#endif
 }
 
 private func logSafeArea(_ message: @autoclosure () -> String) {
@@ -957,6 +981,7 @@ public struct Reader: View {
     var additionalTopSafeAreaInset: CGFloat? = nil
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
+    var ignoresSampledTopObscuredInset = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -983,6 +1008,7 @@ public struct Reader: View {
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
+        ignoresSampledTopObscuredInset: Bool = false,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -999,6 +1025,7 @@ public struct Reader: View {
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
+        self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -1017,6 +1044,24 @@ public struct Reader: View {
             darkModeTheme: darkModeTheme
         )
         let sampledTopInset = max(0, obscuredInsets?.top ?? 0)
+        let effectiveSampledTopInset: CGFloat = {
+            guard ignoresSampledTopObscuredInset else { return sampledTopInset }
+#if os(iOS)
+            let fallbackTopInset = max(0, currentWindowTopSafeAreaInset())
+            let clampedSampledInset = sampledTopInset > 0 ? min(sampledTopInset, 88) : 0
+            return max(fallbackTopInset, clampedSampledInset)
+#else
+            return 0
+#endif
+        }()
+        let effectiveObscuredInsets = ignoresSampledTopObscuredInset
+            ? EdgeInsets(
+                top: effectiveSampledTopInset,
+                leading: obscuredInsets?.leading ?? 0,
+                bottom: obscuredInsets?.bottom ?? 0,
+                trailing: obscuredInsets?.trailing ?? 0
+            )
+            : obscuredInsets
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
         let effectiveTopInset = explicitTopInset
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
@@ -1060,7 +1105,7 @@ public struct Reader: View {
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
-            obscuredInsets: obscuredInsets,
+            obscuredInsets: effectiveObscuredInsets,
             usesEBookChromeInsets: pageURL.isEBookURL,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
@@ -1075,8 +1120,8 @@ public struct Reader: View {
             buildMenu: buildMenu
         )
 #if os(iOS)
-        .readerStatusBarFade(
-            top: max(0, (obscuredInsets?.top ?? 0)),//    + 8 + 2)
+        .readerStatusBarFadeOnPhone(
+            top: effectiveSampledTopInset,//    + 8 + 2)
             backgroundColor: statusBarFadeBackgroundColor
         )
         .ignoresSafeArea(.all, edges: .all)

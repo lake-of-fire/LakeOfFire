@@ -373,6 +373,8 @@ fileprivate struct ReaderWebViewInternal: View {
                 backgroundColor: readerThemeBackgroundColor,
                 usesSampledPageTopColorForUnderPageBackground: true,
                 usesConfiguredBackgroundForReaderDocuments: true,
+                adjustsScrollViewContentInsetsForSafeArea: false,
+                nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
                 userScripts: userScripts),
             navigator: navigator,
             state: $state,

@@ -110,6 +110,7 @@ public struct LibraryManagerView: View {
         .navigationSplitViewStyle(.balanced)
         .onChange(of: viewModel.selectedSidebarDestination) { destination in
             Task { @MainActor in
+                viewModel.navigationPath = NavigationPath()
                 switch destination {
                 case .none:
                     viewModel.selectedFeed = nil
@@ -117,13 +118,13 @@ public struct LibraryManagerView: View {
                     compactColumn = .sidebar
                 case .some(.userScripts):
                     viewModel.selectedFeed = nil
-                    compactColumn = .content
+                    compactColumn = .detail
                 case .some(.category(let categoryID)):
                     viewModel.selectedScript = nil
                     if viewModel.selectedFeed?.categoryID != categoryID {
                         viewModel.selectedFeed = nil
                     }
-                    compactColumn = .content
+                    compactColumn = .detail
                 }
             }
         }
@@ -131,9 +132,11 @@ public struct LibraryManagerView: View {
             Task { @MainActor in
                 if feed != nil {
                     viewModel.selectedScript = nil
+                    syncDetailNavigationPath()
                     compactColumn = .detail
                 } else if viewModel.selectedScript == nil {
-                    compactColumn = viewModel.selectedSidebarDestination == nil ? .sidebar : .content
+                    viewModel.navigationPath = NavigationPath()
+                    compactColumn = viewModel.selectedSidebarDestination == nil ? .sidebar : .detail
                 }
             }
         }
@@ -141,20 +144,30 @@ public struct LibraryManagerView: View {
             Task { @MainActor in
                 if script != nil {
                     viewModel.selectedFeed = nil
+                    syncDetailNavigationPath()
                     compactColumn = .detail
                 } else if viewModel.selectedFeed == nil {
-                    compactColumn = viewModel.selectedSidebarDestination == nil ? .sidebar : .content
+                    viewModel.navigationPath = NavigationPath()
+                    compactColumn = viewModel.selectedSidebarDestination == nil ? .sidebar : .detail
                 }
+            }
+        }
+        .onChange(of: viewModel.navigationPath.count) { pathCount in
+            guard pathCount == 0 else { return }
+            if viewModel.selectedFeed != nil || viewModel.selectedScript != nil {
+                viewModel.selectedFeed = nil
+                viewModel.selectedScript = nil
             }
         }
         .task { @MainActor in
             columnVisibility = .all
             if viewModel.selectedFeed != nil || viewModel.selectedScript != nil {
+                syncDetailNavigationPath()
                 compactColumn = .detail
             } else if viewModel.selectedSidebarDestination == nil {
                 compactColumn = .sidebar
             } else {
-                compactColumn = .content
+                compactColumn = .detail
             }
         }
     }
@@ -175,11 +188,8 @@ public struct LibraryManagerView: View {
                 sidebar: {
                     sidebarView
                 },
-                content: {
-                    contentView
-                },
                 detail: {
-                    detailView
+                    detailNavigationView
                 }
             )
         } else {
@@ -188,11 +198,8 @@ public struct LibraryManagerView: View {
                 sidebar: {
                     sidebarView
                 },
-                content: {
-                    contentView
-                },
                 detail: {
-                    detailView
+                    detailNavigationView
                 }
             )
         }
@@ -264,36 +271,58 @@ public struct LibraryManagerView: View {
     }
 
     @ViewBuilder
-    private var detailView: some View {
-        VStack {
-            if let feed = viewModel.selectedFeed {
-#if os(macOS)
-                ScrollView {
-                    LibraryFeedView(feed: feed)
-                    //                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
+    private var detailNavigationView: some View {
+        NavigationStack(path: $viewModel.navigationPath) {
+            contentView
+                .navigationDestination(for: Feed.self) { feed in
+                    feedDetailView(feed)
                 }
-#else
-                LibraryFeedView(feed: feed)
-                //                            .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
-#endif
-            }
-            if let script = viewModel.selectedScript {
-#if os(macOS)
-                ScrollView {
-                    LibraryScriptForm(script: script)
-                    //                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
+                .navigationDestination(for: UserScript.self) { script in
+                    scriptDetailView(script)
                 }
-#else
-                LibraryScriptForm(script: script)
-                //                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
-#endif
+        }
+    }
+
+    private func syncDetailNavigationPath() {
+        var path = NavigationPath()
+        if let feed = viewModel.selectedFeed {
+            path.append(feed)
+        } else if let script = viewModel.selectedScript {
+            path.append(script)
+        }
+        viewModel.navigationPath = path
+    }
+
+    @ViewBuilder
+    private func feedDetailView(_ feed: Feed) -> some View {
+        detailFormContainer {
+            LibraryFeedView(feed: feed)
+            //                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
+        }
+    }
+
+    @ViewBuilder
+    private func scriptDetailView(_ script: UserScript) -> some View {
+        detailFormContainer {
+            LibraryScriptForm(script: script)
+            //                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
+        }
+    }
+
+    @ViewBuilder
+    private func detailFormContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        Group {
+#if os(macOS)
+            ScrollView {
+                content()
             }
+#else
+            content()
+#endif
         }
 #if os(macOS)
         .textFieldStyle(.roundedBorder)
 #endif
-        //                .fixedSize(horizontal: false, vertical: true)
-        //            }
         .toolbar {
 #if os(iOS)
             ToolbarItem(placement: dismissToolbarPlacement) {
@@ -315,14 +344,13 @@ public struct LibraryManagerView: View {
 #endif
         }
     }
-    
+
     public init() {
     }
 }
 
 private enum CompactLibraryColumn {
     case sidebar
-    case content
     case detail
 
     @available(iOS 17, macOS 14, *)
@@ -330,8 +358,6 @@ private enum CompactLibraryColumn {
         switch self {
         case .sidebar:
             return .sidebar
-        case .content:
-            return .content
         case .detail:
             return .detail
         }
@@ -342,8 +368,6 @@ private enum CompactLibraryColumn {
         switch column {
         case .sidebar:
             self = .sidebar
-        case .content:
-            self = .content
         case .detail:
             self = .detail
         default:

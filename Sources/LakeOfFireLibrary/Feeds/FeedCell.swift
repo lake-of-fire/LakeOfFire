@@ -38,12 +38,13 @@ public struct FeedCell: View {
     @ObservedRealmObject var feed: Feed
     var includesDescription = true
     var horizontalSpacing: CGFloat = 10
+    private let cachedShowsAudioIndicator: Bool?
     
     @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 40
     @ScaledMetric(relativeTo: .caption2) private var scaledNewBadgeHeight: CGFloat = 19
     
     private var showsAudioIndicator: Bool {
-        feed.firstEntryHasAudio
+        cachedShowsAudioIndicator ?? feed.anyEntryHasAudio
     }
 
     private var showsUnreadIndicator: Bool {
@@ -117,9 +118,15 @@ public struct FeedCell: View {
         .tag(feed.id.uuidString)
     }
     
-    public init(feed: Feed, includesDescription: Bool = true, horizontalSpacing: CGFloat = 10) {
+    public init(
+        feed: Feed,
+        includesDescription: Bool = true,
+        horizontalSpacing: CGFloat = 10,
+        cachedShowsAudioIndicator: Bool? = nil
+    ) {
         self.feed = feed
         self.includesDescription = includesDescription
         self.horizontalSpacing = horizontalSpacing
+        self.cachedShowsAudioIndicator = cachedShowsAudioIndicator
     }
 }
