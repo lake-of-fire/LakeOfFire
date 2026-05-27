@@ -1119,6 +1119,7 @@ public struct Reader: View {
             "inputLeading=\(additionalLeadingSafeAreaInset ?? 0)",
             "sampledTop=\(sampledTopInset)",
             "sampledLeading=\(obscuredInsets?.leading ?? 0)",
+            "webViewObscuredTop=\(effectiveObscuredInsets?.top ?? 0)",
             "effectiveTop=\(effectiveTopInset)",
             "effectiveLeading=\(additionalLeadingInset)",
             "bottom=\(additionalBottomSafeAreaInset ?? 0)"

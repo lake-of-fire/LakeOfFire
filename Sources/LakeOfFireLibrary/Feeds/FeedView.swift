@@ -228,7 +228,9 @@ public struct FeedView: View {
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
     var showsToolbar = true
+    var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
+    @State private var hasAppliedInitialScrollEntryID = false
     @Environment(\.contentSelection) private var contentSelection
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -346,10 +348,14 @@ public struct FeedView: View {
                     )
                     .id("feed-vertical-\(feed.id.uuidString)")
                     .animation(.easeInOut(duration: 0.25), value: entryIDs)
+                    .onAppear {
+                        applyInitialScrollEntryIDIfNeeded()
+                    }
                     .task(id: contentSelection.wrappedValue) { @MainActor in
                         scrollToSelectedEntry(with: proxy)
                     }
                     .onChange(of: entryIDs) { _ in
+                        applyInitialScrollEntryIDIfNeeded()
                         scrollToSelectedEntry(with: proxy)
                     }
 #if os(iOS)
@@ -374,6 +380,19 @@ public struct FeedView: View {
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             proxy.scrollTo(selection, anchor: .center)
+        }
+    }
+
+    @MainActor
+    private func applyInitialScrollEntryIDIfNeeded() {
+        guard !hasAppliedInitialScrollEntryID,
+              let initialScrollEntryID,
+              entries.contains(where: { $0.compoundKey == initialScrollEntryID }) else {
+            return
+        }
+        hasAppliedInitialScrollEntryID = true
+        if contentSelection.wrappedValue != initialScrollEntryID {
+            contentSelection.wrappedValue = initialScrollEntryID
         }
     }
 
@@ -489,11 +508,12 @@ public struct FeedView: View {
 #endif
     }
     
-    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false, showsToolbar: Bool = true) {
+    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false, showsToolbar: Bool = true, initialScrollEntryID: String? = nil) {
         self.feed = feed
         self.viewModel = viewModel
         self.isHorizontal = isHorizontal
         self.showsToolbar = showsToolbar
+        self.initialScrollEntryID = initialScrollEntryID
     }
 
     private var toolbarTrailingPlacement: ToolbarItemPlacement {
