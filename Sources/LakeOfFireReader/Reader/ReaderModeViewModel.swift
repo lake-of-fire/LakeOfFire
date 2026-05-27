@@ -2838,6 +2838,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         let snippetRawTitle = content.title
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
+        let tracksReadingProgress = content.tracksReadingProgress
         let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
         let defaultFontSize = defaultFontSize
         let frameIsMainFrame = frameInfo?.isMainFrame ?? true
@@ -2853,6 +2854,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     url,
                     nil,
                     false,
+                    tracksReadingProgress,
                     { doc in
                         do {
                             return try await preprocessWebContentForReaderMode(

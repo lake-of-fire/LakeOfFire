@@ -851,6 +851,10 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
+        if let minimumVersion = opmlEntry.attributeStringValue("minAppVersion"),
+           !Self.isCurrentAppVersionAtLeast(minimumVersion) {
+            return (importedCategories, importedFeeds, importedScripts)
+        }
         let realm = try await Realm(
             configuration: LibraryDataManager.realmConfiguration,
             actor: RealmBackgroundActor.shared
@@ -986,6 +990,25 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             importedScripts.append(contentsOf: newScripts)
         }
         return (importedCategories, importedFeeds, importedScripts)
+    }
+
+    static func isCurrentAppVersionAtLeast(_ minimumVersion: String) -> Bool {
+        guard let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else {
+            return false
+        }
+        return compareVersion(currentVersion, minimumVersion) != .orderedAscending
+    }
+
+    static func compareVersion(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let leftComponents = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let rightComponents = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        for index in 0..<max(leftComponents.count, rightComponents.count) {
+            let left = index < leftComponents.count ? leftComponents[index] : 0
+            let right = index < rightComponents.count ? rightComponents[index] : 0
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+        return .orderedSame
     }
     
     static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
@@ -1247,6 +1270,10 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if feed.rssContainsFullContent != newRssContainsFullContent {
             return true
         }
+        let newEntryContentKind = ReaderContentKind(rawValue: opmlEntry.attributeStringValue("entryContentKind") ?? "") ?? .readerContent
+        if feed.entryContentKind != newEntryContentKind {
+            return true
+        }
         let newInjectEntryImageIntoHeader = opmlEntry.attributeBoolValue("injectEntryImageIntoHeader") ?? false
         if feed.injectEntryImageIntoHeader != newInjectEntryImageIntoHeader {
             return true
@@ -1316,6 +1343,11 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         let newRssContainsFullContent = opmlEntry.attributeBoolValue("rssContainsFullContent") ?? false
         if feed.rssContainsFullContent != newRssContainsFullContent {
             feed.rssContainsFullContent = newRssContainsFullContent
+            didChange = true
+        }
+        let newEntryContentKind = ReaderContentKind(rawValue: opmlEntry.attributeStringValue("entryContentKind") ?? "") ?? .readerContent
+        if feed.entryContentKind != newEntryContentKind {
+            feed.entryContentKind = newEntryContentKind
             didChange = true
         }
         let newInjectEntryImageIntoHeader = opmlEntry.attributeBoolValue("injectEntryImageIntoHeader") ?? false

@@ -59,6 +59,34 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     }
 }
 
+public class FeedEntryCollection: Object, ObjectKeyIdentifiable, ChangeMetadataRecordable {
+    @Persisted(primaryKey: true) public var compoundKey = ""
+    @Persisted(indexed: true) public var feedID: UUID?
+    @Persisted public var scheme = ""
+    @Persisted public var term = ""
+    @Persisted public var title = ""
+    @Persisted public var summary: String?
+    @Persisted public var imageUrl: URL?
+    @Persisted public var url: URL?
+    @Persisted public var publicationDate: Date?
+    @Persisted public var order: Int?
+
+    @Persisted public var explicitlyModifiedAt: Date?
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
+    @Persisted public var isDeleted = false
+
+    public var id: String { compoundKey }
+
+    public static func makePrimaryKey(feedID: UUID?, scheme: String, term: String) -> String {
+        [feedID?.uuidString ?? "", scheme, term].joined(separator: "|")
+    }
+
+    public func updateCompoundKey() {
+        compoundKey = Self.makePrimaryKey(feedID: feedID, scheme: scheme, term: term)
+    }
+}
+
 public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
     public var needsSyncToAppServer: Bool {
         return false
@@ -78,6 +106,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var extractImageFromContent = true
     @Persisted public var deleteOrphans = false
+    @Persisted public var entryContentKindRawValue = ReaderContentKind.readerContent.rawValue
     
     //    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
@@ -108,6 +137,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         case meaningfulContentMinLength
         case extractImageFromContent
         case deleteOrphans
+        case entryContentKindRawValue
         case isFollowed
         case followingOrdinal
         case modifiedAt
@@ -134,6 +164,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(displayPublicationDate, forKey: .displayPublicationDate)
         try container.encode(meaningfulContentMinLength, forKey: .meaningfulContentMinLength)
         try container.encode(deleteOrphans, forKey: .deleteOrphans)
+        try container.encode(entryContentKindRawValue, forKey: .entryContentKindRawValue)
         try container.encode(isFollowed, forKey: .isFollowed)
         try container.encode(followingOrdinal, forKey: .followingOrdinal)
         try container.encode(modifiedAt, forKey: .modifiedAt)
@@ -154,6 +185,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
+        self.entryContentKindRawValue = try container.decodeIfPresent(String.self, forKey: .entryContentKindRawValue) ?? ReaderContentKind.readerContent.rawValue
         self.isFollowed = try container.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
         self.followingOrdinal = try container.decodeIfPresent(Int.self, forKey: .followingOrdinal)
     }
@@ -176,9 +208,44 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
             .sorted(by: \.publicationDate)
             .map { $0 }
     }
+
+    public func getCollections() -> [FeedEntryCollection]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(FeedEntryCollection.self)
+            .where { $0.feedID == id && !$0.isDeleted }
+            .sorted {
+                switch ($0.order, $1.order) {
+                case let (left?, right?) where left != right:
+                    return left > right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    switch ($0.publicationDate, $1.publicationDate) {
+                    case let (left?, right?) where left != right:
+                        return left > right
+                    case (_?, nil):
+                        return true
+                    case (nil, _?):
+                        return false
+                    default:
+                        return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                    }
+                }
+            }
+    }
 }
 
 public extension Feed {
+    var entryContentKind: ReaderContentKind {
+        get { ReaderContentKind(rawValue: entryContentKindRawValue) ?? .readerContent }
+        set { entryContentKindRawValue = newValue.rawValue }
+    }
+
     public static func canonicalFollowingFeedURLKey(for url: URL) -> String {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.absoluteString
@@ -203,7 +270,7 @@ public extension Feed {
     public static func uniqueFollowingFeedRepresentatives(from feeds: [Feed]) -> [Feed] {
         var representativesByURL = [String: Feed]()
 
-        for feed in feeds where !feed.isDeleted && !feed.isArchived {
+        for feed in feeds where !feed.isDeleted && !feed.isArchived && feed.entryContentKind != .contentListing {
             let key = feed.canonicalFollowingFeedURLKey
             guard let current = representativesByURL[key] else {
                 representativesByURL[key] = feed
@@ -305,7 +372,7 @@ public extension Feed {
         historyRealm: Realm? = nil,
         limit: Int? = nil
     ) -> [FeedEntry] {
-        let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived }) {
+        let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived && $0.entryContentKind != .contentListing }) {
             $0.canonicalFollowingFeedURLKey
         }
 
@@ -611,6 +678,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     @Persisted public var autoOpenMediaPlayer = false
+    @Persisted public var readerContentKindRawValue = ReaderContentKind.readerContent.rawValue
+    @Persisted public var feedEntryCollectionKey: String?
+    @Persisted public var feedEntryCollectionScheme: String?
+    @Persisted public var feedEntryCollectionTerm: String?
+    @Persisted public var feedEntryCollectionTitle: String?
     
     // Feed options.
     public var isReaderModeByDefault: Bool {
@@ -722,6 +794,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
             to: bookmark,
             defaultAudioSubtitlesRole: .content
         )
+        bookmark.readerContentKind = readerContentKind
+        bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+        bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+        bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+        bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
 
         bookmark.isReaderModeByDefault = isReaderModeByDefault
     }
@@ -815,6 +892,100 @@ fileprivate func logRSS(_ message: String) {
 #if DEBUG
     debugPrint("# RSS \(message)")
 #endif
+}
+
+fileprivate struct ParsedFeedEntryCollection {
+    let scheme: String
+    let term: String
+    let title: String
+    let summary: String?
+    let imageUrl: URL?
+    let url: URL?
+    let publicationDate: Date?
+    let order: Double?
+}
+
+fileprivate final class ManabiAtomCollectionParser: NSObject, XMLParserDelegate {
+    private(set) var collections: [ParsedFeedEntryCollection] = []
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let localName = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        guard localName == "collection" else { return }
+        if let namespaceURI, namespaceURI != "https://manabi.io/feed" {
+            return
+        }
+        guard
+            let scheme = attributeDict["scheme"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !scheme.isEmpty,
+            let term = (attributeDict["id"] ?? attributeDict["term"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !term.isEmpty
+        else { return }
+
+        let title = attributeDict["title"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = attributeDict["summary"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageUrl = (attributeDict["cover"] ?? attributeDict["image"]).flatMap { URL(string: $0) }
+        let url = (attributeDict["href"] ?? attributeDict["url"]).flatMap { URL(string: $0) }
+        let publicationDate = (attributeDict["published"] ?? attributeDict["updated"] ?? attributeDict["date"])
+            .flatMap(Self.parseDate)
+
+        collections.append(
+            ParsedFeedEntryCollection(
+                scheme: scheme,
+                term: term,
+                title: title?.isEmpty == false ? title! : term,
+                summary: summary?.isEmpty == false ? summary : nil,
+                imageUrl: imageUrl,
+                url: url,
+                publicationDate: publicationDate,
+                order: attributeDict["order"].flatMap(Double.init)
+            )
+        )
+    }
+
+    private static func parseDate(_ rawValue: String) -> Date? {
+        dateTimeWithFractionalSeconds.date(from: rawValue)
+            ?? dateTime.date(from: rawValue)
+            ?? dateOnly.date(from: rawValue)
+    }
+
+    private static let dateTimeWithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let dateTime: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let dateOnly: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        return formatter
+    }()
+}
+
+fileprivate func parseManabiAtomCollections(from data: Data) -> [ParsedFeedEntryCollection] {
+    let parserDelegate = ManabiAtomCollectionParser()
+    let parser = XMLParser(data: data)
+    parser.shouldProcessNamespaces = true
+    parser.delegate = parserDelegate
+    _ = parser.parse()
+    if parserDelegate.collections.isEmpty {
+        let fallbackParser = XMLParser(data: data)
+        fallbackParser.shouldProcessNamespaces = false
+        fallbackParser.delegate = parserDelegate
+        _ = fallbackParser.parse()
+    }
+    return parserDelegate.collections
 }
 
 fileprivate enum FeedFetchResult {
@@ -1017,6 +1188,7 @@ public extension Feed {
         let feedID = id
         let iconUrl = iconUrl
         let rssUrl = rssUrl
+        let entryContentKind = entryContentKind
         var incomingIDs = [String]()
         var skippedItems = 0
         let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
@@ -1081,6 +1253,7 @@ public extension Feed {
             feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
             feedEntry.audioSubtitlesURL = audioSubtitlesURL
             feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
+            feedEntry.readerContentKind = entryContentKind
             feedEntry.updateCompoundKey()
             incomingIDs.append(feedEntry.compoundKey)
             return feedEntry
@@ -1118,10 +1291,35 @@ public extension Feed {
     }
     
     @MainActor
-    private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
+    private func persist(
+        atomItems: [AtomFeedEntry],
+        collections: [ParsedFeedEntryCollection],
+        realmConfiguration: Realm.Configuration,
+        deleteOrphans: Bool
+    ) async throws {
         let feedID = id
         let sourceIconURL = iconUrl
         let rssUrl = rssUrl
+        let entryContentKind = entryContentKind
+        let collectionObjects = collections.map { parsedCollection -> FeedEntryCollection in
+            let collection = FeedEntryCollection()
+            collection.feedID = feedID
+            collection.scheme = parsedCollection.scheme
+            collection.term = parsedCollection.term
+            collection.title = parsedCollection.title
+            collection.summary = parsedCollection.summary
+            collection.imageUrl = parsedCollection.imageUrl
+            collection.url = parsedCollection.url
+            collection.publicationDate = parsedCollection.publicationDate
+            collection.order = parsedCollection.order.map(Int.init)
+            collection.updateCompoundKey()
+            return collection
+        }
+        var collectionsBySchemeAndTerm = [String: FeedEntryCollection]()
+        for collection in collectionObjects {
+            collectionsBySchemeAndTerm["\(collection.scheme)\n\(collection.term)"] = collection
+        }
+        let incomingCollectionKeys = collectionObjects.map(\.compoundKey)
         var incomingIDs = [String]()
         var skippedItems = 0
         let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
@@ -1209,6 +1407,21 @@ public extension Feed {
             feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
             feedEntry.redditTranslationsUrl = redditTranslationsUrl
             feedEntry.redditTranslationsTitle = redditTranslationsTitle
+            feedEntry.readerContentKind = entryContentKind
+            if let collection = (item.categories ?? [])
+                .compactMap({ category -> FeedEntryCollection? in
+                    guard
+                        let scheme = category.attributes?.scheme,
+                        let term = category.attributes?.term
+                    else { return nil }
+                    return collectionsBySchemeAndTerm["\(scheme)\n\(term)"]
+                })
+                .first {
+                feedEntry.feedEntryCollectionKey = collection.compoundKey
+                feedEntry.feedEntryCollectionScheme = collection.scheme
+                feedEntry.feedEntryCollectionTerm = collection.term
+                feedEntry.feedEntryCollectionTitle = collection.title
+            }
             feedEntry.updateCompoundKey()
             incomingIDs.append(feedEntry.compoundKey)
             return feedEntry
@@ -1218,6 +1431,24 @@ public extension Feed {
         )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            if !collectionObjects.isEmpty {
+                try await realm.asyncWrite {
+                    for collection in collectionObjects {
+                        if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
+                            collection.createdAt = existing.createdAt
+                        }
+                    }
+                    realm.add(collectionObjects, update: .modified)
+                    if deleteOrphans {
+                        let collectionOrphans = realm.objects(FeedEntryCollection.self)
+                            .where { $0.feedID == feedID && !$0.isDeleted && !$0.compoundKey.in(incomingCollectionKeys) }
+                        for orphan in collectionOrphans {
+                            orphan.isDeleted = true
+                            orphan.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    }
+                }
+            }
             
             let existingEntryIDs = Array(
                 realm.objects(FeedEntry.self)
@@ -1311,7 +1542,12 @@ public extension Feed {
                             logRSS("stage=parse.atom.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) entries=\(items.count)")
                             Task { @MainActor in
                                 do {
-                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
+                                    try await self.persist(
+                                        atomItems: items,
+                                        collections: parseManabiAtomCollections(from: rssData),
+                                        realmConfiguration: realmConfiguration,
+                                        deleteOrphans: self.deleteOrphans
+                                    )
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
                                     logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
                                     continuation.resume(returning: ())
@@ -1511,6 +1747,11 @@ fileprivate struct FeedEntryPayload {
     let redditTranslationsUrl: URL?
     let redditTranslationsTitle: String?
     let autoOpenMediaPlayer: Bool
+    let readerContentKindRawValue: String
+    let feedEntryCollectionKey: String?
+    let feedEntryCollectionScheme: String?
+    let feedEntryCollectionTerm: String?
+    let feedEntryCollectionTitle: String?
     let createdAt: Date
 
     init(entry: FeedEntry, existing: FeedEntry?) {
@@ -1538,6 +1779,11 @@ fileprivate struct FeedEntryPayload {
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
         autoOpenMediaPlayer = entry.autoOpenMediaPlayer
+        readerContentKindRawValue = entry.readerContentKindRawValue
+        feedEntryCollectionKey = entry.feedEntryCollectionKey
+        feedEntryCollectionScheme = entry.feedEntryCollectionScheme
+        feedEntryCollectionTerm = entry.feedEntryCollectionTerm
+        feedEntryCollectionTitle = entry.feedEntryCollectionTitle
         createdAt = existing?.createdAt ?? entry.createdAt
     }
 }
@@ -1642,6 +1888,26 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
     }
     if content.autoOpenMediaPlayer != payload.autoOpenMediaPlayer {
         content.autoOpenMediaPlayer = payload.autoOpenMediaPlayer
+        didChange = true
+    }
+    if content.readerContentKindRawValue != payload.readerContentKindRawValue {
+        content.readerContentKindRawValue = payload.readerContentKindRawValue
+        didChange = true
+    }
+    if content.feedEntryCollectionKey != payload.feedEntryCollectionKey {
+        content.feedEntryCollectionKey = payload.feedEntryCollectionKey
+        didChange = true
+    }
+    if content.feedEntryCollectionScheme != payload.feedEntryCollectionScheme {
+        content.feedEntryCollectionScheme = payload.feedEntryCollectionScheme
+        didChange = true
+    }
+    if content.feedEntryCollectionTerm != payload.feedEntryCollectionTerm {
+        content.feedEntryCollectionTerm = payload.feedEntryCollectionTerm
+        didChange = true
+    }
+    if content.feedEntryCollectionTitle != payload.feedEntryCollectionTitle {
+        content.feedEntryCollectionTitle = payload.feedEntryCollectionTitle
         didChange = true
     }
     return didChange

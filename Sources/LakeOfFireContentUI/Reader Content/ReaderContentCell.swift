@@ -111,8 +111,9 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let feed = feedEntry?.getFeed()
                 let feedTitle = feed?.title
                 let feedIconURL = feed?.iconUrl
-                let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
-                let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
+                let tracksReadingProgress = item.tracksReadingProgress
+                let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
+                let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
                 let syncStatusPresentation = try await ReaderContentSyncStatusLoader.syncStatusLoader?(itemURL)
                 let historyRealm = try await Realm(
                     configuration: ReaderContentLoader.historyRealmConfiguration,
@@ -626,6 +627,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var isProgressVisible: Bool {
+        guard item.tracksReadingProgress else { return false }
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
         }
@@ -646,6 +648,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var shouldShowProgressRow: Bool {
+        guard item.tracksReadingProgress else { return false }
         if isProgressVisible { return true }
         if item.hasAudio { return !appearance.isEbookStyle }
         if item.hasPrimaryMedia { return !appearance.isEbookStyle }

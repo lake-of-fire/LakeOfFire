@@ -94,6 +94,11 @@ public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
     case media
 }
 
+public enum ReaderContentKind: String, CaseIterable, Sendable {
+    case readerContent
+    case contentListing
+}
+
 private enum ReaderContentFormatters {
     static let snippetChromeDate: DateFormatter = {
         let formatter = DateFormatter()
@@ -161,6 +166,11 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var meaningfulContentMinLength: Int { get set }
     var injectEntryImageIntoHeader: Bool { get set }
     var displayPublicationDate: Bool { get set }
+    var readerContentKindRawValue: String { get set }
+    var feedEntryCollectionKey: String? { get set }
+    var feedEntryCollectionScheme: String? { get set }
+    var feedEntryCollectionTerm: String? { get set }
+    var feedEntryCollectionTitle: String? { get set }
 
     var createdAt: Date { get }
     var modifiedAt: Date { get set }
@@ -175,6 +185,19 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 }
 
 public extension ReaderContentProtocol {
+    var readerContentKind: ReaderContentKind {
+        get { ReaderContentKind(rawValue: readerContentKindRawValue) ?? .readerContent }
+        set { readerContentKindRawValue = newValue.rawValue }
+    }
+
+    var isContentListing: Bool {
+        readerContentKind == .contentListing
+    }
+
+    var tracksReadingProgress: Bool {
+        !isContentListing
+    }
+
     var primaryMediaKind: ReaderPrimaryMediaKind? {
         get {
             primaryMediaKindRawValue.flatMap { ReaderPrimaryMediaKind(rawValue: $0) }
@@ -254,6 +277,11 @@ public extension ReaderContentProtocol {
         destination.redditTranslationsUrl = redditTranslationsUrl
         destination.redditTranslationsTitle = redditTranslationsTitle
         destination.autoOpenMediaPlayer = autoOpenMediaPlayer
+        destination.readerContentKind = readerContentKind
+        destination.feedEntryCollectionKey = feedEntryCollectionKey
+        destination.feedEntryCollectionScheme = feedEntryCollectionScheme
+        destination.feedEntryCollectionTerm = feedEntryCollectionTerm
+        destination.feedEntryCollectionTitle = feedEntryCollectionTitle
         return destination
     }
 
@@ -527,6 +555,11 @@ public extension ReaderContentProtocol {
         let resolvedRedditTranslationsURL = redditTranslationsUrl
         let resolvedRedditTranslationsTitle = redditTranslationsTitle
         let autoOpenMediaPlayer = autoOpenMediaPlayer
+        let readerContentKind = readerContentKind
+        let feedEntryCollectionKey = feedEntryCollectionKey
+        let feedEntryCollectionScheme = feedEntryCollectionScheme
+        let feedEntryCollectionTerm = feedEntryCollectionTerm
+        let feedEntryCollectionTitle = feedEntryCollectionTitle
         try await { @RealmBackgroundActor in
             let bookmark = try await Bookmark.add(
                 url: url,
@@ -543,6 +576,11 @@ public extension ReaderContentProtocol {
                 isReaderModeAvailable: isReaderModeAvailable,
                 isReaderModeOfferHidden: isReaderModeOfferHidden,
                 autoOpenMediaPlayer: autoOpenMediaPlayer,
+                readerContentKind: readerContentKind,
+                feedEntryCollectionKey: feedEntryCollectionKey,
+                feedEntryCollectionScheme: feedEntryCollectionScheme,
+                feedEntryCollectionTerm: feedEntryCollectionTerm,
+                feedEntryCollectionTitle: feedEntryCollectionTitle,
                 realmConfiguration: realmConfiguration
             )
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
@@ -585,6 +623,11 @@ public extension ReaderContentProtocol {
                     managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
                     managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
                     managedBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                    managedBookmark.readerContentKind = readerContentKind
+                    managedBookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                    managedBookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                    managedBookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                    managedBookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
                 }
                 managedBookmark.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -646,14 +689,19 @@ public extension ReaderContentProtocol {
             "resolvedPageURL=\(resolvedPageURL.absoluteString)"
         )
         var imageURL: URL?
-        let ref = ThreadSafeReference(to: self)
         if let config = realm?.configuration {
+            let ref = ThreadSafeReference(to: self)
             imageURL = try await { @MainActor in
                 let realm = try await Realm(configuration: config, actor: MainActor.shared)
                 let content = realm.resolve(ref)
                 return try await content?.imageURLToDisplay()
             }()
         }
+        let readerContentKind = readerContentKind
+        let feedEntryCollectionKey = feedEntryCollectionKey
+        let feedEntryCollectionScheme = feedEntryCollectionScheme
+        let feedEntryCollectionTerm = feedEntryCollectionTerm
+        let feedEntryCollectionTitle = feedEntryCollectionTitle
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
 //            await realm.asyncRefresh()
@@ -684,6 +732,11 @@ public extension ReaderContentProtocol {
                 record.autoOpenMediaPlayer = autoOpenMediaPlayer
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
+                record.readerContentKind = readerContentKind
+                record.feedEntryCollectionKey = feedEntryCollectionKey
+                record.feedEntryCollectionScheme = feedEntryCollectionScheme
+                record.feedEntryCollectionTerm = feedEntryCollectionTerm
+                record.feedEntryCollectionTitle = feedEntryCollectionTitle
 //                record.isReaderModeByDefault = isReaderModeByDefault
                 record.displayPublicationDate = displayPublicationDate
                 record.lastVisitedAt = Date()
@@ -723,6 +776,11 @@ public extension ReaderContentProtocol {
             record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
             record.autoOpenMediaPlayer = autoOpenMediaPlayer
             record.publicationDate = publicationDate
+            record.readerContentKind = readerContentKind
+            record.feedEntryCollectionKey = feedEntryCollectionKey
+            record.feedEntryCollectionScheme = feedEntryCollectionScheme
+            record.feedEntryCollectionTerm = feedEntryCollectionTerm
+            record.feedEntryCollectionTitle = feedEntryCollectionTitle
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
             record.isReaderModeByDefault = isReaderModeByDefault

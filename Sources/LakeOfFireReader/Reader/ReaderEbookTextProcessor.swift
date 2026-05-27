@@ -100,6 +100,7 @@ internal func ebookTextProcessor(
                 contentURL,
                 sectionLocationURL,
                 isCacheWarmer,
+                true,
                 { $0 }
             )
             readabilityProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readabilityProcessStartedAt)

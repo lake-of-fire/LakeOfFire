@@ -85,6 +85,11 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var injectEntryImageIntoHeader = false
     @Persisted public var displayPublicationDate = true
+    @Persisted public var readerContentKindRawValue = ReaderContentKind.readerContent.rawValue
+    @Persisted public var feedEntryCollectionKey: String?
+    @Persisted public var feedEntryCollectionScheme: String?
+    @Persisted public var feedEntryCollectionTerm: String?
+    @Persisted public var feedEntryCollectionTitle: String?
     
     @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
@@ -207,6 +212,11 @@ public extension Bookmark {
         isReaderModeAvailable: Bool,
         isReaderModeOfferHidden: Bool = false,
         autoOpenMediaPlayer: Bool = false,
+        readerContentKind: ReaderContentKind = .readerContent,
+        feedEntryCollectionKey: String? = nil,
+        feedEntryCollectionScheme: String? = nil,
+        feedEntryCollectionTerm: String? = nil,
+        feedEntryCollectionTitle: String? = nil,
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -244,6 +254,11 @@ public extension Bookmark {
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.rssContainsFullContent = rssContainsFullContent
                 bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+                bookmark.readerContentKind = readerContentKind
+                bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -285,6 +300,11 @@ public extension Bookmark {
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
             bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
+            bookmark.readerContentKind = readerContentKind
+            bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+            bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+            bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+            bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
             //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)
