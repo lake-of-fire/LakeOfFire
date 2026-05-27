@@ -290,6 +290,25 @@ public class LibraryDataManager: NSObject {
     public static var currentUsername: String? = nil
 
     private var importOPMLTask: Task<(), Error>?
+
+    static func isCurrentAppVersionAtLeast(_ minimumVersion: String) -> Bool {
+        let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "0"
+        return compareVersion(currentVersion, minimumVersion) != .orderedAscending
+    }
+
+    static func compareVersion(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let lhsComponents = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let rhsComponents = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        for index in 0..<max(lhsComponents.count, rhsComponents.count) {
+            let lhsValue = index < lhsComponents.count ? lhsComponents[index] : 0
+            let rhsValue = index < rhsComponents.count ? rhsComponents[index] : 0
+            if lhsValue < rhsValue { return .orderedAscending }
+            if lhsValue > rhsValue { return .orderedDescending }
+        }
+        return .orderedSame
+    }
     
     @RealmBackgroundActor
     var realmCancellables = Set<AnyCancellable>()
@@ -843,6 +862,17 @@ public class LibraryDataManager: NSObject {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
+        if let minimumVersion = opmlEntry.attributeStringValue("minAppVersion"),
+           !Self.isCurrentAppVersionAtLeast(minimumVersion) {
+            debugPrint(
+                "# LIBRARY",
+                "stage=library.opml.entry.skipMinAppVersion",
+                "uuid=\(uuid?.uuidString ?? "nil")",
+                "title=\(opmlEntry.title ?? opmlEntry.text)",
+                "minAppVersion=\(minimumVersion)"
+            )
+            return (importedCategories, importedFeeds, importedScripts)
+        }
         let realm = try await Realm(
             configuration: LibraryDataManager.realmConfiguration,
             actor: RealmBackgroundActor.shared
@@ -1254,6 +1284,10 @@ public class LibraryDataManager: NSObject {
         if feed.extractImageFromContent != newExtractImageFromContent {
             return true
         }
+        let newEntryContentKind = ReaderContentKind(rawValue: opmlEntry.attributeStringValue("entryContentKind") ?? "") ?? .readerContent
+        if feed.entryContentKind != newEntryContentKind {
+            return true
+        }
         if feed.isDeleted {
             return true
         }
@@ -1344,6 +1378,11 @@ public class LibraryDataManager: NSObject {
         let newExtractImageFromContent = opmlEntry.attributeBoolValue("extractImageFromContent") ?? true
         if feed.extractImageFromContent != newExtractImageFromContent {
             feed.extractImageFromContent = newExtractImageFromContent
+            didChange = true
+        }
+        let newEntryContentKind = ReaderContentKind(rawValue: opmlEntry.attributeStringValue("entryContentKind") ?? "") ?? .readerContent
+        if feed.entryContentKind != newEntryContentKind {
+            feed.entryContentKind = newEntryContentKind
             didChange = true
         }
         

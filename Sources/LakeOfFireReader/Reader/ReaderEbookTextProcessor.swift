@@ -77,7 +77,7 @@ internal func ebookTextProcessor(
     sectionLocation: String,
     content: String,
     isCacheWarmer: Bool,
-    processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+    processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
     processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
@@ -104,6 +104,7 @@ internal func ebookTextProcessor(
                 contentURL,
                 sectionLocationURL,
                 isCacheWarmer,
+                true,
                 { $0 }
             )
             readabilityProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readabilityProcessStartedAt)

@@ -899,7 +899,7 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
-    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
+    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
     @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
     @Published public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
@@ -2248,6 +2248,7 @@ public class ReaderModeViewModel: ObservableObject {
         let snippetRawTitle = content.title
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
+        let tracksReadingProgress = content.tracksReadingProgress
         let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
         
         try await { @ReaderViewModelActor [weak self] in
@@ -2261,6 +2262,7 @@ public class ReaderModeViewModel: ObservableObject {
                     url,
                     nil,
                     false,
+                    tracksReadingProgress,
                     { doc in
                         do {
                             return try await preprocessWebContentForReaderMode(

@@ -19,9 +19,28 @@ private func logDetent(_ message: String) {
 private func logFeedFlash(_ message: String) {
 }
 
+private func sortFeedEntryCollections(_ collections: [FeedEntryCollection]) -> [FeedEntryCollection] {
+    collections.sorted { lhs, rhs in
+        switch (lhs.order, rhs.order) {
+        case let (left?, right?) where left != right:
+            return left > right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            if lhs.publicationDate != rhs.publicationDate {
+                return (lhs.publicationDate ?? .distantPast) > (rhs.publicationDate ?? .distantPast)
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+}
+
 @MainActor
 public class FeedViewModel: ObservableObject {
     @Published var entries: [FeedEntry]? = nil
+    @Published var collections: [FeedEntryCollection]? = nil
     @Published var isFeedGroupFollowed = false
 
     private static var recentAutomaticFetchAttempts: [UUID: Date] = [:]
@@ -52,6 +71,24 @@ public class FeedViewModel: ObservableObject {
     }
 
     @MainActor
+    private func reloadCollections(feedID: UUID, reason: String) async {
+        do {
+            let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            collections = sortFeedEntryCollections(Array(
+                realm.objects(FeedEntryCollection.self)
+                    .where { $0.feedID == feedID && !$0.isDeleted }
+            ))
+            logFeedFlash(
+                "model.reloadCollections instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) collections=\(collections?.count ?? 0)"
+            )
+        } catch {
+            logFeedFlash(
+                "model.reloadCollections.error instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) error=\(error.localizedDescription)"
+            )
+        }
+    }
+
+    @MainActor
     private func reloadFollowedStatus(reason: String) async {
         do {
             let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
@@ -71,6 +108,7 @@ public class FeedViewModel: ObservableObject {
     
     public init(feed: Feed) {
         entries = feed.getEntries()
+        collections = feed.getCollections()
         isFeedGroupFollowed = feed.isFollowed
         canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         let feedID = feed.id
@@ -104,6 +142,20 @@ public class FeedViewModel: ObservableObject {
                 })
                 .store(in: &cancellables)
 
+            realm.objects(FeedEntryCollection.self)
+                .where { $0.feedID == feedID && !$0.isDeleted }
+                .collectionPublisher
+                .subscribe(on: feedQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: feedQueue)
+                .receive(on: feedQueue)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        await self?.reloadCollections(feedID: feedID, reason: "collectionsChanged")
+                    }
+                })
+                .store(in: &cancellables)
+
             realm.objects(Feed.self)
                 .where { !$0.isDeleted }
                 .collectionPublisher
@@ -120,6 +172,7 @@ public class FeedViewModel: ObservableObject {
         }
         Task { @MainActor [weak self] in
             await self?.reloadFollowedStatus(reason: "init")
+            await self?.reloadCollections(feedID: feedID, reason: "init")
         }
     }
     
@@ -238,6 +291,7 @@ public struct FeedView: View {
     @ViewBuilder
     private func feedContent(entries: [FeedEntry]) -> some View {
         let entryIDs = entries.map(\.compoundKey)
+        let collections = viewModel.collections ?? []
         Group {
             if isHorizontal {
                 ReaderContentHorizontalList(
@@ -260,15 +314,36 @@ public struct FeedView: View {
                         useDefaultRowInsets: true,
                         showsNewBadges: showsReaderContentNewBadges,
                         separateRowsIntoSections: true,
-                        allowEditing: allowsVideoMakerSelection
-                    ) {
-                    } emptyStateView: {
-                        EmptyStateBoxView(
-                            title: Text("No Entries Available"),
-                            text: Text("This feed is empty. Try refreshing or checking back later."),
-                            systemImageName: "newspaper.fill"
-                        )
-                    }
+                        allowEditing: allowsVideoMakerSelection,
+                        supplementarySections: {
+                            if !collections.isEmpty {
+                                Section {
+                                    ForEach(collections) { collection in
+                                        NavigationLink {
+                                            FeedEntryCollectionView(
+                                                collection: collection,
+                                                viewModel: viewModel
+                                            )
+                                        } label: {
+                                            FeedEntryCollectionCell(collection: collection)
+                                        }
+                                    }
+                                } header: {
+                                    Text("Collections")
+                                }
+                            }
+                        },
+                        headerView: {
+                            EmptyView()
+                        },
+                        emptyStateView: {
+                            EmptyStateBoxView(
+                                title: Text("No Entries Available"),
+                                text: Text("This feed is empty. Try refreshing or checking back later."),
+                                systemImageName: "newspaper.fill"
+                            )
+                        }
+                    )
                     .id("feed-vertical-\(feed.id.uuidString)")
                     .animation(.easeInOut(duration: 0.25), value: entryIDs)
                     .task(id: contentSelection.wrappedValue) { @MainActor in
@@ -305,6 +380,7 @@ public struct FeedView: View {
     public var body: some View {
         let currentEntries = viewModel.entries
         let isFeedGroupFollowed = viewModel.isFeedGroupFollowed
+        let allowsFollowing = feed.entryContentKind != .contentListing
         let showInitialContent = !(currentEntries?.isEmpty ?? true)
         AsyncView(operation: { forceRefreshRequested in
             logDetent(
@@ -367,13 +443,15 @@ public struct FeedView: View {
             ToolbarItem(placement: toolbarTrailingPlacement) {
                 if showsToolbar {
                     Menu {
-                        Section {
-                            Button {
-                                Task { @MainActor in
-                                    try? await setFollowed(!isFeedGroupFollowed)
+                        if allowsFollowing {
+                            Section {
+                                Button {
+                                    Task { @MainActor in
+                                        try? await setFollowed(!isFeedGroupFollowed)
+                                    }
+                                } label: {
+                                    Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
                                 }
-                            } label: {
-                                Label(isFeedGroupFollowed ? "Following" : "Follow", systemImage: isFeedGroupFollowed ? "checkmark" : "plus")
                             }
                         }
 #if DEBUG
@@ -450,6 +528,7 @@ public struct FeedView: View {
 
     @MainActor
     private func setFollowed(_ isFollowed: Bool) async throws {
+        guard feed.entryContentKind != .contentListing else { return }
         let canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         try await Realm.asyncWrite(configuration: ReaderContentLoader.feedEntryRealmConfiguration) { realm in
             let now = Date()
@@ -467,5 +546,151 @@ public struct FeedView: View {
                 feed.modifiedAt = now
             }
         }
+    }
+}
+
+private struct FeedEntryCollectionCell: View {
+    @ObservedRealmObject var collection: FeedEntryCollection
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let imageUrl = collection.imageUrl {
+                AsyncImage(url: imageUrl) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.18))
+                    }
+                }
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(collection.title)
+                    .font(.headline)
+                    .lineLimit(2)
+                if let metadataText {
+                    Text(metadataText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var metadataText: String? {
+        if let publicationDate = collection.publicationDate {
+            return publicationDate.formatted(date: .abbreviated, time: .omitted)
+        }
+        return collection.summary
+    }
+}
+
+private struct FeedEntryCollectionHeader: View {
+    @ObservedRealmObject var collection: FeedEntryCollection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let imageUrl = collection.imageUrl {
+                AsyncImage(url: imageUrl) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    default:
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.18))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 160)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(collection.title)
+                    .font(.title3.weight(.semibold))
+                if let publicationDate = collection.publicationDate {
+                    Text(publicationDate.formatted(date: .abbreviated, time: .omitted))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                if let summary = collection.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+private struct FeedEntryCollectionView: View {
+    @ObservedRealmObject var collection: FeedEntryCollection
+    @ObservedObject var viewModel: FeedViewModel
+    @Environment(\.contentSelection) private var contentSelection
+    @State private var showsReaderContentNewBadges = true
+
+    private var entries: [FeedEntry] {
+        (viewModel.entries ?? []).filter { $0.feedEntryCollectionKey == collection.compoundKey }
+    }
+
+    var body: some View {
+        ReaderContentList(
+            contents: entries,
+            sortOrder: .publicationDate,
+            includeSource: false,
+            entrySelection: contentSelection,
+            useDefaultRowInsets: true,
+            showsNewBadges: showsReaderContentNewBadges,
+            separateRowsIntoSections: true,
+            supplementarySections: {
+                EmptyView()
+            },
+            headerView: {
+                FeedEntryCollectionHeader(collection: collection)
+            },
+            emptyStateView: {
+                EmptyStateBoxView(
+                    title: Text("No Entries Available"),
+                    text: Text("This collection is empty. Try refreshing or checking back later."),
+                    systemImageName: "newspaper.fill"
+                )
+            }
+        )
+        .navigationTitle(collection.title)
+#if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+#endif
+        .toolbar {
+            ToolbarItem(placement: toolbarTrailingPlacement) {
+                Menu {
+                    Toggle(isOn: $showsReaderContentNewBadges) {
+                        Text("Show New Badge")
+                    }
+                } label: {
+                    Label("More Options", systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
+                }
+            }
+        }
+    }
+
+    private var toolbarTrailingPlacement: ToolbarItemPlacement {
+#if os(macOS)
+        .automatic
+#else
+        .navigationBarTrailing
+#endif
     }
 }

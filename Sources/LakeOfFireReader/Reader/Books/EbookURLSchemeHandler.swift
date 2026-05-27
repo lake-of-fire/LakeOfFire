@@ -199,14 +199,14 @@ fileprivate actor EBookProcessTextRequestDeduper {
 actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
     let ebookTextProcessor: EbookTextProcessor?
-    let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
+    let processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
     let processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?
     let processHTML: ((String, Bool) async -> String)?
     
     init(
         ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?,
         ebookTextProcessor: EbookTextProcessor?,
-        processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+        processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
         processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
         processHTML: ((String, Bool) async -> String)?
     ) {
@@ -331,7 +331,7 @@ public actor EbookURLSchemeActor {
 }
 
 typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
-typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
+typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
 typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String

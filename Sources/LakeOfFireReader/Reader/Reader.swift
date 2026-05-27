@@ -30,6 +30,10 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
     }
 }
 
+private func lakeMay26Log(_ message: @autoclosure () -> String) {
+    print("# MAY26 \(message())")
+}
+
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
@@ -979,6 +983,7 @@ public struct Reader: View {
 //    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat? = nil
+    var additionalLeadingSafeAreaInset: CGFloat? = nil
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
     var ignoresSampledTopObscuredInset = false
@@ -1006,6 +1011,7 @@ public struct Reader: View {
 //        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
+        additionalLeadingSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
         ignoresSampledTopObscuredInset: Bool = false,
@@ -1023,6 +1029,7 @@ public struct Reader: View {
 //        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
+        self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
@@ -1064,6 +1071,7 @@ public struct Reader: View {
             : obscuredInsets
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
         let effectiveTopInset = explicitTopInset
+        let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
         let ebookChromeBottomInset = max(0, ebookChromeBottomSafeAreaInset ?? additionalBottomInset)
@@ -1082,6 +1090,7 @@ public struct Reader: View {
         let chromeInsetsTaskID = [
             pageURL.absoluteString,
             "\(effectiveTopInset)",
+            "\(additionalLeadingInset)",
             "\(effectiveBottomInset)",
             "\(effectiveToolbarBottomOffset)",
             "\(scriptCaller.hasAsyncCaller)",
@@ -1093,6 +1102,8 @@ public struct Reader: View {
             "pageURL=\(pageURL.absoluteString)",
             "readerContentPageURL=\(readerContent.pageURL.absoluteString)",
             "sampledBottom=\(sampledBottomInset)",
+            "additionalTop=\(effectiveTopInset)",
+            "additionalLeading=\(additionalLeadingInset)",
             "additionalBottom=\(additionalBottomInset)",
             "ebookChromeBottom=\(ebookChromeBottomInset)",
             "ebookChromeExtraBottom=\(ebookChromeExtraBottomInset)",
@@ -1101,6 +1112,17 @@ public struct Reader: View {
             "toolbarBottomOffset=\(effectiveToolbarBottomOffset)",
             "isEBook=\(pageURL.isEBookURL)"
         ].joined(separator: " ")
+        let lakeReaderMay26Signature = [
+            "lakeReader.forwardInsets",
+            "pageURL=\(pageURL.absoluteString)",
+            "inputTop=\(additionalTopSafeAreaInset ?? 0)",
+            "inputLeading=\(additionalLeadingSafeAreaInset ?? 0)",
+            "sampledTop=\(sampledTopInset)",
+            "sampledLeading=\(obscuredInsets?.leading ?? 0)",
+            "effectiveTop=\(effectiveTopInset)",
+            "effectiveLeading=\(additionalLeadingInset)",
+            "bottom=\(additionalBottomSafeAreaInset ?? 0)"
+        ].joined(separator: " ")
 
         //            VStack(spacing: 0) {
         ReaderWebView(
@@ -1108,7 +1130,8 @@ public struct Reader: View {
             obscuredInsets: effectiveObscuredInsets,
             usesEBookChromeInsets: pageURL.isEBookURL,
             bounces: bounces,
-            additionalTopSafeAreaInset: additionalTopSafeAreaInset,
+            additionalTopSafeAreaInset: effectiveTopInset,
+            additionalLeadingSafeAreaInset: additionalLeadingInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
@@ -1119,6 +1142,9 @@ public struct Reader: View {
             textSelection: $textSelection,
             buildMenu: buildMenu
         )
+        .task(id: lakeReaderMay26Signature) {
+            lakeMay26Log(lakeReaderMay26Signature)
+        }
 #if os(iOS)
         .readerStatusBarFadeOnPhone(
             top: effectiveSampledTopInset,//    + 8 + 2)

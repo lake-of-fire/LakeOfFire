@@ -28,6 +28,10 @@ private func logSafeArea(_ message: @autoclosure () -> String) {
 private func logEPUBBack(_ message: @autoclosure () -> String) {
 }
 
+private func lakeMay26Log(_ message: @autoclosure () -> String) {
+    print("# MAY26 \(message())")
+}
+
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {
@@ -152,6 +156,7 @@ public struct ReaderWebView: View {
     var usesEBookChromeInsets = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
+    var additionalLeadingSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
@@ -191,6 +196,7 @@ public struct ReaderWebView: View {
         usesEBookChromeInsets: Bool = false,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
+        additionalLeadingSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
@@ -206,6 +212,7 @@ public struct ReaderWebView: View {
         self.usesEBookChromeInsets = usesEBookChromeInsets
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
+        self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
@@ -235,6 +242,7 @@ public struct ReaderWebView: View {
             usesEBookChromeInsets: usesEBookChromeInsets,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
+            additionalLeadingSafeAreaInset: additionalLeadingSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             schemeHandlers: schemeHandlers,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
@@ -277,6 +285,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var usesEBookChromeInsets = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
+    var additionalLeadingSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
@@ -333,9 +342,12 @@ fileprivate struct ReaderWebViewInternal: View {
         let additionalBottom = usesEBookChromeInsets
             ? 0
             : additionalInsets.bottom
+        let sampledLeading = additionalInsets.leading > 0
+            ? 0
+            : (obscuredInsets?.leading ?? 0)
         return EdgeInsets(
             top: max(0, sampledTop + additionalInsets.top),
-            leading: max(0, (obscuredInsets?.leading ?? 0) + additionalInsets.leading),
+            leading: max(0, sampledLeading + additionalInsets.leading),
             bottom: max(0, sampledBottom + additionalBottom),
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
@@ -348,7 +360,7 @@ fileprivate struct ReaderWebViewInternal: View {
         let resolvedObscuredInsets = totalObscuredInsets(
             additionalInsets: EdgeInsets(
                 top: max(0, additionalTopSafeAreaInset ?? 0),
-                leading: 0,
+                leading: max(0, additionalLeadingSafeAreaInset ?? 0),
                 bottom: max(0, additionalBottomSafeAreaInset ?? 0),
                 trailing: 0
             )
@@ -359,12 +371,23 @@ fileprivate struct ReaderWebViewInternal: View {
             "readerContentPageURL=\(readerContentPageURLString)",
             "usesEBookChromeInsets=\(usesEBookChromeInsets)",
             "sampledTop=\(obscuredInsets?.top ?? 0)",
+            "sampledLeading=\(obscuredInsets?.leading ?? 0)",
             "sampledBottom=\(obscuredInsets?.bottom ?? 0)",
             "additionalTop=\(additionalTopSafeAreaInset ?? 0)",
+            "additionalLeading=\(additionalLeadingSafeAreaInset ?? 0)",
             "additionalBottom=\(additionalBottomSafeAreaInset ?? 0)",
             "resolvedPolicy=sampledPlusAdditionalWhenNotEBook",
             "resolvedTop=\(resolvedObscuredInsets.top)",
+            "resolvedLeading=\(resolvedObscuredInsets.leading)",
             "resolvedBottom=\(resolvedObscuredInsets.bottom)"
+        ].joined(separator: " ")
+        let readerWebViewMay26Signature = [
+            "readerWebView.resolveInsets",
+            "stateURL=\(state.pageURL.absoluteString)",
+            "contentURL=\(readerContentPageURLString)",
+            "sampled=t\(obscuredInsets?.top ?? 0) l\(obscuredInsets?.leading ?? 0) b\(obscuredInsets?.bottom ?? 0)",
+            "additional=t\(additionalTopSafeAreaInset ?? 0) l\(additionalLeadingSafeAreaInset ?? 0) b\(additionalBottomSafeAreaInset ?? 0)",
+            "resolved=t\(resolvedObscuredInsets.top) l\(resolvedObscuredInsets.leading) b\(resolvedObscuredInsets.bottom)"
         ].joined(separator: " ")
 
         WebView(
@@ -409,6 +432,9 @@ fileprivate struct ReaderWebViewInternal: View {
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
             logEPUBBack(safeAreaBottomSignature)
+        }
+        .task(id: readerWebViewMay26Signature) {
+            lakeMay26Log(readerWebViewMay26Signature)
         }
         .onAppear {
             logEPUBBack("stage=readerWebView.appear \(safeAreaBottomSignature) navigatorAttached=\(navigator.hasAttachedWebView)")

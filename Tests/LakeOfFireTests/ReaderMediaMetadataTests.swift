@@ -74,6 +74,46 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(bookmark.contentSubtitleURL, subtitleURL)
     }
 
+    func testBookmarkAndHistoryRecordCopyFeedEntryCollectionMetadata() async throws {
+        let configuration = makeRealmConfiguration()
+        let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
+        }
+
+        let entry = FeedEntry()
+        entry.url = URL(string: "https://example.com/listing")!
+        entry.title = "Listing"
+        entry.readerContentKind = .contentListing
+        entry.feedEntryCollectionKey = "feed|scheme|issue-38"
+        entry.feedEntryCollectionScheme = "https://example.com/feed.atom#collections"
+        entry.feedEntryCollectionTerm = "issue-38"
+        entry.feedEntryCollectionTitle = "Issue 38"
+        entry.updateCompoundKey()
+
+        try await entry.addBookmark(realmConfiguration: configuration)
+        _ = try await entry.addHistoryRecord(realmConfiguration: configuration, pageURL: entry.url)
+
+        let realm = try Realm(configuration: configuration)
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        XCTAssertEqual(bookmark.readerContentKind, .contentListing)
+        XCTAssertEqual(bookmark.feedEntryCollectionKey, "feed|scheme|issue-38")
+        XCTAssertEqual(bookmark.feedEntryCollectionScheme, "https://example.com/feed.atom#collections")
+        XCTAssertEqual(bookmark.feedEntryCollectionTerm, "issue-38")
+        XCTAssertEqual(bookmark.feedEntryCollectionTitle, "Issue 38")
+
+        let historyRecord = try XCTUnwrap(realm.objects(HistoryRecord.self).first)
+        XCTAssertEqual(historyRecord.readerContentKind, .contentListing)
+        XCTAssertEqual(historyRecord.feedEntryCollectionKey, "feed|scheme|issue-38")
+        XCTAssertEqual(historyRecord.feedEntryCollectionScheme, "https://example.com/feed.atom#collections")
+        XCTAssertEqual(historyRecord.feedEntryCollectionTerm, "issue-38")
+        XCTAssertEqual(historyRecord.feedEntryCollectionTitle, "Issue 38")
+    }
+
     func testResolvedVoiceAudioURLsPreservesVoiceAudioURLAndAdditionalListEntries() {
         let entry = FeedEntry()
         let primaryAudioURL = URL(string: "https://example.com/audio-primary.m4a")!

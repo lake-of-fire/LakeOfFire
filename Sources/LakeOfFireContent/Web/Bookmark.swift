@@ -15,6 +15,11 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
+    @Persisted public var readerContentKindRawValue = ReaderContentKind.readerContent.rawValue
+    @Persisted public var feedEntryCollectionKey: String?
+    @Persisted public var feedEntryCollectionScheme: String?
+    @Persisted public var feedEntryCollectionTerm: String?
+    @Persisted public var feedEntryCollectionTitle: String?
     @Persisted public var isFromClipboard = false
     @Persisted public var isPhysicalMedia = false
 
@@ -128,6 +133,11 @@ public extension Bookmark {
         html: String? = nil,
         content: Data? = nil,
         publicationDate: Date? = nil,
+        readerContentKind: ReaderContentKind = .readerContent,
+        feedEntryCollectionKey: String? = nil,
+        feedEntryCollectionScheme: String? = nil,
+        feedEntryCollectionTerm: String? = nil,
+        feedEntryCollectionTitle: String? = nil,
         isFromClipboard: Bool,
         isTitlePrefixOfContent: Bool = false,
         rssContainsFullContent: Bool,
@@ -151,6 +161,11 @@ public extension Bookmark {
                     bookmark.content = content
                 }
                 bookmark.publicationDate = publicationDate
+                bookmark.readerContentKind = readerContentKind
+                bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+                bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+                bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+                bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
                 bookmark.isFromClipboard = isFromClipboard
                 bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
                 bookmark.isReaderModeByDefault = isReaderModeByDefault
@@ -180,6 +195,11 @@ public extension Bookmark {
             bookmark.imageUrl = imageUrl
             bookmark.sourceIconURL = sourceIconURL
             bookmark.publicationDate = publicationDate
+            bookmark.readerContentKind = readerContentKind
+            bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+            bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+            bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+            bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
             bookmark.isFromClipboard = isFromClipboard
             bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
             bookmark.isReaderModeByDefault = isReaderModeByDefault

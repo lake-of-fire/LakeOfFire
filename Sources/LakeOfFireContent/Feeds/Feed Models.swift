@@ -58,6 +58,33 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     }
 }
 
+public class FeedEntryCollection: Object, ObjectKeyIdentifiable, ChangeMetadataRecordable {
+    @Persisted(primaryKey: true) public var compoundKey = ""
+    @Persisted(indexed: true) public var feedID: UUID?
+    @Persisted public var scheme = ""
+    @Persisted public var term = ""
+    @Persisted public var title = ""
+    @Persisted public var summary: String?
+    @Persisted public var imageUrl: URL?
+    @Persisted public var url: URL?
+    @Persisted public var publicationDate: Date?
+    @Persisted public var order: Double?
+
+    @Persisted public var explicitlyModifiedAt: Date?
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
+    @Persisted public var isDeleted = false
+
+    public static func makePrimaryKey(feedID: UUID, scheme: String, term: String) -> String {
+        [feedID.uuidString, scheme, term].joined(separator: "|")
+    }
+
+    public func updateCompoundKey() {
+        guard let feedID else { return }
+        compoundKey = Self.makePrimaryKey(feedID: feedID, scheme: scheme, term: term)
+    }
+}
+
 public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
     public var needsSyncToAppServer: Bool {
         return false
@@ -77,6 +104,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var extractImageFromContent = true
     @Persisted public var deleteOrphans = false
+    @Persisted public var entryContentKindRawValue = ReaderContentKind.readerContent.rawValue
     
     //    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
@@ -107,6 +135,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         case meaningfulContentMinLength
         case extractImageFromContent
         case deleteOrphans
+        case entryContentKindRawValue
         case isFollowed
         case followingOrdinal
         case modifiedAt
@@ -133,6 +162,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(displayPublicationDate, forKey: .displayPublicationDate)
         try container.encode(meaningfulContentMinLength, forKey: .meaningfulContentMinLength)
         try container.encode(deleteOrphans, forKey: .deleteOrphans)
+        try container.encode(entryContentKindRawValue, forKey: .entryContentKindRawValue)
         try container.encode(isFollowed, forKey: .isFollowed)
         try container.encode(followingOrdinal, forKey: .followingOrdinal)
         try container.encode(modifiedAt, forKey: .modifiedAt)
@@ -153,6 +183,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
+        self.entryContentKindRawValue = try container.decodeIfPresent(String.self, forKey: .entryContentKindRawValue) ?? ReaderContentKind.readerContent.rawValue
         self.isFollowed = try container.decodeIfPresent(Bool.self, forKey: .isFollowed) ?? false
         self.followingOrdinal = try container.decodeIfPresent(Int.self, forKey: .followingOrdinal)
     }
@@ -175,9 +206,38 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
             .sorted(by: \.publicationDate)
             .map { $0 }
     }
+
+    public func getCollections() -> [FeedEntryCollection]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(FeedEntryCollection.self)
+            .where { $0.feedID == id && !$0.isDeleted }
+            .sorted { lhs, rhs in
+                switch (lhs.order, rhs.order) {
+                case let (l?, r?) where l != r:
+                    return l > r
+                case (nil, _?):
+                    return false
+                case (_?, nil):
+                    return true
+                default:
+                    if lhs.publicationDate != rhs.publicationDate {
+                        return (lhs.publicationDate ?? .distantPast) > (rhs.publicationDate ?? .distantPast)
+                    }
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+            }
+    }
 }
 
 public extension Feed {
+    var entryContentKind: ReaderContentKind {
+        get { ReaderContentKind(rawValue: entryContentKindRawValue) ?? .readerContent }
+        set { entryContentKindRawValue = newValue.rawValue }
+    }
+
     public static func canonicalFollowingFeedURLKey(for url: URL) -> String {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.absoluteString
@@ -304,7 +364,7 @@ public extension Feed {
         historyRealm: Realm? = nil,
         limit: Int? = nil
     ) -> [FeedEntry] {
-        let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived }) {
+        let groupedFeeds = Dictionary(grouping: feeds.filter { !$0.isDeleted && !$0.isArchived && $0.entryContentKind != .contentListing }) {
             $0.canonicalFollowingFeedURLKey
         }
 
@@ -552,6 +612,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
     @Persisted(indexed: true) public var publicationDate: Date?
+    @Persisted public var readerContentKindRawValue = ReaderContentKind.readerContent.rawValue
+    @Persisted public var feedEntryCollectionKey: String?
+    @Persisted public var feedEntryCollectionScheme: String?
+    @Persisted public var feedEntryCollectionTerm: String?
+    @Persisted public var feedEntryCollectionTitle: String?
     @Persisted public var isPhysicalMedia = false
     
     @Persisted public var isReaderModeOfferHidden = false
@@ -713,6 +778,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
             preservingExistingVoiceAudioURL: false,
             defaultAudioSubtitlesRole: .content
         )
+        bookmark.readerContentKind = readerContentKind
+        bookmark.feedEntryCollectionKey = feedEntryCollectionKey
+        bookmark.feedEntryCollectionScheme = feedEntryCollectionScheme
+        bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
+        bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
         
         bookmark.isReaderModeByDefault = isReaderModeByDefault
     }
@@ -805,6 +875,107 @@ fileprivate struct FeedFetchMetadata {
 fileprivate enum FeedFetchResult {
     case notModified(metadata: FeedFetchMetadata)
     case fetched(Data, metadata: FeedFetchMetadata)
+}
+
+fileprivate struct ParsedFeedEntryCollection {
+    let scheme: String
+    let term: String
+    let title: String
+    let summary: String?
+    let imageUrl: URL?
+    let url: URL?
+    let publicationDate: Date?
+    let order: Double?
+
+    func compoundKey(feedID: UUID) -> String {
+        FeedEntryCollection.makePrimaryKey(feedID: feedID, scheme: scheme, term: term)
+    }
+}
+
+fileprivate final class ManabiAtomCollectionParser: NSObject, XMLParserDelegate {
+    private(set) var collections: [ParsedFeedEntryCollection] = []
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let localName = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        guard localName == "collection" else { return }
+        if let namespaceURI, namespaceURI != "https://manabi.io/feed" {
+            return
+        }
+        guard
+            let scheme = attributeDict["scheme"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !scheme.isEmpty,
+            let term = (attributeDict["id"] ?? attributeDict["term"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !term.isEmpty
+        else { return }
+
+        let title = attributeDict["title"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = attributeDict["summary"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageUrl = (attributeDict["cover"] ?? attributeDict["image"])
+            .flatMap { URL(string: $0) }
+        let url = (attributeDict["href"] ?? attributeDict["url"])
+            .flatMap { URL(string: $0) }
+        let publicationDate = (attributeDict["published"] ?? attributeDict["updated"] ?? attributeDict["date"])
+            .flatMap(Self.parseDate)
+        let resolvedTitle = title?.isEmpty == false ? title! : term
+
+        collections.append(
+            ParsedFeedEntryCollection(
+                scheme: scheme,
+                term: term,
+                title: resolvedTitle,
+                summary: summary?.isEmpty == false ? summary : nil,
+                imageUrl: imageUrl,
+                url: url,
+                publicationDate: publicationDate,
+                order: attributeDict["order"].flatMap(Double.init)
+            )
+        )
+    }
+
+    private static func parseDate(_ rawValue: String) -> Date? {
+        dateTimeWithFractionalSeconds.date(from: rawValue)
+            ?? dateTime.date(from: rawValue)
+            ?? dateOnly.date(from: rawValue)
+    }
+
+    private static let dateTimeWithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let dateTime: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let dateOnly: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        return formatter
+    }()
+}
+
+fileprivate func parseManabiAtomCollections(from data: Data) -> [ParsedFeedEntryCollection] {
+    let parserDelegate = ManabiAtomCollectionParser()
+    let parser = XMLParser(data: data)
+    parser.shouldProcessNamespaces = true
+    parser.delegate = parserDelegate
+    _ = parser.parse()
+    if parserDelegate.collections.isEmpty {
+        let fallbackParser = XMLParser(data: data)
+        fallbackParser.shouldProcessNamespaces = false
+        fallbackParser.delegate = parserDelegate
+        _ = fallbackParser.parse()
+    }
+    return parserDelegate.collections
 }
 
 fileprivate let feedHTTPDateFormatter: DateFormatter = {
@@ -977,6 +1148,7 @@ public extension Feed {
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         let iconUrl = iconUrl
+        let entryContentKind = entryContentKind
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             let existingEntries = Array(
@@ -1044,6 +1216,7 @@ public extension Feed {
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = iconUrl
                 feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                feedEntry.readerContentKind = entryContentKind
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
                 feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
                 feedEntry.updateCompoundKey()
@@ -1093,11 +1266,41 @@ public extension Feed {
     }
     
     @MainActor
-    private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
+    private func persist(
+        atomItems: [AtomFeedEntry],
+        collections: [ParsedFeedEntryCollection],
+        realmConfiguration: Realm.Configuration,
+        deleteOrphans: Bool
+    ) async throws {
         let feedID = id
         let sourceIconURL = iconUrl
+        let entryContentKind = entryContentKind
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            let collectionObjects = collections.map { parsedCollection -> FeedEntryCollection in
+                let collection = FeedEntryCollection()
+                collection.feedID = feedID
+                collection.scheme = parsedCollection.scheme
+                collection.term = parsedCollection.term
+                collection.title = parsedCollection.title
+                collection.summary = parsedCollection.summary
+                collection.imageUrl = parsedCollection.imageUrl
+                collection.url = parsedCollection.url
+                collection.publicationDate = parsedCollection.publicationDate
+                collection.order = parsedCollection.order
+                collection.updateCompoundKey()
+                return collection
+            }
+            var collectionsBySchemeAndTerm = [String: FeedEntryCollection]()
+            for collection in collectionObjects {
+                collectionsBySchemeAndTerm["\(collection.scheme)\n\(collection.term)"] = collection
+            }
+            let incomingCollectionKeys = collectionObjects.map(\.compoundKey)
+            let existingCollectionKeys = Array(
+                realm.objects(FeedEntryCollection.self)
+                    .where { $0.feedID == feedID && !$0.isDeleted }
+                    .map(\.compoundKey)
+            )
             let existingEntries = Array(
                 realm.objects(FeedEntry.self)
                     .where { $0.feedID == feedID }
@@ -1181,6 +1384,17 @@ public extension Feed {
                     }
                 } catch { }
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                let collection = item.categories?
+                    .lazy
+                    .compactMap { category -> FeedEntryCollection? in
+                        guard
+                            let scheme = category.attributes?.scheme,
+                            let term = category.attributes?.term
+                        else { return nil }
+                        return collectionsBySchemeAndTerm["\(scheme)\n\(term)"]
+                    }
+                    .first
                 
                 let feedEntry = FeedEntry()
                 feedEntry.feedID = feedID
@@ -1191,6 +1405,11 @@ public extension Feed {
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = sourceIconURL
                 feedEntry.publicationDate = item.published ?? item.updated
+                feedEntry.readerContentKind = entryContentKind
+                feedEntry.feedEntryCollectionKey = collection?.compoundKey
+                feedEntry.feedEntryCollectionScheme = collection?.scheme
+                feedEntry.feedEntryCollectionTerm = collection?.term
+                feedEntry.feedEntryCollectionTitle = collection?.title
                 feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURL = voiceAudioURLs.first
@@ -1217,10 +1436,22 @@ public extension Feed {
                 "existingLatestPublicationDate=\(existingEntries.compactMap { $0.publicationDate }.max()?.description ?? "nil")",
                 "incomingLatestPublicationDate=\(feedEntries.compactMap { $0.publicationDate }.max()?.description ?? "nil")"
             )
-            if !entriesToPersist.isEmpty || deleteOrphans {
+            if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
+                    for collection in collectionObjects {
+                        if let existing = realm.object(ofType: FeedEntryCollection.self, forPrimaryKey: collection.compoundKey) {
+                            collection.createdAt = existing.createdAt
+                        }
+                    }
+                    realm.add(collectionObjects, update: .modified)
                     if deleteOrphans {
+                        let collectionOrphans = realm.objects(FeedEntryCollection.self)
+                            .where { !$0.isDeleted && $0.compoundKey.in(existingCollectionKeys) && !$0.compoundKey.in(incomingCollectionKeys) }
+                        for orphan in collectionOrphans {
+                            orphan.isDeleted = true
+                            orphan.refreshChangeMetadata(explicitlyModified: true)
+                        }
                         let orphans = realm.objects(FeedEntry.self)
                             .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                         for orphan in orphans {
@@ -1279,6 +1510,7 @@ public extension Feed {
                 "lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
             )
             rssData = cleanRssData(rssData)
+            let atomCollections = parseManabiAtomCollections(from: rssData)
             let parser = FeedKit.FeedParser(data: rssData)
             return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
@@ -1307,7 +1539,12 @@ public extension Feed {
                             }
                             Task { @MainActor in
                                 do {
-                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
+                                    try await self.persist(
+                                        atomItems: items,
+                                        collections: atomCollections,
+                                        realmConfiguration: realmConfiguration,
+                                        deleteOrphans: self.deleteOrphans
+                                    )
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
                                     continuation.resume(returning: ())
                                 } catch {
@@ -1395,6 +1632,11 @@ fileprivate struct FeedEntryPayload {
     let imageUrl: URL?
     let sourceIconURL: URL?
     let publicationDate: Date?
+    let readerContentKindRawValue: String
+    let feedEntryCollectionKey: String?
+    let feedEntryCollectionScheme: String?
+    let feedEntryCollectionTerm: String?
+    let feedEntryCollectionTitle: String?
     let content: Data?
     let voiceFrameUrl: URL?
     let voiceAudioURL: URL?
@@ -1411,6 +1653,11 @@ fileprivate struct FeedEntryPayload {
         imageUrl = entry.imageUrl
         sourceIconURL = entry.sourceIconURL
         publicationDate = entry.publicationDate
+        readerContentKindRawValue = entry.readerContentKindRawValue
+        feedEntryCollectionKey = entry.feedEntryCollectionKey
+        feedEntryCollectionScheme = entry.feedEntryCollectionScheme
+        feedEntryCollectionTerm = entry.feedEntryCollectionTerm
+        feedEntryCollectionTitle = entry.feedEntryCollectionTitle
         content = entry.content
         voiceFrameUrl = entry.voiceFrameUrl
         voiceAudioURLs = entry.resolvedVoiceAudioURLs
@@ -1444,6 +1691,26 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
     }
     if content.publicationDate != payload.publicationDate {
         content.publicationDate = payload.publicationDate
+        didChange = true
+    }
+    if content.readerContentKindRawValue != payload.readerContentKindRawValue {
+        content.readerContentKindRawValue = payload.readerContentKindRawValue
+        didChange = true
+    }
+    if content.feedEntryCollectionKey != payload.feedEntryCollectionKey {
+        content.feedEntryCollectionKey = payload.feedEntryCollectionKey
+        didChange = true
+    }
+    if content.feedEntryCollectionScheme != payload.feedEntryCollectionScheme {
+        content.feedEntryCollectionScheme = payload.feedEntryCollectionScheme
+        didChange = true
+    }
+    if content.feedEntryCollectionTerm != payload.feedEntryCollectionTerm {
+        content.feedEntryCollectionTerm = payload.feedEntryCollectionTerm
+        didChange = true
+    }
+    if content.feedEntryCollectionTitle != payload.feedEntryCollectionTitle {
+        content.feedEntryCollectionTitle = payload.feedEntryCollectionTitle
         didChange = true
     }
     if content.content != payload.content {

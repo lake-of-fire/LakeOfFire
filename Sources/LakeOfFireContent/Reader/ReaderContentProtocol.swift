@@ -40,6 +40,11 @@ public struct ReaderContentProgressMetadata: Sendable {
     }
 }
 
+public enum ReaderContentKind: String, CaseIterable, Sendable {
+    case readerContent
+    case contentListing
+}
+
 public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
     case content
     case media
@@ -74,6 +79,11 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var sourceIconURL: URL? { get set }
     var content: Data? { get set }
     var publicationDate: Date? { get set }
+    var readerContentKindRawValue: String { get set }
+    var feedEntryCollectionKey: String? { get set }
+    var feedEntryCollectionScheme: String? { get set }
+    var feedEntryCollectionTerm: String? { get set }
+    var feedEntryCollectionTitle: String? { get set }
     var isFromClipboard: Bool { get set }
     var isPhysicalMedia: Bool { get set }
     
@@ -120,6 +130,19 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 }
 
 public extension ReaderContentProtocol {
+    var readerContentKind: ReaderContentKind {
+        get { ReaderContentKind(rawValue: readerContentKindRawValue) ?? .readerContent }
+        set { readerContentKindRawValue = newValue.rawValue }
+    }
+
+    var isContentListing: Bool {
+        readerContentKind == .contentListing
+    }
+
+    var tracksReadingProgress: Bool {
+        !isContentListing
+    }
+
     var defaultSnippetChromeTitle: String {
         "Snippet — \(createdAt.readerSnippetChromeDateString)"
     }
@@ -426,6 +449,11 @@ public extension ReaderContentProtocol {
         let html = html
         let content = content
         let publicationDate = publicationDate
+        let readerContentKind = readerContentKind
+        let feedEntryCollectionKey = feedEntryCollectionKey
+        let feedEntryCollectionScheme = feedEntryCollectionScheme
+        let feedEntryCollectionTerm = feedEntryCollectionTerm
+        let feedEntryCollectionTitle = feedEntryCollectionTitle
         let imageURL = imageUrl
         let sourceIconURL = sourceIconURL
         let isFromClipboard = isFromClipboard
@@ -452,6 +480,11 @@ public extension ReaderContentProtocol {
                 html: html,
                 content: content,
                 publicationDate: publicationDate,
+                readerContentKind: readerContentKind,
+                feedEntryCollectionKey: feedEntryCollectionKey,
+                feedEntryCollectionScheme: feedEntryCollectionScheme,
+                feedEntryCollectionTerm: feedEntryCollectionTerm,
+                feedEntryCollectionTitle: feedEntryCollectionTitle,
                 isFromClipboard: isFromClipboard,
                 isTitlePrefixOfContent: isTitlePrefixOfContent,
                 rssContainsFullContent: rssContainsFullContent,
@@ -535,8 +568,13 @@ public extension ReaderContentProtocol {
             "rssContainsFullContent=\(rssContainsFullContent)"
         )
         var imageURL: URL?
-        let ref = ThreadSafeReference(to: self)
+        let readerContentKind = readerContentKind
+        let feedEntryCollectionKey = feedEntryCollectionKey
+        let feedEntryCollectionScheme = feedEntryCollectionScheme
+        let feedEntryCollectionTerm = feedEntryCollectionTerm
+        let feedEntryCollectionTitle = feedEntryCollectionTitle
         if let config = realm?.configuration {
+            let ref = ThreadSafeReference(to: self)
             imageURL = try await { @MainActor in
                 let realm = try await Realm(configuration: config, actor: MainActor.shared)
                 let content = realm.resolve(ref)
@@ -569,6 +607,11 @@ public extension ReaderContentProtocol {
                 record.autoOpenMediaPlayer = autoOpenMediaPlayer
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
+                record.readerContentKind = readerContentKind
+                record.feedEntryCollectionKey = feedEntryCollectionKey
+                record.feedEntryCollectionScheme = feedEntryCollectionScheme
+                record.feedEntryCollectionTerm = feedEntryCollectionTerm
+                record.feedEntryCollectionTitle = feedEntryCollectionTitle
                 record.isReaderModeByDefault = isReaderModeByDefault
                 record.isReaderModeAvailable = isReaderModeAvailable
                 record.isReaderModeOfferHidden = isReaderModeOfferHidden
@@ -614,6 +657,11 @@ public extension ReaderContentProtocol {
             record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
             record.autoOpenMediaPlayer = autoOpenMediaPlayer
             record.publicationDate = publicationDate
+            record.readerContentKind = readerContentKind
+            record.feedEntryCollectionKey = feedEntryCollectionKey
+            record.feedEntryCollectionScheme = feedEntryCollectionScheme
+            record.feedEntryCollectionTerm = feedEntryCollectionTerm
+            record.feedEntryCollectionTitle = feedEntryCollectionTitle
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
             record.isReaderModeByDefault = isReaderModeByDefault

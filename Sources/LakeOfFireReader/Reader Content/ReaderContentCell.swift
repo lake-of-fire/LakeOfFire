@@ -95,8 +95,9 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let itemURL = item.url
             let itemSourceIconURL = item.sourceIconURL
-            let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
-            let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
+            let tracksReadingProgress = item.tracksReadingProgress
+            let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
+            let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
             let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
             let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
 
@@ -416,6 +417,10 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 
     private var compactCellHeight: CGFloat {
         max(1, appearance.maxCellHeight * compactScale)
+    }
+
+    private var compactCellMinWidth: CGFloat {
+        appearance.maxCellHeight + 30
     }
 
     private var compactThumbnailEdgeLength: CGFloat {
@@ -1071,7 +1076,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             }
         }
         .frame(
-            minWidth: appearance.maxCellHeight,
+            minWidth: usesCompactControlSize ? compactCellMinWidth : appearance.maxCellHeight,
             minHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? effectiveCardCellHeight : nil),
             idealHeight: usesCompactControlSize ? compactCellHeight : (hasVisibleThumbnail ? (readerContentCellStyle == .card ? effectiveCardCellHeight : appearance.maxCellHeight) : nil),
             maxHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? effectiveCardCellHeight : nil)
