@@ -900,6 +900,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     let listRowSpacing: CGFloat?
     let listSectionSpacing: CGFloat?
     let contentSectionTitle: String?
+    let rendersHeaderViewInSectionHeader: Bool
     let allowEditing: Bool
     let onDelete: (@MainActor ([C]) async throws -> Void)?
     // Optional custom grouping
@@ -951,7 +952,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
 
     private var showsHeaderSection: Bool {
-        Header.self != EmptyView.self
+        !rendersHeaderViewInSectionHeader && Header.self != EmptyView.self
     }
 
     private var effectiveListRowSpacing: CGFloat? {
@@ -961,6 +962,22 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private var normalizedScrollTargetID: String? {
         let trimmed = scrollTargetID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    @ViewBuilder
+    private var contentSectionHeader: some View {
+        if rendersHeaderViewInSectionHeader {
+            VStack(alignment: .leading, spacing: 8) {
+                headerView()
+                if let contentSectionTitle {
+                    Text(contentSectionTitle)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else if let contentSectionTitle {
+            Text(contentSectionTitle)
+                .foregroundStyle(.secondary)
+        }
     }
     
     @ViewBuilder private var listItems: some View {
@@ -1050,41 +1067,19 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
         guard let targetID = normalizedScrollTargetID else { return }
         guard viewModel.filteredContentIDs.contains(targetID) else {
-            debugPrint(
-                "# NEXT readerContentList.scroll.skip reason=missingFilteredTarget trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) contents=\(contents.count) filtered=\(viewModel.filteredContents.count)"
-            )
-            return
-        }
-        guard lastScrolledTargetID != targetID else {
-            debugPrint(
-                "# NEXT readerContentList.scroll.skip reason=alreadyScrolled trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) filtered=\(viewModel.filteredContents.count)"
-            )
             return
         }
         guard pendingScrollTargetID != targetID else {
-            debugPrint(
-                "# NEXT readerContentList.scroll.skip reason=alreadyPending trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) filtered=\(viewModel.filteredContents.count)"
-            )
             return
         }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
         pendingScrollTargetID = targetID
-        debugPrint(
-            "# NEXT readerContentList.scroll.schedule trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID) filtered=\(viewModel.filteredContents.count)"
-        )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             guard pendingScrollTargetID == targetID else { return }
             pendingScrollTargetID = nil
-            lastScrolledTargetID = targetID
-            debugPrint(
-                "# NEXT readerContentList.scroll.begin trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID) filtered=\(viewModel.filteredContents.count)"
-            )
             withAnimation(.easeInOut(duration: 0.25)) {
                 proxy.scrollTo(anchorID, anchor: .center)
             }
-            debugPrint(
-                "# NEXT readerContentList.scroll.end trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID)"
-            )
         }
     }
 
@@ -1127,9 +1122,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @ViewBuilder
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
         listContainerWithSpacing
-            .onAppear {
-                scheduleScrollToTarget(with: scrollProxy, reason: "appear")
-            }
                 .toolbar {
                     //#if os(iOS)
                     //            ToolbarItem(placement: .navigationBarTrailing) {
@@ -1272,9 +1264,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                             .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
                     }
                 } header: {
-                    if !showEmptyState, let contentSectionTitle {
-                        Text(contentSectionTitle)
-                            .foregroundStyle(.secondary)
+                    if !showEmptyState || rendersHeaderViewInSectionHeader {
+                        contentSectionHeader
                     }
                 }
                 .headerProminence(.increased)
@@ -1373,6 +1364,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
+        rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
@@ -1399,6 +1391,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.listRowSpacing = listRowSpacing
         self.listSectionSpacing = listSectionSpacing
         self.contentSectionTitle = contentSectionTitle
+        self.rendersHeaderViewInSectionHeader = rendersHeaderViewInSectionHeader
         self.allowEditing = allowEditing
         self.onDelete = onDelete
         self.customGrouping = customGrouping
@@ -1428,6 +1421,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         listRowSpacing: CGFloat? = 15,
         listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
+        rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
@@ -1453,6 +1447,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             listRowSpacing: listRowSpacing,
             listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
+            rendersHeaderViewInSectionHeader: rendersHeaderViewInSectionHeader,
             allowEditing: allowEditing,
             onDelete: onDelete,
             customGrouping: customGrouping,

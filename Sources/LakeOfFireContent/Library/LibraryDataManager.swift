@@ -863,7 +863,24 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
                 let feedCategory = feed.getCategory()
-                if feedCategory == nil || feedCategory?.opmlURL == download?.url || feed.isDeleted {
+                let feedURLChangedInManagedOPML = opmlEntry.feedURL.map { feed.rssUrl != $0 } == true
+                    && download.map { LibraryConfiguration.opmlURLs.contains($0.url) } == true
+                if feedCategory == nil || feedCategory?.opmlURL == download?.url || feed.isDeleted || feedURLChangedInManagedOPML {
+                    if feedURLChangedInManagedOPML,
+                       feed.title.localizedCaseInsensitiveContains("niponica")
+                        || feed.rssUrl.absoluteString.localizedCaseInsensitiveContains("niponica")
+                        || (opmlEntry.feedURL?.absoluteString.localizedCaseInsensitiveContains("niponica") ?? false) {
+                        debugPrint(
+                            "# NIPONICA stage=library.opml.feed.reconcileManagedURL",
+                            "feedID=\(feed.id.uuidString)",
+                            "title=\(feed.title)",
+                            "oldRSSURL=\(feed.rssUrl.absoluteString)",
+                            "newRSSURL=\(opmlEntry.feedURL?.absoluteString ?? "nil")",
+                            "categoryID=\(feedCategory?.id.uuidString ?? "nil")",
+                            "categoryOpmlURL=\(feedCategory?.opmlURL?.absoluteString ?? "nil")",
+                            "downloadURL=\(download?.url.absoluteString ?? "nil")"
+                        )
+                    }
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID) {
                         try Task.checkCancellation()
                         let categoryID = categoryID ?? feedCategory?.id
