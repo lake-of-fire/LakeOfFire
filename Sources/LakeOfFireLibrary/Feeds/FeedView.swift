@@ -231,8 +231,6 @@ public struct FeedView: View {
     var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
     @State private var hasAppliedInitialScrollEntryID = false
-    @State private var lastScrolledSelectionID: String?
-    @State private var pendingScrollSelectionID: String?
     @Environment(\.contentSelection) private var contentSelection
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -285,6 +283,19 @@ public struct FeedView: View {
         (entries ?? []).map(\.compoundKey).joined(separator: ",")
     }
 
+    private func scrollAnchorID(for entryID: String) -> String {
+        readerContentListSeparatedRowScrollAnchorID(entryID)
+    }
+
+    private func logTargetRowAppearanceIfNeeded(_ content: FeedEntry, entries: [FeedEntry]) {
+        let activeTarget = contentSelection.wrappedValue ?? initialScrollEntryID
+        guard content.compoundKey == activeTarget else { return }
+        let index = entries.firstIndex(where: { $0.compoundKey == content.compoundKey })
+        print(
+            "# NEXT feedView.rowAppear target=\(content.compoundKey) feedID=\(feed.id.uuidString) index=\(index.map(String.init(describing:)) ?? "nil") entries=\(entries.count) initial=\(initialScrollEntryID ?? "nil") selection=\(contentSelection.wrappedValue ?? "nil") anchor=\(scrollAnchorID(for: content.compoundKey))"
+        )
+    }
+
     private func logFeedViewFlash(_ stage: String, entries: [FeedEntry]?, showInitialContent: Bool? = nil) {
         let showInitialContentDescription = showInitialContent.map(String.init(describing:)) ?? "nil"
         logFeedFlash(
@@ -309,61 +320,59 @@ public struct FeedView: View {
                 .id("feed-horizontal-\(feed.id.uuidString)")
                 .animation(.easeInOut(duration: 0.25), value: entryIDs)
             } else {
-                ScrollViewReader { proxy in
-                    ReaderContentList(
-                        contents: entries,
-                        sortOrder: .publicationDate,
-                        includeSource: false,
-                        entrySelection: contentSelection,
-                        useDefaultRowInsets: true,
-                        showsNewBadges: showsReaderContentNewBadges,
-                        separateRowsIntoSections: true,
-                        allowEditing: allowsVideoMakerSelection,
-                        supplementarySections: {
-                            if !collections.isEmpty {
-                                Section {
-                                    ForEach(collections) { collection in
-                                        NavigationLink {
-                                            FeedEntryCollectionView(
-                                                collection: collection,
-                                                viewModel: viewModel
-                                            )
-                                        } label: {
-                                            FeedEntryCollectionCell(collection: collection)
-                                        }
+                ReaderContentList(
+                    contents: entries,
+                    sortOrder: .publicationDate,
+                    includeSource: false,
+                    entrySelection: contentSelection,
+                    useDefaultRowInsets: true,
+                    showsNewBadges: showsReaderContentNewBadges,
+                    separateRowsIntoSections: true,
+                    allowEditing: allowsVideoMakerSelection,
+                    onContentAppear: { content in
+                        logTargetRowAppearanceIfNeeded(content, entries: entries)
+                    },
+                    scrollTargetID: initialScrollEntryID,
+                    supplementarySections: {
+                        if !collections.isEmpty {
+                            Section {
+                                ForEach(collections) { collection in
+                                    NavigationLink {
+                                        FeedEntryCollectionView(
+                                            collection: collection,
+                                            viewModel: viewModel
+                                        )
+                                    } label: {
+                                        FeedEntryCollectionCell(collection: collection)
                                     }
-                                } header: {
-                                    Text("Collections")
                                 }
+                            } header: {
+                                Text("Collections")
                             }
-                        },
-                        headerView: {
-                            EmptyView()
-                        },
-                        emptyStateView: {
-                            EmptyStateBoxView(
-                                title: Text("No Entries Available"),
-                                text: Text("This feed is empty. Try refreshing or checking back later."),
-                                systemImageName: "newspaper.fill"
-                            )
                         }
-                    )
-                    .id("feed-vertical-\(feed.id.uuidString)")
-                    .animation(.easeInOut(duration: 0.25), value: entryIDs)
-                    .onAppear {
-                        applyInitialScrollEntryIDIfNeeded()
+                    },
+                    headerView: {
+                        EmptyView()
+                    },
+                    emptyStateView: {
+                        EmptyStateBoxView(
+                            title: Text("No Entries Available"),
+                            text: Text("This feed is empty. Try refreshing or checking back later."),
+                            systemImageName: "newspaper.fill"
+                        )
                     }
-                    .task(id: contentSelection.wrappedValue) { @MainActor in
-                        scrollToSelectedEntry(with: proxy)
-                    }
-                    .onChange(of: entryIDs) { _ in
-                        applyInitialScrollEntryIDIfNeeded()
-                        scrollToSelectedEntry(with: proxy)
-                    }
-#if os(iOS)
-                    .listStyle(.insetGrouped)
-#endif
+                )
+                .id("feed-vertical-\(feed.id.uuidString)")
+                .animation(.easeInOut(duration: 0.25), value: entryIDs)
+                .onAppear {
+                    applyInitialScrollEntryIDIfNeeded()
                 }
+                .onChange(of: entryIDs) { _ in
+                    applyInitialScrollEntryIDIfNeeded()
+                }
+#if os(iOS)
+                .listStyle(.insetGrouped)
+#endif
             }
         }
         .onAppear {
@@ -371,38 +380,6 @@ public struct FeedView: View {
         }
         .onDisappear {
             logFeedViewFlash("contentDisappear", entries: entries)
-        }
-    }
-
-    @MainActor
-    private func scrollToSelectedEntry(with proxy: ScrollViewProxy) {
-        guard let selection = contentSelection.wrappedValue,
-              entries.contains(where: { $0.compoundKey == selection }) else {
-            print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=missingSelectionOrEntry selection=\(contentSelection.wrappedValue ?? "nil") entries=\(entries.count)")
-            return
-        }
-        guard lastScrolledSelectionID != selection else {
-            print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=alreadyScrolled selection=\(selection) entries=\(entries.count)")
-            return
-        }
-        guard pendingScrollSelectionID != selection else {
-            print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=alreadyPending selection=\(selection) entries=\(entries.count)")
-            return
-        }
-        pendingScrollSelectionID = selection
-        print("# NEXT feedView.scroll.schedule feedID=\(feed.id.uuidString) selection=\(selection) entries=\(entries.count)")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard pendingScrollSelectionID == selection else {
-                print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=stalePending selection=\(selection) pending=\(pendingScrollSelectionID ?? "nil") entries=\(entries.count)")
-                return
-            }
-            pendingScrollSelectionID = nil
-            lastScrolledSelectionID = selection
-            print("# NEXT feedView.scroll.begin feedID=\(feed.id.uuidString) selection=\(selection) entries=\(entries.count)")
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(selection, anchor: .center)
-            }
-            print("# NEXT feedView.scroll.end feedID=\(feed.id.uuidString) selection=\(selection)")
         }
     }
 
