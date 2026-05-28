@@ -28,10 +28,6 @@ private func logSafeArea(_ message: @autoclosure () -> String) {
 private func logEPUBBack(_ message: @autoclosure () -> String) {
 }
 
-private func lakeMay26Log(_ message: @autoclosure () -> String) {
-    print("# MAY26 \(message())")
-}
-
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {
@@ -373,23 +369,16 @@ fileprivate struct ReaderWebViewInternal: View {
             "sampledTop=\(obscuredInsets?.top ?? 0)",
             "sampledLeading=\(obscuredInsets?.leading ?? 0)",
             "sampledBottom=\(obscuredInsets?.bottom ?? 0)",
+            "sampledTrailing=\(obscuredInsets?.trailing ?? 0)",
             "additionalTop=\(additionalTopSafeAreaInset ?? 0)",
             "additionalLeading=\(additionalLeadingSafeAreaInset ?? 0)",
             "additionalBottom=\(additionalBottomSafeAreaInset ?? 0)",
             "resolvedPolicy=sampledPlusAdditionalWhenNotEBook",
             "resolvedTop=\(resolvedObscuredInsets.top)",
             "resolvedLeading=\(resolvedObscuredInsets.leading)",
-            "resolvedBottom=\(resolvedObscuredInsets.bottom)"
+            "resolvedBottom=\(resolvedObscuredInsets.bottom)",
+            "resolvedTrailing=\(resolvedObscuredInsets.trailing)"
         ].joined(separator: " ")
-        let readerWebViewMay26Signature = [
-            "readerWebView.resolveInsets",
-            "stateURL=\(state.pageURL.absoluteString)",
-            "contentURL=\(readerContentPageURLString)",
-            "sampled=t\(obscuredInsets?.top ?? 0) l\(obscuredInsets?.leading ?? 0) b\(obscuredInsets?.bottom ?? 0)",
-            "additional=t\(additionalTopSafeAreaInset ?? 0) l\(additionalLeadingSafeAreaInset ?? 0) b\(additionalBottomSafeAreaInset ?? 0)",
-            "resolved=t\(resolvedObscuredInsets.top) l\(resolvedObscuredInsets.leading) b\(resolvedObscuredInsets.bottom)"
-        ].joined(separator: " ")
-
         WebView(
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
@@ -432,9 +421,6 @@ fileprivate struct ReaderWebViewInternal: View {
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
             logEPUBBack(safeAreaBottomSignature)
-        }
-        .task(id: readerWebViewMay26Signature) {
-            lakeMay26Log(readerWebViewMay26Signature)
         }
         .onAppear {
             logEPUBBack("stage=readerWebView.appear \(safeAreaBottomSignature) navigatorAttached=\(navigator.hasAttachedWebView)")

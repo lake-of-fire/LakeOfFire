@@ -910,6 +910,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .id(content.compoundKey)
 #if os(iOS)
         .deleteDisabled((content as? any DeletableReaderContent) == nil || isDeleteBlockedByStatus)
         .swipeActions {

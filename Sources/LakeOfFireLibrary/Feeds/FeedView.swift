@@ -231,6 +231,8 @@ public struct FeedView: View {
     var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
     @State private var hasAppliedInitialScrollEntryID = false
+    @State private var lastScrolledSelectionID: String?
+    @State private var pendingScrollSelectionID: String?
     @Environment(\.contentSelection) private var contentSelection
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -376,10 +378,31 @@ public struct FeedView: View {
     private func scrollToSelectedEntry(with proxy: ScrollViewProxy) {
         guard let selection = contentSelection.wrappedValue,
               entries.contains(where: { $0.compoundKey == selection }) else {
+            print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=missingSelectionOrEntry selection=\(contentSelection.wrappedValue ?? "nil") entries=\(entries.count)")
             return
         }
-        withAnimation(.easeInOut(duration: 0.25)) {
-            proxy.scrollTo(selection, anchor: .center)
+        guard lastScrolledSelectionID != selection else {
+            print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=alreadyScrolled selection=\(selection) entries=\(entries.count)")
+            return
+        }
+        guard pendingScrollSelectionID != selection else {
+            print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=alreadyPending selection=\(selection) entries=\(entries.count)")
+            return
+        }
+        pendingScrollSelectionID = selection
+        print("# NEXT feedView.scroll.schedule feedID=\(feed.id.uuidString) selection=\(selection) entries=\(entries.count)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard pendingScrollSelectionID == selection else {
+                print("# NEXT feedView.scroll.skip feedID=\(feed.id.uuidString) reason=stalePending selection=\(selection) pending=\(pendingScrollSelectionID ?? "nil") entries=\(entries.count)")
+                return
+            }
+            pendingScrollSelectionID = nil
+            lastScrolledSelectionID = selection
+            print("# NEXT feedView.scroll.begin feedID=\(feed.id.uuidString) selection=\(selection) entries=\(entries.count)")
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(selection, anchor: .center)
+            }
+            print("# NEXT feedView.scroll.end feedID=\(feed.id.uuidString) selection=\(selection)")
         }
     }
 
@@ -388,11 +411,14 @@ public struct FeedView: View {
         guard !hasAppliedInitialScrollEntryID,
               let initialScrollEntryID,
               entries.contains(where: { $0.compoundKey == initialScrollEntryID }) else {
+            print("# NEXT feedView.initialScroll.skip feedID=\(feed.id.uuidString) reason=guard applied=\(hasAppliedInitialScrollEntryID) initial=\(initialScrollEntryID ?? "nil") entries=\(entries.count)")
             return
         }
         hasAppliedInitialScrollEntryID = true
+        print("# NEXT feedView.initialScroll.apply feedID=\(feed.id.uuidString) initial=\(initialScrollEntryID) currentSelection=\(contentSelection.wrappedValue ?? "nil")")
         if contentSelection.wrappedValue != initialScrollEntryID {
             contentSelection.wrappedValue = initialScrollEntryID
+            print("# NEXT feedView.initialScroll.selectionSet feedID=\(feed.id.uuidString) initial=\(initialScrollEntryID)")
         }
     }
 

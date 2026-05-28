@@ -30,10 +30,6 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
     }
 }
 
-private func lakeMay26Log(_ message: @autoclosure () -> String) {
-    print("# MAY26 \(message())")
-}
-
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
@@ -1004,6 +1000,7 @@ public struct Reader: View {
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
     @State private var obscuredInsets: EdgeInsets? = nil
+    @State private var obscuredGeometrySize: CGSize? = nil
     
     public init(
         persistentWebViewID: String? = nil,
@@ -1102,29 +1099,22 @@ public struct Reader: View {
             "pageURL=\(pageURL.absoluteString)",
             "readerContentPageURL=\(readerContent.pageURL.absoluteString)",
             "sampledBottom=\(sampledBottomInset)",
+            "sampledTop=\(sampledTopInset)",
+            "sampledLeading=\(obscuredInsets?.leading ?? 0)",
+            "sampledTrailing=\(obscuredInsets?.trailing ?? 0)",
             "additionalTop=\(effectiveTopInset)",
             "additionalLeading=\(additionalLeadingInset)",
             "additionalBottom=\(additionalBottomInset)",
             "ebookChromeBottom=\(ebookChromeBottomInset)",
             "ebookChromeExtraBottom=\(ebookChromeExtraBottomInset)",
+            "effectiveTop=\(effectiveObscuredInsets?.top ?? 0)",
+            "effectiveLeading=\(effectiveObscuredInsets?.leading ?? 0)",
+            "effectiveTrailing=\(effectiveObscuredInsets?.trailing ?? 0)",
             "effectiveBottom=\(effectiveBottomInset)",
             "toolbarReferenceBottom=\(toolbarReferenceBottomInset)",
             "toolbarBottomOffset=\(effectiveToolbarBottomOffset)",
             "isEBook=\(pageURL.isEBookURL)"
         ].joined(separator: " ")
-        let lakeReaderMay26Signature = [
-            "lakeReader.forwardInsets",
-            "pageURL=\(pageURL.absoluteString)",
-            "inputTop=\(additionalTopSafeAreaInset ?? 0)",
-            "inputLeading=\(additionalLeadingSafeAreaInset ?? 0)",
-            "sampledTop=\(sampledTopInset)",
-            "sampledLeading=\(obscuredInsets?.leading ?? 0)",
-            "webViewObscuredTop=\(effectiveObscuredInsets?.top ?? 0)",
-            "effectiveTop=\(effectiveTopInset)",
-            "effectiveLeading=\(additionalLeadingInset)",
-            "bottom=\(additionalBottomSafeAreaInset ?? 0)"
-        ].joined(separator: " ")
-
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
@@ -1143,9 +1133,6 @@ public struct Reader: View {
             textSelection: $textSelection,
             buildMenu: buildMenu
         )
-        .task(id: lakeReaderMay26Signature) {
-            lakeMay26Log(lakeReaderMay26Signature)
-        }
 #if os(iOS)
         .readerStatusBarFadeOnPhone(
             top: effectiveSampledTopInset,//    + 8 + 2)
@@ -1155,13 +1142,15 @@ public struct Reader: View {
 #endif
         .background {
             GeometryReader { geometry in
+                let geometrySize = geometry.size
+                let geometrySafeAreaInsets = geometry.safeAreaInsets
                 Color.clear
-                    .task {
+                    .onAppear {
                         let sampledInsets = EdgeInsets(
-                            top: max(0, geometry.safeAreaInsets.top),
-                            leading: max(0, geometry.safeAreaInsets.leading),
-                            bottom: max(0, geometry.safeAreaInsets.bottom),
-                            trailing: max(0, geometry.safeAreaInsets.trailing)
+                            top: max(0, geometrySafeAreaInsets.top),
+                            leading: max(0, geometrySafeAreaInsets.leading),
+                            bottom: max(0, geometrySafeAreaInsets.bottom),
+                            trailing: max(0, geometrySafeAreaInsets.trailing)
                         )
                         logSafeArea(
                             "stage=lakeReader.geometryInitialBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
@@ -1171,15 +1160,39 @@ public struct Reader: View {
                                 "stage=lakeReader.geometryInitial pageURL=\(pageURL.absoluteString) sampledTop=\(sampledInsets.top) sampledBottom=\(sampledInsets.bottom) previousTop=\(obscuredInsets?.top ?? 0) previousBottom=\(obscuredInsets?.bottom ?? 0) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomInset)"
                             )
                         }
+                        obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
                     }
                     .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
-                        let sampledInsets = EdgeInsets(
+                        var sampledInsets = EdgeInsets(
                             top: max(0, safeAreaInsets.top),
                             leading: max(0, safeAreaInsets.leading),
                             bottom: max(0, safeAreaInsets.bottom),
                             trailing: max(0, safeAreaInsets.trailing)
                         )
+                        let previousInsets = obscuredInsets
+                        let previousSize = obscuredGeometrySize
+                        if !pageURL.isEBookURL,
+                           let previousInsets,
+                           let previousSize,
+                           previousInsets.top > 0,
+                           sampledInsets.top > previousInsets.top,
+                           previousSize.width > 1,
+                           previousSize.height > 1,
+                           geometrySize.width > 1,
+                           geometrySize.height > 1 {
+                            let topDelta = sampledInsets.top - previousInsets.top
+                            let heightDelta = previousSize.height - geometrySize.height
+                            let keepsSameBottom = abs(sampledInsets.bottom - previousInsets.bottom) < 0.5
+                            let keepsSameLeading = abs(sampledInsets.leading - previousInsets.leading) < 0.5
+                            let keepsSameTrailing = abs(sampledInsets.trailing - previousInsets.trailing) < 0.5
+                            if topDelta > 0,
+                               keepsSameBottom,
+                               keepsSameLeading,
+                               keepsSameTrailing {
+                                sampledInsets.top = previousInsets.top
+                            }
+                        }
                         logSafeArea(
                             "stage=lakeReader.geometryChangedBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
                         )
@@ -1188,6 +1201,7 @@ public struct Reader: View {
                                 "stage=lakeReader.geometryChanged pageURL=\(pageURL.absoluteString) sampledTop=\(sampledInsets.top) sampledBottom=\(sampledInsets.bottom) previousTop=\(obscuredInsets?.top ?? 0) previousBottom=\(obscuredInsets?.bottom ?? 0) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomInset)"
                             )
                         }
+                        obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
                     }
             }
