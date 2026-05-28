@@ -1146,12 +1146,17 @@ public struct Reader: View {
                 let geometrySafeAreaInsets = geometry.safeAreaInsets
                 Color.clear
                     .onAppear {
-                        let sampledInsets = EdgeInsets(
+                        var sampledInsets = EdgeInsets(
                             top: max(0, geometrySafeAreaInsets.top),
                             leading: max(0, geometrySafeAreaInsets.leading),
                             bottom: max(0, geometrySafeAreaInsets.bottom),
                             trailing: max(0, geometrySafeAreaInsets.trailing)
                         )
+                        if !pageURL.isEBookURL,
+                           explicitTopInset > 0,
+                           sampledInsets.top > explicitTopInset {
+                            sampledInsets.top = explicitTopInset
+                        }
                         logSafeArea(
                             "stage=lakeReader.geometryInitialBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
                         )
@@ -1171,27 +1176,16 @@ public struct Reader: View {
                             trailing: max(0, safeAreaInsets.trailing)
                         )
                         let previousInsets = obscuredInsets
-                        let previousSize = obscuredGeometrySize
+                        if !pageURL.isEBookURL,
+                           explicitTopInset > 0,
+                           sampledInsets.top > explicitTopInset {
+                            sampledInsets.top = explicitTopInset
+                        }
                         if !pageURL.isEBookURL,
                            let previousInsets,
-                           let previousSize,
                            previousInsets.top > 0,
-                           sampledInsets.top > previousInsets.top,
-                           previousSize.width > 1,
-                           previousSize.height > 1,
-                           geometrySize.width > 1,
-                           geometrySize.height > 1 {
-                            let topDelta = sampledInsets.top - previousInsets.top
-                            let heightDelta = previousSize.height - geometrySize.height
-                            let keepsSameBottom = abs(sampledInsets.bottom - previousInsets.bottom) < 0.5
-                            let keepsSameLeading = abs(sampledInsets.leading - previousInsets.leading) < 0.5
-                            let keepsSameTrailing = abs(sampledInsets.trailing - previousInsets.trailing) < 0.5
-                            if topDelta > 0,
-                               keepsSameBottom,
-                               keepsSameLeading,
-                               keepsSameTrailing {
-                                sampledInsets.top = previousInsets.top
-                            }
+                           sampledInsets.top > previousInsets.top {
+                            sampledInsets.top = previousInsets.top
                         }
                         logSafeArea(
                             "stage=lakeReader.geometryChangedBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
@@ -1223,6 +1217,7 @@ public struct Reader: View {
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
+            debugPrint("# BOTTOM \(safeAreaBottomSignature)")
             logMay8("native.lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             if pageURL.isEBookURL {
                 logEPUBBack("stage=lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")

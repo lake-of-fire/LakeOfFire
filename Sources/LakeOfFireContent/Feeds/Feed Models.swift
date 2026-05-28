@@ -860,6 +860,16 @@ public enum FeedError: Error {
     case jsonFeedsUnsupported
 }
 
+private func logNiponica(_ message: String) {
+#if DEBUG
+    debugPrint("# NIPONICA \(message)")
+#endif
+}
+
+private func isNiponicaFeedURL(_ url: URL) -> Bool {
+    url.absoluteString.localizedCaseInsensitiveContains("niponica")
+}
+
 fileprivate struct FeedFetchMetadata {
     let etag: String?
     let lastModifiedAt: Date?
@@ -1056,6 +1066,12 @@ fileprivate func getRssData(
     lastFetchedETag: String?,
     lastFetchedModifiedAt: Date?
 ) async throws -> FeedFetchResult {
+    let shouldLogNiponica = isNiponicaFeedURL(rssUrl)
+    if shouldLogNiponica {
+        logNiponica(
+            "stage=feedFetch.http.begin rssURL=\(rssUrl.absoluteString) lastFetchedETag=\(lastFetchedETag ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil")"
+        )
+    }
     let session = makeFeedSession()
     let headRequest = makeFeedRequest(
         url: rssUrl,
@@ -1065,12 +1081,23 @@ fileprivate func getRssData(
     )
     let (_, headResponse) = try await session.data(for: headRequest)
     guard let headHTTPResponse = headResponse as? HTTPURLResponse else {
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=head reason=nonHTTPResponse response=\(String(describing: headResponse))")
+        }
         throw FeedError.downloadFailed
     }
 
     let headMetadata = feedFetchMetadata(from: headHTTPResponse)
+    if shouldLogNiponica {
+        logNiponica(
+            "stage=feedFetch.http.head rssURL=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode) contentType=\(headHTTPResponse.value(forHTTPHeaderField: "Content-Type") ?? "nil") contentLength=\(headHTTPResponse.value(forHTTPHeaderField: "Content-Length") ?? "nil") etag=\(headMetadata.etag ?? "nil") lastModifiedAt=\(headMetadata.lastModifiedAt?.description ?? "nil")"
+        )
+    }
     switch headHTTPResponse.statusCode {
     case 304:
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=head status=304")
+        }
         return .notModified(metadata: headMetadata)
     case let statusCode where isSuccessfulFeedRefreshStatus(statusCode):
         if isFeedUnchanged(
@@ -1078,9 +1105,17 @@ fileprivate func getRssData(
             lastFetchedETag: lastFetchedETag,
             lastFetchedModifiedAt: lastFetchedModifiedAt
         ) {
+            if shouldLogNiponica {
+                logNiponica(
+                    "stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=head status=\(statusCode) reason=metadataUnchanged"
+                )
+            }
             return .notModified(metadata: headMetadata)
         }
     default:
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=head status=\(headHTTPResponse.statusCode) reason=badStatus")
+        }
         throw FeedError.downloadFailed
     }
 
@@ -1092,18 +1127,35 @@ fileprivate func getRssData(
     )
     let (data, getResponse) = try await session.data(for: getRequest)
     guard let getHTTPResponse = getResponse as? HTTPURLResponse else {
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get reason=nonHTTPResponse response=\(String(describing: getResponse))")
+        }
         throw FeedError.downloadFailed
     }
 
     let getMetadata = headMetadata.merged(with: feedFetchMetadata(from: getHTTPResponse))
+    if shouldLogNiponica {
+        logNiponica(
+            "stage=feedFetch.http.get rssURL=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode) bytes=\(data.count) contentType=\(getHTTPResponse.value(forHTTPHeaderField: "Content-Type") ?? "nil") contentLength=\(getHTTPResponse.value(forHTTPHeaderField: "Content-Length") ?? "nil") etag=\(getMetadata.etag ?? "nil") lastModifiedAt=\(getMetadata.lastModifiedAt?.description ?? "nil")"
+        )
+    }
     switch getHTTPResponse.statusCode {
     case 304:
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=get status=304")
+        }
         return .notModified(metadata: getMetadata)
     case 200..<300:
         return .fetched(data, metadata: getMetadata)
     case 300..<400:
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=redirectStatus")
+        }
         return .notModified(metadata: getMetadata)
     default:
+        if shouldLogNiponica {
+            logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=badStatus")
+        }
         throw FeedError.downloadFailed
     }
 }
@@ -1475,6 +1527,13 @@ public extension Feed {
     
     @MainActor
     func fetch(realmConfiguration: Realm.Configuration) async throws {
+        let shouldLogNiponica = title.localizedCaseInsensitiveContains("niponica")
+            || isNiponicaFeedURL(rssUrl)
+        if shouldLogNiponica {
+            logNiponica(
+                "stage=feed.fetch.begin feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
+            )
+        }
         debugPrint(
             "# FEEDNEW stage=feed.fetch.begin",
             "feedID=\(id.uuidString)",
@@ -1484,13 +1543,28 @@ public extension Feed {
             "lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil")",
             "lastFetchedETag=\(lastFetchedETag ?? "nil")"
         )
-        let fetchResult = try await getRssData(
-            rssUrl: rssUrl,
-            lastFetchedETag: lastFetchedETag,
-            lastFetchedModifiedAt: lastFetchedModifiedAt
-        )
+        let fetchResult: FeedFetchResult
+        do {
+            fetchResult = try await getRssData(
+                rssUrl: rssUrl,
+                lastFetchedETag: lastFetchedETag,
+                lastFetchedModifiedAt: lastFetchedModifiedAt
+            )
+        } catch {
+            if shouldLogNiponica {
+                logNiponica(
+                    "stage=feed.fetch.error feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) phase=http error=\(String(describing: error)) localized=\(error.localizedDescription)"
+                )
+            }
+            throw error
+        }
         switch fetchResult {
         case .notModified(let metadata):
+            if shouldLogNiponica {
+                logNiponica(
+                    "stage=feed.fetch.notModified feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
+                )
+            }
             debugPrint(
                 "# FEEDNEW stage=feed.fetch.notModified",
                 "feedID=\(id.uuidString)",
@@ -1501,6 +1575,11 @@ public extension Feed {
             try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
             return
         case .fetched(var rssData, let metadata):
+            if shouldLogNiponica {
+                logNiponica(
+                    "stage=feed.fetch.fetched feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) bytes=\(rssData.count) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
+                )
+            }
             debugPrint(
                 "# FEEDNEW stage=feed.fetch.fetched",
                 "feedID=\(id.uuidString)",
@@ -1511,6 +1590,11 @@ public extension Feed {
             )
             rssData = cleanRssData(rssData)
             let atomCollections = parseManabiAtomCollections(from: rssData)
+            if shouldLogNiponica {
+                logNiponica(
+                    "stage=feed.fetch.preParse feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) cleanedBytes=\(rssData.count) atomCollections=\(atomCollections.count)"
+                )
+            }
             let parser = FeedKit.FeedParser(data: rssData)
             return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
                 parser.parseAsync { parserResult in
@@ -1519,23 +1603,53 @@ public extension Feed {
                         switch feed {
                         case .rss(let rssFeed):
                             guard let items = rssFeed.items else {
+                                if shouldLogNiponica {
+                                    logNiponica(
+                                        "stage=feed.fetch.parserError feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss reason=nilItems"
+                                    )
+                                }
                                 continuation.resume(throwing: FeedError.parserFailed)
                                 return
+                            }
+                            if shouldLogNiponica {
+                                logNiponica(
+                                    "stage=feed.fetch.parsed feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss items=\(items.count)"
+                                )
                             }
                             Task { @MainActor in
                                 do {
                                     try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    if shouldLogNiponica {
+                                        logNiponica(
+                                            "stage=feed.fetch.persisted feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=rss items=\(items.count)"
+                                        )
+                                    }
                                     continuation.resume(returning: ())
                                 } catch {
+                                    if shouldLogNiponica {
+                                        logNiponica(
+                                            "stage=feed.fetch.error feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) phase=persist feedType=rss error=\(String(describing: error)) localized=\(error.localizedDescription)"
+                                        )
+                                    }
                                     continuation.resume(throwing: error)
                                 }
                             }
                             return
                         case .atom(let atomFeed):
                             guard let items = atomFeed.entries else {
+                                if shouldLogNiponica {
+                                    logNiponica(
+                                        "stage=feed.fetch.parserError feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=atom reason=nilEntries collections=\(atomCollections.count)"
+                                    )
+                                }
                                 continuation.resume(throwing: FeedError.parserFailed)
                                 return
+                            }
+                            if shouldLogNiponica {
+                                logNiponica(
+                                    "stage=feed.fetch.parsed feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=atom entries=\(items.count) collections=\(atomCollections.count)"
+                                )
                             }
                             Task { @MainActor in
                                 do {
@@ -1546,17 +1660,37 @@ public extension Feed {
                                         deleteOrphans: self.deleteOrphans
                                     )
                                     try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    if shouldLogNiponica {
+                                        logNiponica(
+                                            "stage=feed.fetch.persisted feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=atom entries=\(items.count) collections=\(atomCollections.count)"
+                                        )
+                                    }
                                     continuation.resume(returning: ())
                                 } catch {
+                                    if shouldLogNiponica {
+                                        logNiponica(
+                                            "stage=feed.fetch.error feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) phase=persist feedType=atom error=\(String(describing: error)) localized=\(error.localizedDescription)"
+                                        )
+                                    }
                                     continuation.resume(throwing: error)
                                 }
                             }
                             return
                         case .json:
+                            if shouldLogNiponica {
+                                logNiponica(
+                                    "stage=feed.fetch.parserError feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=json reason=unsupported"
+                                )
+                            }
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
-                    case .failure:
+                    case .failure(let error):
+                        if shouldLogNiponica {
+                            logNiponica(
+                                "stage=feed.fetch.parserError feedID=\(self.id.uuidString) title=\(self.title) rssURL=\(self.rssUrl.absoluteString) feedType=unknown reason=parseFailure error=\(String(describing: error))"
+                            )
+                        }
                         continuation.resume(throwing: FeedError.parserFailed)
                         return
                     }

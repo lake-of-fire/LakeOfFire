@@ -19,6 +19,17 @@ private func logDetent(_ message: String) {
 private func logFeedFlash(_ message: String) {
 }
 
+private func logNiponica(_ message: String) {
+#if DEBUG
+    debugPrint("# NIPONICA \(message)")
+#endif
+}
+
+private func isNiponicaFeed(_ feed: Feed) -> Bool {
+    feed.title.localizedCaseInsensitiveContains("niponica")
+        || feed.rssUrl.absoluteString.localizedCaseInsensitiveContains("niponica")
+}
+
 private func sortFeedEntryCollections(_ collections: [FeedEntryCollection]) -> [FeedEntryCollection] {
     collections.sorted { lhs, rhs in
         switch (lhs.order, rhs.order) {
@@ -178,6 +189,11 @@ public class FeedViewModel: ObservableObject {
     
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
+        if isNiponicaFeed(feed) {
+            logNiponica(
+                "stage=feedViewModel.fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(feed.lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(feed.lastFetchedETag ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
+            )
+        }
         logDetent(
             "feedViewModel.fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
         )
@@ -187,16 +203,35 @@ public class FeedViewModel: ObservableObject {
         if force {
             logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
             logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
-            try await feed.fetch()
+            do {
+                try await feed.fetch()
+            } catch {
+                if isNiponicaFeed(feed) {
+                    logNiponica(
+                        "stage=feedViewModel.fetchIfNeeded.error instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) reason=force error=\(String(describing: error)) localized=\(error.localizedDescription) entries=\(entries?.count ?? -1)"
+                    )
+                }
+                throw error
+            }
             await reloadEntries(feedID: feed.id, reason: "forceFetchComplete")
             logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce")
             logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce entries=\(entries?.count ?? -1)")
+            if isNiponicaFeed(feed) {
+                logNiponica(
+                    "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=fetchedForce entries=\(entries?.count ?? -1)"
+                )
+            }
             return
         }
 
         guard feed.shouldRefreshAutomaticallyOnFeedAppear else {
             logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipFresh")
             logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipFresh entries=\(entries?.count ?? -1)")
+            if isNiponicaFeed(feed) {
+                logNiponica(
+                    "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=skipFresh entries=\(entries?.count ?? -1)"
+                )
+            }
             return
         }
 
@@ -210,16 +245,35 @@ public class FeedViewModel: ObservableObject {
             logFeedFlash(
                 "fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt))) entries=\(entries?.count ?? -1)"
             )
+            if isNiponicaFeed(feed) {
+                logNiponica(
+                    "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt))) entries=\(entries?.count ?? -1)"
+                )
+            }
             return
         }
 
         Self.recentAutomaticFetchAttempts[feed.id] = now
         logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
         logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
-        try await feed.fetch()
+        do {
+            try await feed.fetch()
+        } catch {
+            if isNiponicaFeed(feed) {
+                logNiponica(
+                    "stage=feedViewModel.fetchIfNeeded.error instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) reason=autoStale error=\(String(describing: error)) localized=\(error.localizedDescription) entries=\(entries?.count ?? -1)"
+                )
+            }
+            throw error
+        }
         await reloadEntries(feedID: feed.id, reason: "autoFetchComplete")
         logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto")
         logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto entries=\(entries?.count ?? -1)")
+        if isNiponicaFeed(feed) {
+            logNiponica(
+                "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=fetchedAuto entries=\(entries?.count ?? -1)"
+            )
+        }
     }
 }
 
@@ -405,11 +459,30 @@ public struct FeedView: View {
         let allowsFollowing = feed.entryContentKind != .contentListing
         let showInitialContent = !(currentEntries?.isEmpty ?? true)
         AsyncView(operation: { forceRefreshRequested in
+            if isNiponicaFeed(feed) {
+                logNiponica(
+                    "stage=feedView.asyncOperation.begin feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) force=\(forceRefreshRequested) entries=\(viewModel.entries?.count ?? -1) showInitialContent=\(showInitialContent)"
+                )
+            }
             logDetent(
                 "feedView.asyncOperation feedID=\(feed.id.uuidString) title=\(feed.title) force=\(forceRefreshRequested) entries=\(viewModel.entries?.count ?? -1)"
             )
             logFeedViewFlash("asyncOperation force=\(forceRefreshRequested)", entries: viewModel.entries, showInitialContent: showInitialContent)
-            try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
+            do {
+                try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
+                if isNiponicaFeed(feed) {
+                    logNiponica(
+                        "stage=feedView.asyncOperation.end feedID=\(feed.id.uuidString) title=\(feed.title) result=success entries=\(viewModel.entries?.count ?? -1)"
+                    )
+                }
+            } catch {
+                if isNiponicaFeed(feed) {
+                    logNiponica(
+                        "stage=feedView.asyncOperation.error feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) error=\(String(describing: error)) localized=\(error.localizedDescription) entries=\(viewModel.entries?.count ?? -1)"
+                    )
+                }
+                throw error
+            }
         }, showInitialContent: showInitialContent) { _ in
             let contentEntries = viewModel.entries
             if let contentEntries {

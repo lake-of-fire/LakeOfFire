@@ -420,6 +420,7 @@ fileprivate struct ReaderWebViewInternal: View {
         )
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
+            debugPrint("# BOTTOM \(safeAreaBottomSignature)")
             logEPUBBack(safeAreaBottomSignature)
         }
         .onAppear {
