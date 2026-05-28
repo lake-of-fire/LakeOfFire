@@ -1291,46 +1291,21 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
         guard let targetID = normalizedScrollTargetID else { return }
         guard viewModel.filteredContentIDs.contains(targetID) else {
-            print(
-                "# NEXT readerContentList.scroll.skip reason=missingFilteredTarget trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ",")) loading=\(viewModel.isLoading) hasLoadedBefore=\(viewModel.hasLoadedBefore)"
-            )
-            return
-        }
-        guard lastScrolledTargetID != targetID else {
-            print(
-                "# NEXT readerContentList.scroll.skip reason=alreadyScrolled trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) filtered=\(viewModel.filteredContents.count)"
-            )
             return
         }
         guard pendingScrollTargetID != targetID else {
-            print(
-                "# NEXT readerContentList.scroll.skip reason=alreadyPending trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) filtered=\(viewModel.filteredContents.count)"
-            )
             return
         }
         let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
         pendingScrollTargetID = targetID
-        print(
-            "# NEXT readerContentList.scroll.schedule trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID) filtered=\(viewModel.filteredContents.count)"
-        )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             guard pendingScrollTargetID == targetID else {
-                print(
-                    "# NEXT readerContentList.scroll.skip reason=stalePending trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) pending=\(pendingScrollTargetID ?? "nil") filtered=\(viewModel.filteredContents.count)"
-                )
                 return
             }
             pendingScrollTargetID = nil
-            lastScrolledTargetID = targetID
-            print(
-                "# NEXT readerContentList.scroll.begin trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID) filtered=\(viewModel.filteredContents.count)"
-            )
             withAnimation(.easeInOut(duration: 0.25)) {
                 proxy.scrollTo(anchorID, anchor: .center)
             }
-            print(
-                "# NEXT readerContentList.scroll.end trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID)"
-            )
         }
     }
 
@@ -1411,7 +1386,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 logFeedFlash(
                     "readerContentList.appear type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator) hasLoadedBefore=\(viewModel.hasLoadedBefore) isLoading=\(viewModel.isLoading)"
                 )
-                scheduleScrollToTarget(with: scrollProxy, reason: "appear")
             }
             .onDisappear {
                 logFeedFlash(

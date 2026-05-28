@@ -337,17 +337,10 @@ public struct FeedView: View {
         (entries ?? []).map(\.compoundKey).joined(separator: ",")
     }
 
-    private func scrollAnchorID(for entryID: String) -> String {
-        readerContentListSeparatedRowScrollAnchorID(entryID)
-    }
-
-    private func logTargetRowAppearanceIfNeeded(_ content: FeedEntry, entries: [FeedEntry]) {
-        let activeTarget = contentSelection.wrappedValue ?? initialScrollEntryID
-        guard content.compoundKey == activeTarget else { return }
-        let index = entries.firstIndex(where: { $0.compoundKey == content.compoundKey })
-        print(
-            "# NEXT feedView.rowAppear target=\(content.compoundKey) feedID=\(feed.id.uuidString) index=\(index.map(String.init(describing:)) ?? "nil") entries=\(entries.count) initial=\(initialScrollEntryID ?? "nil") selection=\(contentSelection.wrappedValue ?? "nil") anchor=\(scrollAnchorID(for: content.compoundKey))"
-        )
+    private func consumeInitialScrollEntryIDIfNeeded(_ content: FeedEntry) {
+        if content.compoundKey == initialScrollEntryID {
+            hasAppliedInitialScrollEntryID = true
+        }
     }
 
     private func logFeedViewFlash(_ stage: String, entries: [FeedEntry]?, showInitialContent: Bool? = nil) {
@@ -361,6 +354,7 @@ public struct FeedView: View {
     private func feedContent(entries: [FeedEntry]) -> some View {
         let entryIDs = entries.map(\.compoundKey)
         let collections = viewModel.collections ?? []
+        let activeScrollTargetID = hasAppliedInitialScrollEntryID ? nil : initialScrollEntryID
         Group {
             if isHorizontal {
                 ReaderContentHorizontalList(
@@ -384,9 +378,9 @@ public struct FeedView: View {
                     separateRowsIntoSections: true,
                     allowEditing: allowsVideoMakerSelection,
                     onContentAppear: { content in
-                        logTargetRowAppearanceIfNeeded(content, entries: entries)
+                        consumeInitialScrollEntryIDIfNeeded(content)
                     },
-                    scrollTargetID: initialScrollEntryID,
+                    scrollTargetID: activeScrollTargetID,
                     supplementarySections: {
                         if !collections.isEmpty {
                             Section {
@@ -439,17 +433,12 @@ public struct FeedView: View {
 
     @MainActor
     private func applyInitialScrollEntryIDIfNeeded() {
-        guard !hasAppliedInitialScrollEntryID,
-              let initialScrollEntryID,
+        guard let initialScrollEntryID,
               entries.contains(where: { $0.compoundKey == initialScrollEntryID }) else {
-            print("# NEXT feedView.initialScroll.skip feedID=\(feed.id.uuidString) reason=guard applied=\(hasAppliedInitialScrollEntryID) initial=\(initialScrollEntryID ?? "nil") entries=\(entries.count)")
             return
         }
-        hasAppliedInitialScrollEntryID = true
-        print("# NEXT feedView.initialScroll.apply feedID=\(feed.id.uuidString) initial=\(initialScrollEntryID) currentSelection=\(contentSelection.wrappedValue ?? "nil")")
         if contentSelection.wrappedValue != initialScrollEntryID {
             contentSelection.wrappedValue = initialScrollEntryID
-            print("# NEXT feedView.initialScroll.selectionSet feedID=\(feed.id.uuidString) initial=\(initialScrollEntryID)")
         }
     }
 
@@ -691,6 +680,7 @@ private struct FeedEntryCollectionCell: View {
 
 private struct FeedEntryCollectionHeader: View {
     @ObservedRealmObject var collection: FeedEntryCollection
+    let titleVisibilityCoordinateSpaceName: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -714,6 +704,14 @@ private struct FeedEntryCollectionHeader: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(collection.title)
                     .font(.title3.weight(.semibold))
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: FeedEntryCollectionTitleVisibilityPreferenceKey.self,
+                                value: proxy.frame(in: .named(titleVisibilityCoordinateSpaceName)).maxY
+                            )
+                        }
+                    }
                 if let publicationDate = collection.publicationDate {
                     Text(publicationDate.formatted(date: .abbreviated, time: .omitted))
                         .font(.subheadline)
@@ -730,11 +728,22 @@ private struct FeedEntryCollectionHeader: View {
     }
 }
 
+private struct FeedEntryCollectionTitleVisibilityPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
+    }
+}
+
 private struct FeedEntryCollectionView: View {
     @ObservedRealmObject var collection: FeedEntryCollection
     @ObservedObject var viewModel: FeedViewModel
     @Environment(\.contentSelection) private var contentSelection
     @State private var showsReaderContentNewBadges = true
+    @State private var showsInlineNavigationTitle = false
+
+    private let titleVisibilityCoordinateSpaceName = "FeedEntryCollectionTitleVisibility"
 
     private var entries: [FeedEntry] {
         (viewModel.entries ?? []).filter { $0.feedEntryCollectionKey == collection.compoundKey }
@@ -749,11 +758,15 @@ private struct FeedEntryCollectionView: View {
             useDefaultRowInsets: true,
             showsNewBadges: showsReaderContentNewBadges,
             separateRowsIntoSections: true,
+            rendersHeaderViewInSectionHeader: true,
             supplementarySections: {
                 EmptyView()
             },
             headerView: {
-                FeedEntryCollectionHeader(collection: collection)
+                FeedEntryCollectionHeader(
+                    collection: collection,
+                    titleVisibilityCoordinateSpaceName: titleVisibilityCoordinateSpaceName
+                )
             },
             emptyStateView: {
                 EmptyStateBoxView(
@@ -763,7 +776,11 @@ private struct FeedEntryCollectionView: View {
                 )
             }
         )
-        .navigationTitle(collection.title)
+        .coordinateSpace(name: titleVisibilityCoordinateSpaceName)
+        .onPreferenceChange(FeedEntryCollectionTitleVisibilityPreferenceKey.self) { titleMaxY in
+            showsInlineNavigationTitle = titleMaxY <= 0
+        }
+        .navigationTitle(navigationTitle)
 #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .listStyle(.insetGrouped)
@@ -787,6 +804,14 @@ private struct FeedEntryCollectionView: View {
         .automatic
 #else
         .navigationBarTrailing
+#endif
+    }
+
+    private var navigationTitle: String {
+#if os(iOS)
+        showsInlineNavigationTitle ? collection.title : ""
+#else
+        collection.title
 #endif
     }
 }
