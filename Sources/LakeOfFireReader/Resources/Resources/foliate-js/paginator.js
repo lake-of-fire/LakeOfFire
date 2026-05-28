@@ -87,6 +87,33 @@ const postBlankPageLog = (event, details = {}) => {
         try { console.log(line); } catch (_) {}
     }
 };
+const manabiPageSummaryIsVisiblyBlank = summary =>
+    !!summary
+    && (summary.textCharCount ?? 0) === 0
+    && (summary.mediaCount ?? 0) === 0;
+const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summariesByPage = null } = {}) => {
+    if (!Number.isFinite(page) || !Number.isFinite(pages) || !Number.isFinite(direction) || direction === 0) {
+        return page;
+    }
+    const minPage = 1;
+    const maxPage = Math.max(minPage, pages - 2);
+    let target = Math.max(minPage, Math.min(maxPage, Math.trunc(page)));
+    const step = direction > 0 ? 1 : -1;
+    const summaryForPage = candidatePage =>
+        summariesByPage instanceof Map
+            ? (summariesByPage.get(candidatePage) ?? null)
+            : (summariesByPage?.[candidatePage] ?? null);
+    while (
+        target >= minPage
+        && target <= maxPage
+        && manabiPageSummaryIsVisiblyBlank(summaryForPage(target))
+    ) {
+        const nextTarget = target + step;
+        if (nextTarget < minPage || nextTarget > maxPage) break;
+        target = nextTarget;
+    }
+    return target;
+};
 const sectionDebugInfo = section => section
     ? {
         href: section.href ?? null,
@@ -1862,6 +1889,54 @@ export class Paginator extends HTMLElement {
             });
         }
     }
+    async #resolveBlankPageTarget(page, direction, reason = 'unknown') {
+        if (
+            this.#isCacheWarmer
+            || this.scrolled
+            || !this.#view?.document
+            || !Number.isFinite(page)
+            || !Number.isFinite(direction)
+            || direction === 0
+        ) {
+            return page;
+        }
+        const pages = await this.pages();
+        const minPage = 1;
+        const maxPage = Math.max(minPage, pages - 2);
+        if (page < minPage || page > maxPage) {
+            return page;
+        }
+
+        const size = await this.size();
+        const rectMapper = await this.#getRectMapper();
+        const summariesByPage = new Map();
+        let target = page;
+
+        while (target >= minPage && target <= maxPage) {
+            summariesByPage.set(target, await this.#blankPageContentSummary(target, size, rectMapper));
+            const resolved = manabiResolveBlankPageTarget({
+                page: target,
+                pages,
+                direction,
+                summariesByPage,
+            });
+            if (resolved === target) break;
+            target = resolved;
+        }
+
+        if (target !== page) {
+            postBlankPageLog('skip', {
+                reason,
+                index: this.#index,
+                section: sectionDebugInfo(this.sections?.[this.#index]),
+                fromPage: page,
+                toPage: target,
+                pages,
+                direction: direction > 0 ? 'forward' : 'backward',
+            });
+        }
+        return target;
+    }
     #typographyRenderSignature({
         width,
         height,
@@ -3373,7 +3448,7 @@ export class Paginator extends HTMLElement {
             return true;
         }
         if (await this.atStart()) return
-        const page = await this.page() - 1
+        const page = await this.#resolveBlankPageTarget((await this.page()) - 1, -1, 'page-turn.prev')
         return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
     }
     async #scrollNext(distance) {
@@ -3390,7 +3465,7 @@ export class Paginator extends HTMLElement {
             return true;
         }
         if (await this.atEnd()) return
-        const page = await this.page() + 1
+        const page = await this.#resolveBlankPageTarget((await this.page()) + 1, 1, 'page-turn.next')
         const pages = await this.pages()
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
