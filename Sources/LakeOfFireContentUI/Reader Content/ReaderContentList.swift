@@ -39,6 +39,10 @@ public actor ReaderContentListActor: CachedRealmsActor {
     }
 }
 
+public func readerContentListSeparatedRowScrollAnchorID(_ contentID: String) -> String {
+    "reader-content-list-section-\(contentID)"
+}
+
 @MainActor
 public enum ReaderContentListDeleteDialog: @preconcurrency Identifiable {
     case confirm(
@@ -746,6 +750,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
 #if os(iOS)
         .deleteDisabled((content as? any DeletableReaderContent) == nil)
         .swipeActions {
@@ -905,6 +910,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
     let onContentAppear: ((C) -> Void)?
+    let scrollTargetID: String?
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
@@ -922,6 +928,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @Environment(\.editMode) private var editMode
 #endif
     @State private var multiSelection = Set<String>()
+    @State private var pendingScrollTargetID: String?
+    @State private var lastScrolledTargetID: String?
     
     private var showEmptyState: Bool {
         return !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
@@ -948,6 +956,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     private var effectiveListRowSpacing: CGFloat? {
         useDefaultRowInsets || separateRowsIntoSections ? nil : listRowSpacing
+    }
+
+    private var normalizedScrollTargetID: String? {
+        let trimmed = scrollTargetID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
     
     @ViewBuilder private var listItems: some View {
@@ -1007,6 +1020,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 }
                 .headerProminence(.increased)
             )
+            .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
         }
     }
     
@@ -1030,6 +1044,48 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         }
         .listItemTint(appTint)
         .readerContentListLayoutAdjustments()
+    }
+
+    @MainActor
+    private func scheduleScrollToTarget(with proxy: ScrollViewProxy, reason: String) {
+        guard let targetID = normalizedScrollTargetID else { return }
+        guard viewModel.filteredContentIDs.contains(targetID) else {
+            debugPrint(
+                "# NEXT readerContentList.scroll.skip reason=missingFilteredTarget trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) contents=\(contents.count) filtered=\(viewModel.filteredContents.count)"
+            )
+            return
+        }
+        guard lastScrolledTargetID != targetID else {
+            debugPrint(
+                "# NEXT readerContentList.scroll.skip reason=alreadyScrolled trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) filtered=\(viewModel.filteredContents.count)"
+            )
+            return
+        }
+        guard pendingScrollTargetID != targetID else {
+            debugPrint(
+                "# NEXT readerContentList.scroll.skip reason=alreadyPending trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) filtered=\(viewModel.filteredContents.count)"
+            )
+            return
+        }
+        let anchorID = readerContentListSeparatedRowScrollAnchorID(targetID)
+        pendingScrollTargetID = targetID
+        debugPrint(
+            "# NEXT readerContentList.scroll.schedule trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID) filtered=\(viewModel.filteredContents.count)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard pendingScrollTargetID == targetID else { return }
+            pendingScrollTargetID = nil
+            lastScrolledTargetID = targetID
+            debugPrint(
+                "# NEXT readerContentList.scroll.begin trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID) filtered=\(viewModel.filteredContents.count)"
+            )
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(anchorID, anchor: .center)
+            }
+            debugPrint(
+                "# NEXT readerContentList.scroll.end trigger=\(reason) type=\(String(describing: C.self)) target=\(targetID) anchor=\(anchorID)"
+            )
+        }
     }
 
 #if os(iOS)
@@ -1068,9 +1124,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #endif
     }
 
-    public var body: some View {
-        Group {
-            listContainerWithSpacing
+    @ViewBuilder
+    private func listBody(scrollProxy: ScrollViewProxy) -> some View {
+        listContainerWithSpacing
+            .onAppear {
+                scheduleScrollToTarget(with: scrollProxy, reason: "appear")
+            }
                 .toolbar {
                     //#if os(iOS)
                     //            ToolbarItem(placement: .navigationBarTrailing) {
@@ -1101,7 +1160,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         entrySelection = nil
                     }
                 }
-                .task { @MainActor in
+            .task { @MainActor in
                     try? await viewModel.load(
                         contents: contents,
                         contentFilter: contentFilter,
@@ -1109,6 +1168,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         postSortTransform: postSortTransform
                     )
                     refreshGrouping()
+                    scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
                 }
                 .onChange(of: contents) { contents in
                     Task { @MainActor in
@@ -1119,11 +1179,18 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                             postSortTransform: postSortTransform
                         )
                         refreshGrouping()
+                        scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
                     }
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
                     refreshGrouping()
+                    scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
                 }
+    }
+
+    public var body: some View {
+        ScrollViewReader { scrollProxy in
+            listBody(scrollProxy: scrollProxy)
         }
         .readerContentSelectionSync(
             viewModel: viewModel,
@@ -1312,6 +1379,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
+        scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
         @ViewBuilder headerView: @escaping () -> Header,
@@ -1340,6 +1408,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         self.emptyStateView = emptyStateView
         self.onContentSelected = onContentSelected
         self.onContentAppear = onContentAppear
+        self.scrollTargetID = scrollTargetID
         _viewModel = StateObject(wrappedValue: ReaderContentListViewModel(initialContents: contents, sortOrder: sortOrder))
     }
 }
@@ -1365,6 +1434,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
         onContentAppear: ((C) -> Void)? = nil,
+        scrollTargetID: String? = nil,
         postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
@@ -1389,6 +1459,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
             onContentAppear: onContentAppear,
+            scrollTargetID: scrollTargetID,
             postSortTransform: postSortTransform,
             supplementarySections: { EmptyView() },
             headerView: headerView,

@@ -185,6 +185,7 @@ public struct FeedView: View {
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
     var showsToolbar = true
+    var initialScrollEntryID: String?
     @State private var showsReaderContentNewBadges = true
 
     @Environment(\.contentSelection) private var contentSelection
@@ -227,7 +228,8 @@ public struct FeedView: View {
                             useDefaultRowInsets: true,
                             showsNewBadges: showsReaderContentNewBadges,
                             separateRowsIntoSections: true,
-                            listSectionSpacing: 10
+                            listSectionSpacing: 10,
+                            scrollTargetID: initialScrollEntryID
                         ) {
                             if !collections.isEmpty {
                                 Section {
@@ -300,11 +302,12 @@ public struct FeedView: View {
         }
     }
     
-    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false, showsToolbar: Bool = true) {
+    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false, showsToolbar: Bool = true, initialScrollEntryID: String? = nil) {
         self.feed = feed
         self.viewModel = viewModel
         self.isHorizontal = isHorizontal
         self.showsToolbar = showsToolbar
+        self.initialScrollEntryID = initialScrollEntryID
     }
 
     @MainActor
