@@ -121,6 +121,21 @@ const postBookInsetLog = (event, details = {}) => {
     }
 };
 
+let lastPageTrackingBookLayoutLogSignature = null;
+const postPageTrackingBookLayoutLog = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    const signaturePayload = { event, ...details };
+    const signature = JSON.stringify(signaturePayload);
+    if (signature === lastPageTrackingBookLayoutLogSignature) return;
+    lastPageTrackingBookLayoutLogSignature = signature;
+    const line = `# BOOK ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 const PAGE_NUM_DEDUP_EVENTS = new Set([
     'goto.snapshot',
     'nav.sections.handoff',
@@ -4618,6 +4633,45 @@ class Reader {
     #logPageTracking(event, details = {}) {
         postReaderLog(event, details);
     }
+    #logPageTrackingLayout(reason, phase, container, buttonHost) {
+        if (!(container instanceof HTMLElement) || !(buttonHost instanceof HTMLElement)) {
+            return;
+        }
+        const button = buttonHost.querySelector('.page-read-button');
+        const navBar = document.getElementById('nav-bar');
+        const computedStyle = window.getComputedStyle(document.body ?? document.documentElement);
+        const viewportHeight = window.visualViewport?.height ?? window.innerHeight ?? null;
+        const containerRect = container.getBoundingClientRect();
+        const buttonRect = button instanceof Element ? button.getBoundingClientRect() : null;
+        const navBarRect = navBar instanceof Element ? navBar.getBoundingClientRect() : null;
+        postPageTrackingBookLayoutLog('ebook.pageTracking.layout', {
+            reason,
+            phase,
+            stateCount: this.pageTrackingStates?.length ?? 0,
+            hasCompletionAction: !!this.completionAction,
+            markReadButtonsVisible: document.body?.dataset?.mnbMarkReadButtonsVisible ?? null,
+            navHidden: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            cssToolbarBottom: computedStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
+            cssSystemBottom: computedStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
+            cssPhysicalBottom: computedStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
+            cssPageTrackingBottom: computedStyle?.getPropertyValue('--mnb-page-tracking-bottom-inset')?.trim() || null,
+            cssStageBottom: computedStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+            windowInnerHeight: window.innerHeight ?? null,
+            visualViewportHeight: window.visualViewport?.height ?? null,
+            containerRect: this.#formatRect(containerRect),
+            buttonRect: this.#formatRect(buttonRect),
+            navBarRect: this.#formatRect(navBarRect),
+            containerBottomGapToViewport: Number.isFinite(viewportHeight)
+                ? safeRound(viewportHeight - containerRect.bottom, 1)
+                : null,
+            buttonBottomGapToViewport: buttonRect && Number.isFinite(viewportHeight)
+                ? safeRound(viewportHeight - buttonRect.bottom, 1)
+                : null,
+            navBarBottomGapToViewport: navBarRect && Number.isFinite(viewportHeight)
+                ? safeRound(viewportHeight - navBarRect.bottom, 1)
+                : null,
+        });
+    }
     #pageReadMarkerDiagnosticState(details = {}) {
         const readerStage = document.getElementById('reader-stage');
         const topMarker = document.getElementById('page-read-marker-top');
@@ -5571,6 +5625,7 @@ class Reader {
             buttonHost.innerHTML = '';
             this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
+            this.#logPageTrackingLayout(reason, 'hidden', container, buttonHost);
             return;
         }
         if (completionAction) {
@@ -5592,6 +5647,7 @@ class Reader {
             this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
             this.#scheduleInitialPaginatorSettle('page-tracking-render.completion-action');
+            requestAnimationFrame(() => this.#logPageTrackingLayout(reason, 'completion-action', container, buttonHost));
             return;
         }
         buttonHost.innerHTML = pageTrackingStates.map((state) => {
@@ -5639,6 +5695,7 @@ class Reader {
             const markerTop = document.getElementById('page-read-marker-top');
             const sideStyle = markerSide instanceof Element ? getComputedStyle(markerSide) : null;
             const topStyle = markerTop instanceof Element ? getComputedStyle(markerTop) : null;
+            this.#logPageTrackingLayout(reason, 'visible-page', container, buttonHost);
         });
         this.navHUD?.refreshAuxiliaryLayout?.();
         this.#scheduleInitialPaginatorSettle('page-tracking-render');

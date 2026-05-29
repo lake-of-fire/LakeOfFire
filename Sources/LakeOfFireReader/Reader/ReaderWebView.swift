@@ -28,6 +28,12 @@ private func logSafeArea(_ message: @autoclosure () -> String) {
 private func logEPUBBack(_ message: @autoclosure () -> String) {
 }
 
+private func logBook(_ message: @autoclosure () -> String) {
+#if DEBUG
+    debugPrint("# BOOK \(message())")
+#endif
+}
+
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {
@@ -332,23 +338,26 @@ fileprivate struct ReaderWebViewInternal: View {
         let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
             ? 0
             : (obscuredInsets?.top ?? 0)
-        let sampledBottom = usesEBookChromeInsets
-            ? 0
-            : (obscuredInsets?.bottom ?? 0)
-        let additionalBottom = usesEBookChromeInsets
-            ? 0
-            : additionalInsets.bottom
+        let sampledBottom = obscuredInsets?.bottom ?? 0
         let sampledLeading = additionalInsets.leading > 0
             ? 0
             : (obscuredInsets?.leading ?? 0)
+        let resolvedBottom = usesEBookChromeInsets
+            ? max(sampledBottom, additionalInsets.bottom)
+            : sampledBottom + additionalInsets.bottom
         return EdgeInsets(
             top: max(0, sampledTop + additionalInsets.top),
             leading: max(0, sampledLeading + additionalInsets.leading),
-            bottom: max(0, sampledBottom + additionalBottom),
+            bottom: max(0, resolvedBottom),
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
 #else
-        EdgeInsets()
+        EdgeInsets(
+            top: max(0, additionalInsets.top),
+            leading: max(0, additionalInsets.leading),
+            bottom: max(0, additionalInsets.bottom),
+            trailing: max(0, additionalInsets.trailing)
+        )
 #endif
     }
     
@@ -373,7 +382,7 @@ fileprivate struct ReaderWebViewInternal: View {
             "additionalTop=\(additionalTopSafeAreaInset ?? 0)",
             "additionalLeading=\(additionalLeadingSafeAreaInset ?? 0)",
             "additionalBottom=\(additionalBottomSafeAreaInset ?? 0)",
-            "resolvedPolicy=sampledPlusAdditionalWhenNotEBook",
+            "resolvedPolicy=\(usesEBookChromeInsets ? "ebookMaxSampledAdditional" : "sampledPlusAdditionalWhenNotEBook")",
             "resolvedTop=\(resolvedObscuredInsets.top)",
             "resolvedLeading=\(resolvedObscuredInsets.leading)",
             "resolvedBottom=\(resolvedObscuredInsets.bottom)",
@@ -421,6 +430,9 @@ fileprivate struct ReaderWebViewInternal: View {
         .task(id: safeAreaBottomSignature) {
             logSafeArea(safeAreaBottomSignature)
             debugPrint("# BOTTOM \(safeAreaBottomSignature)")
+            if usesEBookChromeInsets {
+                logBook("readerWebView.resolveInsets \(safeAreaBottomSignature)")
+            }
             logEPUBBack(safeAreaBottomSignature)
         }
         .onAppear {

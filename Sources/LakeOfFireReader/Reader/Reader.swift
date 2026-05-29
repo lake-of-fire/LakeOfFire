@@ -30,6 +30,12 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
     }
 }
 
+private func logBook(_ message: @autoclosure () -> String) {
+#if DEBUG
+    debugPrint("# BOOK \(message())")
+#endif
+}
+
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
@@ -1071,10 +1077,14 @@ public struct Reader: View {
         let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
-        let ebookChromeBottomInset = max(0, ebookChromeBottomSafeAreaInset ?? additionalBottomInset)
+        let ebookChromeBottomInset = max(
+            sampledBottomInset,
+            additionalBottomInset,
+            max(0, ebookChromeBottomSafeAreaInset ?? 0)
+        )
         let ebookChromeExtraBottomInset = max(0, ebookChromeBottomInset - sampledBottomInset)
         let effectiveBottomInset = pageURL.isEBookURL
-            ? ebookChromeExtraBottomInset
+            ? ebookChromeBottomInset
             : max(sampledBottomInset, additionalBottomInset)
         let toolbarReferenceBottomInset = pageURL.isEBookURL
             ? ebookChromeBottomInset
@@ -1220,11 +1230,13 @@ public struct Reader: View {
             debugPrint("# BOTTOM \(safeAreaBottomSignature)")
             logMay8("native.lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             if pageURL.isEBookURL {
+                logBook("lakeReader.computeInsets \(safeAreaBottomSignature) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
                 logEPUBBack("stage=lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             }
         }
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
+            logBook("lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) readerContentPageURL=\(readerContent.pageURL.absoluteString) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) effectiveBottom=\(effectiveBottomInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) readerRenderReady=\(readerViewModel.state.hasReaderRenderReady)")
             logMay8("native.lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) readerContentPageURL=\(readerContent.pageURL.absoluteString) chromeInsetsTaskID=\(chromeInsetsTaskID) sampledTopInset=\(sampledTopInset) explicitTopInset=\(explicitTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
             logEPUBBack("stage=lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) sampledTopInset=\(sampledTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
             let retryDelaysInNanoseconds: [UInt64] = [
