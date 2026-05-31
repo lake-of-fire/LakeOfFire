@@ -7,7 +7,7 @@ import RealmSwiftGaps
 import LakeKit
 import LakeOfFireContent
 import LakeOfFireCore
-import PersistedLRUCacheHybrid
+import PersistedLRUCache
 
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 
@@ -107,7 +107,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
-    private let trackingSizeCache = PersistedLRUCacheHybrid.PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
+    private let trackingSizeCache = PersistedLRUCache.PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
         totalBytesLimit: 20 * 1024 * 1024,
