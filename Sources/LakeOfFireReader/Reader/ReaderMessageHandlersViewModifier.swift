@@ -10,9 +10,27 @@ import LakeOfFireCore
 import PersistedLRUCache
 
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
+public struct ReaderNavigationVisibilityChange: Sendable {
+    public let shouldHide: Bool
+    public let reason: String?
+    public let source: String?
+    public let direction: String?
+
+    public init(shouldHide: Bool, reason: String?, source: String?, direction: String?) {
+        self.shouldHide = shouldHide
+        self.reason = reason
+        self.source = source
+        self.direction = direction
+    }
+}
+public typealias ReaderNavigationVisibilityWillChangeHandler = @MainActor @Sendable (_ change: ReaderNavigationVisibilityChange) -> Void
 
 private struct ReaderShowOriginalWillBeginHandlerKey: EnvironmentKey {
     static let defaultValue: ReaderShowOriginalWillBeginHandler? = nil
+}
+
+private struct ReaderNavigationVisibilityWillChangeHandlerKey: EnvironmentKey {
+    static let defaultValue: ReaderNavigationVisibilityWillChangeHandler? = nil
 }
 
 public extension EnvironmentValues {
@@ -20,11 +38,20 @@ public extension EnvironmentValues {
         get { self[ReaderShowOriginalWillBeginHandlerKey.self] }
         set { self[ReaderShowOriginalWillBeginHandlerKey.self] = newValue }
     }
+
+    var readerNavigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler? {
+        get { self[ReaderNavigationVisibilityWillChangeHandlerKey.self] }
+        set { self[ReaderNavigationVisibilityWillChangeHandlerKey.self] = newValue }
+    }
 }
 
 public extension View {
     func onReaderShowOriginalWillBegin(_ handler: @escaping ReaderShowOriginalWillBeginHandler) -> some View {
         environment(\.readerShowOriginalWillBeginHandler, handler)
+    }
+
+    func onReaderNavigationVisibilityWillChange(_ handler: @escaping ReaderNavigationVisibilityWillChangeHandler) -> some View {
+        environment(\.readerNavigationVisibilityWillChangeHandler, handler)
     }
 }
 
@@ -98,6 +125,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var navigator: WebViewNavigator
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
+    var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -107,7 +135,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
-    private let trackingSizeCache = PersistedLRUCache.PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
+    private let trackingSizeCache = PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
         totalBytesLimit: 20 * 1024 * 1024,
@@ -116,6 +144,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     )
     private let trackingSizeHistoryLimit = 10
     fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?
+    fileprivate var ebookBootstrapFallbackURL: URL?
     fileprivate var automaticReadabilityTask: Task<Void, Never>?
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
@@ -199,13 +228,28 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             return
         }
 
+        if ebookBootstrapFallbackURL == loaderURL, ebookBootstrapFallbackTask != nil {
+            return
+        }
         ebookBootstrapFallbackTask?.cancel()
+        ebookBootstrapFallbackURL = loaderURL
         ebookBootstrapFallbackTask = Task { @MainActor [weak self] in
+            defer {
+                if self?.ebookBootstrapFallbackURL == loaderURL {
+                    self?.ebookBootstrapFallbackTask = nil
+                    self?.ebookBootstrapFallbackURL = nil
+                }
+            }
             guard let self else { return }
-            do {
-                let result = try await scriptCaller.evaluateJavaScript(
+            for attempt in 0..<24 {
+                try? await Task.sleep(nanoseconds: attempt == 0 ? 350_000_000 : 450_000_000)
+                if Task.isCancelled { return }
+                do {
+                    let result = try await scriptCaller.evaluateJavaScript(
                         """
                         return (() => {
+                            const fallbackURL = url;
+                            const fallbackLayoutMode = layoutMode;
                             const startedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
                             const startedAgeMs = startedAt > 0 ? (Date.now() - startedAt) : null;
                             const hasReader = !!globalThis.reader;
@@ -228,7 +272,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             const isTerminalFailure =
                                 (typeof loadEBookLastState === "string" && loadEBookLastState.startsWith("open-error:"))
                                 || loadEBookLastState === "open-watchdog-timeout";
-                            const isStaleStart = startedAgeMs !== null && startedAgeMs > 2500;
+                            const isStaleStart = startedAgeMs !== null && startedAgeMs > 6000;
                             if (
                                 hasRenderer
                                 || hasSectionLayoutController
@@ -253,7 +297,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 readyState,
                                 locationHref,
                             });
-                            if (globalThis.manabiLoadEBookStarted && hasView) return JSON.stringify({
+                            if (isTerminalFailure) {
+                                globalThis.manabiLoadEBookStarted = false;
+                                globalThis.manabiLoadEBookInFlight = false;
+                                globalThis.manabiEbookFallbackLoadRequested = false;
+                            }
+                            if (globalThis.manabiLoadEBookStarted && hasView && !isStaleStart) return JSON.stringify({
                                 state: "started-pending",
                                 startedAgeMs,
                                 hasReader,
@@ -266,7 +315,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 readyState,
                                 locationHref,
                             });
-                            if (globalThis.manabiLoadEBookStarted && hasReader) return JSON.stringify({
+                            if (globalThis.manabiLoadEBookStarted && hasReader && !isStaleStart) return JSON.stringify({
                                 state: "reader-created",
                                 startedAgeMs,
                                 hasReader,
@@ -279,21 +328,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 readyState,
                                 locationHref,
                             });
-                            if (globalThis.manabiLoadEBookStarted) return JSON.stringify({
+                            if (globalThis.manabiLoadEBookStarted && !isStaleStart) return JSON.stringify({
                                 state: "started-no-reader",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (isTerminalFailure) return JSON.stringify({
-                                state: "terminal-failure",
                                 startedAgeMs,
                                 hasReader,
                                 hasView,
@@ -318,7 +354,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 readyState,
                                 locationHref,
                             });
-                            if (globalThis.manabiEbookFallbackLoadRequested === true) return JSON.stringify({
+                            if (globalThis.manabiEbookFallbackLoadRequested === true && !isStaleStart) return JSON.stringify({
                                 state: "fallback-start-already-requested",
                                 startedAgeMs,
                                 hasReader,
@@ -331,8 +367,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 readyState,
                                 locationHref,
                             });
+                            if (globalThis.manabiEbookFallbackLoadRequested === true && isStaleStart) {
+                                globalThis.manabiEbookFallbackLoadRequested = false;
+                            }
+                            globalThis.manabiEbookFallbackLoadRequested = true;
+                            const loadArgs = {};
+                            loadArgs.url = fallbackURL;
+                            loadArgs.layoutMode = fallbackLayoutMode;
+                            window.loadEBook(loadArgs);
                             return JSON.stringify({
-                                state: "observe-only",
+                                state: "fallback-started",
                                 startedAgeMs,
                                 hasReader,
                                 hasView,
@@ -351,23 +395,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
                         ],
                         in: frameInfo
-                )
-                let state = String(describing: result ?? "nil")
-                debugPrint(
-                    "# EPUB  ebookViewerInitialized.fallback",
-                    "mode=single-shot",
-                    "state=\(state)",
-                    "page=\(url.absoluteString)",
-                    "frameURL=\(frameInfo?.request.url?.absoluteString ?? "nil")",
-                    "frameMainDocumentURL=\(frameInfo?.request.mainDocumentURL?.absoluteString ?? "nil")"
-                )
-            } catch {
-                debugPrint(
-                    "# EPUB  ebookViewerInitialized.fallback.error",
-                    "mode=single-shot",
-                    "error=\(error)",
-                    "page=\(url.absoluteString)"
-                )
+                    )
+                    let state = String(describing: result ?? "nil")
+                    if state.contains(#""ready""#) {
+                        return
+                    }
+                } catch {
+                }
             }
         }
     }
@@ -640,7 +674,40 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
                 if source == "toolbar.blankTap" {
-                    UserDefaults.standard.set(Date().timeIntervalSince1970 * 1000, forKey: "ManabiLastToolbarBlankNativeToggleAtMs")
+                    navigationVisibilityWillChangeHandler?(
+                        ReaderNavigationVisibilityChange(
+                            shouldHide: shouldHide,
+                            reason: nil,
+                            source: source,
+                            direction: direction
+                        )
+                    )
+                    lastNavigationVisibilityEvent = .init(
+                        timestamp: Date(),
+                        shouldHide: shouldHide,
+                        source: source,
+                        direction: direction
+                    )
+                    return
+                }
+                if !shouldHide,
+                   source?.contains("page-turn") == true,
+                   direction != "backward" {
+                    navigationVisibilityWillChangeHandler?(
+                        ReaderNavigationVisibilityChange(
+                            shouldHide: shouldHide,
+                            reason: nil,
+                            source: source,
+                            direction: direction
+                        )
+                    )
+                    lastNavigationVisibilityEvent = .init(
+                        timestamp: Date(),
+                        shouldHide: shouldHide,
+                        source: source,
+                        direction: direction
+                    )
+                    return
                 }
                 setHideNavigationDueToScroll(
                     shouldHide,
@@ -1064,7 +1131,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
         hideNavigationDueToScroll: Binding<Bool>,
-        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
+        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -1074,6 +1142,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.navigator = navigator
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+        self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
     }
 
     // MARK: Readability
@@ -1137,9 +1206,34 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         direction: String? = nil
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
-        guard previousValue != shouldHide else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
+        let isPageTurnVisibilityChange = source?.contains("page-turn") == true
+        guard previousValue != shouldHide else {
+            if isPageTurnVisibilityChange {
+                navigationVisibilityWillChangeHandler?(
+                    ReaderNavigationVisibilityChange(
+                        shouldHide: shouldHide,
+                        reason: reason,
+                        source: source,
+                        direction: direction
+                    )
+                )
+            }
+            return
+        }
+        navigationVisibilityWillChangeHandler?(
+            ReaderNavigationVisibilityChange(
+                shouldHide: shouldHide,
+                reason: reason,
+                source: source,
+                direction: direction
+            )
+        )
+        if isPageTurnVisibilityChange {
             hideNavigationDueToScroll.wrappedValue = shouldHide
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                hideNavigationDueToScroll.wrappedValue = shouldHide
+            }
         }
     }
 
@@ -1176,6 +1270,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewMessageHandlers) internal var webViewMessageHandlers
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
+    @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
 
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
@@ -1193,7 +1288,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         readerContent: readerContent,
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
-                        showOriginalWillBeginHandler: showOriginalWillBeginHandler
+                        showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler
                     )
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -1204,6 +1300,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.navigator = navigator
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                     readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+                    readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
@@ -1215,27 +1312,40 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 }
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
-                await pushHideNavigationStateToWebView()
+                await pushHideNavigationStateToWebView(reason: "binding", force: false)
             }
             .task(id: readerViewModel.state.pageURL) { @MainActor in
                 if !readerViewModel.state.pageURL.isEBookURL {
                     readerMessageHandlers?.ebookBootstrapFallbackTask?.cancel()
                     readerMessageHandlers?.ebookBootstrapFallbackTask = nil
+                    readerMessageHandlers?.ebookBootstrapFallbackURL = nil
+                } else {
+                    readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
                 }
             }
             .task(id: readerContent.pageURL) {
-                await pushHideNavigationStateToWebView()
+                await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
     }
 }
 
 extension ReaderMessageHandlersViewModifier {
     @MainActor
-    private func pushHideNavigationStateToWebView() async {
-        guard readerContent.pageURL.isEBookURL else { return }
-        let boolLiteral = hideNavigationDueToScroll.wrappedValue ? "true" : "false"
+    private func pushHideNavigationStateToWebView(reason: String, force: Bool) async {
+        let pageURL = readerContent.pageURL
+        guard pageURL.isEBookURL else { return }
+        let shouldHide = hideNavigationDueToScroll.wrappedValue
+        if reason == "binding", !force, !shouldHide {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            let settledPageURL = readerContent.pageURL
+            let settledShouldHide = hideNavigationDueToScroll.wrappedValue
+            if settledPageURL != pageURL || settledShouldHide != shouldHide {
+                return
+            }
+        }
+        let boolLiteral = shouldHide ? "true" : "false"
         do {
-            try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral));")
+            try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
         } catch {
             // Ignore boot timing races.
         }

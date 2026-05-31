@@ -595,16 +595,113 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
 }
 
 fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
+    @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
+    @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject var readerViewModel: ReaderViewModel
+    @EnvironmentObject var scriptCaller: WebViewScriptCaller
 
     func body(content: Content) -> some View {
         content
+            .task(id: readerHeaderMediaSyncID) {
+                await syncReaderHeaderMediaButton(reason: "task")
+            }
             .onChange(of: readerMediaPlayerViewModel.audioURLs) { audioURLs in
                 Task { @MainActor in
                     guard readerMediaPlayerViewModel.playbackSource == .recordedAudio else { return }
-                    readerMediaPlayerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
+                    if audioURLs.isEmpty {
+                        readerMediaPlayerViewModel.isMediaPlayerPresented = false
+                    }
+                    await syncReaderHeaderMediaButton(reason: "audioURLs")
                 }
             }
+            .onChange(of: readerMediaPlayerViewModel.isPlaying) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "isPlaying")
+                }
+            }
+            .onChange(of: readerMediaPlayerViewModel.playbackSource) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "playbackSource")
+                }
+            }
+            .onChange(of: readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil") { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "readerModeRendered")
+                }
+            }
+            .onChange(of: readerViewModel.state.pageURL.absoluteString) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "webViewPageURL")
+                }
+            }
+            .onChange(of: readerViewModel.state.hasReaderRenderReady) { _ in
+                Task { @MainActor in
+                    await syncReaderHeaderMediaButton(reason: "renderReady")
+                }
+            }
+    }
+
+    private var readerHeaderMediaSyncID: String {
+        [
+            readerContent.pageURL.absoluteString,
+            readerContent.content?.compoundKey ?? "nil",
+            String(readerContent.content?.hasAudio ?? false),
+            String(readerContent.content?.hasHTML ?? false),
+            String(readerMediaPlayerViewModel.hasRecordedAudio),
+            String(readerMediaPlayerViewModel.hasPreparedAITTS),
+            String(readerMediaPlayerViewModel.isPlaying),
+            readerMediaPlayerViewModel.playbackSource.rawValue,
+            readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil",
+            readerViewModel.state.pageURL.absoluteString,
+            String(readerViewModel.state.hasReaderRenderReady),
+        ].joined(separator: "|")
+    }
+
+    @MainActor
+    private func syncReaderHeaderMediaButton(reason: String) async {
+        guard scriptCaller.hasAsyncCaller else { return }
+
+        let isPlaying = readerMediaPlayerViewModel.isPlaying
+        let webViewPageURL = readerViewModel.state.pageURL
+        let contentURL = readerContent.content?.url ?? readerContent.pageURL
+        let contentCanonicalURL = contentURL.canonicalReaderContentURLForHotfix()
+        let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?.canonicalReaderContentURLForHotfix()
+        let isReaderModeContent = (readerContent.content?.isReaderModeByDefault ?? false)
+            || readerModeViewModel.isReaderMode
+            || readerModeViewModel.pendingReaderModeURL != nil
+            || renderedCanonicalURL == contentCanonicalURL
+        let hasRecordedAudio = readerMediaPlayerViewModel.hasRecordedAudio
+            || (readerContent.content?.hasAudio ?? false)
+        let ttsAvailable = isReaderModeContent
+            && !hasRecordedAudio
+            && (readerContent.content?.hasHTML ?? false)
+        let usesTTS = readerMediaPlayerViewModel.playbackSource == .aiTextToSpeech
+            || (!hasRecordedAudio && ttsAvailable)
+        let mediaAvailable = hasRecordedAudio
+            || readerMediaPlayerViewModel.hasPreparedAITTS
+            || ttsAvailable
+
+        if isReaderModeContent {
+            guard !webViewPageURL.isReaderURLLoaderURL else { return }
+            guard renderedCanonicalURL == contentCanonicalURL || readerViewModel.state.hasReaderRenderReady else { return }
+        }
+
+        do {
+            _ = try await scriptCaller.evaluateJavaScript(
+                """
+                window.manabiSyncReaderHeaderMediaButton?.({
+                    mediaAvailable: \(mediaAvailable ? "true" : "false"),
+                    isPlaying: \(isPlaying ? "true" : "false"),
+                    usesTTS: \(usesTTS ? "true" : "false"),
+                    reason: '\(reason)'
+                });
+                """,
+                duplicateInMultiTargetFrames: true
+            )
+        } catch {
+            debugPrint("# MEDIA readerHeader.sync.error", error.localizedDescription)
+        }
     }
 }
 

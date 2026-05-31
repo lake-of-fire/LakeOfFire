@@ -1,5 +1,9 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
+const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
+const MANABI_DISABLE_POST_LOAD_RERENDER = false;
+const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
+
 const CSS_DEFAULTS = {
     gapPct: 5,
     minGapPx: 36,
@@ -607,6 +611,7 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
+        this.setImageSize()
         this.#debouncedExpand()
         //        await this.expand()
     }
@@ -660,6 +665,7 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
+        this.setImageSize()
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
@@ -671,13 +677,104 @@ class View {
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
+    setImageSize() {
+        const {
+            width,
+            height,
+            topMargin = 0,
+            bottomMargin = 0,
+            margin = 0,
+        } = this.layout || {};
+        const vertical = this.#vertical;
+        const doc = this.document;
+        const numericWidth = Number.isFinite(width) ? width : 0;
+        const numericHeight = Number.isFinite(height) ? height : 0;
+        const verticalMaxWidth = Math.max(1, numericWidth - margin * 2);
+        const horizontalMaxHeight = Math.max(1, numericHeight - topMargin - bottomMargin - margin * 2);
+        const parentMediaCounts = new WeakMap();
+        const textNodeType = doc?.defaultView?.Node?.TEXT_NODE ?? 3;
+        const mediaSelector = 'img, svg, image, picture, video, object, iframe, canvas, embed';
+        const hasSubstantiveDirectText = parent => {
+            for (const node of parent?.childNodes || []) {
+                if (node.nodeType === textNodeType && /\S/.test(node.textContent || '')) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const hasSubstantiveTextExcludingMedia = element => {
+            const clone = element?.cloneNode?.(true);
+            for (const media of clone?.querySelectorAll?.(mediaSelector) || []) {
+                media.remove();
+            }
+            return /\S/.test(clone?.textContent || '');
+        };
+        const applyVerticalMediaWrapperSizing = element => {
+            if (!vertical || !element || element === doc.body || element === doc.documentElement) return;
+            setStylesImportant(element, {
+                'block-size': 'fit-content',
+                'width': 'fit-content',
+                'max-block-size': '100%',
+                'break-inside': 'auto',
+                'page-break-inside': 'auto',
+                '-webkit-column-break-inside': 'auto',
+                'box-sizing': 'border-box',
+            });
+        };
+        for (const el of doc?.body?.querySelectorAll?.('img, svg, video') || []) {
+            const inlineMaxHeight = el.style.maxHeight;
+            const inlineMaxWidth = el.style.maxWidth;
+            Object.assign(el.style, {
+                maxHeight: vertical
+                    ? (inlineMaxHeight && inlineMaxHeight !== 'none' && inlineMaxHeight !== '0px' ? inlineMaxHeight : '100%')
+                    : `${horizontalMaxHeight}px`,
+                maxWidth: vertical
+                    ? `${verticalMaxWidth}px`
+                    : (inlineMaxWidth && inlineMaxWidth !== 'none' && inlineMaxWidth !== '0px' ? inlineMaxWidth : '100%'),
+                objectFit: 'contain',
+                pageBreakInside: vertical ? 'auto' : 'avoid',
+                breakInside: vertical ? 'auto' : 'avoid',
+                boxSizing: 'border-box',
+            });
+            const parent = el.parentElement;
+            let parentMediaCount = parentMediaCounts.get(parent);
+            if (parent && parentMediaCount == null) {
+                parentMediaCount = parent.querySelectorAll?.('img, svg, video')?.length ?? 0;
+                parentMediaCounts.set(parent, parentMediaCount);
+            }
+            if (parent && parent !== doc.body && !hasSubstantiveDirectText(parent) && parentMediaCount === 1) {
+                Object.assign(parent.style, {
+                    pageBreakInside: vertical ? 'auto' : 'avoid',
+                    breakInside: vertical ? 'auto' : 'avoid',
+                    webkitColumnBreakInside: vertical ? 'auto' : 'avoid',
+                    boxSizing: 'border-box',
+                });
+            }
+            let ancestor = parent;
+            while (vertical && ancestor && ancestor !== doc.body && ancestor !== doc.documentElement) {
+                if (ancestor.matches?.('p, figure, div')) {
+                    const ancestorMediaCount = ancestor.querySelectorAll?.(mediaSelector)?.length ?? 0;
+                    if (ancestorMediaCount === 1 && !hasSubstantiveTextExcludingMedia(ancestor)) {
+                        applyVerticalMediaWrapperSizing(ancestor);
+                    }
+                }
+                ancestor = ancestor.parentElement;
+            }
+        }
+    }
     async expand() {
         await this.onBeforeExpand()
         //        console.log("expand...")
-        return new Promise(resolve => {
+        return new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
+                try {
                 //                console.log("expand... inside 0")
-                const documentElement = this.document?.documentElement
+                const doc = this.document
+                const documentElement = doc?.documentElement
+                if (!doc?.body || !documentElement || !this.#iframe?.isConnected) {
+                    resolve()
+                    return
+                }
                 const side = this.#vertical ? 'height' : 'width'
                 const otherSide = this.#vertical ? 'width' : 'height'
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
@@ -764,6 +861,9 @@ class View {
                 await this.onExpand()
                 //                console.log("expand... call'd onexpand")
                 resolve()
+                } catch (error) {
+                    reject(error)
+                }
             })
         })
     }
@@ -865,6 +965,7 @@ export class Paginator extends HTMLElement {
     #cachedSizes = null
     #cachedStart = null
     #lastRenderContainerSize = null
+    #lastTypographyRenderSignature = null
     #visibleRangeCache = null
     #visibleRangeInFlight = null
     #visibleRangeCacheVersion = 0
@@ -1126,7 +1227,29 @@ export class Paginator extends HTMLElement {
         previousView.destroy()
         previousView.element?.remove?.()
     }
-    #setLoading(isLoading) {
+    #installStyleElementsForDocument(doc) {
+        if (!doc?.head) return
+        if (this.#styleMap.has(doc)) return
+        const $styleBefore = doc.createElement('style')
+        doc.head.prepend($styleBefore)
+        const $style = doc.createElement('style')
+        doc.head.append($style)
+        this.#styleMap.set(doc, [$styleBefore, $style])
+    }
+    #applyStylesToDocument(doc, styles = this.#styles) {
+        const $$styles = this.#styleMap.get(doc)
+        if (!$$styles) return
+        const [$beforeStyle, $style] = $$styles
+        if (Array.isArray(styles)) {
+            const [beforeStyle, style] = styles
+            $beforeStyle.textContent = beforeStyle
+            $style.textContent = style
+        } else {
+            $style.textContent = styles ?? ''
+        }
+    }
+    #setLoading(isLoading, reason = 'unknown') {
+        if (this.#isLoading === isLoading) return
         this.#isLoading = isLoading;
         if (isLoading) {
             this.#top.classList.add('reader-loading');
@@ -1165,6 +1288,36 @@ export class Paginator extends HTMLElement {
         this.#visibleRangeInFlight = null
         this.#visibleRangeCacheVersion += 1
     }
+    async #visibleRangeCacheKey() {
+        await this.#awaitDirection()
+        const doc = this.#view?.document ?? null
+        const container = this.#container
+        if (!doc || !container) return null
+        const scrollProp = await this.scrollProp()
+        const scrollOffset = Math.round(container[scrollProp] || 0)
+        return {
+            doc,
+            key: [
+                this.#index,
+                this.scrolled ? 'scrolled' : 'paginated',
+                this.#vertical ? 'vertical' : 'horizontal',
+                this.#rtl ? 'rtl' : 'ltr',
+                scrollProp,
+                scrollOffset,
+                Math.round(container.clientWidth || 0),
+                Math.round(container.clientHeight || 0),
+                Math.round(container.scrollWidth || 0),
+                Math.round(container.scrollHeight || 0),
+            ].join('|')
+        }
+    }
+    #cloneRange(range) {
+        try {
+            return range?.cloneRange?.() ?? range
+        } catch {
+            return range
+        }
+    }
     async #getSentinelVisibilities() {
         //        console.log("trackSentinelVisibilities...")
         await new Promise(r => requestAnimationFrame(r));
@@ -1185,7 +1338,6 @@ export class Paginator extends HTMLElement {
 
                 const elements = Array.from(this.#view.document.body.getElementsByTagName('reader-sentinel'))
                 let visibleIDSet = new Set(visibleSentinelIDs)
-                let visibleSource = 'observer'
                 if (visibleIDSet.size === 0) {
                     const containerRect = this.#container && typeof this.#container.getBoundingClientRect === 'function'
                         ? this.#container.getBoundingClientRect()
@@ -1213,7 +1365,6 @@ export class Paginator extends HTMLElement {
                                 visibleIDSet.add(element.id)
                             }
                         }
-                        visibleSource = 'geometry'
                     }
                 }
                 const visibleIndexes = elements
@@ -1229,55 +1380,6 @@ export class Paginator extends HTMLElement {
                         .slice(expandedStart, expandedEnd + 1)
                         .map(element => element.id)
                         .filter(Boolean)
-                    const payload = {
-                        event: 'sentinelRange.expanded',
-                        timestamp: Date.now(),
-                        source: visibleSource,
-                        visibleSentinelCount: visibleIDSet.size,
-                        expandedSentinelCount: expandedSentinelIDs.length,
-                        firstVisibleSentinelID: elements[firstIndex]?.id || null,
-                        lastVisibleSentinelID: elements[lastIndex]?.id || null,
-                        firstExpandedSentinelID: elements[expandedStart]?.id || null,
-                        lastExpandedSentinelID: elements[expandedEnd]?.id || null,
-                        totalSentinelCount: elements.length,
-                    }
-                    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`
-                    console.log(line)
-                    window.webkit?.messageHandlers?.print?.postMessage?.(line)
-                } else {
-                    const containerRect = this.#container && typeof this.#container.getBoundingClientRect === 'function'
-                        ? this.#container.getBoundingClientRect()
-                        : null
-                    const frameElement = this.#view?.document?.defaultView?.frameElement ?? null
-                    const iframeRect = frameElement && typeof frameElement.getBoundingClientRect === 'function'
-                        ? frameElement.getBoundingClientRect()
-                        : null
-                    const payload = {
-                        event: 'sentinelRange.empty',
-                        timestamp: Date.now(),
-                        source: visibleSource,
-                        observerVisibleSentinelCount: visibleSentinelIDs.length,
-                        totalSentinelCount: elements.length,
-                        containerRect: containerRect
-                            ? {
-                                left: Math.round(containerRect.left),
-                                top: Math.round(containerRect.top),
-                                width: Math.round(containerRect.width),
-                                height: Math.round(containerRect.height),
-                            }
-                            : null,
-                        iframeRect: iframeRect
-                            ? {
-                                left: Math.round(iframeRect.left),
-                                top: Math.round(iframeRect.top),
-                                width: Math.round(iframeRect.width),
-                                height: Math.round(iframeRect.height),
-                            }
-                            : null,
-                    }
-                    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`
-                    console.log(line)
-                    window.webkit?.messageHandlers?.print?.postMessage?.(line)
                 }
 
                 resolve?.(expandedSentinelIDs)
@@ -1313,6 +1415,27 @@ export class Paginator extends HTMLElement {
         // Must have no non-whitespace text nodes
         if (container.textContent.trim() !== '') return false;
         return true;
+    }
+    #typographyMetrics() {
+        const doc = this.#view?.document;
+        const bodyStyle = doc?.body ? getComputedStyle(doc.body) : null;
+        const containerStyle = this.#container ? getComputedStyle(this.#container) : null;
+        const fontSize =
+            parseFloat(bodyStyle?.fontSize)
+            || parseFloat(containerStyle?.fontSize)
+            || 20;
+        const parsedLineHeight =
+            parseFloat(bodyStyle?.lineHeight)
+            || parseFloat(containerStyle?.lineHeight);
+        const lineHeight = Number.isFinite(parsedLineHeight)
+            ? parsedLineHeight
+            : fontSize * 1.5;
+        const inlineCharacterAdvance = Math.max(fontSize, Math.min(lineHeight, fontSize * 1.8));
+        return {
+            fontSize,
+            lineHeight,
+            inlineCharacterAdvance,
+        };
     }
     #intersectsPageRange(mappedRect, pageStart, pageEnd) {
         if (!mappedRect) return false;
@@ -1601,7 +1724,20 @@ export class Paginator extends HTMLElement {
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const flow = this.getAttribute('flow')
-        this.#top.classList.toggle('mnb-vertical-paginated', vertical && flow !== 'scrolled')
+        const typographyMetrics = this.#typographyMetrics()
+        this.#lastTypographyRenderSignature = this.#typographyRenderSignature({
+            width,
+            height,
+            flow,
+            vertical,
+            fontSize: typographyMetrics.fontSize,
+            lineHeight: typographyMetrics.lineHeight,
+            inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
+        })
+        this.#top.classList.toggle(
+            'mnb-vertical-paginated',
+            MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && vertical && flow !== 'scrolled'
+        )
 
         // New:
         const {
@@ -1702,17 +1838,25 @@ export class Paginator extends HTMLElement {
         }
 
         let divisor, columnWidth
-        const isSingleMediaElementWithoutText = this.#isSingleMediaElementWithoutText()
-        if (isSingleMediaElementWithoutText) {
+        if (MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && this.#isSingleMediaElementWithoutText()) {
             columnWidth = maxInlineSize
             this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
             this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
-            // retro way:
-            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
-            //                        divisor = Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize))
-            //            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
-            //            console.log("Divisor", Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize)), divisor)
+            const shouldForceSpread = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+                && flow !== 'scrolled'
+                && maxColumnCountSpread > 1
+                && (vertical || width > height)
+            const candidateDivisor = Math.max(1, shouldForceSpread
+                ? maxColumnCountSpread
+                : Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize)))
+            const candidateColumnWidth = (size / candidateDivisor) - gap
+            const inlineCharsPerColumn = candidateColumnWidth / typographyMetrics.inlineCharacterAdvance
+            const shouldDisableMultiColumnForTypography =
+                MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+                && candidateDivisor > 1
+                && inlineCharsPerColumn < MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN
+            divisor = shouldDisableMultiColumnForTypography ? 1 : candidateDivisor
             columnWidth = (size / divisor) - gap
         }
 
@@ -1786,18 +1930,48 @@ export class Paginator extends HTMLElement {
         await this.render()
         return { rendered: true, previousSize, currentSize }
     }
+    #typographyRenderSignature({
+        width,
+        height,
+        flow = this.getAttribute('flow'),
+        vertical = this.#vertical,
+        fontSize,
+        lineHeight,
+        inlineCharacterAdvance,
+    } = {}) {
+        const metrics = fontSize == null || lineHeight == null || inlineCharacterAdvance == null
+            ? this.#typographyMetrics()
+            : { fontSize, lineHeight, inlineCharacterAdvance };
+        return [
+            flow ?? '',
+            vertical ? 'vertical' : 'horizontal',
+            Math.round(width ?? this.#container?.clientWidth ?? 0),
+            Math.round(height ?? this.#container?.clientHeight ?? 0),
+            manabiRound(metrics.fontSize, 2),
+            manabiRound(metrics.lineHeight, 2),
+            manabiRound(metrics.inlineCharacterAdvance, 2),
+        ].join('|');
+    }
     async renderIfTypographyChanged(reason = 'unspecified') {
+        if (MANABI_DISABLE_POST_LOAD_RERENDER) {
+            return { rendered: false, reason: 'post-load-rerender-disabled' }
+        }
         if (!this.#view || this.#isCacheWarmer) {
             return { rendered: false, reason: 'unavailable' }
         }
-        void reason;
+        const { width, height } = await this.sizes()
+        const signature = this.#typographyRenderSignature({ width, height })
+        const previousSignature = this.#lastTypographyRenderSignature
+        if (signature === previousSignature) {
+            return { rendered: false, reason: 'unchanged', signature }
+        }
         this.#cachedSizes = null
         this.#cachedStart = null
         this.#view.cachedViewSize = null
         this.#view.cachedSizes = null
         this.#invalidateVisibleRangeCache()
         await this.render()
-        return { rendered: true, reason }
+        return { rendered: true, reason, previousSignature, signature }
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
@@ -2310,6 +2484,16 @@ export class Paginator extends HTMLElement {
     async #getVisibleRange() {
         //            console.log("getVisibleRange...")
         await this.#awaitDirection();
+        const cacheKey = await this.#visibleRangeCacheKey()
+        if (cacheKey && this.#visibleRangeCache?.doc === cacheKey.doc && this.#visibleRangeCache?.key === cacheKey.key) {
+            return this.#cloneRange(this.#visibleRangeCache.range)
+        }
+        if (cacheKey && this.#visibleRangeInFlight?.doc === cacheKey.doc && this.#visibleRangeInFlight?.key === cacheKey.key) {
+            const range = await this.#visibleRangeInFlight.promise
+            return this.#cloneRange(range)
+        }
+        const cacheVersion = this.#visibleRangeCacheVersion
+        const computeVisibleRange = async () => {
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
         const visibleSentinelIDs = await this.#getSentinelVisibilities()
         //            await new Promise(r => requestAnimationFrame(r));
@@ -2367,6 +2551,30 @@ export class Paginator extends HTMLElement {
             range.collapse(true);
         }
         return range;
+        }
+        const promise = computeVisibleRange()
+        if (cacheKey) {
+            this.#visibleRangeInFlight = {
+                doc: cacheKey.doc,
+                key: cacheKey.key,
+                promise
+            }
+        }
+        try {
+            const range = await promise
+            if (cacheKey && this.#visibleRangeCacheVersion === cacheVersion) {
+                this.#visibleRangeCache = {
+                    doc: cacheKey.doc,
+                    key: cacheKey.key,
+                    range
+                }
+            }
+            return this.#cloneRange(range)
+        } finally {
+            if (cacheKey && this.#visibleRangeInFlight?.promise === promise) {
+                this.#visibleRangeInFlight = null
+            }
+        }
     }
     async #afterScroll(reason) {
         if (this.#isCacheWarmer) {
@@ -2488,6 +2696,7 @@ export class Paginator extends HTMLElement {
                 once: true,
             });
         }
+        try {
         const {
             index,
             src,
@@ -2529,11 +2738,7 @@ export class Paginator extends HTMLElement {
                     })
                 } else {
                     if (doc.head) {
-                        const $styleBefore = doc.createElement('style')
-                        doc.head.prepend($styleBefore)
-                        const $style = doc.createElement('style')
-                        doc.head.append($style)
-                        this.#styleMap.set(doc, [$styleBefore, $style])
+                        this.#installStyleElementsForDocument(doc)
                     }
                     //                    console.log("#display... await onLoad")
                     await onLoad?.({
@@ -2620,6 +2825,22 @@ export class Paginator extends HTMLElement {
         }
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
+            const pageCurrent = await this.page().catch(() => null)
+            const pageTotal = await this.pages().catch(() => null)
+            const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
+            const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
+            const landedPastContent = frameRect && rootRect && frameRect.bottom <= rootRect.top + 1
+            if (
+                typeof pageCurrent === 'number'
+                && typeof pageTotal === 'number'
+                && pageTotal > 2
+                && (pageCurrent >= pageTotal - 1 || landedPastContent)
+            ) {
+                const correctedPage = Math.max(1, pageTotal - 2)
+                await this.#scrollToPage(correctedPage, 'navigation')
+            }
+        }
         postEPUBLoadLog('js.paginator.display.scrollToAnchor.end', {
             targetIndex: index,
             elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
@@ -2650,6 +2871,11 @@ export class Paginator extends HTMLElement {
         }
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
+        } catch (error) {
+            throw error
+        } finally {
+            this.#setLoading(false)
+        }
     }
     #cacheNeighborPrefetch(index, promise) {
         const entry = {
@@ -3009,14 +3235,7 @@ export class Paginator extends HTMLElement {
     }
     setStyles(styles) {
         this.#styles = styles
-        const $$styles = this.#styleMap.get(this.#view?.document)
-        if (!$$styles) return
-        const [$beforeStyle, $style] = $$styles
-        if (Array.isArray(styles)) {
-            const [beforeStyle, style] = styles
-            $beforeStyle.textContent = beforeStyle
-            $style.textContent = style
-        } else $style.textContent = styles
+        this.#applyStylesToDocument(this.#view?.document, styles)
 
         //        // NOTE: needs `requestAnimationFrame` in Chromium
         //        requestAnimationFrame(() =>
@@ -3028,7 +3247,14 @@ export class Paginator extends HTMLElement {
     destroy() {
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
-        this.#view.destroy()
+        this.#setLoading(false)
+        clearTimeout(this.#prefetchTimer)
+        this.#prefetchTimer = null
+        for (const [index, entry] of this.#prefetchCache) {
+            this.#releaseNeighborPrefetch(index, entry)
+        }
+        this.#prefetchCache = new Map()
+        this.#view?.destroy?.()
         this.#view = null
         this.sections[this.#index]?.unload?.()
     }

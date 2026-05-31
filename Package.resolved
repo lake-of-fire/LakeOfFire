@@ -177,8 +177,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/PersistedLRUCache.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "92c910e0223cb415a7bf0a72d0e5e01eaa95e5b7"
+        "revision" : "b86f15682d134978962eb0f7d88f9b9d23edff0a"
       }
     },
     {

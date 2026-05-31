@@ -476,6 +476,20 @@ const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {})
     }
 };
 
+const recordPageTurnNavigationIntent = (direction, source, details = {}) => {
+    const now = Date.now();
+    if (direction === 'forward') {
+        globalThis.__manabiLastForwardPageTurnHideAtMs = now;
+    } else if (direction === 'backward') {
+        globalThis.__manabiLastBackwardPageTurnRevealAtMs = now;
+    }
+    postHideNavLog('pageTurn.intent', {
+        direction,
+        source,
+        ...details,
+    });
+};
+
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
     try {
         postEbookTapLog('outer.lookupClose.post', {
@@ -1087,6 +1101,62 @@ const summarizeDocumentFontState = (doc) => ({
     readyState: doc?.readyState ?? 'nil',
     isCacheWarmerDocument: isCacheWarmerDocument(doc),
 });
+
+const classifySingleMediaDocumentForInitialLayout = (doc) => {
+    const body = doc?.body;
+    if (!body || body.dataset?.mnbSingleMediaInitialLayoutChecked === 'true') {
+        return {
+            applied: false,
+            reason: body ? 'already-checked' : 'missing-body',
+        };
+    }
+    body.dataset.mnbSingleMediaInitialLayoutChecked = 'true';
+
+    const mediaSelector = 'img, svg, image, picture, video, object';
+    const mediaElements = Array.from(body.querySelectorAll?.(mediaSelector) ?? []);
+    const textLength = body.textContent?.trim?.().length ?? 0;
+    const textNodeType = doc.defaultView?.Node?.TEXT_NODE ?? 3;
+    const substantiveElements = Array.from(body.querySelectorAll?.('*') ?? [])
+        .filter((element) => {
+            if (element?.nodeType !== 1) return false;
+            if (element.matches(mediaSelector)) return false;
+            if (element.closest('mnb-seg, .mnb-tracking-container')) return false;
+            if (element.matches('.h-valign-width, .v-valign-height, .inline-width, .inline-height')) return false;
+            const tagName = element.tagName?.toLowerCase?.() ?? '';
+            if (tagName === 'br' || tagName === 'script' || tagName === 'style') return false;
+            const ownText = Array.from(element.childNodes ?? [])
+                .filter((node) => node.nodeType === textNodeType)
+                .map((node) => node.textContent ?? '')
+                .join('')
+                .trim();
+            return ownText.length > 0;
+        });
+    const shouldApply = textLength === 0 && mediaElements.length === 1 && substantiveElements.length === 0;
+    if (!shouldApply) {
+        return {
+            applied: false,
+            reason: 'not-single-media',
+            textLength,
+            mediaCount: mediaElements.length,
+            substantiveElementCount: substantiveElements.length,
+        };
+    }
+
+    const htmlWritingMode = doc.defaultView?.getComputedStyle?.(doc.documentElement)?.writingMode || '';
+    const bodyWritingMode = doc.defaultView?.getComputedStyle?.(body)?.writingMode || '';
+    if (htmlWritingMode.startsWith('vertical') || bodyWritingMode.startsWith('vertical')) {
+        body.classList.add('reader-vertical-writing');
+    }
+    body.classList.add('reader-is-single-media-element-without-text');
+    return {
+        applied: true,
+        reason: 'single-media',
+        textLength,
+        mediaCount: mediaElements.length,
+        htmlWritingMode,
+        bodyWritingMode,
+    };
+};
 
 
 const postFontLog = (event, details = {}) => {
@@ -1838,6 +1908,25 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
             return false;
         }
     } else {
+        const now = Date.now();
+        const lastForwardPageTurnHideAtMs = Number(globalThis.__manabiLastForwardPageTurnHideAtMs || 0);
+        const lastBackwardPageTurnRevealAtMs = Number(globalThis.__manabiLastBackwardPageTurnRevealAtMs || 0);
+        const isStaleSwiftRevealAfterForwardPageTurn =
+            source === 'swift.bindingPush'
+            && lastForwardPageTurnHideAtMs > lastBackwardPageTurnRevealAtMs
+            && now - lastForwardPageTurnHideAtMs < 1500
+            && globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
+        if (isStaleSwiftRevealAfterForwardPageTurn) {
+            postHideNavLog('js.bridge.ignored', {
+                source,
+                requestedHide: false,
+                reason: 'stale-swift-reveal-after-forward-page-turn',
+                lastForwardPageTurnHideAtMs,
+                lastBackwardPageTurnRevealAtMs,
+                currentState: captureNavVisibilityState(),
+            });
+            return true;
+        }
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             postHideNavLog('js.bridge.ignored', {
                 source,
@@ -1894,8 +1983,8 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
     return normalized;
 };
 
-window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
-    return setNativeHideNavigationState(shouldHide, 'window.manabiSetHideNavigationDueToScroll');
+window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabiSetHideNavigationDueToScroll') => {
+    return setNativeHideNavigationState(shouldHide, source);
 };
 
 const normalizeChromeInsetCSSValue = (value) => {
@@ -3839,6 +3928,45 @@ const getCSSForBookContent = ({
     body.reader-is-single-media-element-without-text *:not(.mnb-tracking-container *):not(mnb-seg *) {
         max-height: 99vh;
     }
+    body.reader-is-single-media-element-without-text :is(.h-valign-width, .v-valign-height) {
+        display: none !important;
+        inline-size: 0 !important;
+        block-size: 0 !important;
+        width: 0 !important;
+        height: 0 !important;
+    }
+    body.reader-is-single-media-element-without-text :is(.inline-height, .inline-width) {
+        inline-size: auto !important;
+        block-size: auto !important;
+        width: auto !important;
+        height: auto !important;
+    }
+    body.reader-is-single-media-element-without-text {
+        overflow: hidden !important;
+    }
+    body.reader-is-single-media-element-without-text :is(p, div, figure):has(> img, > svg, > video, > object, > image) {
+        display: grid !important;
+        place-items: center !important;
+        inline-size: 100% !important;
+        block-size: 100% !important;
+        width: 100% !important;
+        height: 100% !important;
+        max-inline-size: 100% !important;
+        max-block-size: 100% !important;
+        max-width: 100% !important;
+        max-height: 100% !important;
+        overflow: hidden !important;
+    }
+    body.reader-is-single-media-element-without-text :is(img, svg, image, picture, video, object) {
+        max-inline-size: 100% !important;
+        max-block-size: 100% !important;
+        max-width: 100% !important;
+        max-height: 100vh !important;
+        width: auto !important;
+        height: auto !important;
+        margin: auto !important;
+        object-fit: contain !important;
+    }
 /*
 reader-sentinel {
   position: relative;
@@ -5122,6 +5250,11 @@ class Reader {
             return;
         }
         const shouldHide = direction === 'forward';
+        markCacheWarmerForegroundActivity(`page-turn.${source}`);
+        recordPageTurnNavigationIntent(direction, source, {
+            isRTL: this.isRTL,
+            ...details,
+        });
         postHideNavLog('pageTurn.hideNavigation.apply', {
             source,
             direction,
@@ -5130,11 +5263,13 @@ class Reader {
             before: captureNavVisibilityState(),
             ...details,
         });
-        this.navHUD?.setHideNavigationDueToScroll?.(shouldHide, source, {
-            direction,
-            isRTL: this.isRTL,
-            ...details,
-        });
+        if (shouldHide) {
+            this.navHUD?.setHideNavigationDueToScroll?.(true, source, {
+                direction,
+                isRTL: this.isRTL,
+                ...details,
+            });
+        }
         postEbookNavigationVisibilityToNative(shouldHide, source, {
             direction,
             isRTL: this.isRTL,
@@ -6820,19 +6955,32 @@ class Reader {
                                             btn.addEventListener('click', this.#onNavButtonClick.bind(this))
                                             );
         // Side-nav scroll handlers
+        const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            this.#clearVisiblePageReadChrome('page-turn-start');
+            this.#applyPageTurnNavigationVisibility(method, 'page-turn.side-button');
+            if (method === 'goLeft') {
+                await this.view.goLeft();
+            } else {
+                await this.view.goRight();
+            }
+        };
         const leftSideBtn = document.getElementById('btn-scroll-left');
         if (leftSideBtn) leftSideBtn.addEventListener('click', async () => {
-            markCacheWarmerForegroundActivity('side-button.left');
-            this.#clearVisiblePageReadChrome('page-turn-start');
-            this.#applyPageTurnNavigationVisibility('goLeft', 'page-turn.side-button');
-            await this.view.goLeft();
+            const now = Date.now();
+            if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'left'
+                && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
+                return;
+            }
+            await runSideButtonPageTurn('left', 'goLeft', leftSideBtn, 'click');
         });
         const rightSideBtn = document.getElementById('btn-scroll-right');
         if (rightSideBtn) rightSideBtn.addEventListener('click', async () => {
-            markCacheWarmerForegroundActivity('side-button.right');
-            this.#clearVisiblePageReadChrome('page-turn-start');
-            this.#applyPageTurnNavigationVisibility('goRight', 'page-turn.side-button');
-            await this.view.goRight();
+            const now = Date.now();
+            if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'right'
+                && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
+                return;
+            }
+            await runSideButtonPageTurn('right', 'goRight', rightSideBtn, 'click');
         });
 
         // Immediate tap feedback for side-nav chevrons on iOS/touch
@@ -6842,8 +6990,18 @@ class Reader {
             }, {
                 passive: true
             });
-            nav.addEventListener('touchend', () => {
+            nav.addEventListener('touchend', (event) => {
                 nav.classList.remove('pressed');
+                const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
+                const method = side === 'left' ? 'goLeft' : (side === 'right' ? 'goRight' : null);
+                if (side && method) {
+                    event.preventDefault?.();
+                    globalThis.__manabiLastSideButtonTouchActivation = {
+                        side,
+                        timestamp: Date.now(),
+                    };
+                    runSideButtonPageTurn(side, method, nav, 'touchend').catch((error) => console.error(error));
+                }
             });
             nav.addEventListener('touchcancel', () => {
                 nav.classList.remove('pressed');
@@ -7657,9 +7815,13 @@ class Reader {
             bodyClassName: document.body?.className || 'nil',
         });
         applyStoredChromeInsets('reader.documentLoad');
+        const singleMediaInitialLayout = !isCacheWarmerDocument(doc)
+            ? classifySingleMediaDocumentForInitialLayout(doc)
+            : { applied: false, reason: 'cache-warmer-document' };
         markEPUBPerf('document.load.first', {
             documentURL: doc?.location?.href || null,
             isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
+            singleMediaInitialLayout,
         }, {
             once: true,
         });
@@ -7803,6 +7965,91 @@ class Reader {
             }
         });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        if (doc && doc.__manabiContentBlankTapInstalled !== true) {
+            doc.__manabiContentBlankTapInstalled = true;
+            const blankPointerMoveThreshold = 12;
+            let pendingBlankPointerTap = null;
+            const touchPointForBlankPointer = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
+            const clearPendingBlankPointerTap = () => {
+                pendingBlankPointerTap = null;
+            };
+            const blankPointerMovedPastTapThreshold = (event, pending) => {
+                const point = touchPointForBlankPointer(event);
+                const dx = (point?.screenX ?? point?.clientX ?? pending.startX) - pending.startX;
+                const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
+                return (dx * dx + dy * dy) > (blankPointerMoveThreshold * blankPointerMoveThreshold);
+            };
+            const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
+                const target = event.target;
+                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                if (excludedTarget) {
+                    return;
+                }
+                const now = Date.now();
+                if (window.__manabiLookupPopoverActive === true) {
+                    window.__manabiSuppressUnhandledTapHideNavigationUntil = now + 750;
+                }
+                const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
+                if (now - lastPostedAt > 350) {
+                    doc.__manabiLastBlankPointerPostAt = now;
+                    const ebookNavigationHidden =
+                        globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                        || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                        || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+                    globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
+                    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                        touchedEntryWithElementId: null,
+                        wasAlreadySelected: false,
+                        touchstartAtMs,
+                        touchstartEventType: event.type,
+                        ebookNavigationHidden,
+                        source,
+                    });
+                }
+            };
+            const handleBlankPointerTouchStart = (event) => {
+                const target = event.target;
+                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                if (excludedTarget) {
+                    clearPendingBlankPointerTap();
+                    return;
+                }
+                const point = touchPointForBlankPointer(event);
+                pendingBlankPointerTap = point
+                    ? {
+                        startX: point.screenX ?? point.clientX,
+                        startY: point.screenY ?? point.clientY,
+                        startAtMs: Date.now(),
+                    }
+                    : null;
+            };
+            const handleBlankPointerTouchMove = (event) => {
+                const pending = pendingBlankPointerTap;
+                if (!pending) return;
+                if (blankPointerMovedPastTapThreshold(event, pending)) {
+                    clearPendingBlankPointerTap();
+                }
+            };
+            const handleBlankPointerTouchEnd = (event) => {
+                const pending = pendingBlankPointerTap;
+                clearPendingBlankPointerTap();
+                if (!pending || event.type === 'touchcancel') {
+                    return;
+                }
+                if (blankPointerMovedPastTapThreshold(event, pending)) {
+                    return;
+                }
+                postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
+            };
+            const handleBlankPointerMouseDown = (event) => {
+                postContentDocumentBlankPointerTap(event, 'content-document.blank.mouse');
+            };
+            doc.addEventListener('touchstart', handleBlankPointerTouchStart, { passive: true, capture: true });
+            doc.addEventListener('touchmove', handleBlankPointerTouchMove, { passive: true, capture: true });
+            doc.addEventListener('touchend', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            doc.addEventListener('touchcancel', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            doc.addEventListener('mousedown', handleBlankPointerMouseDown, { passive: true, capture: true });
+        }
         installEbookTapProbe(doc, 'reader-document');
         installRestorePositionSaveUserInputTracking(doc, 'reader-document');
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
@@ -9529,34 +9776,41 @@ window.manabiGetReaderGoToSheetSnapshot = async () => {
 }
 
 window.manabiScheduleReaderPageGoTo = (pageNumber) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.scheduleReaderPageGoTo' });
     globalThis.reader?.scheduleGoToPageNumber?.(pageNumber);
 }
 
 window.manabiGoToReaderPage = async (pageNumber) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.goToReaderPage' });
     globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderPage');
     return await globalThis.reader?.goToPageNumber?.(pageNumber, 'window.manabiGoToReaderPage');
 }
 
 window.manabiScheduleReaderLocationGoTo = (locationNumber) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.scheduleReaderLocationGoTo' });
     globalThis.reader?.scheduleGoToPageNumber?.(locationNumber);
 }
 
 window.manabiGoToReaderLocation = async (locationNumber) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.goToReaderLocation' });
     globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderLocation');
     return await globalThis.reader?.goToLocationNumber?.(locationNumber, 'window.manabiGoToReaderLocation');
 }
 
 window.manabiGoToReaderPercent = async (percent) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.goToReaderPercent' });
     globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderPercent');
     return await globalThis.reader?.goToPercent?.(percent, 'window.manabiGoToReaderPercent');
 }
 
 window.manabiGoToReaderHref = async (href) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.goToReaderHref' });
     globalThis.reader?.navHUD?.requestExplicitRelocateHistoryMutation?.('bridge.goToReaderHref');
     return await globalThis.reader?.goToHref?.(href, 'window.manabiGoToReaderHref');
 }
 
 window.manabiScheduleReaderFractionGoTo = (fraction) => {
+    markRestorePositionSaveUserInput({ type: 'bridge.scheduleReaderFractionGoTo' });
     postPageNumLog('goto.live-schedule.request', {
         requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
     });
@@ -9591,6 +9845,7 @@ const postEBookJumpLog = (event, payload = {}) => {
 };
 
 window.manabiBeginReaderProgressScrub = () => {
+    markRestorePositionSaveUserInput({ type: 'bridge.beginReaderProgressScrub' });
     const navHUD = globalThis.reader?.navHUD;
     if (navHUD?.scrubSession?.active) {
         postEBookJumpLog('scrub-begin-request', {
@@ -9625,6 +9880,9 @@ window.manabiBeginReaderProgressScrub = () => {
 }
 
 window.manabiEndReaderProgressScrub = async (fraction, cancel = false) => {
+    markRestorePositionSaveUserInput({
+        type: cancel ? 'bridge.endReaderProgressScrub.cancel' : 'bridge.endReaderProgressScrub.commit',
+    });
     const navHUD = globalThis.reader?.navHUD;
     const view = globalThis.reader?.view;
     globalThis.reader?.scheduleGoToFraction?.cancel?.();

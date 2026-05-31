@@ -86,6 +86,7 @@ let package = Package(
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
         .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/PersistedLRUCache.git", revision: "b86f15682d134978962eb0f7d88f9b9d23edff0a"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
     ],
     targets: [
@@ -219,6 +220,7 @@ let package = Package(
                 .product(name: "LakeKit", package: "LakeKit"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
+                .product(name: "PersistedLRUCache", package: "PersistedLRUCache"),
                 .product(name: "Pow", package: "Pow"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),

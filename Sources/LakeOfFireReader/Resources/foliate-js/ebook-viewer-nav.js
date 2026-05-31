@@ -551,6 +551,21 @@ export class NavigationHUD {
         });
     }
 
+    _captureHideNavState() {
+        return {
+            bodyNavHiddenClass: document.body?.classList?.contains?.('nav-hidden') ?? null,
+            bodyNavHiddenScrollClass: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            navHidden: this.navHidden,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            hudHideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
+            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+            ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
+            ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
+        };
+    }
+
     // External toggle for full nav hide (not the scroll HUD hide).
     setNavHiddenState(shouldHide) {
         const previous = this.navHidden;
@@ -835,15 +850,6 @@ export class NavigationHUD {
                     pageCount: this.rendererPageSnapshot?.total ?? null,
                 });
                 try {
-                    logHideNavTrace('nativePost.send', {
-                        source: 'relocate.explicit',
-                        requestedHide: false,
-                        reason: detail?.reason ?? null,
-                        explicitRelocateSource,
-                        pageNumber: this.rendererPageSnapshot?.current ?? null,
-                        pageCount: this.rendererPageSnapshot?.total ?? null,
-                        state: this._captureHideNavState(),
-                    });
                     window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
                         hideNavigationDueToScroll: false,
                         source: 'relocate.explicit',
@@ -851,11 +857,6 @@ export class NavigationHUD {
                         explicitRelocateSource,
                     });
                 } catch (error) {
-                    logHideNavTrace('nativePost.error', {
-                        source: 'relocate.explicit',
-                        requestedHide: false,
-                        message: error?.message || String(error),
-                    });
                 }
             }
             return;
@@ -863,21 +864,22 @@ export class NavigationHUD {
 
         const direction = reportedDirection;
         const shouldHide = direction === 'forward';
-        if (!shouldHide) {
-            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = false;
-            globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
+        const now = Date.now();
+        if (direction === 'forward') {
+            globalThis.__manabiLastForwardPageTurnHideAtMs = now;
+        } else if (direction === 'backward') {
+            globalThis.__manabiLastBackwardPageTurnRevealAtMs = now;
         }
-        this.setHideNavigationDueToScroll(shouldHide, 'relocate.page-turn', {
-            direction,
-            reportedDirection,
-            isRTL: this.isRTL,
-            reason: detail?.reason ?? null,
-            sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
-            pageNumber: this.rendererPageSnapshot?.current ?? null,
-            pageCount: this.rendererPageSnapshot?.total ?? null,
-        });
-        if (!shouldHide && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
-            return;
+        if (shouldHide) {
+            this.setHideNavigationDueToScroll(true, 'relocate.page-turn', {
+                direction,
+                reportedDirection,
+                isRTL: this.isRTL,
+                reason: detail?.reason ?? null,
+                sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+                pageNumber: this.rendererPageSnapshot?.current ?? null,
+                pageCount: this.rendererPageSnapshot?.total ?? null,
+            });
         }
         try {
             window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
