@@ -101,19 +101,13 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 
     func body(content: Content) -> some View {
-        let hostID = ObjectIdentifier(readerContentListModalsModel)
-        let logPrefix = "# DELETEMODAL [\(origin)] host=\(hostID)"
         content
-            .onReceive(readerContentListModalsModel.$deleteDialog) { newValue in
-                debugPrint("\(logPrefix) deleteDialog updated \(String(describing: newValue))")
-            }
             .alert(item: Binding<ReaderContentListDeleteDialog?>(
                 get: {
                     guard isActive else { return nil }
                     return readerContentListModalsModel.deleteDialog
                 },
                 set: { newValue in
-                    debugPrint("\(logPrefix) SHEET SET \(String(describing: newValue))")
                     if isActive {
                         readerContentListModalsModel.deleteDialog = newValue
                     }
@@ -125,7 +119,6 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         title: Text(title),
                         message: Text(message),
                         primaryButton: .destructive(Text(actionTitle)) {
-                            debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
                             Task { @MainActor in
                                 do {
                                     try await preflightDeleteBatch(items)
@@ -134,13 +127,11 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                                     }
                                     readerContentListModalsModel.clearDeleteDialog()
                                 } catch {
-                                    debugPrint("\(logPrefix) delete failed \(error.localizedDescription)")
                                     readerContentListModalsModel.presentDeleteError(for: error)
                                 }
                             }
                         },
                         secondaryButton: .cancel {
-                            debugPrint("\(logPrefix) cancel tapped")
                             readerContentListModalsModel.clearDeleteDialog()
                         }
                     )
@@ -153,9 +144,6 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                         }
                     )
                 }
-            }
-            .onAppear {
-                debugPrint("\(logPrefix) sheets modifier appear isActive=\(isActive)")
             }
     }
 }
@@ -250,6 +238,7 @@ struct ReaderContentListAppearance: Sendable {
     var clearRowBackground: Bool = false
     var useDefaultRowInsets: Bool = false
     var showsNewBadges: Bool = true
+    var wrapsContentInGroupBox: Bool = false
 
     var usesNativeRowInsets: Bool {
         useDefaultRowInsets || (!useCardBackground && !clearRowBackground)
@@ -673,6 +662,18 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 120
 
+    private var isDeleteBlockedByStatus: Bool {
+        guard content is ContentFile else {
+            return false
+        }
+        switch cloudDriveSyncStatusModel.status {
+        case .cloudOnly, .loadingStatus:
+            return true
+        default:
+            return false
+        }
+    }
+
     @MainActor
     private func selectContent() {
         entrySelection = content.compoundKey
@@ -721,6 +722,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                             }
                         }
                 )
+        } else if appearance.wrapsContentInGroupBox {
+            GroupBox {
+                cell(item: item)
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } else {
             cell(item: item)
         }
@@ -752,48 +759,48 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         }
         .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
 #if os(iOS)
-        .deleteDisabled((content as? any DeletableReaderContent) == nil)
+        .deleteDisabled((content as? any DeletableReaderContent) == nil || isDeleteBlockedByStatus)
         .swipeActions {
-            if let content = content as? any DeletableReaderContent {
+            if let deletable = content as? any DeletableReaderContent {
                 Button {
                     if let onRequestDelete {
                         Task { @MainActor in
                             do {
                                 try await onRequestDelete(self.content)
                             } catch {
-                                print(error)
+                                readerContentListModalsModel.presentDeleteError(for: error)
                             }
                         }
                     } else {
-                        // Fallback to default deletion
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [content])
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
                     }
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
                 .tint(.red)
+                .disabled(isDeleteBlockedByStatus)
             }
         }
 #endif
 #if os(macOS)
         .contextMenu {
-            if let content = content as? any DeletableReaderContent {
+            if let deletable = content as? any DeletableReaderContent {
                 Button(role: .destructive) {
                     if let onRequestDelete {
                         Task { @MainActor in
                             do {
                                 try await onRequestDelete(self.content)
                             } catch {
-                                print(error)
+                                readerContentListModalsModel.presentDeleteError(for: error)
                             }
                         }
                     } else {
-                        // Fallback to default deletion
-                        readerContentListModalsModel.presentDeleteConfirmation(for: [content])
+                        readerContentListModalsModel.presentDeleteConfirmation(for: [deletable])
                     }
                 } label: {
-                    Label(content.deleteActionTitle, systemImage: "trash")
+                    Label(deletable.deleteActionTitle, systemImage: "trash")
                 }
+                .disabled(isDeleteBlockedByStatus)
             }
         }
 #endif
@@ -806,7 +813,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         )
 #endif
         .modifier {
-            if appearance.useCardBackground {
+            if appearance.useCardBackground || appearance.wrapsContentInGroupBox {
                 $0.listRowBackground(Color.clear)
             } else {
                 $0
@@ -919,6 +926,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
     @State private var sectionExpanded: [String: Bool] = [:]
+    @State private var deleteEligibilityByContentKey: [String: ReaderFileDeleteEligibility] = [:]
+    @State private var deleteEligibilityRefreshTask: Task<Void, Never>?
 
     // Navigation/env for selection syncing when using custom grouping
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -948,7 +957,22 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     }
     
     private var isDeletionToolbarButtonDisabled: Bool {
-        return multiSelection.isEmpty
+        guard !multiSelection.isEmpty else {
+            return true
+        }
+        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
+            guard multiSelection.contains(content.compoundKey) else { return nil }
+            return content as? ContentFile
+        }
+        guard !selectedContentFiles.isEmpty else {
+            return false
+        }
+        guard selectedContentFiles.allSatisfy({ deleteEligibilityByContentKey[$0.compoundKey] != nil }) else {
+            return true
+        }
+        return selectedContentFiles.contains {
+            deleteEligibilityByContentKey[$0.compoundKey] != .allowed
+        }
     }
 
     private var showsHeaderSection: Bool {
@@ -957,6 +981,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     private var effectiveListRowSpacing: CGFloat? {
         useDefaultRowInsets || separateRowsIntoSections ? nil : listRowSpacing
+    }
+
+    private var separatedRowsUseGroupBox: Bool {
+#if os(macOS)
+        separateRowsIntoSections
+#else
+        false
+#endif
     }
 
     private var normalizedScrollTargetID: String? {
@@ -1018,7 +1050,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                             alwaysShowThumbnails: alwaysShowThumbnails,
                             showSeparators: false,
                             useDefaultRowInsets: useDefaultRowInsets,
-                            showsNewBadges: showsNewBadges
+                            showsNewBadges: showsNewBadges,
+                            wrapsContentInGroupBox: separatedRowsUseGroupBox
                         ),
                         isFirst: true,
                         isLast: true,
@@ -1027,17 +1060,44 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         customMenuOptions: customMenuOptions,
                         onContentAppear: onContentAppear
                     )
-                    .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
+                    .readerContentListRowStyle(
+                        useDefaultRowInsets: useDefaultRowInsets || separatedRowsUseGroupBox
+                    )
                 } header: {
                     if index == viewModel.filteredContents.startIndex,
-                       let contentSectionTitle {
-                        Text(contentSectionTitle)
-                            .foregroundStyle(.secondary)
+                       !showEmptyState || rendersHeaderViewInSectionHeader {
+                        contentSectionHeader
                     }
                 }
                 .headerProminence(.increased)
             )
             .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
+        }
+    }
+
+    private func refreshDeleteEligibilityCache() {
+        deleteEligibilityRefreshTask?.cancel()
+        let selectedContentFiles = viewModel.filteredContents.compactMap { content -> ContentFile? in
+            guard multiSelection.contains(content.compoundKey) else { return nil }
+            return content as? ContentFile
+        }
+        guard !selectedContentFiles.isEmpty else {
+            deleteEligibilityByContentKey = [:]
+            return
+        }
+        deleteEligibilityRefreshTask = Task { @MainActor in
+            var nextEligibility = [String: ReaderFileDeleteEligibility]()
+            for contentFile in selectedContentFiles {
+                guard let readerBackingURL = ReaderFileManager.shared.canonicalReaderBackingURL(for: contentFile.url) else {
+                    continue
+                }
+                let eligibility = await ReaderFileManager.shared.deleteEligibility(forReaderBackingURL: readerBackingURL)
+                if Task.isCancelled {
+                    return
+                }
+                nextEligibility[contentFile.compoundKey] = eligibility
+            }
+            deleteEligibilityByContentKey = nextEligibility
         }
     }
     
@@ -1151,6 +1211,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     } else if newSelection.count > 1 {
                         entrySelection = nil
                     }
+                    refreshDeleteEligibilityCache()
                 }
             .task { @MainActor in
                     try? await viewModel.load(
@@ -1160,6 +1221,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         postSortTransform: postSortTransform
                     )
                     refreshGrouping()
+                    refreshDeleteEligibilityCache()
                     scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
                 }
                 .onChange(of: contents) { contents in
@@ -1171,11 +1233,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                             postSortTransform: postSortTransform
                         )
                         refreshGrouping()
+                        refreshDeleteEligibilityCache()
                         scheduleScrollToTarget(with: scrollProxy, reason: "contentsChanged")
                     }
                 }
                 .onChange(of: viewModel.filteredContents) { _ in
                     refreshGrouping()
+                    refreshDeleteEligibilityCache()
                     scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
                 }
     }
@@ -1198,13 +1262,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             Button(role: .destructive) {
                 let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
                 if let onDelete {
-                    do {
-                        Task { @MainActor in
+                    Task { @MainActor in
+                        do {
                             try await onDelete(selected)
-                            //                                    //                                multiSelection.removeAll()
+                        } catch {
+                            readerContentListModalsModel.presentDeleteError(for: error)
                         }
-                    } catch {
-                        print(error)
                     }
                 } else if let selected = selected as? [any DeletableReaderContent] {
                     readerContentListModalsModel.presentDeleteConfirmation(for: selected)
@@ -1232,6 +1295,79 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             .opacity(isDeletionToolbarButtonDisabled ? 0.45 : 1)
         }
     }
+
+    @ViewBuilder
+    private func groupedRowContent(
+        section: ReaderContentGroupingSection<C>,
+        index: Array<C>.Index,
+        content: C
+    ) -> some View {
+        let lastIndex = section.items.indices.last ?? section.items.startIndex
+        ReaderContentInnerListItem(
+            content: content,
+            entrySelection: $entrySelection,
+            includeSource: includeSource,
+            appearance: ReaderContentListAppearance(
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                showSeparators: false,
+                useDefaultRowInsets: useDefaultRowInsets,
+                showsNewBadges: showsNewBadges,
+                wrapsContentInGroupBox: separatedRowsUseGroupBox
+            ),
+            isFirst: index == section.items.startIndex,
+            isLast: index == lastIndex,
+            viewModel: viewModel,
+            onRequestDelete: onRequestDelete,
+            customMenuOptions: customMenuOptions,
+            onContentAppear: onContentAppear
+        )
+        .readerContentListRowStyle(
+            useDefaultRowInsets: useDefaultRowInsets || separatedRowsUseGroupBox
+        )
+    }
+
+    @ViewBuilder
+    private func groupedRows(section: ReaderContentGroupingSection<C>) -> some View {
+        if separateRowsIntoSections {
+            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+                sectionWithSpacing(
+                    Section {
+                        groupedRowContent(section: section, index: index, content: content)
+                    } header: {
+                        if index == section.items.startIndex {
+                            Text(section.title)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .headerProminence(.increased)
+                )
+                .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
+            }
+        } else {
+            let lastIndex = section.items.indices.last ?? section.items.startIndex
+            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+                ReaderContentInnerListItem(
+                    content: content,
+                    entrySelection: $entrySelection,
+                    includeSource: includeSource,
+                    appearance: ReaderContentListAppearance(
+                        alwaysShowThumbnails: alwaysShowThumbnails,
+                        showSeparators: false,
+                        useDefaultRowInsets: useDefaultRowInsets,
+                        showsNewBadges: showsNewBadges,
+                        wrapsContentInGroupBox: false
+                    ),
+                    isFirst: index == section.items.startIndex,
+                    isLast: index == lastIndex,
+                    viewModel: viewModel,
+                    onRequestDelete: onRequestDelete,
+                    customMenuOptions: customMenuOptions,
+                    onContentAppear: onContentAppear
+                )
+            }
+            .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
+        }
+    }
     
     @ViewBuilder
     private var listContent: some View {
@@ -1245,7 +1381,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
         supplementarySections()
 
-        if customGrouping == nil {
+        if customGrouping == nil, !showEmptyState, separateRowsIntoSections {
+            separateRowSections
+        } else if customGrouping == nil {
             sectionWithSpacing(
                 Section {
                     if showEmptyState {
@@ -1257,8 +1395,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                                 .listRowBackground(Color.clear)
                                 .stackListStyle(.grouped)
                         }
-                    } else if separateRowsIntoSections {
-                        separateRowSections
                     } else {
                         listItems
                             .readerContentListRowStyle(useDefaultRowInsets: useDefaultRowInsets)
@@ -1285,29 +1421,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 }
             } else {
                 ForEach(groupedSections) { section in
-                    if #available(iOS 17, macOS 14, *) {
+                    if separateRowsIntoSections {
+                        groupedRows(section: section)
+                    } else if #available(iOS 17, macOS 14, *) {
                         sectionWithSpacing(
                             Section(isExpanded: binding(for: section.id)) {
-                                let lastIndex = section.items.indices.last ?? section.items.startIndex
-                                ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
-                                    ReaderContentInnerListItem(
-                                        content: content,
-                                        entrySelection: $entrySelection,
-                                        includeSource: includeSource,
-                                        appearance: ReaderContentListAppearance(
-                                            alwaysShowThumbnails: alwaysShowThumbnails,
-                                            showSeparators: false,
-                                            useCardBackground: false
-                                        ),
-                                        isFirst: index == section.items.startIndex,
-                                        isLast: index == lastIndex,
-                                        viewModel: viewModel,
-                                        onRequestDelete: onRequestDelete,
-                                        customMenuOptions: customMenuOptions,
-                                        onContentAppear: onContentAppear
-                                    )
-                                }
-                                .readerContentListRowStyle()
+                                groupedRows(section: section)
                             } header: {
                                 Text(section.title)
                                     .foregroundStyle(.secondary)
@@ -1317,26 +1436,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     } else {
                         sectionWithSpacing(
                             Section {
-                                let lastIndex = section.items.indices.last ?? section.items.startIndex
-                                ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
-                                    ReaderContentInnerListItem(
-                                        content: content,
-                                        entrySelection: $entrySelection,
-                                        includeSource: includeSource,
-                                        appearance: ReaderContentListAppearance(
-                                            alwaysShowThumbnails: alwaysShowThumbnails,
-                                            showSeparators: false,
-                                            useCardBackground: false
-                                        ),
-                                        isFirst: index == section.items.startIndex,
-                                        isLast: index == lastIndex,
-                                        viewModel: viewModel,
-                                        onRequestDelete: onRequestDelete,
-                                        customMenuOptions: customMenuOptions,
-                                        onContentAppear: onContentAppear
-                                    )
-                                }
-                                .readerContentListRowStyle()
+                                groupedRows(section: section)
                             } header: {
                                 Text(section.title)
                                     .bold()
@@ -1523,7 +1623,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             useCardBackground: useCardBackground,
             clearRowBackground: clearRowBackground,
             useDefaultRowInsets: useDefaultRowInsets,
-            showsNewBadges: showsNewBadges
+            showsNewBadges: showsNewBadges,
+            wrapsContentInGroupBox: false
         )
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions

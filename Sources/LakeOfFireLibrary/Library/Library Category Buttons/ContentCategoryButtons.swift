@@ -275,7 +275,7 @@ public struct FeedCategoryButtonLabel: View {
 #if os(iOS)
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 46
 #else
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 32
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 46
 #endif
     
 #if os(iOS)
@@ -306,12 +306,12 @@ public struct FeedCategoryButtonLabel: View {
             .shadow(color: .black, radius: 40)
             Spacer(minLength: 0)
         }
-        .frame(minHeight: isCompact ? nil : scaledCategoryHeight, alignment: .leading)
+        .frame(minHeight: scaledCategoryHeight, alignment: .leading)
         .frame(maxWidth: .infinity)
 #if os(iOS)
         .frame(idealHeight: isCompact || horizontalSizeClass == .compact ? scaledCategoryHeight : scaledCategoryHeight * 2.4)
 #else
-        .frame(idealHeight: isCompact ? nil : scaledCategoryHeight * 2.4)
+        .frame(idealHeight: isCompact ? scaledCategoryHeight : scaledCategoryHeight * 2.4)
 #endif
         //            .padding(.horizontal, scaledCategoryHeight * 0.36)
         .overlay(Color.white.opacity(0.0000001)) // Weird macOS hack...
