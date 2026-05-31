@@ -324,7 +324,11 @@ fileprivate struct ReaderWebViewInternal: View {
         defaultResetURL: URL(string: "about:blank")
     )
 
+    @Environment(\.readerWebViewConfigurationTransform) private var readerWebViewConfigurationTransform
+    @Environment(\.readerWebViewMessageHandlersTransform) private var readerWebViewMessageHandlersTransform
+    @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @Environment(\.readerNavigationActionHandler) private var readerNavigationActionHandler
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
@@ -390,15 +394,18 @@ fileprivate struct ReaderWebViewInternal: View {
             )
         )
 
+        let webViewConfig = WebViewConfig(
+            dataDetectorsEnabled: false,
+            backgroundColor: readerThemeBackgroundColor,
+            usesSampledPageTopColorForUnderPageBackground: true,
+            usesConfiguredBackgroundForReaderDocuments: true,
+            adjustsScrollViewContentInsetsForSafeArea: false,
+            nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
+            userScripts: userScripts
+        )
+
         WebView(
-            config: WebViewConfig(
-                dataDetectorsEnabled: false,
-                backgroundColor: readerThemeBackgroundColor,
-                usesSampledPageTopColorForUnderPageBackground: true,
-                usesConfiguredBackgroundForReaderDocuments: true,
-                adjustsScrollViewContentInsetsForSafeArea: false,
-                nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
-                userScripts: userScripts),
+            config: readerWebViewConfigurationTransform(webViewConfig),
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
@@ -422,6 +429,9 @@ fileprivate struct ReaderWebViewInternal: View {
             onURLChanged: { state in
                 handler.onURLChanged(state: state)
             },
+            onNavigationAction: { action in
+                await readerNavigationActionHandler?(action)
+            },
             buildMenu: { builder in
                 buildMenu?(builder)
             },
@@ -429,6 +439,7 @@ fileprivate struct ReaderWebViewInternal: View {
             textSelection: $textSelection,
             webViewPrewarmer: webViewPrewarmer
         )
+        .environment(\.webViewMessageHandlers, readerWebViewMessageHandlersTransform(webViewMessageHandlers, scriptCaller))
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }

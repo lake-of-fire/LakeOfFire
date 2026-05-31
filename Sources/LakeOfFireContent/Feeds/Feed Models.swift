@@ -45,9 +45,31 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
             print("Warning: Unexpectedly unmanaged object")
             return nil
         }
-        return realm.objects(Feed.self).where { $0.categoryID == id && !$0.isDeleted }
-            .sorted(by: \.title)
+        return realm.objects(Feed.self).where { $0.categoryID == id && $0.directoryID == nil && !$0.isDeleted }
             .map { $0 }
+            .sorted(by: feedCollectionChildSort)
+    }
+
+    public func getCollectionChildren() -> [FeedCollectionChild]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        let directories = Array(realm.objects(FeedDirectory.self).where { $0.categoryID == id && $0.parentDirectoryID == nil && !$0.isDeleted })
+            .map(FeedCollectionChild.directory)
+        let feeds = Array(realm.objects(Feed.self).where { $0.categoryID == id && $0.directoryID == nil && !$0.isDeleted })
+            .map(FeedCollectionChild.feed)
+        return (directories + feeds).sorted(by: feedCollectionChildSort)
+    }
+
+    public func getDirectories() -> [FeedDirectory]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(FeedDirectory.self).where { $0.categoryID == id && $0.parentDirectoryID == nil && !$0.isDeleted }
+            .map { $0 }
+            .sorted(by: feedCollectionChildSort)
     }
     
     public func isEmpty() -> Bool {
@@ -56,6 +78,138 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
             return true
         }
         return realm.objects(Feed.self).where { $0.categoryID == id && !$0.isDeleted }.first == nil
+            && realm.objects(FeedDirectory.self).where { $0.categoryID == id && !$0.isDeleted }.first == nil
+    }
+}
+
+public enum FeedCollectionChild {
+    case directory(FeedDirectory)
+    case feed(Feed)
+
+    public var id: UUID {
+        switch self {
+        case .directory(let directory):
+            return directory.id
+        case .feed(let feed):
+            return feed.id
+        }
+    }
+
+    public var ordinal: Int? {
+        switch self {
+        case .directory(let directory):
+            return directory.ordinal
+        case .feed(let feed):
+            return feed.ordinal
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .directory(let directory):
+            return directory.title
+        case .feed(let feed):
+            return feed.title
+        }
+    }
+
+    fileprivate var typeSortRank: Int {
+        switch self {
+        case .directory:
+            return 0
+        case .feed:
+            return 1
+        }
+    }
+}
+
+private protocol FeedCollectionSortable {
+    var id: UUID { get }
+    var ordinal: Int? { get }
+    var title: String { get }
+    var typeSortRank: Int { get }
+}
+
+extension FeedDirectory: FeedCollectionSortable {
+    fileprivate var typeSortRank: Int { 0 }
+}
+
+extension Feed: FeedCollectionSortable {
+    fileprivate var typeSortRank: Int { 1 }
+}
+
+extension FeedCollectionChild: FeedCollectionSortable {}
+
+private func feedCollectionChildSort<LHS: FeedCollectionSortable, RHS: FeedCollectionSortable>(_ lhs: LHS, _ rhs: RHS) -> Bool {
+    let titleComparison = lhs.title.localizedStandardCompare(rhs.title)
+    if titleComparison != .orderedSame {
+        return titleComparison == .orderedAscending
+    }
+    if lhs.typeSortRank != rhs.typeSortRank {
+        return lhs.typeSortRank < rhs.typeSortRank
+    }
+    return lhs.id.uuidString < rhs.id.uuidString
+}
+
+public class FeedDirectory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, ChangeMetadataRecordable {
+    public var needsSyncToAppServer: Bool {
+        return false
+    }
+
+    @Persisted(primaryKey: true) public var id = UUID()
+
+    @Persisted public var opmlOwnerName: String?
+    @Persisted public var opmlURL: URL?
+
+    @Persisted(indexed: true) public var categoryID: UUID?
+    @Persisted(indexed: true) public var parentDirectoryID: UUID?
+    @Persisted public var title = ""
+    @Persisted public var markdownDescription: String?
+    @Persisted public var iconUrl: URL?
+    @Persisted public var backgroundImageUrl: URL?
+    @Persisted public var ordinal: Int?
+    @Persisted public var isArchived = false
+
+    @Persisted public var explicitlyModifiedAt: Date?
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
+    @Persisted public var isDeleted = false
+
+    public var isUserEditable: Bool {
+        guard let realm, let categoryID else { return false }
+        return realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)?.opmlURL == nil
+    }
+
+    public func getFeeds() -> [Feed]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(Feed.self).where { $0.directoryID == id && !$0.isDeleted }
+            .map { $0 }
+            .sorted(by: feedCollectionChildSort)
+    }
+
+    public func getDirectories() -> [FeedDirectory]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(FeedDirectory.self).where { $0.parentDirectoryID == id && !$0.isDeleted }
+            .map { $0 }
+            .sorted(by: feedCollectionChildSort)
+    }
+
+    public func getCollectionChildren() -> [FeedCollectionChild]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        let directories = Array(realm.objects(FeedDirectory.self).where { $0.parentDirectoryID == id && !$0.isDeleted })
+            .map(FeedCollectionChild.directory)
+        let feeds = Array(realm.objects(Feed.self).where { $0.directoryID == id && !$0.isDeleted })
+            .map(FeedCollectionChild.feed)
+        return (directories + feeds).sorted(by: feedCollectionChildSort)
     }
 }
 
@@ -95,6 +249,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var title: String
     @Persisted public var categoryID: UUID?
+    @Persisted public var directoryID: UUID?
+    @Persisted public var ordinal: Int?
     @Persisted public var markdownDescription: String?
     @Persisted public var rssUrl: URL
     @Persisted public var iconUrl: URL
@@ -127,6 +283,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     public enum CodingKeys: String, CodingKey, CaseIterable {
         case id
         case title
+        case directoryID
+        case ordinal
         case markdownDescription
         case rssUrl
         case iconUrl
@@ -157,6 +315,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
+        try container.encode(directoryID, forKey: .directoryID)
+        try container.encode(ordinal, forKey: .ordinal)
         try container.encode(markdownDescription, forKey: .markdownDescription)
         try container.encode(rssUrl, forKey: .rssUrl)
         try container.encode(isReaderModeByDefault, forKey: .isReaderModeByDefault)
@@ -178,6 +338,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(UUID.self, forKey: .id)
         self.title = try container.decode(String.self, forKey: .title)
+        self.directoryID = try container.decodeIfPresent(UUID.self, forKey: .directoryID)
+        self.ordinal = try container.decodeIfPresent(Int.self, forKey: .ordinal)
         self.markdownDescription = try container.decode(String.self, forKey: .markdownDescription)
         self.rssUrl = try container.decode(URL.self, forKey: .rssUrl)
         self.isReaderModeByDefault = try container.decode(Bool.self, forKey: .isReaderModeByDefault)

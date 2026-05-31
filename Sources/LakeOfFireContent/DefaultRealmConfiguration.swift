@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 68
+    public static let schemaVersion: UInt64 = 71
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -19,6 +19,7 @@ public enum DefaultRealmConfiguration {
 //        }
         config.objectTypes = [
             FeedCategory.self,
+            FeedDirectory.self,
             Feed.self,
             FeedEntryCollection.self,
             FeedEntry.self,
@@ -98,6 +99,23 @@ public enum DefaultRealmConfiguration {
         }
         if oldSchemaVersion < 67 {
             migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 69 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 70 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+            migration.enumerateObjects(ofType: FeedDirectory.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 71 {
+            migration.enumerateObjects(ofType: Feed.className()) { oldObject, newObject in
+                guard oldSchemaVersion >= 70 else { return }
+                newObject?["ordinal"] = oldObject?["opmlOrder"]
+            }
+            migration.enumerateObjects(ofType: FeedDirectory.className()) { oldObject, newObject in
+                guard oldSchemaVersion >= 70 else { return }
+                newObject?["ordinal"] = oldObject?["opmlOrder"]
+            }
         }
     }
 

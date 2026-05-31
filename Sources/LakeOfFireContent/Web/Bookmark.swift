@@ -99,7 +99,12 @@ open class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol
     open var locationBarTitle: String? {
         let url = url
         if url.isSnippetURL {
-            return "Snippet: \(createdAt.formatted())"
+            return ReaderContentLoader.resolvedSnippetLocationBarTitle(
+                title: title,
+                createdAt: createdAt,
+                needsClipboardIndicator: needsClipboardIndicator,
+                isTitlePrefixOfContent: isTitlePrefixOfContent
+            )
         } else if url.isEBookURL {
             return title
         } else if url.isReaderFileURL {

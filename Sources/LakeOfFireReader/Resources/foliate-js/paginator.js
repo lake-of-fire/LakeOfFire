@@ -15,6 +15,12 @@ const CSS_DEFAULTS = {
     maxColumnCountPortrait: 1,
 };
 
+const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
+const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = true;
+const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
+const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
+const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
+
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
@@ -51,6 +57,50 @@ const postEPUBLoadLog = (stage, details = {}) => {
 const markPaginatorPerf = (stage, details = {}, options = {}) => {
     globalThis.__manabiMarkEPUBPerf?.(`paginator.${stage}`, details, options);
 };
+const postBlankPageLog = (event, details = {}) => {
+    const payload = { event, timestamp: Date.now(), ...details };
+    const line = `# BLANKPAGE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+const manabiPageSummaryIsVisiblyBlank = summary =>
+    !!summary
+    && (summary.textCharCount ?? 0) === 0
+    && (summary.mediaCount ?? 0) === 0;
+const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summariesByPage = null } = {}) => {
+    if (!Number.isFinite(page) || !Number.isFinite(pages) || !Number.isFinite(direction) || direction === 0) {
+        return page;
+    }
+    const minPage = 1;
+    const maxPage = Math.max(minPage, pages - 2);
+    let target = Math.max(minPage, Math.min(maxPage, Math.trunc(page)));
+    const step = direction > 0 ? 1 : -1;
+    const summaryForPage = candidatePage =>
+        summariesByPage instanceof Map
+            ? (summariesByPage.get(candidatePage) ?? null)
+            : (summariesByPage?.[candidatePage] ?? null);
+    while (
+        target >= minPage
+        && target <= maxPage
+        && manabiPageSummaryIsVisiblyBlank(summaryForPage(target))
+    ) {
+        const nextTarget = target + step;
+        if (nextTarget < minPage || nextTarget > maxPage) break;
+        target = nextTarget;
+    }
+    return target;
+};
+const sectionDebugInfo = section => section
+    ? {
+        href: section.href ?? null,
+        id: section.id ?? null,
+        linear: section.linear ?? null,
+        loadState: section.loadState ?? section.state ?? null,
+    }
+    : null;
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
@@ -1264,6 +1314,259 @@ export class Paginator extends HTMLElement {
         if (container.textContent.trim() !== '') return false;
         return true;
     }
+    #intersectsPageRange(mappedRect, pageStart, pageEnd) {
+        if (!mappedRect) return false;
+        const left = Number(mappedRect.left);
+        const right = Number(mappedRect.right);
+        if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+        return right > pageStart && left < pageEnd;
+    }
+    #describeNodeForBlankPage(node) {
+        const element = node?.nodeType === Node.ELEMENT_NODE
+            ? node
+            : node?.parentElement;
+        if (!element) return null;
+        const id = element.id ? `#${element.id}` : '';
+        const className = typeof element.className === 'string' && element.className.trim()
+            ? `.${element.className.trim().split(/\s+/).slice(0, 3).join('.')}`
+            : '';
+        return `${element.localName || element.nodeName}${id}${className}`;
+    }
+    async #blankPageContentSummary(page, size, rectMapper) {
+        const doc = this.#view?.document;
+        if (!doc?.body || !Number.isFinite(page) || !Number.isFinite(size) || size <= 0) {
+            return null;
+        }
+        const pageStart = Math.max(0, (page - 1) * size);
+        const pageEnd = pageStart + size;
+        const summary = {
+            page,
+            pageStart: manabiRound(pageStart, 1),
+            pageEnd: manabiRound(pageEnd, 1),
+            textNodeCount: 0,
+            textCharCount: 0,
+            mediaCount: 0,
+            elementBoxCount: 0,
+            textSamples: [],
+            mediaSamples: [],
+            elementSamples: [],
+        };
+
+        const walker = doc.createTreeWalker(doc.body, SHOW_TEXT, {
+            acceptNode: node => /\S/.test(node.nodeValue || '') ? FILTER_ACCEPT : FILTER_REJECT,
+        });
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const range = doc.createRange();
+            try {
+                range.selectNodeContents(node);
+                const rects = Array.from(range.getClientRects?.() || []);
+                if (!rects.some(rect => this.#intersectsPageRange(rectMapper(rect), pageStart, pageEnd))) {
+                    continue;
+                }
+                const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                summary.textNodeCount += 1;
+                summary.textCharCount += text.length;
+                if (summary.textSamples.length < 3 && text) {
+                    summary.textSamples.push(text.slice(0, 80));
+                }
+            } finally {
+                range.detach?.();
+            }
+        }
+
+        const mediaSelector = 'img,image,svg,video,picture,object,iframe,canvas,embed';
+        for (const element of doc.body.querySelectorAll?.(mediaSelector) || []) {
+            const rects = Array.from(element.getClientRects?.() || []);
+            if (!rects.some(rect => this.#intersectsPageRange(rectMapper(rect), pageStart, pageEnd))) {
+                continue;
+            }
+            summary.mediaCount += 1;
+            if (summary.mediaSamples.length < 5) {
+                summary.mediaSamples.push({
+                    node: this.#describeNodeForBlankPage(element),
+                    src: element.currentSrc || element.src || element.href?.baseVal || element.getAttribute?.('src') || element.getAttribute?.('href') || null,
+                    alt: element.getAttribute?.('alt') || null,
+                    naturalWidth: element.naturalWidth ?? null,
+                    naturalHeight: element.naturalHeight ?? null,
+                    complete: element.complete ?? null,
+                });
+            }
+        }
+
+        if (summary.textCharCount === 0 && summary.mediaCount === 0) {
+            for (const element of doc.body.querySelectorAll?.('body *') || []) {
+                const rects = Array.from(element.getClientRects?.() || []);
+                const mappedRects = rects
+                    .map(rectMapper)
+                    .filter(rect => this.#intersectsPageRange(rect, pageStart, pageEnd));
+                if (mappedRects.length > 0) {
+                    summary.elementBoxCount += 1;
+                    if (summary.elementSamples.length < 5) {
+                        const style = doc.defaultView?.getComputedStyle?.(element);
+                        summary.elementSamples.push({
+                            node: this.#describeNodeForBlankPage(element),
+                            display: style?.display || null,
+                            blockSize: style?.blockSize || null,
+                            inlineSize: style?.inlineSize || null,
+                            mediaDescendantCount: element.querySelectorAll?.(mediaSelector)?.length ?? 0,
+                            textLength: (element.textContent || '').replace(/\s+/g, '').length,
+                            rects: mappedRects.slice(0, 3).map(rect => ({
+                                left: manabiRound(rect.left, 1),
+                                right: manabiRound(rect.right, 1),
+                                top: manabiRound(rect.top, 1),
+                                bottom: manabiRound(rect.bottom, 1),
+                            })),
+                        });
+                    }
+                }
+            }
+        }
+
+        return summary;
+    }
+    #blankPageMediaPlacements(size, rectMapper, centerPage) {
+        const doc = this.#view?.document;
+        if (!doc?.body || !Number.isFinite(size) || size <= 0) return [];
+        const mediaSelector = 'img,image,svg,video,picture,object,iframe,canvas,embed';
+        const placements = [];
+        for (const element of doc.body.querySelectorAll?.(mediaSelector) || []) {
+            const mappedRects = Array.from(element.getClientRects?.() || [])
+                .map(rectMapper)
+                .filter(rect =>
+                    rect
+                    && Number.isFinite(Number(rect.left))
+                    && Number.isFinite(Number(rect.right))
+                    && Number(rect.right) > Number(rect.left)
+                );
+            if (mappedRects.length === 0) continue;
+            const minLeft = Math.min(...mappedRects.map(rect => Number(rect.left)));
+            const maxRight = Math.max(...mappedRects.map(rect => Number(rect.right)));
+            const firstPage = Math.floor(minLeft / size) + 1;
+            const lastPage = Math.max(firstPage, Math.ceil(maxRight / size));
+            if (Number.isFinite(centerPage) && (lastPage < centerPage - 2 || firstPage > centerPage + 2)) {
+                continue;
+            }
+            placements.push({
+                node: this.#describeNodeForBlankPage(element),
+                firstPage,
+                lastPage,
+                left: manabiRound(minLeft, 1),
+                right: manabiRound(maxRight, 1),
+                src: element.currentSrc || element.src || element.href?.baseVal || element.getAttribute?.('src') || element.getAttribute?.('href') || null,
+                naturalWidth: element.naturalWidth ?? null,
+                naturalHeight: element.naturalHeight ?? null,
+                complete: element.complete ?? null,
+            });
+            if (placements.length >= 12) break;
+        }
+        return placements;
+    }
+    async #logBlankPageCandidate(reason) {
+        if (this.#isCacheWarmer || this.scrolled || !this.#view?.document) return;
+        try {
+            const page = await this.page();
+            const pages = await this.pages();
+            const size = await this.size();
+            if (!Number.isFinite(page) || !Number.isFinite(pages) || pages <= 2 || page <= 0 || page >= pages - 1) {
+                return;
+            }
+            const rectMapper = await this.#getRectMapper();
+            const current = await this.#blankPageContentSummary(page, size, rectMapper);
+            if (!current || current.textCharCount > 0 || current.mediaCount > 0) {
+                return;
+            }
+            const previousPage = page > 1 ? await this.#blankPageContentSummary(page - 1, size, rectMapper) : null;
+            const nextPage = page < pages - 2 ? await this.#blankPageContentSummary(page + 1, size, rectMapper) : null;
+            postBlankPageLog('candidate', {
+                reason: reason ?? null,
+                index: this.#index,
+                section: sectionDebugInfo(this.sections?.[this.#index]),
+                page,
+                pages,
+                size: manabiRound(size, 1),
+                start: manabiRound(await this.start(), 1),
+                viewSize: manabiRound(await this.viewSize(), 1),
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+                flow: this.getAttribute('flow') || null,
+                layout: {
+                    width: this.#view.layout?.width ?? null,
+                    height: this.#view.layout?.height ?? null,
+                    gap: this.#view.layout?.gap ?? null,
+                    columnWidth: this.#view.layout?.columnWidth ?? null,
+                    divisor: this.#view.layout?.divisor ?? null,
+                },
+                container: {
+                    clientWidth: this.#container?.clientWidth ?? null,
+                    clientHeight: this.#container?.clientHeight ?? null,
+                    scrollLeft: this.#container?.scrollLeft ?? null,
+                    scrollTop: this.#container?.scrollTop ?? null,
+                    scrollWidth: this.#container?.scrollWidth ?? null,
+                    scrollHeight: this.#container?.scrollHeight ?? null,
+                },
+                previousPage,
+                currentPage: current,
+                nextPage,
+                nearbyMediaPlacements: this.#blankPageMediaPlacements(size, rectMapper, page),
+            });
+        } catch (error) {
+            postBlankPageLog('probe-error', {
+                reason: reason ?? null,
+                index: this.#index,
+                section: sectionDebugInfo(this.sections?.[this.#index]),
+                message: error?.message || String(error),
+                stack: error?.stack || null,
+            });
+        }
+    }
+    async #resolveBlankPageTarget(page, direction, reason = 'unknown') {
+        if (
+            this.#isCacheWarmer
+            || this.scrolled
+            || !this.#view?.document
+            || !Number.isFinite(page)
+            || !Number.isFinite(direction)
+            || direction === 0
+        ) {
+            return page;
+        }
+        const pages = await this.pages();
+        const minPage = 1;
+        const maxPage = Math.max(minPage, pages - 2);
+        if (page < minPage || page > maxPage) {
+            return page;
+        }
+
+        const size = await this.size();
+        const rectMapper = await this.#getRectMapper();
+        const summariesByPage = new Map();
+        let target = page;
+
+        while (target >= minPage && target <= maxPage) {
+            summariesByPage.set(target, await this.#blankPageContentSummary(target, size, rectMapper));
+            const resolved = manabiResolveBlankPageTarget({
+                page: target,
+                pages,
+                direction,
+                summariesByPage,
+            });
+            if (resolved === target) break;
+            target = resolved;
+        }
+
+        if (target !== page) {
+            postBlankPageLog('skip', {
+                reason,
+                index: this.#index,
+                section: sectionDebugInfo(this.sections?.[this.#index]),
+                fromPage: page,
+                toPage: target,
+                pages,
+                direction: direction > 0 ? 'forward' : 'backward',
+            });
+        }
+        return target;
+    }
     async #beforeRender({
         vertical,
         verticalRTL,
@@ -1483,6 +1786,19 @@ export class Paginator extends HTMLElement {
         await this.render()
         return { rendered: true, previousSize, currentSize }
     }
+    async renderIfTypographyChanged(reason = 'unspecified') {
+        if (!this.#view || this.#isCacheWarmer) {
+            return { rendered: false, reason: 'unavailable' }
+        }
+        void reason;
+        this.#cachedSizes = null
+        this.#cachedStart = null
+        this.#view.cachedViewSize = null
+        this.#view.cachedSizes = null
+        this.#invalidateVisibleRangeCache()
+        await this.render()
+        return { rendered: true, reason }
+    }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
     }
@@ -1696,11 +2012,15 @@ export class Paginator extends HTMLElement {
 
         if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
             state.triggered = true;
+            this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(dx, 'touch'), {
+                input: 'touch',
+                source: 'paginator.touchmove',
+            });
 
-            if (dx < 0) {
-                (this.bookDir === 'rtl') ? await this.prev() : await this.next();
+            if (this.#logicalDirectionForSwipeDelta(dx, 'touch') === 'forward') {
+                await this.next();
             } else {
-                (this.bookDir === 'rtl') ? await this.next() : await this.prev();
+                await this.prev();
             }
         }
     }
@@ -1786,7 +2106,9 @@ export class Paginator extends HTMLElement {
                 composed: true,
                 detail: {
                     leftOpacity: '',
-                    rightOpacity: ''
+                    rightOpacity: '',
+                    source: 'paginator',
+                    reason: 'paginator.wheel.momentum-falling',
                 }
             }));
             this.#lastWheelDeltaX = e.deltaX;
@@ -1795,21 +2117,25 @@ export class Paginator extends HTMLElement {
 
         if (this.#wheelArmed) {
             if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
-                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD);
+                this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' });
             } else {
-                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD);
+                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD, { input: 'wheel' });
             }
         }
 
         if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
             this.#wheelArmed = false;
             this.#wheelCooldown = true;
+            this.#dispatchForegroundPageTurnActivity(this.#logicalDirectionForSwipeDelta(e.deltaX, 'wheel'), {
+                input: 'wheel',
+                source: 'paginator.wheel',
+            });
             if (e.deltaX > 0) {
                 await this.prev();
             } else {
                 await this.next();
             }
-            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD)
+            this.#updateSwipeChevron(e.deltaX, TRIGGER_THRESHOLD, { input: 'wheel' })
             setTimeout(() => {
                 this.#wheelCooldown = false;
             }, 100);
@@ -1954,58 +2280,8 @@ export class Paginator extends HTMLElement {
     }
     async scrollToAnchor(anchor, select) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
-        await this.#fastScrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
-    async #fastScrollToAnchor(anchor, reason = 'anchor') {
-        await this.#awaitDirection();
-        this.#anchor = anchor;
-        const anchorNode = uncollapse(anchor);
-        let node = anchorNode;
-        if (node && node.startContainer !== undefined) {
-            node = node.startContainer;
-        }
-        if (node && (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE)) {
-            const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-            if (element && element.nodeType === Node.ELEMENT_NODE) {
-                let left = element.offsetLeft;
-                let top = element.offsetTop;
-                const width = element.offsetWidth;
-                const height = element.offsetHeight;
-                let current = element;
-                let doc = element.ownerDocument;
-                while (current && current !== this.#container) {
-                    const parent = current.offsetParent;
-                    if (!parent) {
-                        const win = doc.defaultView;
-                        if (win && win.frameElement) {
-                            current = win.frameElement;
-                            doc = current.ownerDocument;
-                            left += current.offsetLeft;
-                            top += current.offsetTop;
-                            continue;
-                        }
-                        break;
-                    }
-                    current = parent;
-                    left += current.offsetLeft;
-                    top += current.offsetTop;
-                }
-                if (width > 0 || height > 0) {
-                    await this.#scrollToRect({
-                        left,
-                        right: left + width,
-                        top,
-                        bottom: top + height,
-                        width,
-                        height
-                    }, reason);
-                    return;
-                }
-            }
-        }
-        await this.#scrollToAnchor(anchor, reason);
-    }
-    // TODO: Fix newer way and stop using this one that calculates getClientRects
     async #scrollToAnchor(anchor, reason = 'anchor') {
         //        console.log('#scrollToAnchor0...', anchor)
         this.#anchor = anchor
@@ -2030,106 +2306,6 @@ export class Paginator extends HTMLElement {
         const textPages = await this.pages() - 2
         const newPage = Math.round(anchor * (textPages - 1))
         await this.#scrollToPage(newPage + 1, reason)
-    }
-    async #NscrollToAnchor(anchor, reason = 'anchor') {
-        //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
-        await this.#awaitDirection();
-
-        return new Promise(resolve => {
-            requestAnimationFrame(async () => {
-                //                console.log("#scrollToAnchor...frames...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
-                this.#anchor = anchor;
-                //                console.log('scrollToAnchor: anchor=', anchor);
-                // Determine anchor target (could be Range or Element)
-                const anchorNode = uncollapse(anchor);
-
-                // OG slow path: use getClientRects for sanity check
-                //                const rects = anchorNode?.getClientRects?.();
-                ////                console.log('OG clientRects:', rects);
-                //                if (rects && rects.length > 0) {
-                //                    const ogRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
-                ////                    console.log('OG rect chosen:', ogRect);
-                //                    //                        await this.#scrollToRect(ogRect, reason);
-                //                    //                        resolve();
-                //                    //                        return;
-                //                }
-                //                console.log('anchorNode=', anchorNode);
-
-                // Fast path: compute offset using offsetLeft/offsetTop chains
-                let elNode = anchorNode;
-                if (elNode && elNode.startContainer !== undefined) {
-                    elNode = elNode.startContainer;
-                }
-                if (elNode && (elNode.nodeType === Node.ELEMENT_NODE || elNode.nodeType === Node.TEXT_NODE)) {
-                    let el = elNode.nodeType === Node.TEXT_NODE ? elNode.parentElement : elNode;
-                    if (el && el.nodeType === Node.ELEMENT_NODE) {
-                        let left = el.offsetLeft, top = el.offsetTop;
-                        const width = el.offsetWidth, height = el.offsetHeight;
-                        //                        console.log('initial offsets:', { left, top, width, height });
-                        let current = el;
-                        let doc = el.ownerDocument;
-                        // Traverse offsetParent chain (and iframe chain)
-                        while (current && current !== this.#container) {
-                            const parent = current.offsetParent;
-                            if (!parent) {
-                                const frame = doc?.defaultView?.frameElement;
-                                if (frame) {
-                                    left += frame.offsetLeft;
-                                    top += frame.offsetTop;
-                                    current = frame;
-                                    doc = current.ownerDocument;
-                                    continue;
-                                }
-                                break;
-                            }
-                            current = parent;
-                            if (current !== this.#container) {
-                                left += current.offsetLeft;
-                                top += current.offsetTop;
-                            }
-                        }
-                        //                        console.log('after traversal offsets:', { left, top });
-                        // Re‑create a synthetic rect from the accumulated offsets and
-                        // feed it to the normal scroll‑to‑rect path.  This avoids the
-                        // heavyweight `getClientRects()` call but still lets the
-                        // existing mapper logic figure out the correct offset for both
-                        // page‑ and scroll‑modes.
-                        const syntheticRect = {
-                            left,
-                            right: left + width,
-                            top,
-                            bottom: top + height,
-                            width,
-                            height
-                        };
-                        //                        console.log('syntheticRect=', syntheticRect);
-                        const rectMapper = await this.#getRectMapper();
-                        const mapped = rectMapper(syntheticRect);
-                        //                        console.log('mappedRect=', mapped);
-                        // Use the same helper that the slow path relies on so we keep
-                        // consistent behaviour between modes.
-                        await this.#scrollToRect(syntheticRect, reason);
-                        resolve();
-                        return;
-                    }
-                }
-                // Fraction fallback
-                if (this.scrolled) {
-                    await this.#scrollTo(anchor * (await this.viewSize()), reason);
-                    resolve();
-                    return;
-                }
-                const _pages = await this.pages();
-                if (!_pages) {
-                    resolve();
-                    return;
-                }
-                const textPages = _pages - 2;
-                const newPage = Math.round(anchor * (textPages - 1));
-                await this.#scrollToPage(newPage + 1, reason);
-                resolve();
-            });
-        });
     }
     async #getVisibleRange() {
         //            console.log("getVisibleRange...")
@@ -2229,12 +2405,45 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
+        void this.#logBlankPageCandidate(reason)
     }
-    #updateSwipeChevron(dx, minSwipe) {
-        let leftOpacity = 0,
-            rightOpacity = 0;
-        if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
-        else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
+    #logicalDirectionForSwipeDelta(dx, input = 'touch') {
+        if (dx === 0) return null;
+        if (input === 'wheel') return dx > 0 ? 'backward' : 'forward';
+        const swipedLeft = dx < 0;
+        return this.bookDir === 'rtl'
+            ? (swipedLeft ? 'backward' : 'forward')
+            : (swipedLeft ? 'forward' : 'backward');
+    }
+    #chevronSideForLogicalDirection(logicalDirection) {
+        if (logicalDirection === 'forward') {
+            return this.bookDir === 'rtl' ? 'left' : 'right';
+        }
+        if (logicalDirection === 'backward') {
+            return this.bookDir === 'rtl' ? 'right' : 'left';
+        }
+        return null;
+    }
+    #dispatchForegroundPageTurnActivity(logicalDirection, { input = 'touch', source = 'paginator' } = {}) {
+        if (logicalDirection !== 'forward' && logicalDirection !== 'backward') return;
+        this.dispatchEvent(new CustomEvent('foregroundPageTurnActivity', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                input,
+                source,
+                logicalDirection,
+                chevronSide: this.#chevronSideForLogicalDirection(logicalDirection),
+                isRTL: this.bookDir === 'rtl',
+            }
+        }));
+    }
+    #updateSwipeChevron(dx, minSwipe, { input = 'touch' } = {}) {
+        const progress = Math.min(1, Math.abs(dx) / minSwipe);
+        const logicalDirection = this.#logicalDirectionForSwipeDelta(dx, input);
+        const chevronSide = this.#chevronSideForLogicalDirection(logicalDirection);
+        const leftOpacity = chevronSide === 'left' ? progress : 0;
+        const rightOpacity = chevronSide === 'right' ? progress : 0;
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -2243,6 +2452,11 @@ export class Paginator extends HTMLElement {
                 rightOpacity,
                 source: 'paginator',
                 reason: 'paginator.swipe.progress',
+                input,
+                dx,
+                logicalDirection,
+                chevronSide,
+                isRTL: this.bookDir === 'rtl',
             }
         }));
         if (Math.abs(dx) > minSwipe) {
@@ -2437,6 +2651,104 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
     }
+    #cacheNeighborPrefetch(index, promise) {
+        const entry = {
+            promise: null,
+            fulfilled: false,
+            rejected: false,
+            released: false,
+            consumed: false,
+            dropped: false,
+        };
+        entry.promise = Promise.resolve(promise)
+            .then(src => {
+                entry.fulfilled = true;
+                return src;
+            })
+            .catch(error => {
+                entry.rejected = true;
+                if (this.#prefetchCache.get(index) === entry) {
+                    this.#prefetchCache.delete(index);
+                }
+                throw error;
+            });
+        this.#prefetchCache.set(index, entry);
+        return entry;
+    }
+    #releaseNeighborPrefetch(index, entry = this.#prefetchCache.get(index), remove = true) {
+        if (!entry || entry.released) return;
+        if (remove && this.#prefetchCache.get(index) === entry) {
+            this.#prefetchCache.delete(index);
+        }
+        if (!entry.fulfilled) {
+            entry.dropped = true;
+            return;
+        }
+        entry.released = true;
+        this.sections[index]?.unload?.();
+    }
+    #consumeNeighborPrefetch(index, entry = this.#prefetchCache.get(index)) {
+        if (!entry || entry.released) return;
+        if (this.#prefetchCache.get(index) === entry) {
+            this.#prefetchCache.delete(index);
+        }
+        entry.released = true;
+        entry.consumed = true;
+    }
+    async #isWithinNeighborPrefetchWindow() {
+        if (!this.#view || this.#isCacheWarmer) return false;
+        try {
+            const page = await this.page();
+            const pages = await this.pages();
+            const lastReadablePage = Math.max(1, pages - 2);
+            const remainingPages = Math.max(0, lastReadablePage - page);
+            return remainingPages <= MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD;
+        } catch (_error) {
+            return false;
+        }
+    }
+    #scheduleNeighborPrefetch(reason = 'unknown', delayMs = MANABI_NEIGHBOR_PREFETCH_DELAY_MS) {
+        if (!MANABI_ENABLE_NEIGHBOR_PREFETCH || this.#isCacheWarmer) return;
+        const index = this.#index;
+        clearTimeout(this.#prefetchTimer);
+        this.#prefetchTimer = setTimeout(() => {
+            void this.#refreshNeighborPrefetch(index, reason).catch(() => {});
+        }, delayMs);
+    }
+    async #refreshNeighborPrefetch(index, reason = 'unknown') {
+        void reason;
+        if (this.#index !== index) return;
+
+        const nextIndex = this.#adjacentIndex(1);
+        const withinPrefetchWindow = await this.#isWithinNeighborPrefetchWindow();
+        const wanted = withinPrefetchWindow && nextIndex != null ? [nextIndex] : [];
+        const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)));
+        for (const [i, entry] of this.#prefetchCache) {
+            if (!keep.has(i)) this.#releaseNeighborPrefetch(i, entry);
+        }
+
+        wanted.forEach(i => {
+            if (
+                i >= 0 &&
+                i < this.sections.length &&
+                this.sections[i].linear !== 'no'
+            ) {
+                const entry = this.#prefetchCache.get(i)
+                    ?? this.#cacheNeighborPrefetch(i, this.sections[i].load());
+                entry.promise.catch(() => {});
+            }
+        });
+    }
+    async #waitForNeighborPrefetch(index) {
+        const entry = this.#prefetchCache.get(index);
+        if (!entry?.promise) return null;
+        try {
+            await entry.promise;
+            return entry;
+        } catch (_error) {
+            return null;
+        }
+    }
     #canGoToIndex(index) {
         return index >= 0 && index <= this.sections.length - 1
     }
@@ -2509,6 +2821,12 @@ export class Paginator extends HTMLElement {
             // hide the view until final relocate needs
             this.style.display = 'none'
 
+            let prefetchEntry = null
+            let usedPrefetchPromise = false
+            if (MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT) {
+                prefetchEntry = await this.#waitForNeighborPrefetch(index)
+            }
+
             const oldIndex = this.#index
             // Reset direction flags and promise before loading a new section
             this.#vertical = this.#verticalRTL = this.#rtl = null;
@@ -2525,65 +2843,53 @@ export class Paginator extends HTMLElement {
                 }))
             }
 
-            let loadPromise;
-            if (this.#prefetchCache.has(index)) {
-                loadPromise = this.#prefetchCache.get(index);
+            let sectionLoadPromise;
+            if (
+                MANABI_ENABLE_PREFETCH_PROMISE_REUSE
+                && prefetchEntry?.promise
+                && this.#prefetchCache.get(index) === prefetchEntry
+            ) {
+                usedPrefetchPromise = true;
+                sectionLoadPromise = prefetchEntry.promise;
                 postEPUBLoadLog('js.paginator.goTo.loadPromise.cacheHit', {
                     index,
                     elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
                 });
             } else {
-                loadPromise = this.sections[index].load();
-                this.#prefetchCache.set(index, loadPromise);
+                sectionLoadPromise = this.sections[index].load();
                 postEPUBLoadLog('js.paginator.goTo.loadPromise.created', {
                     index,
                     sectionHref: this.sections[index]?.href ?? this.sections[index]?.id ?? null,
                     elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
                 });
             }
-            await this.#display(Promise.resolve(loadPromise)
-                .then(src => ({
-                    index,
-                    src,
-                    anchor,
-                    onLoad,
-                    select
-                }))
-                .catch(error => {
-                    console.error(error);
-                    console.warn(new Error(`Failed to load section ${index}`));
-                    return {};
-                }));
+            try {
+                await this.#display(Promise.resolve(sectionLoadPromise)
+                    .then(src => ({
+                        index,
+                        src,
+                        anchor,
+                        onLoad,
+                        select
+                    }))
+                    .catch(error => {
+                        console.error(error);
+                        console.warn(new Error(`Failed to load section ${index}`));
+                        return {};
+                    }));
+            } finally {
+                if (prefetchEntry) {
+                    if (usedPrefetchPromise) this.#consumeNeighborPrefetch(index, prefetchEntry)
+                    else this.#releaseNeighborPrefetch(index, prefetchEntry)
+                }
+            }
             postEPUBLoadLog('js.paginator.goTo.end', {
                 index,
                 willLoadNewIndex,
                 elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
             });
 
-            clearTimeout(this.#prefetchTimer);
-            this.#prefetchTimer = setTimeout(() => {
-                if (this.#index !== index) return; // bail if user has moved on
-
-                const wanted = [index - 1, index + 1];
-                // Keep any already cached of these two
-                const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
-                this.#prefetchCache = new Map(
-                    [...this.#prefetchCache].filter(([i]) => keep.has(i))
-                );
-
-                // Now prefetch any neighbor not already cached
-                wanted.forEach(i => {
-                    if (
-                        i >= 0 &&
-                        i < this.sections.length &&
-                        this.sections[i].linear !== 'no' &&
-                        !this.#prefetchCache.has(i)
-                    ) {
-                        const p = this.sections[i].load().catch(() => { });
-                        this.#prefetchCache.set(i, p);
-                    }
-                });
-            }, 500);
+            this.#scheduleNeighborPrefetch('section-display')
         }
     }
     async goTo(target) {
@@ -2605,7 +2911,7 @@ export class Paginator extends HTMLElement {
             return true;
         }
         if (await this.atStart()) return
-        const page = await this.page() - 1
+        const page = await this.#resolveBlankPageTarget((await this.page()) - 1, -1, 'page-turn.prev')
         return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
     }
     async #scrollNext(distance) {
@@ -2622,7 +2928,7 @@ export class Paginator extends HTMLElement {
             return true;
         }
         if (await this.atEnd()) return
-        const page = await this.page() + 1
+        const page = await this.#resolveBlankPageTarget((await this.page()) + 1, 1, 'page-turn.next')
         const pages = await this.pages()
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
@@ -2651,6 +2957,7 @@ export class Paginator extends HTMLElement {
                 index: this.#adjacentIndex(dir),
                 anchor: prev ? () => 1 : () => 0,
             })
+            else if (dir > 0) this.#scheduleNeighborPrefetch('page-turn.within-section')
             if (shouldGo || !this.hasAttribute('animated')) await wait(100)
         } finally {
             this.#pendingPageTurnDirection = null

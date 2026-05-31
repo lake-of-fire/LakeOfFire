@@ -38,6 +38,7 @@
 		1C547B18077736B243213EF2 /* foliate-js in Resources */ = {isa = PBXBuildFile; fileRef = CA92F856353D8F32BE2AA800 /* foliate-js */; };
 		1DD99F8B86F5139FAF89395A /* ContentBlockingEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CAF69D789FE196EF8EC4FDA /* ContentBlockingEnvironment.swift */; };
 		2035E4B128481E027CD0FB24 /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
+		21373399C747A6D16BCE282B /* ReaderNativeContentEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69DD30D82D01A1F384553B21 /* ReaderNativeContentEnvironment.swift */; };
 		221E5837DDF30B7164E59399 /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		22AF60D340476D2E33739FA0 /* CodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E267DA04D9DFBAE6197B193 /* CodeEditor.swift */; };
 		230759FF4A0CFEF36AB397A9 /* AdblockRulesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BCDA574ECC78281E3EAC5E /* AdblockRulesModel.swift */; };
@@ -175,6 +176,7 @@
 		B7D257D2C631668FE377D59F /* ReaderWebMediaBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6D48C0A0228526D537B8F4C /* ReaderWebMediaBridge.swift */; };
 		B7D972F268641334FA733C5D /* LakeOfFireReader.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */; };
 		B8B2A183DF6A5B204CB3F869 /* ReaderDateFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D368550632212CD59E14EFC7 /* ReaderDateFormatter.swift */; };
+		B9EDBCCB85BD97738139ACE2 /* ReaderWebViewConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D49ACB0FB2C5F018460D97 /* ReaderWebViewConfiguration.swift */; };
 		BB5ACFE3BC82697CEF723ACB /* Color+Presets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84EE5AD646FA4689A146F785 /* Color+Presets.swift */; };
 		BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 252359C3746A321FE34487F6 /* SwiftDOMPurify.framework */; };
 		BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
@@ -733,6 +735,7 @@
 		64238F6B2BCE65AB3D1E2032 /* BookLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookLibraryView.swift; sourceTree = "<group>"; };
 		65FFA60D0376D0A46ABD68E2 /* AdblockStatsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdblockStatsModel.swift; sourceTree = "<group>"; };
 		685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireReader.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		69DD30D82D01A1F384553B21 /* ReaderNativeContentEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderNativeContentEnvironment.swift; sourceTree = "<group>"; };
 		69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderShareUtilities.swift; sourceTree = "<group>"; };
 		6ABCCFDB971B5C888BE1180E /* ReaderContentList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentList.swift; sourceTree = "<group>"; };
 		6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -771,6 +774,7 @@
 		9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDataManager.swift; sourceTree = "<group>"; };
 		9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InjectionImport.swift; sourceTree = "<group>"; };
 		9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderImage.swift; sourceTree = "<group>"; };
+		A0D49ACB0FB2C5F018460D97 /* ReaderWebViewConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebViewConfiguration.swift; sourceTree = "<group>"; };
 		A0D512450D8EC517DDA7A82D /* LakeOfFireLibrary-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireLibrary-Info.plist"; sourceTree = "<group>"; };
 		A0E0729E124F758E59DB56B4 /* UserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserScript.swift; sourceTree = "<group>"; };
 		A40C9908B4E643535FB1DD19 /* PDFJSWeb */ = {isa = PBXFileReference; path = PDFJSWeb; sourceTree = "<group>"; };
@@ -996,6 +1000,7 @@
 				1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */,
 				EBB3093361E7F10B9B618FEA /* ReaderModeButton.swift */,
 				F928AF6884694ED6E488E4D6 /* ReaderModeViewModel.swift */,
+				69DD30D82D01A1F384553B21 /* ReaderNativeContentEnvironment.swift */,
 				355678653CC5882AE9C4748C /* ReaderSettings.swift */,
 				D9A9E2BDEC10079CE6CED146 /* ReaderToastBar.swift */,
 				96D232EF9DFC289EF1F9D2B6 /* ReaderToastsView.swift */,
@@ -1003,6 +1008,7 @@
 				F747D237C65559FEC763B4B0 /* ReaderViewModelActor.swift */,
 				D6D48C0A0228526D537B8F4C /* ReaderWebMediaBridge.swift */,
 				F63913BA3B001236DF672E24 /* ReaderWebView.swift */,
+				A0D49ACB0FB2C5F018460D97 /* ReaderWebViewConfiguration.swift */,
 				7864C63653918DC62961A70B /* String+StrippingHTML.swift */,
 				4683349F75B4D15429EB3408 /* TranscriptURLSchemeHandler.swift */,
 				42130BBDD30500801F64BF97 /* URL+ReaderCanonical.swift */,
@@ -1915,6 +1921,7 @@
 				F4F9B4AF34EE7401B91A9B47 /* ReaderMessageHandlersViewModifier.swift in Sources */,
 				8F83E3E0D028AB91C912C310 /* ReaderModeButton.swift in Sources */,
 				09C951CAF82A49704471FAF9 /* ReaderModeViewModel.swift in Sources */,
+				21373399C747A6D16BCE282B /* ReaderNativeContentEnvironment.swift in Sources */,
 				80E05426241473182B1338A2 /* ReaderSettings.swift in Sources */,
 				6ACF6EE4F619ED0BEE29F134 /* ReaderToastBar.swift in Sources */,
 				59FF7DE4EF12E96FE29A26E1 /* ReaderToastsView.swift in Sources */,
@@ -1922,6 +1929,7 @@
 				C3E914F2969FAAD012F6790B /* ReaderViewModelActor.swift in Sources */,
 				B7D257D2C631668FE377D59F /* ReaderWebMediaBridge.swift in Sources */,
 				D1056C22353520428B5BFCED /* ReaderWebView.swift in Sources */,
+				B9EDBCCB85BD97738139ACE2 /* ReaderWebViewConfiguration.swift in Sources */,
 				01EFDA9F827E56F28B89A8F5 /* String+StrippingHTML.swift in Sources */,
 				C773E57BEDA5CC98500BFB78 /* TranscriptURLSchemeHandler.swift in Sources */,
 				3AAAFB6251905A8071DEBCDD /* URL+ReaderCanonical.swift in Sources */,
@@ -2304,6 +2312,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -2314,6 +2323,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2389,6 +2400,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
@@ -2400,6 +2412,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2473,6 +2487,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
@@ -2484,6 +2499,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2560,6 +2577,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -2570,6 +2588,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2645,6 +2665,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
@@ -2656,6 +2677,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2729,6 +2752,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
@@ -2740,6 +2764,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2858,6 +2884,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
@@ -2869,6 +2896,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -3152,6 +3181,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -3162,6 +3192,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -3233,6 +3265,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
@@ -3244,6 +3277,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -3705,6 +3740,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -3715,6 +3751,8 @@
 				);
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",

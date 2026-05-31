@@ -7,6 +7,7 @@ import RealmSwiftGaps
 import LakeKit
 import LakeOfFireContent
 import LakeOfFireCore
+import PersistedLRUCacheHybrid
 
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 
@@ -106,11 +107,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
-    private let trackingSizeCache = LRUFileCache<String, ReaderSizeTrackingCacheBucket>(
+    private let trackingSizeCache = PersistedLRUCacheHybrid.PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
         totalBytesLimit: 20 * 1024 * 1024,
-        countLimit: 10_000
+        countLimit: 10_000,
+        inlineStorageThreshold: 64 * 1024
     )
     private let trackingSizeHistoryLimit = 10
     fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?
@@ -1006,7 +1008,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         try await scriptCaller.evaluateJavaScript(
-                            "window.loadEBook({ url, layoutMode })",
+                            """
+                            const fallbackURL = url;
+                            const fallbackLayoutMode = layoutMode;
+                            window.loadEBook({ url, layoutMode });
+                            """,
                             arguments: [
                                 "url": loaderURL.absoluteString,
                                 "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
