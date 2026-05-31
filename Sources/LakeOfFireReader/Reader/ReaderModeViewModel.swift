@@ -1948,7 +1948,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+    public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         let contentURL = readerContent.pageURL
         let scheduledAt = CFAbsoluteTimeGetCurrent()
         let cachedReadabilityContent = readabilityContent

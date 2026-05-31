@@ -728,7 +728,7 @@
                     --word-tracking-checkmark-height: calc(var(--word-tracking-status-size) / 1.8);
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
                     position: fixed;
-                    bottom: calc(var(--mnb-page-tracking-bottom-inset, 0px) + 7px);
+                    bottom: calc(var(--mnb-page-tracking-bottom-inset, 0px) + 3px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
@@ -911,6 +911,19 @@
                     color: currentColor;
                     transition: max-width 240ms ease, opacity 180ms ease;
                 }
+                #page-tracking-container .page-read-button:not([data-completion-action]) {
+                    width: calc(var(--page-read-button-height) * 0.85);
+                    height: calc(var(--page-read-button-height) * 0.85);
+                    min-width: calc(var(--page-read-button-height) * 0.85);
+                    min-height: calc(var(--page-read-button-height) * 0.85);
+                    padding-inline: 0;
+                    gap: 0;
+                    justify-content: center;
+                }
+                #page-tracking-container .page-read-button:not([data-completion-action]) .mnb-tracking-button-label {
+                    max-width: 0;
+                    opacity: 0;
+                }
                 body #page-tracking-container .page-read-button,
                 body #page-tracking-container .page-read-button *,
                 body #nav-hidden-buttons button,
@@ -926,23 +939,6 @@
                     writing-mode: horizontal-tb !important;
                     text-orientation: mixed !important;
                     direction: ltr !important;
-                }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button {
-                    width: fit-content;
-                    height: var(--page-read-button-height);
-                    min-width: var(--page-read-button-height);
-                    min-height: var(--page-read-button-height);
-                    box-shadow:
-                        0px 1px 6px 1px color-mix(in srgb, var(--theme-tracking-unread-color) 18%, transparent),
-                        0px 6px 16px -8px color-mix(in srgb, black 12%, transparent);
-                    justify-content: flex-start;
-                    padding-inline-start: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 3px);
-                    padding-inline-end: calc((var(--page-read-button-height) - var(--word-tracking-status-size)) / 2 + 9px);
-                    gap: 6px;
-                }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .mnb-tracking-button-label {
-                    max-width: 96px;
-                    opacity: 1;
                 }
                 #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) {
                     width: calc(var(--page-read-button-height) * 0.85);

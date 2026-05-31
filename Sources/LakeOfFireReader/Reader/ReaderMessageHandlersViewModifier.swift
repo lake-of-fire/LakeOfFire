@@ -137,11 +137,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
-    private let trackingSizeCache = LRUFileCache<String, ReaderSizeTrackingCacheBucket>(
+    private let trackingSizeCache = PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
         totalBytesLimit: 20 * 1024 * 1024,
-        countLimit: 10_000
+        countLimit: 10_000,
+        inlineStorageThreshold: 64 * 1024
     )
     private let trackingSizeHistoryLimit = 10
     fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?

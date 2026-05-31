@@ -400,7 +400,6 @@ const isEventInsideElementCircle = (event, element, slop = 2) => {
 const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
 const CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS = 1800;
 const CACHE_WARMER_IDLE_RETRY_MS = 250;
-const CACHE_WARMER_MAX_SECTIONS_AHEAD = 2;
 const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
 const replaceTextResultCache = new Map();
 const replaceTextInFlightCache = new Map();
@@ -800,6 +799,124 @@ const loadRectSnapshot = element => {
     };
 };
 
+const roundLayoutNumber = (value, digits = 1) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Number(number.toFixed(digits)) : null;
+};
+
+const layoutElementSnapshot = element => {
+    if (!element) return null;
+    return {
+        rect: loadRectSnapshot(element),
+        scrollLeft: roundLayoutNumber(element.scrollLeft),
+        scrollTop: roundLayoutNumber(element.scrollTop),
+        scrollWidth: roundLayoutNumber(element.scrollWidth),
+        scrollHeight: roundLayoutNumber(element.scrollHeight),
+        clientWidth: roundLayoutNumber(element.clientWidth),
+        clientHeight: roundLayoutNumber(element.clientHeight),
+        offsetWidth: roundLayoutNumber(element.offsetWidth),
+        offsetHeight: roundLayoutNumber(element.offsetHeight),
+    };
+};
+
+const lastLayoutLogSignatureByEvent = new Map();
+
+const collectEBookLayoutSnapshot = (view = globalThis.reader?.view ?? null, extra = {}) => {
+    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const shadowRoot = renderer?.shadowRoot ?? null;
+    const container = shadowRoot?.getElementById?.('container') ?? shadowRoot?.querySelector?.('#container') ?? null;
+    const top = shadowRoot?.getElementById?.('top') ?? shadowRoot?.querySelector?.('#top') ?? null;
+    const header = shadowRoot?.getElementById?.('header') ?? shadowRoot?.querySelector?.('#header') ?? null;
+    const footer = shadowRoot?.getElementById?.('footer') ?? shadowRoot?.querySelector?.('#footer') ?? null;
+    const readerDoc = renderer?.view?.document ?? renderer?.view?.doc ?? null;
+    const readerRoot = readerDoc?.documentElement ?? null;
+    const readerBody = readerDoc?.body ?? null;
+    const readerBodyStyle = readerDoc?.defaultView && readerBody
+        ? readerDoc.defaultView.getComputedStyle(readerBody)
+        : null;
+    const visualViewport = window.visualViewport ?? null;
+
+    return {
+        ...extra,
+        href: location.href,
+        windowInnerWidth: roundLayoutNumber(window.innerWidth),
+        windowInnerHeight: roundLayoutNumber(window.innerHeight),
+        windowScrollX: roundLayoutNumber(window.scrollX),
+        windowScrollY: roundLayoutNumber(window.scrollY),
+        visualViewportWidth: roundLayoutNumber(visualViewport?.width),
+        visualViewportHeight: roundLayoutNumber(visualViewport?.height),
+        visualViewportOffsetTop: roundLayoutNumber(visualViewport?.offsetTop),
+        visualViewportPageTop: roundLayoutNumber(visualViewport?.pageTop),
+        visualViewportScale: roundLayoutNumber(visualViewport?.scale, 3),
+        bodyClass: document.body?.className || null,
+        rendererLocalName: renderer?.localName || null,
+        rendererFlow: renderer?.getAttribute?.('flow') || null,
+        rendererDir: renderer?.getAttribute?.('dir') || null,
+        rendererClass: renderer?.className || null,
+        rendererSnapshot: layoutElementSnapshot(renderer),
+        viewSnapshot: layoutElementSnapshot(view),
+        topSnapshot: layoutElementSnapshot(top),
+        containerSnapshot: layoutElementSnapshot(container),
+        headerRect: loadRectSnapshot(header),
+        footerRect: loadRectSnapshot(footer),
+        readerReadyState: readerDoc?.readyState || null,
+        readerRootClientWidth: roundLayoutNumber(readerRoot?.clientWidth),
+        readerRootClientHeight: roundLayoutNumber(readerRoot?.clientHeight),
+        readerRootScrollWidth: roundLayoutNumber(readerRoot?.scrollWidth),
+        readerRootScrollHeight: roundLayoutNumber(readerRoot?.scrollHeight),
+        readerBodyClientWidth: roundLayoutNumber(readerBody?.clientWidth),
+        readerBodyClientHeight: roundLayoutNumber(readerBody?.clientHeight),
+        readerBodyScrollWidth: roundLayoutNumber(readerBody?.scrollWidth),
+        readerBodyScrollHeight: roundLayoutNumber(readerBody?.scrollHeight),
+        readerWritingMode: readerBodyStyle?.writingMode || null,
+        readerDirection: readerBodyStyle?.direction || null,
+        readerColumnWidth: readerBodyStyle?.columnWidth || null,
+        readerColumnGap: readerBodyStyle?.columnGap || null,
+        readerColumnCount: readerBodyStyle?.columnCount || null,
+        visibleSegmentCount: document.querySelectorAll?.('[data-mnb-segment-id]').length ?? null,
+    };
+};
+
+const layoutLogSignature = details => JSON.stringify({
+    reason: details.reason ?? null,
+    fraction: details.fraction ?? null,
+    currentLocation: details.currentLocation ?? null,
+    totalLocation: details.totalLocation ?? null,
+    sectionIndex: details.sectionIndex ?? null,
+    localSectionIndex: details.localSectionIndex ?? null,
+    rendererTotal: details.rendererTotal ?? null,
+    rendererFlow: details.rendererFlow ?? null,
+    rendererDir: details.rendererDir ?? null,
+    rendererLocalName: details.rendererLocalName ?? null,
+    windowInnerWidth: details.windowInnerWidth ?? null,
+    windowInnerHeight: details.windowInnerHeight ?? null,
+    visualViewportHeight: details.visualViewportHeight ?? null,
+    visualViewportOffsetTop: details.visualViewportOffsetTop ?? null,
+    containerScrollLeft: details.containerSnapshot?.scrollLeft ?? null,
+    containerScrollTop: details.containerSnapshot?.scrollTop ?? null,
+    containerScrollWidth: details.containerSnapshot?.scrollWidth ?? null,
+    containerScrollHeight: details.containerSnapshot?.scrollHeight ?? null,
+    readerBodyScrollWidth: details.readerBodyScrollWidth ?? null,
+    readerBodyScrollHeight: details.readerBodyScrollHeight ?? null,
+});
+
+const postLayoutLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
+    const payload = { message: `# LAYOUT js.${event}` };
+    for (const [key, value] of Object.entries(details)) {
+        if (value === undefined || value === null) continue;
+        payload[key] = value;
+    }
+    const signature = layoutLogSignature(payload);
+    if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
+    lastLayoutLogSignatureByEvent.set(event, signature);
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (error) {
+        if (manabiDiagnosticsEnabled()) console.debug('# LAYOUT', event, payload, error);
+    }
+};
+
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
     const renderer = globalThis.reader?.view?.renderer ?? null;
     const readerDoc = globalThis.reader?.view?.renderer?.view?.document ?? null;
@@ -897,27 +1014,6 @@ const cacheWarmerForegroundBusyState = () => {
     };
 };
 
-const cacheWarmerWindowLimitState = (targetIndex) => {
-    const activeIndex = activeForegroundSectionIndex();
-    const maxTargetIndex = Number.isInteger(activeIndex)
-        ? activeIndex + CACHE_WARMER_MAX_SECTIONS_AHEAD
-        : null;
-    const minTargetIndex = Number.isInteger(activeIndex)
-        ? activeIndex
-        : null;
-    const limited =
-        Number.isInteger(targetIndex)
-        && Number.isInteger(maxTargetIndex)
-        && targetIndex > maxTargetIndex;
-    return {
-        limited,
-        activeIndex,
-        minTargetIndex,
-        maxTargetIndex,
-        maxSectionsAhead: CACHE_WARMER_MAX_SECTIONS_AHEAD,
-    };
-};
-
 const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified') => {
     if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
         return;
@@ -943,11 +1039,6 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
         return;
     }
     const activeIndex = activeForegroundSectionIndex();
-    const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, activeIndex);
-    const windowLimit = cacheWarmerWindowLimitState(targetIndex);
-    if (windowLimit.limited) {
-        return;
-    }
     globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
     window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, activeIndex)
         ?.catch?.((error) => console.error(error));
@@ -1459,7 +1550,6 @@ const maybeOpenDeferredCacheWarmer = async () => {
         });
         return;
     }
-    const windowLimit = cacheWarmerWindowLimitState(nextUsefulIndex);
     postReplaceTextPerfLog('cache-warmer.preflight.scan', {
         firstLiveHref: firstLiveSectionHref(),
         processedSectionCount: liveProcessedSectionHrefSet().size,
@@ -1472,9 +1562,6 @@ const maybeOpenDeferredCacheWarmer = async () => {
         activeForegroundHref: preflightScan.activeForegroundHref,
         sectionCount: preflightScan.sectionCount,
         sectionSample: preflightScan.sample,
-        activeForegroundIndex: windowLimit.activeIndex,
-        maxTargetIndex: windowLimit.maxTargetIndex,
-        maxSectionsAhead: windowLimit.maxSectionsAhead,
         ...captureEPUBOverlapState(),
     });
     if (!Number.isInteger(nextUsefulIndex)) {
@@ -1488,20 +1575,6 @@ const maybeOpenDeferredCacheWarmer = async () => {
             highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
             uniqueSentenceCount: 0,
             firstLiveHref: firstLiveSectionHref(),
-            processedSectionCount: liveProcessedSectionHrefSet().size,
-            settledSectionCount: liveSettledSectionHrefSet().size,
-            ...captureEPUBOverlapState(),
-        });
-        return;
-    }
-    if (windowLimit.limited) {
-        postReplaceTextPerfLog('cache-warmer.deferred', {
-            reason: 'foreground-window-limit',
-            targetSectionIndex: nextUsefulIndex,
-            targetSectionHref: preflightScan.targetHref,
-            activeForegroundIndex: windowLimit.activeIndex,
-            maxTargetIndex: windowLimit.maxTargetIndex,
-            maxSectionsAhead: windowLimit.maxSectionsAhead,
             processedSectionCount: liveProcessedSectionHrefSet().size,
             settledSectionCount: liveSettledSectionHrefSet().size,
             ...captureEPUBOverlapState(),
@@ -4613,7 +4686,7 @@ class Reader {
             requestAnimationFrame(() => this.#syncPageTrackingButtons('visual-viewport-resize', null, 1).catch((error) => console.error(error)));
         });
         window.manabiInvalidateVisiblePageSegmentSnapshot = (reason = 'manual') => {
-            this.#invalidateVisiblePageSegmentSnapshot();
+            this.#invalidateVisiblePageSegmentSnapshot(reason);
             requestAnimationFrame(() => this.#syncPageTrackingButtons(reason, null, 1).catch((error) => console.error(error)));
         };
         screen.orientation?.addEventListener?.('change', () => {
@@ -4802,7 +4875,7 @@ class Reader {
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
         const visibleButtons = Array.from(document.querySelectorAll('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]'));
         if (reason === 'page-turn-start') {
-            this.#invalidateVisiblePageSegmentSnapshot();
+            this.#invalidateVisiblePageSegmentSnapshot(reason);
             this.pageReadMarkerAwaitingPageState = true;
         }
         document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
@@ -4820,12 +4893,13 @@ class Reader {
             });
         });
     }
-    #invalidateVisiblePageSegmentSnapshot() {
+    #invalidateVisiblePageSegmentSnapshot(sourceReason = 'unspecified') {
         this.visiblePageCollectionGeneration += 1;
         this.visiblePageSegmentSnapshot = null;
         window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             reason: 'visible-page-segment-snapshot.invalidated',
+            sourceReason,
             isExplicitReset: true,
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
@@ -5827,6 +5901,7 @@ class Reader {
             startY: touch.screenY,
             triggered: false,
             chevronActive: false,
+            nativeLookupCancelled: false,
             lastLoggedProgressBucket: null,
         };
     }
@@ -5884,6 +5959,10 @@ class Reader {
             },
         }));
         state.chevronActive = progress > 0;
+        if (!state.nativeLookupCancelled && progress >= 0.25) {
+            state.nativeLookupCancelled = true;
+            this.#invalidateVisiblePageSegmentSnapshot('page-turn-swipe-intent');
+        }
         const progressBucket = Math.floor(progress * 4);
         if (state.lastLoggedProgressBucket !== progressBucket || progress >= 1) {
             state.lastLoggedProgressBucket = progressBucket;
@@ -6435,6 +6514,11 @@ class Reader {
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         applyStoredChromeInsets('reader.open');
+        postLayoutLog('reader.open', collectEBookLayoutSnapshot(this.view, {
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+            bookDir: this.bookDir,
+            isRTL: this.isRTL,
+        }));
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
@@ -6505,6 +6589,11 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            postLayoutLog('pageTurn.sideButton.begin', collectEBookLayoutSnapshot(this.view, {
+                side,
+                method,
+                eventType,
+            }));
             try {
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility(method, 'page-turn.side-button');
@@ -6513,7 +6602,18 @@ class Reader {
                 } else {
                     await this.view.goRight();
                 }
+                postLayoutLog('pageTurn.sideButton.end', collectEBookLayoutSnapshot(this.view, {
+                    side,
+                    method,
+                    eventType,
+                }));
             } catch (error) {
+                postLayoutLog('pageTurn.sideButton.error', collectEBookLayoutSnapshot(this.view, {
+                    side,
+                    method,
+                    eventType,
+                    error: error?.message || String(error),
+                }));
                 throw error;
             }
         };
@@ -6613,6 +6713,11 @@ class Reader {
         this.view.addEventListener('foregroundPageTurnActivity', e => {
             const detail = e?.detail ?? {};
             const source = detail.source || 'paginator';
+            postLayoutLog('foregroundPageTurnActivity', collectEBookLayoutSnapshot(this.view, {
+                source,
+                direction: detail.direction ?? null,
+                reason: detail.reason ?? null,
+            }));
             markCacheWarmerForegroundActivity(source);
         });
         // Listen for resetSideNavChevrons custom event to reset chevrons
@@ -6696,6 +6801,75 @@ class Reader {
         
         document.addEventListener('keydown', this.#handleKeydown.bind(this))
         
+        let pendingMainDocumentBlankNavigationTouch = null;
+        const mainDocumentBlankNavigationMoveThreshold = 12;
+        const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
+            const now = Date.now();
+            if (window.__manabiLookupPopoverActive === true) {
+                window.__manabiSuppressUnhandledTapHideNavigationUntil = now + 750;
+            }
+            const ebookNavigationHidden =
+                globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                touchedEntryWithElementId: null,
+                wasAlreadySelected: false,
+                touchstartAtMs,
+                touchstartEventType: event.type,
+                ebookNavigationHidden,
+                source,
+            });
+        };
+        const clearPendingMainDocumentBlankNavigationTouch = () => {
+            pendingMainDocumentBlankNavigationTouch = null;
+        };
+        const touchPointForNavigationGesture = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
+        const movedPastBlankNavigationTapThreshold = (event, pending) => {
+            const point = touchPointForNavigationGesture(event);
+            const dx = (point?.screenX ?? point?.clientX ?? pending.startX) - pending.startX;
+            const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
+            return (dx * dx + dy * dy) > (mainDocumentBlankNavigationMoveThreshold * mainDocumentBlankNavigationMoveThreshold);
+        };
+        const postNavigationTouchDebug = (event, stage, extra = {}) => {
+            if (!manabiDiagnosticsEnabled()) return;
+            const target = event.target;
+            const point = event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
+            const targetElement = target instanceof Element ? target : target?.parentElement;
+            const rectFor = element => {
+                if (!(element instanceof Element)) return null;
+                const rect = element.getBoundingClientRect();
+                return {
+                    x: roundLayoutNumber(rect.x),
+                    y: roundLayoutNumber(rect.y),
+                    width: roundLayoutNumber(rect.width),
+                    height: roundLayoutNumber(rect.height),
+                    bottom: roundLayoutNumber(rect.bottom),
+                };
+            };
+            window.webkit?.messageHandlers?.print?.postMessage?.({
+                message: '# NAV js.ebookToolbarTouch',
+                stage,
+                eventType: event.type,
+                x: roundLayoutNumber(point?.clientX),
+                y: roundLayoutNumber(point?.clientY),
+                targetTag: target?.tagName || target?.nodeName || null,
+                targetID: target?.id || null,
+                targetClass: typeof target?.className === 'string' ? target.className : null,
+                closestNavBar: !!targetElement?.closest?.('#nav-bar'),
+                closestPageTracking: !!targetElement?.closest?.('#page-tracking-container'),
+                closestPageTrackingButtons: !!targetElement?.closest?.('#page-tracking-buttons'),
+                closestButton: targetElement?.closest?.('button')?.id || null,
+                navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                    || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                    || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true,
+                navBarRect: rectFor(document.getElementById('nav-bar')),
+                pageTrackingRect: rectFor(document.getElementById('page-tracking-container')),
+                pageTrackingButtonsRect: rectFor(document.getElementById('page-tracking-buttons')),
+                progressWrapperRect: rectFor(document.getElementById('progress-wrapper')),
+                ...extra,
+            });
+        };
         const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
             const target = event.target;
@@ -6711,19 +6885,102 @@ class Reader {
             }
             const excludedTarget = target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]');
             if (excludedTarget) {
+                clearPendingMainDocumentBlankNavigationTouch();
                 return
             }
 
-            if (window.__manabiLookupPopoverActive === true) {
-                window.__manabiSuppressUnhandledTapHideNavigationUntil = Date.now() + 750;
+            if (event.type === 'touchstart') {
+                const point = touchPointForNavigationGesture(event);
+                pendingMainDocumentBlankNavigationTouch = point
+                    ? {
+                        startX: point.screenX ?? point.clientX,
+                        startY: point.screenY ?? point.clientY,
+                        startAtMs: Date.now(),
+                    }
+                    : null;
+                return;
             }
-            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
-                touchedEntryWithElementId: null,
-                wasAlreadySelected: false,
-                touchstartAtMs: Date.now(),
-            })
+            postNoElementNavigationTouchStart(event, 'main-document.blank')
         }
+        const processMainDocumentBlankNavigationTouchMove = function(event) {
+            const pending = pendingMainDocumentBlankNavigationTouch;
+            if (!pending) {
+                return;
+            }
+            if (movedPastBlankNavigationTapThreshold(event, pending)) {
+                clearPendingMainDocumentBlankNavigationTouch();
+            }
+        }
+        const processMainDocumentBlankNavigationTouchEnd = function(event) {
+            const pending = pendingMainDocumentBlankNavigationTouch;
+            clearPendingMainDocumentBlankNavigationTouch();
+            if (!pending || event.type === 'touchcancel') {
+                return;
+            }
+            if (movedPastBlankNavigationTapThreshold(event, pending)) {
+                return;
+            }
+            postNoElementNavigationTouchStart(event, 'main-document.blank', pending.startAtMs)
+        }
+        const processNavChromeTouchStart = function(event) {
+            const target = event.target;
+            if (target && target.ownerDocument !== document) {
+                return;
+            }
+            const navBar = target?.closest?.('#nav-bar');
+            if (!navBar) {
+                return;
+            }
+            const interactiveTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button');
+            postNavigationTouchDebug(event, 'nav-bar.touchstart', {
+                interactive: !!interactiveTarget,
+                interactiveID: interactiveTarget?.id || null,
+                interactiveTag: interactiveTarget?.tagName || null,
+            });
+            if (interactiveTarget) {
+                return;
+            }
+            postNoElementNavigationTouchStart(event, 'nav-bar.chrome')
+        }
+        const processPageTrackingChromeTouchStart = function(event) {
+            const target = event.target;
+            if (target && target.ownerDocument !== document) {
+                return;
+            }
+            const pageTrackingContainer = target?.closest?.('#page-tracking-container');
+            if (!pageTrackingContainer) {
+                return;
+            }
+            const pageReadButton = target?.closest?.('.page-read-button');
+            postNavigationTouchDebug(event, 'page-tracking.touchstart', {
+                interactive: !!pageReadButton,
+                interactiveID: pageReadButton?.id || null,
+                trackingID: pageReadButton?.dataset?.pageTrackingId || null,
+                completionAction: pageReadButton?.dataset?.completionAction || null,
+            });
+        }
+        document.addEventListener('touchstart', processNavChromeTouchStart, {
+            passive: true
+        })
+        document.addEventListener('mousedown', processNavChromeTouchStart, {
+            passive: true
+        })
+        document.addEventListener('touchstart', processPageTrackingChromeTouchStart, {
+            passive: true
+        })
+        document.addEventListener('mousedown', processPageTrackingChromeTouchStart, {
+            passive: true
+        })
         document.addEventListener('touchstart', processTouchStart, {
+            passive: true
+        })
+        document.addEventListener('touchmove', processMainDocumentBlankNavigationTouchMove, {
+            passive: true
+        })
+        document.addEventListener('touchend', processMainDocumentBlankNavigationTouchEnd, {
+            passive: true
+        })
+        document.addEventListener('touchcancel', processMainDocumentBlankNavigationTouchEnd, {
             passive: true
         })
         document.addEventListener('mousedown', processTouchStart, {
@@ -7247,31 +7504,85 @@ class Reader {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         if (doc && doc.__manabiMay20BlankTapLoggingInstalled !== true) {
             doc.__manabiMay20BlankTapLoggingInstalled = true;
-            const logDocumentPointer = (event) => {
+            const blankPointerMoveThreshold = 12;
+            let pendingBlankPointerTap = null;
+            const touchPointForBlankPointer = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
+            const clearPendingBlankPointerTap = () => {
+                pendingBlankPointerTap = null;
+            };
+            const blankPointerMovedPastTapThreshold = (event, pending) => {
+                const point = touchPointForBlankPointer(event);
+                const dx = (point?.screenX ?? point?.clientX ?? pending.startX) - pending.startX;
+                const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
+                return (dx * dx + dy * dy) > (blankPointerMoveThreshold * blankPointerMoveThreshold);
+            };
+            const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
                 const target = event.target;
                 const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
                 const now = Date.now();
-                if (!excludedTarget && (event.type === 'touchstart' || event.type === 'mousedown')) {
-                    const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
-                    if (now - lastPostedAt > 350) {
-                        doc.__manabiLastBlankPointerPostAt = now;
-                        const ebookNavigationHidden =
-                            globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
-                            || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
-                            || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-                        globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
-                        window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
-                            touchedEntryWithElementId: null,
-                            wasAlreadySelected: false,
-                            touchstartAtMs: now,
-                            touchstartEventType: event.type,
-                            ebookNavigationHidden,
-                        });
-                    }
+                if (excludedTarget) {
+                    return;
+                }
+                const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
+                if (now - lastPostedAt > 350) {
+                    doc.__manabiLastBlankPointerPostAt = now;
+                    const ebookNavigationHidden =
+                        globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
+                        || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                        || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+                    globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
+                    window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                        touchedEntryWithElementId: null,
+                        wasAlreadySelected: false,
+                        touchstartAtMs,
+                        touchstartEventType: event.type,
+                        ebookNavigationHidden,
+                        source,
+                    });
                 }
             };
-            doc.addEventListener('touchstart', logDocumentPointer, { passive: true, capture: true });
-            doc.addEventListener('mousedown', logDocumentPointer, { passive: true, capture: true });
+            const handleBlankPointerTouchStart = (event) => {
+                const target = event.target;
+                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                if (excludedTarget) {
+                    clearPendingBlankPointerTap();
+                    return;
+                }
+                const point = touchPointForBlankPointer(event);
+                pendingBlankPointerTap = point
+                    ? {
+                        startX: point.screenX ?? point.clientX,
+                        startY: point.screenY ?? point.clientY,
+                        startAtMs: Date.now(),
+                    }
+                    : null;
+            };
+            const handleBlankPointerTouchMove = (event) => {
+                const pending = pendingBlankPointerTap;
+                if (!pending) return;
+                if (blankPointerMovedPastTapThreshold(event, pending)) {
+                    clearPendingBlankPointerTap();
+                }
+            };
+            const handleBlankPointerTouchEnd = (event) => {
+                const pending = pendingBlankPointerTap;
+                clearPendingBlankPointerTap();
+                if (!pending || event.type === 'touchcancel') {
+                    return;
+                }
+                if (blankPointerMovedPastTapThreshold(event, pending)) {
+                    return;
+                }
+                postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
+            };
+            const handleBlankPointerMouseDown = (event) => {
+                postContentDocumentBlankPointerTap(event, 'content-document.blank.mouse');
+            };
+            doc.addEventListener('touchstart', handleBlankPointerTouchStart, { passive: true, capture: true });
+            doc.addEventListener('touchmove', handleBlankPointerTouchMove, { passive: true, capture: true });
+            doc.addEventListener('touchend', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            doc.addEventListener('touchcancel', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            doc.addEventListener('mousedown', handleBlankPointerMouseDown, { passive: true, capture: true });
         }
         installRestorePositionSaveUserInputTracking(doc, 'reader-document');
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
@@ -7388,6 +7699,17 @@ class Reader {
         const rendererTotal = typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
             ? this.navHUD.rendererPageSnapshot.total
             : null;
+        postLayoutLog('reader.relocate', collectEBookLayoutSnapshot(this.view, {
+            reason: reason ?? null,
+            fraction: safeRound(fraction),
+            effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+            currentLocation: location?.current ?? null,
+            totalLocation: location?.total ?? null,
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal,
+            cfiLength: typeof cfi === 'string' ? cfi.length : 0,
+        }));
         const sectionBaseCFI = typeof sectionIndex === 'number'
             ? (this.view?.book?.sections?.[sectionIndex]?.cfi ?? null)
             : null;
@@ -8052,11 +8374,17 @@ class CacheWarmer {
 window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
 //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    postLayoutLog('setEbookViewerLayout', collectEBookLayoutSnapshot(globalThis.reader?.view, {
+        layoutMode,
+    }));
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
 window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
+        layoutMode,
+    }));
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 

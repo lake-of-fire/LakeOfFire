@@ -2362,6 +2362,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -2373,6 +2374,8 @@
 				OTHER_LDFLAGS = "-ObjC";
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2504,6 +2507,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -2515,6 +2519,8 @@
 				OTHER_LDFLAGS = "-ObjC";
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2563,7 +2569,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -2571,9 +2576,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2584,11 +2589,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -2629,7 +2634,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -2637,9 +2641,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2650,11 +2654,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -2699,7 +2703,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -2707,9 +2710,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2720,11 +2723,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -2769,7 +2772,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -2777,9 +2779,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2790,11 +2792,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -2859,7 +2861,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -2867,9 +2868,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2880,11 +2881,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -2936,6 +2937,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -2947,6 +2949,8 @@
 				OTHER_LDFLAGS = "-ObjC";
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -2991,7 +2995,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -2999,9 +3002,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -3012,11 +3015,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3130,7 +3133,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
@@ -3142,7 +3144,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
@@ -3159,8 +3160,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3239,6 +3238,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
@@ -3250,6 +3250,8 @@
 				OTHER_LDFLAGS = "-ObjC";
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
@@ -3322,7 +3324,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -3330,9 +3331,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -3343,11 +3344,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3442,7 +3443,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
@@ -3454,7 +3454,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
@@ -3471,8 +3470,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3525,7 +3522,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
@@ -3537,7 +3533,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
@@ -3554,8 +3549,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3632,7 +3625,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
@@ -3644,7 +3636,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
@@ -3661,8 +3652,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3715,7 +3704,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
@@ -3723,9 +3711,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -3736,11 +3724,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3781,7 +3769,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
@@ -3793,7 +3780,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
@@ -3810,8 +3796,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
@@ -3864,7 +3848,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
@@ -3876,7 +3859,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
@@ -3893,8 +3875,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",

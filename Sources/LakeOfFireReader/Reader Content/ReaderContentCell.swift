@@ -1147,8 +1147,8 @@ private struct ReaderContentThumbnailTile: View {
 
     private var placeholderLetter: String? {
         switch content {
-        case .icon(_, let placeholder):
-            return placeholder.isEmpty ? nil : placeholder
+        case .icon:
+            return nil
         case .initial(let letter):
             return letter.isEmpty ? nil : letter
         case .symbol:

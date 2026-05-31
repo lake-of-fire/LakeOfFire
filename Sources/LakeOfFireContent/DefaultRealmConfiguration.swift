@@ -3,7 +3,7 @@ import LakeOfFireCore
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 63
+    public static let schemaVersion: UInt64 = 66
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -20,6 +20,7 @@ public enum DefaultRealmConfiguration {
 //        }
         config.objectTypes = [
             FeedCategory.self,
+            FeedDirectory.self,
             Feed.self,
             FeedEntryCollection.self,
             FeedEntry.self,
@@ -99,6 +100,23 @@ public enum DefaultRealmConfiguration {
             }
             if oldSchemaVersion < 62 {
                 migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
+            }
+            if oldSchemaVersion < 64 {
+                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+            }
+            if oldSchemaVersion < 65 {
+                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+                migration.enumerateObjects(ofType: FeedDirectory.className()) { _, _ in }
+            }
+            if oldSchemaVersion < 66 {
+                migration.enumerateObjects(ofType: Feed.className()) { oldObject, newObject in
+                    guard oldSchemaVersion >= 65 else { return }
+                    newObject?["ordinal"] = oldObject?["opmlOrder"]
+                }
+                migration.enumerateObjects(ofType: FeedDirectory.className()) { oldObject, newObject in
+                    guard oldSchemaVersion >= 65 else { return }
+                    newObject?["ordinal"] = oldObject?["opmlOrder"]
+                }
             }
         }
     }
