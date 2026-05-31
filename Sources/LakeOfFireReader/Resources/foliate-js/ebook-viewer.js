@@ -5095,17 +5095,21 @@ class Reader {
             awaitingPageState: this.pageReadMarkerAwaitingPageState,
         });
     }
-    #invalidateVisiblePageSegmentSnapshot() {
+    #invalidateVisiblePageSegmentSnapshot(sourceReason = 'unspecified') {
         this.visiblePageCollectionGeneration += 1;
         this.visiblePageSegmentSnapshot = null;
         postPopoverLog('nativeTargets.invalidate', {
             generation: this.visiblePageCollectionGeneration,
             reason: 'visiblePageSegmentSnapshotInvalidated',
+            sourceReason,
             viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
             viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
         });
         window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
+            reason: 'visible-page-segment-snapshot.invalidated',
+            sourceReason,
+            isExplicitReset: true,
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
             viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
@@ -6150,6 +6154,7 @@ class Reader {
             startY: touch.screenY,
             triggered: false,
             chevronActive: false,
+            nativeLookupCancelled: false,
         };
     }
     async #onMainDocumentTouchMove(event) {
@@ -6192,6 +6197,10 @@ class Reader {
             detail: { leftOpacity, rightOpacity, logicalDirection, chevronSide },
         }));
         state.chevronActive = progress > 0;
+        if (!state.nativeLookupCancelled && progress >= 0.25) {
+            state.nativeLookupCancelled = true;
+            this.#invalidateVisiblePageSegmentSnapshot('page-turn-swipe-intent');
+        }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
         this.#flashSideNavChevron(chevronSide);

@@ -888,10 +888,13 @@ public struct Reader: View {
         let effectiveTopInset = explicitTopInset
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
-        let ebookChromeBottomInset = max(0, ebookChromeBottomSafeAreaInset ?? additionalBottomInset)
-        let ebookChromeExtraBottomInset = max(0, ebookChromeBottomInset - sampledBottomInset)
+        let ebookChromeBottomInset = max(
+            sampledBottomInset,
+            additionalBottomInset,
+            max(0, ebookChromeBottomSafeAreaInset ?? 0)
+        )
         let effectiveBottomInset = pageURL.isEBookURL
-            ? ebookChromeExtraBottomInset
+            ? ebookChromeBottomInset
             : max(sampledBottomInset, additionalBottomInset)
         let toolbarReferenceBottomInset = pageURL.isEBookURL
             ? ebookChromeBottomInset

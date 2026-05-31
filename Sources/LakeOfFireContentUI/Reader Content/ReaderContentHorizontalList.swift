@@ -219,6 +219,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         //        .frame(width: 275, height: maxCellHeight - (padding * 2))
         //                    .buttonStyle(ReaderContentCellButtonStyle())
         .buttonStyle(.borderless)
+        .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
+        .accessibilityLabel(content.titleForDisplay)
         .tint(.secondary)
         //        .background(.cyan)
         //                    .padding(.vertical, 4)
