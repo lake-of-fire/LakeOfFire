@@ -62,6 +62,11 @@ fileprivate actor ReaderContentCellActor {
     static let shared = ReaderContentCellActor()
 }
 
+private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
+    guard let url, !url.isNativeReaderView else { return nil }
+    return url
+}
+
 @MainActor
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
@@ -111,6 +116,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let feed = feedEntry?.getFeed()
                 let feedTitle = feed?.title
                 let feedIconURL = feed?.iconUrl
+                let resolvedSourceIconURL = usableReaderContentSourceIconURL(feedIconURL) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
                 let tracksReadingProgress = item.tracksReadingProgress
                 let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
                 let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
@@ -125,7 +131,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let sourceURL = itemURL
                 var sourceTitle: String?
                 // TODO: Store and get site names from OpenGraph
-                var sourceIconURL: URL?
+                var sourceIconURL: URL? = resolvedSourceIconURL
 
                 if includeSource {
                     if sourceURL.isSnippetURL {
@@ -134,7 +140,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         sourceTitle = sourceURL.contentKindTitle
                     } else if let feedTitle {
                         sourceTitle = feedTitle
-                        sourceIconURL = feedIconURL ?? itemSourceIconURL
+                        sourceIconURL = resolvedSourceIconURL
                     } else if sourceURL.isHTTP {
                         sourceTitle = sourceURL.host
                         let readerRealm = try await Realm(
@@ -146,10 +152,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         if let feedEntry = readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
                             try Task.checkCancellation()
                             sourceTitle = feed.title
-                            sourceIconURL = feed.iconUrl ?? itemSourceIconURL
+                            sourceIconURL = usableReaderContentSourceIconURL(feed.iconUrl) ?? resolvedSourceIconURL
                         } else if let host = sourceURL.host {
                             sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-                            sourceIconURL = itemSourceIconURL
+                            sourceIconURL = resolvedSourceIconURL
                         }
                     }
                 }
@@ -443,7 +449,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var resolvedSourceIconURL: URL? {
-        viewModel.sourceIconURL ?? item.sourceIconURL
+        usableReaderContentSourceIconURL(viewModel.sourceIconURL) ?? usableReaderContentSourceIconURL(item.sourceIconURL)
     }
 
     private var usesSourceIconAsThumbnail: Bool {
@@ -1352,8 +1358,8 @@ private struct ReaderContentThumbnailTile: View {
 
     private var placeholderLetter: String? {
         switch content {
-        case .icon:
-            return nil
+        case .icon(_, let placeholder):
+            return placeholder.isEmpty ? nil : placeholder
         case .initial(let letter):
             return letter.isEmpty ? nil : letter
         case .symbol:

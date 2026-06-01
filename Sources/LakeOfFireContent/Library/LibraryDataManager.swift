@@ -489,13 +489,26 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     }
     
     @RealmBackgroundActor
-    public func getOrCreateAppFeed(rssURL: URL, isReaderModeByDefault: Bool, rssContainsFullContent: Bool) async throws -> Feed? {
+    public func getOrCreateAppFeed(
+        rssURL: URL,
+        isReaderModeByDefault: Bool,
+        rssContainsFullContent: Bool,
+        title: String? = nil,
+        iconURL: URL? = nil
+    ) async throws -> Feed? {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
         var feed = Feed()
         let existingAppFeeds = realm.objects(Feed.self).where({ !$0.isDeleted && $0.categoryID == nil }).filter { $0.rssUrl == rssURL }
         if let existing = existingAppFeeds.first {
             feed = existing
-            if feed.meaningfulContentMinLength != 0 || feed.isReaderModeByDefault != isReaderModeByDefault || feed.rssContainsFullContent != rssContainsFullContent || !feed.deleteOrphans {
+            let shouldUpdateTitle = title.map { feed.title != $0 } ?? false
+            let shouldUpdateIcon = iconURL.map { feed.iconUrl != $0 } ?? false
+            if feed.meaningfulContentMinLength != 0 ||
+                feed.isReaderModeByDefault != isReaderModeByDefault ||
+                feed.rssContainsFullContent != rssContainsFullContent ||
+                !feed.deleteOrphans ||
+                shouldUpdateTitle ||
+                shouldUpdateIcon {
 //                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     feed.deleteOrphans = true
@@ -503,6 +516,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
+                    if let title {
+                        feed.title = title
+                    }
+                    if let iconURL {
+                        feed.iconUrl = iconURL
+                    }
                     feed.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
@@ -521,6 +540,12 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         } else {
             feed.deleteOrphans = true
             feed.rssUrl = rssURL
+            if let title {
+                feed.title = title
+            }
+            if let iconURL {
+                feed.iconUrl = iconURL
+            }
             feed.meaningfulContentMinLength = 0
             feed.isReaderModeByDefault = isReaderModeByDefault
             feed.rssContainsFullContent = rssContainsFullContent
