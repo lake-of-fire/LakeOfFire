@@ -56,6 +56,11 @@ fileprivate actor ReaderContentCellActor {
     static var shared = ReaderContentCellActor()
 }
 
+private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
+    guard let url, !url.isNativeReaderView else { return nil }
+    return url
+}
+
 @MainActor
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
@@ -95,23 +100,22 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let itemURL = item.url
             let itemSourceIconURL = item.sourceIconURL
+            let feed = (item as? FeedEntry)?.getFeed()
+            let sourceIconURL = usableReaderContentSourceIconURL(feed?.iconUrl) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
             let tracksReadingProgress = item.tracksReadingProgress
             let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
             let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
             let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
             let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
 
-            var sourceIconURL: URL?
             var sourceTitle: String?
             if includeSource {
                 if itemURL.isSnippetURL {
                     sourceTitle = "Snippet"
-                } else if let feedEntry = item as? FeedEntry, let feed = feedEntry.getFeed() {
+                } else if let feed {
                     sourceTitle = feed.title
-                    sourceIconURL = feed.iconUrl ?? itemSourceIconURL
                 } else if let host = itemURL.host, !host.isEmpty {
                     sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-                    sourceIconURL = itemSourceIconURL
                 }
             }
 
@@ -432,7 +436,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     }
 
     private var resolvedSourceIconURL: URL? {
-        viewModel.sourceIconURL ?? item.sourceIconURL
+        usableReaderContentSourceIconURL(viewModel.sourceIconURL) ?? usableReaderContentSourceIconURL(item.sourceIconURL)
     }
 
     private var usesSourceIconAsThumbnail: Bool {
@@ -664,7 +668,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
 #if DEBUG
     @ViewBuilder
     private var videoMakerMenuItem: some View {
-        if item.hasTranscriptTracerVideoSource, let readerContentVideoMakerOpenAction {
+        if let readerContentVideoMakerOpenAction, item.hasTranscriptTracerVideoSource {
             Button {
                 readerContentVideoMakerOpenAction([item])
             } label: {
@@ -1126,6 +1130,13 @@ private struct ReaderContentThumbnailTile: View {
                 )
 
             if case let .icon(iconURL, _) = content {
+                if let placeholderLetter {
+                    Text(placeholderLetter)
+                        .font(.system(size: min(width, height) * 0.42, weight: .semibold, design: .rounded))
+                        .minimumScaleFactor(0.4)
+                        .foregroundStyle(Color.secondary.opacity(0.9))
+                }
+
                 ReaderContentSourceIconImage(sourceIconURL: iconURL, iconSize: min(width, height) * 0.52)
             }
 
@@ -1135,7 +1146,7 @@ private struct ReaderContentThumbnailTile: View {
                     .foregroundStyle(Color.secondary.opacity(0.85))
             }
 
-            if let placeholderLetter {
+            if case .initial = content, let placeholderLetter {
                 Text(placeholderLetter)
                     .font(.system(size: min(width, height) * 0.42, weight: .semibold, design: .rounded))
                     .minimumScaleFactor(0.4)
@@ -1147,8 +1158,8 @@ private struct ReaderContentThumbnailTile: View {
 
     private var placeholderLetter: String? {
         switch content {
-        case .icon:
-            return nil
+        case .icon(_, let placeholder):
+            return placeholder.isEmpty ? nil : placeholder
         case .initial(let letter):
             return letter.isEmpty ? nil : letter
         case .symbol:

@@ -401,6 +401,7 @@ const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
 const CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS = 1800;
 const CACHE_WARMER_IDLE_RETRY_MS = 250;
 const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
+const CACHE_WARMER_MAX_SECTIONS_AHEAD = 2;
 const replaceTextResultCache = new Map();
 const replaceTextInFlightCache = new Map();
 
@@ -1018,6 +1019,22 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
     if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
         return;
     }
+    const cacheWarmerWindowLimitState = (targetIndex) => {
+        const activeIndex = activeForegroundSectionIndex();
+        const minTargetIndex = Number.isInteger(activeIndex) ? Math.max(0, activeIndex) : 0;
+        const maxTargetIndex = Number.isInteger(activeIndex)
+            ? activeIndex + CACHE_WARMER_MAX_SECTIONS_AHEAD
+            : null;
+        return {
+            activeIndex: Number.isInteger(activeIndex) ? activeIndex : null,
+            minTargetIndex,
+            maxTargetIndex,
+            targetIndex: Number.isInteger(targetIndex) ? targetIndex : null,
+            isWithinWindow: !Number.isInteger(targetIndex)
+                || !Number.isInteger(maxTargetIndex)
+                || targetIndex <= maxTargetIndex,
+        };
+    };
     const busyState = cacheWarmerForegroundBusyState();
     if (busyState.busy) {
         clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
@@ -1039,6 +1056,11 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
         return;
     }
     const activeIndex = activeForegroundSectionIndex();
+    const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, activeIndex);
+    const windowLimitState = cacheWarmerWindowLimitState(targetIndex);
+    if (!windowLimitState.isWithinWindow) {
+        return;
+    }
     globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
     window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, activeIndex)
         ?.catch?.((error) => console.error(error));
