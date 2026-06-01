@@ -29,9 +29,7 @@ private func logEPUBBack(_ message: @autoclosure () -> String) {
 }
 
 private func logBook(_ message: @autoclosure () -> String) {
-#if DEBUG
-    debugPrint("# BOOK \(message())")
-#endif
+    _ = message
 }
 
 // To avoid redraws...

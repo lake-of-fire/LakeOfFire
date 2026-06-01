@@ -44,13 +44,8 @@ const logFix = (event, detail = {}) => {
     }
 };
 const logBug = (event, detail = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    try {
-        const payload = { event, ...detail };
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKBUG1 ${JSON.stringify(payload)}`);
-    } catch (_err) {
-        try { console.log('# BOOKBUG1', event, detail); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
 const logNavHide = (event, detail = {}) => {

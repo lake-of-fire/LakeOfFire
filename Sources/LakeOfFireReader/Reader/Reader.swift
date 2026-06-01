@@ -31,9 +31,7 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
 }
 
 private func logBook(_ message: @autoclosure () -> String) {
-#if DEBUG
-    debugPrint("# BOOK \(message())")
-#endif
+    _ = message
 }
 
 #if os(iOS)
@@ -781,13 +779,6 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
     @MainActor
     private func syncReaderHeaderMediaButton(reason: String) async {
         guard scriptCaller.hasAsyncCaller else {
-            debugPrint(
-                "# MEDIA readerHeader.sync.skip",
-                "reason=\(reason)",
-                "info=noAsyncCaller",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
-            )
             return
         }
         let isPlaying = readerMediaPlayerViewModel.isPlaying
@@ -809,50 +800,12 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             || ttsAvailable
         if isReaderModeContent {
             guard !webViewPageURL.isReaderURLLoaderURL else {
-                debugPrint(
-                    "# MEDIA readerHeader.sync.skip",
-                    "reason=\(reason)",
-                    "info=readerLoaderDocument",
-                    "pageURL=\(readerContent.pageURL.absoluteString)",
-                    "webViewURL=\(webViewPageURL.absoluteString)",
-                    "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
-                    "lastRendered=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")"
-                )
                 return
             }
             guard renderedCanonicalURL == contentCanonicalURL || readerViewModel.state.hasReaderRenderReady else {
-                debugPrint(
-                    "# MEDIA readerHeader.sync.skip",
-                    "reason=\(reason)",
-                    "info=readerDOMNotSettled",
-                    "pageURL=\(readerContent.pageURL.absoluteString)",
-                    "webViewURL=\(webViewPageURL.absoluteString)",
-                    "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
-                    "lastRendered=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")",
-                    "hasReaderRenderReady=\(readerViewModel.state.hasReaderRenderReady)"
-                )
                 return
             }
         }
-        debugPrint(
-            "# MEDIA readerHeader.sync.begin",
-            "reason=\(reason)",
-            "pageURL=\(readerContent.pageURL.absoluteString)",
-            "webViewURL=\(webViewPageURL.absoluteString)",
-            "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
-            "contentKey=\(readerContent.content?.compoundKey ?? "nil")",
-            "lastRendered=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")",
-            "hasReaderRenderReady=\(readerViewModel.state.hasReaderRenderReady)",
-            "contentHasAudio=\(readerContent.content?.hasAudio ?? false)",
-            "recordedAudioCount=\(readerMediaPlayerViewModel.audioURLs.count)",
-            "hasRecordedAudio=\(readerMediaPlayerViewModel.hasRecordedAudio)",
-            "hasPreparedAITTS=\(readerMediaPlayerViewModel.hasPreparedAITTS)",
-            "ttsAvailable=\(ttsAvailable)",
-            "usesTTS=\(usesTTS)",
-            "mediaAvailable=\(mediaAvailable)",
-            "isPlaying=\(isPlaying)",
-            "playbackSource=\(readerMediaPlayerViewModel.playbackSource.rawValue)"
-        )
         do {
             try await scriptCaller.evaluateJavaScript(
                 """
@@ -865,18 +818,7 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
                 """,
                 duplicateInMultiTargetFrames: true
             )
-            debugPrint(
-                "# MEDIA readerHeader.sync.finish",
-                "reason=\(reason)",
-                "mediaAvailable=\(mediaAvailable)",
-                "isPlaying=\(isPlaying)"
-            )
         } catch {
-            debugPrint(
-                "# MEDIA readerHeader.sync.error",
-                "reason=\(reason)",
-                "error=\(error.localizedDescription)"
-            )
         }
     }
 }

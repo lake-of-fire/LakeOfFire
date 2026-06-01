@@ -162,16 +162,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
         currentContentURL = content.url
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
-        mediaDebugPrint(
-            "# MEDIA mediaPlayer.navigation",
-            "pageURL=\(newState.pageURL.absoluteString)",
-            "contentURL=\(content.url.absoluteString)",
-            "contentKey=\(content.compoundKey)",
-            "voiceCount=\(voiceAudioURLs.count)",
-            "autoOpen=\(content.autoOpenMediaPlayer)",
-            "isNativeReaderView=\(newState.pageURL.isNativeReaderView)",
-            "playbackSource=\(playbackSource.rawValue)"
-        )
 #if DEBUG
         mediaDebugPrint(
             "# AUDIO ReaderMediaPlayerViewModel.onNavigationCommitted url=\(newState.pageURL.absoluteString) voiceCount=\(voiceAudioURLs.count) host=\(newState.pageURL.host ?? "nil") isReaderMode=\(newState.pageURL.isNativeReaderView)"
@@ -187,11 +177,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 audioURLs = voiceAudioURLs
             }
             if !voiceAudioURLs.isEmpty && content.autoOpenMediaPlayer {
-                mediaDebugPrint(
-                    "# MEDIA mediaPlayer.autoOpen",
-                    "contentURL=\(content.url.absoluteString)",
-                    "voiceCount=\(voiceAudioURLs.count)"
-                )
 #if DEBUG
                 if !isMediaPlayerPresented {
                     mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.presentingNowPlaying reason=navigation voiceCount=\(voiceAudioURLs.count)")
@@ -268,13 +253,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func presentRecordedAudio(autoplay: Bool) {
         mediaDebugPrint(
-            "# MEDIA mediaPlayer.presentRecordedAudio",
-            "autoplay=\(autoplay)",
-            "hasRecordedAudio=\(hasRecordedAudio)",
-            "audioURLCount=\(audioURLs.count)",
-            "contentURL=\(currentContentURL?.absoluteString ?? "nil")"
-        )
-        mediaDebugPrint(
             "# READALOUD present.recorded",
             "autoplay=\(autoplay)",
             "hasRecordedAudio=\(hasRecordedAudio)"
@@ -311,11 +289,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             do {
                 try await ReaderContentLoader.updateContent(url: currentContentURL) { object in
                     guard !object.autoOpenMediaPlayer else { return false }
-                    mediaDebugPrint(
-                        "# MEDIA autoOpen.persist",
-                        "contentURL=\(object.url.absoluteString)",
-                        "contentType=\(String(describing: type(of: object)))"
-                    )
                     object.autoOpenMediaPlayer = true
                     return true
                 }

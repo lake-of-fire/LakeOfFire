@@ -102,38 +102,18 @@ const postReplaceTextPerfLog = (event, details = {}) => {
 };
 
 const postBookRotateLog = (event, details = {}) => {
-    const payload = { event, timestamp: Date.now(), ...details };
-    const line = `# BOOKROTATE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 
 const postBookInsetLog = (event, details = {}) => {
-    const payload = { event, timestamp: Date.now(), ...details };
-    const line = `# BOOKINSET ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 
-let lastPageTrackingBookLayoutLogSignature = null;
 const postPageTrackingBookLayoutLog = (event, details = {}) => {
-    const payload = { event, timestamp: Date.now(), ...details };
-    const signaturePayload = { event, ...details };
-    const signature = JSON.stringify(signaturePayload);
-    if (signature === lastPageTrackingBookLayoutLogSignature) return;
-    lastPageTrackingBookLayoutLogSignature = signature;
-    const line = `# BOOK ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 
 const PAGE_NUM_DEDUP_EVENTS = new Set([

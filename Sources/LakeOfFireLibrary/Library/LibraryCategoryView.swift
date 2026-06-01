@@ -100,13 +100,6 @@ class LibraryCategoryViewModel: ObservableObject {
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                     guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
                     guard category.isUserEditable else {
-                        debugPrint(
-                            "# LIBRARY",
-                            "stage=library.category.editBlocked",
-                            "field=title",
-                            "categoryID=\(categoryID.uuidString)",
-                            "opmlURL=\(category.opmlURL?.absoluteString ?? "nil")"
-                        )
                         await self.refresh()
                         return
                     }
@@ -114,13 +107,6 @@ class LibraryCategoryViewModel: ObservableObject {
                     try await realm.asyncWrite {
                         category.title = categoryTitle
                         category.refreshChangeMetadata(explicitlyModified: true)
-                        debugPrint(
-                            "# LIBRARY",
-                            "stage=library.category.userEditPersist",
-                            "field=title",
-                            "categoryID=\(categoryID.uuidString)",
-                            "title=\(category.title)"
-                        )
                     }
                 }
             }
@@ -136,13 +122,6 @@ class LibraryCategoryViewModel: ObservableObject {
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                     guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
                     guard category.isUserEditable else {
-                        debugPrint(
-                            "# LIBRARY",
-                            "stage=library.category.editBlocked",
-                            "field=backgroundImageUrl",
-                            "categoryID=\(categoryID.uuidString)",
-                            "opmlURL=\(category.opmlURL?.absoluteString ?? "nil")"
-                        )
                         await self.refresh()
                         return
                     }
@@ -153,25 +132,12 @@ class LibraryCategoryViewModel: ObservableObject {
                         newURL = URL(string: categoryBackgroundImageURL)
                     }
                     guard let newURL else {
-                        debugPrint(
-                            "# LIBRARY",
-                            "stage=library.category.userEditInvalidImageURL",
-                            "categoryID=\(categoryID.uuidString)",
-                            "rawURL=\(categoryBackgroundImageURL)"
-                        )
                         return
                     }
                     guard category.backgroundImageUrl != newURL else { return }
                     try await realm.asyncWrite {
                         category.backgroundImageUrl = newURL
                         category.refreshChangeMetadata(explicitlyModified: true)
-                        debugPrint(
-                            "# LIBRARY",
-                            "stage=library.category.userEditPersist",
-                            "field=backgroundImageUrl",
-                            "categoryID=\(categoryID.uuidString)",
-                            "backgroundImageUrl=\(category.backgroundImageUrl.absoluteString)"
-                        )
                     }
                 }
             }
