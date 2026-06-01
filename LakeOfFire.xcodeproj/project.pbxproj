@@ -80,6 +80,7 @@
 		5A96F584C1590884AA55785A /* ReaderLoadingProgressOverlayViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEACDFF35BB3C511190E95F2 /* ReaderLoadingProgressOverlayViewModifier.swift */; };
 		5F02C6DB385F1DEF4212ACA8 /* URL+EBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */; };
 		5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
+		5FD3AF8AA82B861BAFC6102C /* PersistedLRUCache.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 335E1A2F446D7690DFC74E74 /* PersistedLRUCache.framework */; };
 		5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		602A9980815C4D77EE598621 /* LibraryScriptFormSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */; };
 		619936BCC4D239752919BF05 /* EPubParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8CF30D23C857DABADD4F9B9 /* EPubParser.swift */; };
@@ -779,6 +780,7 @@
 		30A1DAE8ED246385CD7967D4 /* ReaderConsoleLogsUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderConsoleLogsUserScript.swift; sourceTree = "<group>"; };
 		31505A20249F0A4A7EFFDDDF /* TeamChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamChat.swift; sourceTree = "<group>"; };
 		31ED82BC038DAB511FEE78AE /* LRUCache.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LRUCache.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		335E1A2F446D7690DFC74E74 /* PersistedLRUCache.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PersistedLRUCache.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		33892D7BCB22CA99F6DAFA46 /* ReaderLocationBarViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderLocationBarViewModel.swift; sourceTree = "<group>"; };
 		355678653CC5882AE9C4748C /* ReaderSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSettings.swift; sourceTree = "<group>"; };
 		362415398327404708608B86 /* ZIPFoundation.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ZIPFoundation.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1009,6 +1011,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */,
+				5FD3AF8AA82B861BAFC6102C /* PersistedLRUCache.framework in Frameworks */,
 				598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */,
 				BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */,
 				5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */,
@@ -1245,6 +1248,7 @@
 				0DBF1743F0462956A696C598 /* OpenGraph.framework */,
 				20D77CA7B347A9568C453FE8 /* OPML.framework */,
 				F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */,
+				335E1A2F446D7690DFC74E74 /* PersistedLRUCache.framework */,
 				0ACFBB587A7997D2F15BBE19 /* Pow.framework */,
 				0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */,
 				AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */,

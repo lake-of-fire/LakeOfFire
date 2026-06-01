@@ -10,7 +10,6 @@ import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
-import PersistedLRUCache
 
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
