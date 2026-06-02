@@ -61,22 +61,9 @@ const markPaginatorPerf = (stage, details = {}, options = {}) => {
 };
 const postPaginatorLoadLog = (event, details = {}) => {
 };
-const MANABI_MINIMAL_EBOOKBUG_EVENTS = new Set([
-    'paginator-prefetch-wait-start',
-    'paginator-prefetch-wait-end',
-    'paginator-prefetch-wait-watchdog',
-    'paginator-section-load-error',
-    'paginator-section-load-start',
-    'paginator-section-load-end',
-]);
 const postEBookBugLog = (event, details = {}) => {
-    if (!MANABI_MINIMAL_EBOOKBUG_EVENTS.has(event)) return;
-    const payload = { event, timestamp: Date.now(), ...details };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
-    } catch (_error) {
-        try { console.log('# EBOOKBUG', payload); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 const postBlankPageLog = (event, details = {}) => {
     const payload = { event, timestamp: Date.now(), ...details };

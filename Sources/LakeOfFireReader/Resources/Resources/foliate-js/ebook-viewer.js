@@ -751,17 +751,8 @@ const postReaderLog = (event, details = {}) => {
 };
 
 const postEBookBugLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKBUG ${JSON.stringify(payload)}`);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# EBOOKBUG', payload, error);
-    }
+    void event;
+    void details;
 };
 
 const loadRectSnapshot = element => {
