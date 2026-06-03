@@ -63,9 +63,10 @@ private extension View {
     }
 
     @ViewBuilder
-    func readerStatusBarFadeOnPhone(top: CGFloat, backgroundColor: Color) -> some View {
+    func readerStatusBarFadeForCurrentDevice(top: CGFloat, backgroundColor: Color) -> some View {
 #if os(iOS)
-        if UIDevice.current.userInterfaceIdiom == .phone {
+        let idiom = UIDevice.current.userInterfaceIdiom
+        if idiom == .phone {
             readerStatusBarFade(top: top, backgroundColor: backgroundColor)
         } else {
             self
@@ -74,6 +75,7 @@ private extension View {
         self
 #endif
     }
+
 }
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
@@ -820,6 +822,7 @@ public struct Reader: View {
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
     var onAdditionalSafeAreaBarTap: (() -> Void)?
     var ignoresSampledTopObscuredInset = false
+    var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -848,6 +851,7 @@ public struct Reader: View {
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
         onAdditionalSafeAreaBarTap: (() -> Void)? = nil,
         ignoresSampledTopObscuredInset: Bool = false,
+        hidesTopScrollEdgeEffect: Bool = false,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -866,6 +870,7 @@ public struct Reader: View {
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
         self.onAdditionalSafeAreaBarTap = onAdditionalSafeAreaBarTap
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
+        self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -921,6 +926,7 @@ public struct Reader: View {
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+            hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
@@ -931,7 +937,7 @@ public struct Reader: View {
             buildMenu: buildMenu
         )
 #if os(iOS)
-        .readerStatusBarFadeOnPhone(
+        .readerStatusBarFadeForCurrentDevice(
             top: max(0, (obscuredInsets?.top ?? 0) + 8 + 2),
             backgroundColor: statusBarFadeBackgroundColor
         )
