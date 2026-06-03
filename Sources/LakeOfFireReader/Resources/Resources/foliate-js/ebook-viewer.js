@@ -750,6 +750,23 @@ const postReaderLog = (event, details = {}) => {
     }
 };
 
+const postLookupPositionLog = (event, details = {}) => {
+    if (!manabiDiagnosticsEnabled()) return;
+    const payload = {
+        message: '# LOOKUPPOS',
+        event,
+    };
+    for (const [key, value] of Object.entries(details)) {
+        if (value === undefined || value === null) {
+            continue;
+        }
+        payload[key] = value;
+    }
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (_error) {}
+};
+
 const postEBookBugLog = (event, details = {}) => {
     void event;
     void details;
@@ -768,6 +785,19 @@ const loadRectSnapshot = element => {
         right: round(rect.right),
         bottom: round(rect.bottom),
         left: round(rect.left),
+    };
+};
+
+const lookupPositionRectSnapshot = rect => {
+    if (!rect) return null;
+    const round = value => Number.isFinite(value) ? Number(value.toFixed(2)) : null;
+    return {
+        left: round(rect.left ?? rect.x),
+        top: round(rect.top ?? rect.y),
+        width: round(rect.width),
+        height: round(rect.height),
+        right: round(rect.right),
+        bottom: round(rect.bottom),
     };
 };
 
@@ -3134,6 +3164,26 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
+    const frameElement = view?.frameElement ?? null;
+    const frameRect = frameElement?.getBoundingClientRect?.() ?? null;
+    postLookupPositionLog('ebook.nativeTargets.collect.begin', {
+        reason,
+        hasBuilder: typeof builder === 'function',
+        docURL: doc?.location?.href ?? null,
+        topURL: window.location?.href ?? null,
+        visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+        totalSegmentCount: visibleSegmentsResult?.totalSegmentCount ?? null,
+        viewportWidth,
+        viewportHeight,
+        viewportLeft,
+        viewportTop,
+        resultFrameLeft: visibleSegmentsResult?.frameLeft ?? null,
+        resultFrameTop: visibleSegmentsResult?.frameTop ?? null,
+        frameRect: lookupPositionRectSnapshot(frameRect),
+        visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+        visualViewportOffsetLeft: Number.isFinite(window.visualViewport?.offsetLeft) ? window.visualViewport.offsetLeft : null,
+        visualViewportOffsetTop: Number.isFinite(window.visualViewport?.offsetTop) ? window.visualViewport.offsetTop : null,
+    });
     if (typeof builder !== 'function') {
         messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
@@ -3151,10 +3201,26 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
     const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const targets = [];
+    const sampleSegments = [];
     for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
         const rects = item?.rects?.length ? item.rects : (item?.rect ? [item.rect] : []);
         if (!item?.node || rects.length === 0) {
             continue;
+        }
+        if (sampleSegments.length < 6) {
+            sampleSegments.push({
+                elementId: item.node?.getAttribute?.('id') ?? null,
+                surface: item.node?.textContent?.trim?.().slice?.(0, 24) ?? null,
+                rawRects: rects.slice(0, 3).map(lookupPositionRectSnapshot),
+                rebasedRects: rects.slice(0, 3).map((rect) => lookupPositionRectSnapshot({
+                    left: rect.left + frameLeft,
+                    top: rect.top + frameTop,
+                    width: rect.width,
+                    height: rect.height,
+                    right: rect.left + frameLeft + rect.width,
+                    bottom: rect.top + frameTop + rect.height,
+                })),
+            });
         }
         const target = builder(item.node, rects.map((rect) => ({
             left: rect.left + frameLeft,
@@ -3166,6 +3232,20 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets.push(target);
         }
     }
+    postLookupPositionLog('ebook.nativeTargets.collect.end', {
+        reason,
+        targetCount: targets.length,
+        frameLeft,
+        frameTop,
+        viewportWidth,
+        viewportHeight,
+        viewportLeft,
+        viewportTop,
+        firstTargetElementId: targets[0]?.elementId ?? null,
+        firstTargetRectCount: targets[0]?.rects?.length ?? null,
+        firstTargetRects: targets[0]?.rects?.slice?.(0, 4)?.map?.(lookupPositionRectSnapshot) ?? null,
+        sampleSegments,
+    });
     messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
         reason,
