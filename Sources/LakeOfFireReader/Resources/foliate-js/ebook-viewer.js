@@ -399,7 +399,7 @@ const postPopoverLog = (event, details = {}) => {
     if (globalThis.__manabiPopoverLogCount >= 600) return;
     globalThis.__manabiPopoverLogCount += 1;
     try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# POPOVER ' + JSON.stringify({
+        window.webkit?.messageHandlers?.print?.postMessage?.('POPOVER ' + JSON.stringify({
             event,
             timestamp: Date.now(),
             pageURL: location.href,
@@ -407,7 +407,7 @@ const postPopoverLog = (event, details = {}) => {
         }));
     } catch (_error) {
         try {
-            console.log('# POPOVER ' + JSON.stringify({ event, ...details }));
+            console.log('POPOVER ' + JSON.stringify({ event, ...details }));
         } catch (_) {}
     }
 };
