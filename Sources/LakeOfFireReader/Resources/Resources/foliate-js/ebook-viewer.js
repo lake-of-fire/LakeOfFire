@@ -873,20 +873,8 @@ const layoutLogSignature = details => JSON.stringify({
 });
 
 const postLayoutLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = { message: `# LAYOUT js.${event}` };
-    for (const [key, value] of Object.entries(details)) {
-        if (value === undefined || value === null) continue;
-        payload[key] = value;
-    }
-    const signature = layoutLogSignature(payload);
-    if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
-    lastLayoutLogSignatureByEvent.set(event, signature);
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# LAYOUT', event, payload, error);
-    }
+    void event;
+    void details;
 };
 
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
