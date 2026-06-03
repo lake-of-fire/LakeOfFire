@@ -105,13 +105,15 @@ private extension View {
 
 #if os(iOS)
     @ViewBuilder
-    func readerStatusBarFadeOnPhone(top: CGFloat, backgroundColor: Color) -> some View {
-        if UIDevice.current.userInterfaceIdiom == .phone {
+    func readerStatusBarFadeForCurrentDevice(top: CGFloat, backgroundColor: Color) -> some View {
+        let idiom = UIDevice.current.userInterfaceIdiom
+        if idiom == .phone {
             readerStatusBarFade(top: top, backgroundColor: backgroundColor)
         } else {
             self
         }
     }
+
 #endif
 }
 
@@ -931,6 +933,7 @@ public struct Reader: View {
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
     var ignoresSampledTopObscuredInset = false
+    var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -960,6 +963,7 @@ public struct Reader: View {
         additionalBottomSafeAreaInset: CGFloat? = nil,
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
         ignoresSampledTopObscuredInset: Bool = false,
+        hidesTopScrollEdgeEffect: Bool = false,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -978,6 +982,7 @@ public struct Reader: View {
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
+        self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -1076,6 +1081,7 @@ public struct Reader: View {
             additionalTopSafeAreaInset: effectiveTopInset,
             additionalLeadingSafeAreaInset: additionalLeadingInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+            hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
@@ -1086,7 +1092,7 @@ public struct Reader: View {
             buildMenu: buildMenu
         )
 #if os(iOS)
-        .readerStatusBarFadeOnPhone(
+        .readerStatusBarFadeForCurrentDevice(
             top: effectiveSampledTopInset,//    + 8 + 2)
             backgroundColor: statusBarFadeBackgroundColor
         )

@@ -158,6 +158,7 @@ public struct ReaderWebView: View {
     var additionalTopSafeAreaInset: CGFloat?
     var additionalLeadingSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
+    var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -198,6 +199,7 @@ public struct ReaderWebView: View {
         additionalTopSafeAreaInset: CGFloat? = nil,
         additionalLeadingSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
+        hidesTopScrollEdgeEffect: Bool = false,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -214,6 +216,7 @@ public struct ReaderWebView: View {
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
+        self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -244,6 +247,7 @@ public struct ReaderWebView: View {
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalLeadingSafeAreaInset: additionalLeadingSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+            hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
@@ -287,6 +291,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var additionalTopSafeAreaInset: CGFloat?
     var additionalLeadingSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
+    var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
@@ -393,6 +398,7 @@ fileprivate struct ReaderWebViewInternal: View {
                 usesSampledPageTopColorForUnderPageBackground: true,
                 usesConfiguredBackgroundForReaderDocuments: true,
                 adjustsScrollViewContentInsetsForSafeArea: false,
+                hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
                 nativeLookupHitTestingEnabled: state.pageURL.isEBookURL,
                 userScripts: userScripts),
             navigator: navigator,

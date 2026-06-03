@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <body>
+    <outline text="News" title="News" uuid="7853E308-3F7E-4801-8D0B-393EB03602A5" backgroundImageUrl="https://reader.manabi.io/static/reader/news.jpg">
+      <outline uuid="47687ADC-EA0F-4B36-9E03-4F4EA6CC4F24" title="Asahi Shimbun" text="Asahi Shimbun" iconUrl="https://www.asahi.com/favicon.ico" markdownDescription="A leading Japanese daily covering politics, society, culture, and world affairs.">
+        <outline title="Asahi Shimbun Breaking News" type="rss" xmlUrl="https://www.asahi.com/rss/asahi/newsheadlines.rdf" uuid="01A8E0ED-2F7E-41A2-ABC7-BCC286082EFF" extractImageFromContent="false" isReaderModeByDefault="true" iconUrl="https://www.asahi.com/favicon.ico" markdownDescription="The latest headlines from every Asahi Shimbun news section." rssContainsFullContent="false" injectEntryImageIntoHeader="false" displayPublicationDate="true" meaningfulContentMinLength="0" text="Asahi Shimbun Breaking News"></outline>
+      </outline>
+    </outline>
+  </body>
+</opml>
