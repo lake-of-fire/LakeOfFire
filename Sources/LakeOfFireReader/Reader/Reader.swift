@@ -475,6 +475,7 @@ func syncEbookViewerChromeInsets(
               }
               const targets = [document.documentElement, document.body].filter(Boolean);
               for (const target of targets) {
+                target.style.setProperty('--mnb-reader-stage-top-inset', obscuredTopInset);
                 target.style.setProperty('--mnb-toolbar-bottom-offset', toolbarBottomOffset);
               }
               postMay8('after.fallbackStyle', { appliedInsets });
@@ -1020,7 +1021,9 @@ public struct Reader: View {
             )
             : obscuredInsets
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
-        let effectiveTopInset = explicitTopInset
+        let effectiveTopInset = pageURL.isEBookURL
+            ? max(explicitTopInset, effectiveSampledTopInset)
+            : explicitTopInset
         let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
@@ -1110,9 +1113,10 @@ public struct Reader: View {
                             bottom: max(0, geometrySafeAreaInsets.bottom),
                             trailing: max(0, geometrySafeAreaInsets.trailing)
                         )
-                        if !pageURL.isEBookURL,
-                           explicitTopInset > 0,
-                           sampledInsets.top > explicitTopInset {
+                        if pageURL.isEBookURL {
+                            sampledInsets.top = min(sampledInsets.top, 88)
+                        } else if explicitTopInset > 0,
+                                  sampledInsets.top > explicitTopInset {
                             sampledInsets.top = explicitTopInset
                         }
                         logSafeArea(
@@ -1134,16 +1138,23 @@ public struct Reader: View {
                             trailing: max(0, safeAreaInsets.trailing)
                         )
                         let previousInsets = obscuredInsets
-                        if !pageURL.isEBookURL,
-                           explicitTopInset > 0,
-                           sampledInsets.top > explicitTopInset {
-                            sampledInsets.top = explicitTopInset
-                        }
-                        if !pageURL.isEBookURL,
-                           let previousInsets,
-                           previousInsets.top > 0,
-                           sampledInsets.top > previousInsets.top {
-                            sampledInsets.top = previousInsets.top
+                        if pageURL.isEBookURL {
+                            sampledInsets.top = min(sampledInsets.top, 88)
+                            if let previousInsets,
+                               previousInsets.top > 0,
+                               sampledInsets.top > previousInsets.top {
+                                sampledInsets.top = previousInsets.top
+                            }
+                        } else {
+                            if explicitTopInset > 0,
+                               sampledInsets.top > explicitTopInset {
+                                sampledInsets.top = explicitTopInset
+                            }
+                            if let previousInsets,
+                               previousInsets.top > 0,
+                               sampledInsets.top > previousInsets.top {
+                                sampledInsets.top = previousInsets.top
+                            }
                         }
                         logSafeArea(
                             "stage=lakeReader.geometryChangedBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"

@@ -262,12 +262,19 @@ public actor ReaderPackageEntrySourceCache {
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> CachedSource {
+        let diagnosticLocalURL = Self.diagnosticLocalFileURL(forPackageURL: readerFileURL)
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
-        let cacheKey = canonicalReaderBackingURL.absoluteString
-        let localURL = try await Self.resolvedLocalURL(
-            forPackageURL: canonicalReaderBackingURL,
-            readerFileManager: readerFileManager
-        )
+        let cacheKey = diagnosticLocalURL.map { "diagnosticLocalFilePath:\($0.standardizedFileURL.path)" }
+            ?? canonicalReaderBackingURL.absoluteString
+        let localURL: URL
+        if let diagnosticLocalURL {
+            localURL = diagnosticLocalURL
+        } else {
+            localURL = try await Self.resolvedLocalURL(
+                forPackageURL: canonicalReaderBackingURL,
+                readerFileManager: readerFileManager
+            )
+        }
         let freshnessToken = try Self.freshnessToken(for: localURL)
 
         if let cached = cachedSources[cacheKey],
@@ -298,6 +305,23 @@ public actor ReaderPackageEntrySourceCache {
             return localURL
         }
         return localURL
+    }
+
+    private static func diagnosticLocalFileURL(forPackageURL readerFileURL: URL) -> URL? {
+#if DEBUG
+        guard let components = URLComponents(url: readerFileURL, resolvingAgainstBaseURL: false),
+              let path = components.queryItems?.first(where: { $0.name == "diagnosticLocalFilePath" })?.value,
+              !path.isEmpty else {
+            return nil
+        }
+        let localURL = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            return nil
+        }
+        return localURL
+#else
+        return nil
+#endif
     }
 
     private static func preparedSource(for localURL: URL, freshnessToken: String) throws -> ReaderPackageEntrySource {

@@ -1,5 +1,6 @@
 import Foundation
 import RealmSwift
+import RealmSwiftGaps
 import SwiftReadability
 import SwiftSoup
 import XCTest
@@ -58,6 +59,12 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         var configuration = DefaultRealmConfiguration.configuration
         configuration.inMemoryIdentifier = nil
         configuration.fileURL = realmURL
+        configuration.objectTypes = (configuration.objectTypes ?? []) + [
+            Bookmark.self,
+            ContentFile.self,
+            ContentPackageFile.self,
+            HistoryRecord.self,
+        ]
         return configuration
     }
 
@@ -88,26 +95,39 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         )
         let configuration = makeRealmConfiguration()
         let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
         defer {
             LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            makeFeedSessionOverrideForTesting = originalFeedSessionOverride
         }
         LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
 
         FeedURLProtocol.responses = [rssURL: rssData]
-        URLProtocol.registerClass(FeedURLProtocol.self)
+        makeFeedSessionOverrideForTesting = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            configuration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: configuration)
+        }
         defer {
-            URLProtocol.unregisterClass(FeedURLProtocol.self)
             FeedURLProtocol.responses.removeAll()
         }
 
         let manager = LibraryDataManager()
         try await manager.importOPML(fileURL: opmlURL, realmConfiguration: configuration)
 
-        let feed = try await { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+        let feed: Feed = try {
+            let realm = try Realm(configuration: configuration)
             return try XCTUnwrap(
                 realm.objects(Feed.self).first { $0.rssUrl == rssURL }
             ).freeze()
@@ -118,15 +138,17 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         XCTAssertFalse(feed.injectEntryImageIntoHeader)
         XCTAssertEqual(feed.meaningfulContentMinLength, 0)
 
-        let managedFeed = try XCTUnwrap(feed.thaw())
-        try await managedFeed.fetch(realmConfiguration: configuration)
+        try await feed.fetch(realmConfiguration: configuration)
 
         let entry = try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncRefresh()
+            let entries = Array(realm.objects(FeedEntry.self))
             return try XCTUnwrap(
-                realm.objects(FeedEntry.self).first {
+                entries.first {
                     $0.url.absoluteString.contains("ASV5C451NV5CUEFT01YM")
-                }
+                },
+                "Persisted feed entries: \(entries.count); urls: \(entries.map { $0.url.absoluteString }.joined(separator: ", "))"
             ).freeze()
         }()
 
@@ -152,6 +174,13 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let readerByline = try doc.getElementById("reader-byline")?.text()
         let readerContentText = try XCTUnwrap(doc.getElementById("reader-content")?.text())
         let readerContentHTML = try XCTUnwrap(doc.getElementById("reader-content")?.html())
+        debugPrint(
+            "# ASAHI_READABILITY",
+            "title=\(readerTitle ?? "nil")",
+            "byline=\(readerByline ?? "nil")",
+            "text=\(String(readerContentText.prefix(1200)))",
+            "html=\(String(readerContentHTML.prefix(1200)))"
+        )
 
         XCTAssertEqual(readerTitle, entry.title)
         XCTAssertEqual(readerByline, "朝日新聞")

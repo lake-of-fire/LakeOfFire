@@ -801,6 +801,47 @@ const lookupPositionRectSnapshot = rect => {
     };
 };
 
+const postEBookSafeAreaTopSnapshot = (event, details = {}) => {
+    const readerStage = document.getElementById('reader-stage');
+    const navBar = document.getElementById('nav-bar');
+    const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
+        .find((view) => view?.dataset?.isCache !== 'true') || null;
+    const renderer = liveFoliateView?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const visibleFrame = Array.from(renderer?.shadowRoot?.querySelectorAll?.('iframe') ?? [])
+        .find((frame) => {
+            const rect = frame?.getBoundingClientRect?.();
+            return rect && rect.width > 0 && rect.height > 0;
+        }) ?? null;
+    const bodyStyle = document.body ? getComputedStyle(document.body) : null;
+    const htmlStyle = getComputedStyle(document.documentElement);
+    const payload = {
+        ...details,
+        bodyClass: document.body?.className || null,
+        htmlPaddingTop: htmlStyle?.paddingTop || null,
+        bodyPaddingTop: bodyStyle?.paddingTop || null,
+        bodyCssToolbarBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
+        bodyCssReaderStageTop: bodyStyle?.getPropertyValue('--mnb-reader-stage-top-inset')?.trim() || null,
+        bodyCssReaderStageBottom: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+        visualViewport: window.visualViewport ? {
+            width: roundLayoutNumber(window.visualViewport.width),
+            height: roundLayoutNumber(window.visualViewport.height),
+            offsetTop: roundLayoutNumber(window.visualViewport.offsetTop),
+            pageTop: roundLayoutNumber(window.visualViewport.pageTop),
+            scale: roundLayoutNumber(window.visualViewport.scale, 3),
+        } : null,
+        windowInnerHeight: roundLayoutNumber(window.innerHeight),
+        readerStageRect: lookupPositionRectSnapshot(readerStage?.getBoundingClientRect?.()),
+        navBarRect: lookupPositionRectSnapshot(navBar?.getBoundingClientRect?.()),
+        foliateViewRect: lookupPositionRectSnapshot(liveFoliateView?.getBoundingClientRect?.()),
+        rendererRect: lookupPositionRectSnapshot(renderer?.getBoundingClientRect?.()),
+        iframeRect: lookupPositionRectSnapshot(visibleFrame?.getBoundingClientRect?.()),
+    };
+    const key = JSON.stringify(payload);
+    if (globalThis.__manabiLastLookupPositionSafeAreaTopKey === key) return;
+    globalThis.__manabiLastLookupPositionSafeAreaTopKey = key;
+    postLookupPositionLog(event, payload);
+};
+
 const roundLayoutNumber = (value, digits = 1) => {
     const number = Number(value);
     return Number.isFinite(number) ? Number(number.toFixed(digits)) : null;
@@ -1898,6 +1939,12 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
         }
     } else {
         const now = Date.now();
+        if (
+            source === 'touchstartCallbackHandler.noElement.nativeToggle'
+            || source?.startsWith?.('explicitReveal.')
+        ) {
+            globalThis.__manabiLastExplicitNavigationRevealAtMs = now;
+        }
         const lastForwardPageTurnHideAtMs = Number(globalThis.__manabiLastForwardPageTurnHideAtMs || 0);
         const lastBackwardPageTurnRevealAtMs = Number(globalThis.__manabiLastBackwardPageTurnRevealAtMs || 0);
         const isStaleSwiftRevealAfterForwardPageTurn =
@@ -2074,6 +2121,7 @@ const getNextChromeInsetRevision = () => {
 
 const applyResolvedChromeInsetState = (state) => {
     for (const target of [document.documentElement, document.body].filter(Boolean)) {
+        target.style.setProperty('--mnb-reader-stage-top-inset', state.obscuredTopInset);
         target.style.setProperty('--mnb-toolbar-bottom-offset', state.toolbarBottomOffset);
     }
 };
@@ -2270,6 +2318,18 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         globalThis.__manabiLastPositiveChromeInsets = nextState;
     }
     applyResolvedChromeInsetState(nextState);
+    if (reason === 'native-sync' || reason === 'reader.open' || reason === 'reader.didDisplay' || reason === 'setEbookViewerLayout') {
+        postEBookSafeAreaTopSnapshot('ebook.safeAreaTop.chromeInsetsApplied', {
+            reason,
+            incomingObscuredTopInset: incomingState?.obscuredTopInset ?? null,
+            appliedObscuredTopInset: nextState.obscuredTopInset,
+            appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
+            appliedObscuredBottomInset: nextState.obscuredBottomInset,
+            source: nextState.source,
+            revision: nextState.revision,
+            inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
+        });
+    }
     const landscapeInsetKey = JSON.stringify({
         appliedObscuredTopInset: nextState.obscuredTopInset,
         appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
@@ -3166,24 +3226,26 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     const frameElement = view?.frameElement ?? null;
     const frameRect = frameElement?.getBoundingClientRect?.() ?? null;
-    postLookupPositionLog('ebook.nativeTargets.collect.begin', {
-        reason,
-        hasBuilder: typeof builder === 'function',
-        docURL: doc?.location?.href ?? null,
-        topURL: window.location?.href ?? null,
-        visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-        totalSegmentCount: visibleSegmentsResult?.totalSegmentCount ?? null,
-        viewportWidth,
-        viewportHeight,
-        viewportLeft,
-        viewportTop,
-        resultFrameLeft: visibleSegmentsResult?.frameLeft ?? null,
-        resultFrameTop: visibleSegmentsResult?.frameTop ?? null,
-        frameRect: lookupPositionRectSnapshot(frameRect),
-        visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
-        visualViewportOffsetLeft: Number.isFinite(window.visualViewport?.offsetLeft) ? window.visualViewport.offsetLeft : null,
-        visualViewportOffsetTop: Number.isFinite(window.visualViewport?.offsetTop) ? window.visualViewport.offsetTop : null,
-    });
+    if (globalThis.manabiVerboseLookupPositionTargets === true) {
+        postLookupPositionLog('ebook.nativeTargets.collect.begin', {
+            reason,
+            hasBuilder: typeof builder === 'function',
+            docURL: doc?.location?.href ?? null,
+            topURL: window.location?.href ?? null,
+            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+            totalSegmentCount: visibleSegmentsResult?.totalSegmentCount ?? null,
+            viewportWidth,
+            viewportHeight,
+            viewportLeft,
+            viewportTop,
+            resultFrameLeft: visibleSegmentsResult?.frameLeft ?? null,
+            resultFrameTop: visibleSegmentsResult?.frameTop ?? null,
+            frameRect: lookupPositionRectSnapshot(frameRect),
+            visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+            visualViewportOffsetLeft: Number.isFinite(window.visualViewport?.offsetLeft) ? window.visualViewport.offsetLeft : null,
+            visualViewportOffsetTop: Number.isFinite(window.visualViewport?.offsetTop) ? window.visualViewport.offsetTop : null,
+        });
+    }
     if (typeof builder !== 'function') {
         messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
@@ -3201,26 +3263,10 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
     const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const targets = [];
-    const sampleSegments = [];
     for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
         const rects = item?.rects?.length ? item.rects : (item?.rect ? [item.rect] : []);
         if (!item?.node || rects.length === 0) {
             continue;
-        }
-        if (sampleSegments.length < 6) {
-            sampleSegments.push({
-                elementId: item.node?.getAttribute?.('id') ?? null,
-                surface: item.node?.textContent?.trim?.().slice?.(0, 24) ?? null,
-                rawRects: rects.slice(0, 3).map(lookupPositionRectSnapshot),
-                rebasedRects: rects.slice(0, 3).map((rect) => lookupPositionRectSnapshot({
-                    left: rect.left + frameLeft,
-                    top: rect.top + frameTop,
-                    width: rect.width,
-                    height: rect.height,
-                    right: rect.left + frameLeft + rect.width,
-                    bottom: rect.top + frameTop + rect.height,
-                })),
-            });
         }
         const target = builder(item.node, rects.map((rect) => ({
             left: rect.left + frameLeft,
@@ -3232,20 +3278,21 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets.push(target);
         }
     }
-    postLookupPositionLog('ebook.nativeTargets.collect.end', {
-        reason,
-        targetCount: targets.length,
-        frameLeft,
-        frameTop,
-        viewportWidth,
-        viewportHeight,
-        viewportLeft,
-        viewportTop,
-        firstTargetElementId: targets[0]?.elementId ?? null,
-        firstTargetRectCount: targets[0]?.rects?.length ?? null,
-        firstTargetRects: targets[0]?.rects?.slice?.(0, 4)?.map?.(lookupPositionRectSnapshot) ?? null,
-        sampleSegments,
-    });
+    if (globalThis.manabiVerboseLookupPositionTargets === true) {
+        postLookupPositionLog('ebook.nativeTargets.collect.end', {
+            reason,
+            targetCount: targets.length,
+            frameLeft,
+            frameTop,
+            viewportWidth,
+            viewportHeight,
+            viewportLeft,
+            viewportTop,
+            firstTargetElementId: targets[0]?.elementId ?? null,
+            firstTargetRectCount: targets[0]?.rects?.length ?? null,
+            firstTargetRects: targets[0]?.rects?.slice?.(0, 4)?.map?.(lookupPositionRectSnapshot) ?? null,
+        });
+    }
     messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
         reason,
@@ -8435,6 +8482,10 @@ class CacheWarmer {
 window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
 //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    applyStoredChromeInsets('setEbookViewerLayout');
+    postEBookSafeAreaTopSnapshot('ebook.safeAreaTop.setLayout', {
+        layoutMode,
+    });
     postLayoutLog('setEbookViewerLayout', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         layoutMode,
     }));

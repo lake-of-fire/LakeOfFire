@@ -1186,6 +1186,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
+        debugPrint("# HIDENAV", [
+            "stage": "lakeReader.setHideNavigation.request",
+            "source": source as Any,
+            "reason": reason as Any,
+            "direction": direction as Any,
+            "oldValue": previousValue,
+            "requested": shouldHide,
+            "isPageTurnVisibilityChange": isPageTurnVisibilityChange,
+        ] as [String: Any])
         guard previousValue != shouldHide else {
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
@@ -1214,6 +1223,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
         }
+        debugPrint("# HIDENAV", [
+            "stage": "lakeReader.setHideNavigation.applied",
+            "source": source as Any,
+            "reason": reason as Any,
+            "direction": direction as Any,
+            "newValue": hideNavigationDueToScroll.wrappedValue,
+            "requested": shouldHide,
+            "isPageTurnVisibilityChange": isPageTurnVisibilityChange,
+        ] as [String: Any])
     }
 
     private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
