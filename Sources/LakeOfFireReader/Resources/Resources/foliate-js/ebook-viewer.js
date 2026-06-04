@@ -7035,6 +7035,45 @@ class Reader {
             }
             postNoElementNavigationTouchStart(event, 'main-document.blank', pending.startAtMs)
         }
+        let pendingChromeBlankNavigationTouch = null;
+        const clearPendingChromeBlankNavigationTouch = () => {
+            pendingChromeBlankNavigationTouch = null;
+        };
+        const beginChromeBlankNavigationTouch = function(event, source) {
+            if (event.type === 'touchstart') {
+                const point = touchPointForNavigationGesture(event);
+                pendingChromeBlankNavigationTouch = point
+                    ? {
+                        startX: point.screenX ?? point.clientX,
+                        startY: point.screenY ?? point.clientY,
+                        startAtMs: Date.now(),
+                        source,
+                    }
+                    : null;
+                return;
+            }
+            postNoElementNavigationTouchStart(event, `${source}.mouse`);
+        };
+        const processChromeBlankNavigationTouchMove = function(event) {
+            const pending = pendingChromeBlankNavigationTouch;
+            if (!pending) {
+                return;
+            }
+            if (movedPastBlankNavigationTapThreshold(event, pending)) {
+                clearPendingChromeBlankNavigationTouch();
+            }
+        };
+        const processChromeBlankNavigationTouchEnd = function(event) {
+            const pending = pendingChromeBlankNavigationTouch;
+            clearPendingChromeBlankNavigationTouch();
+            if (!pending || event.type === 'touchcancel') {
+                return;
+            }
+            if (movedPastBlankNavigationTapThreshold(event, pending)) {
+                return;
+            }
+            postNoElementNavigationTouchStart(event, pending.source, pending.startAtMs);
+        };
         const processNavChromeTouchStart = function(event) {
             const target = event.target;
             if (target && target.ownerDocument !== document) {
@@ -7051,9 +7090,10 @@ class Reader {
                 interactiveTag: interactiveTarget?.tagName || null,
             });
             if (interactiveTarget) {
+                clearPendingChromeBlankNavigationTouch();
                 return;
             }
-            postNoElementNavigationTouchStart(event, 'nav-bar.chrome')
+            beginChromeBlankNavigationTouch(event, 'nav-bar.chrome');
         }
         const processPageTrackingChromeTouchStart = function(event) {
             const target = event.target;
@@ -7071,6 +7111,11 @@ class Reader {
                 trackingID: pageReadButton?.dataset?.pageTrackingId || null,
                 completionAction: pageReadButton?.dataset?.completionAction || null,
             });
+            if (pageReadButton) {
+                clearPendingChromeBlankNavigationTouch();
+                return;
+            }
+            beginChromeBlankNavigationTouch(event, 'page-tracking.chrome');
         }
         document.addEventListener('touchstart', processNavChromeTouchStart, {
             passive: true
@@ -7082,6 +7127,15 @@ class Reader {
             passive: true
         })
         document.addEventListener('mousedown', processPageTrackingChromeTouchStart, {
+            passive: true
+        })
+        document.addEventListener('touchmove', processChromeBlankNavigationTouchMove, {
+            passive: true
+        })
+        document.addEventListener('touchend', processChromeBlankNavigationTouchEnd, {
+            passive: true
+        })
+        document.addEventListener('touchcancel', processChromeBlankNavigationTouchEnd, {
             passive: true
         })
         document.addEventListener('touchstart', processTouchStart, {
