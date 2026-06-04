@@ -1163,7 +1163,12 @@ fileprivate let feedHTTPDateFormatter: DateFormatter = {
     return formatter
 }()
 
+var makeFeedSessionOverrideForTesting: (() -> URLSession)?
+
 fileprivate func makeFeedSession() -> URLSession {
+    if let makeFeedSessionOverrideForTesting {
+        return makeFeedSessionOverrideForTesting()
+    }
     let configuration = URLSessionConfiguration.ephemeral
     configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
     return URLSession(configuration: configuration)
