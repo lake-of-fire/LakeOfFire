@@ -174,13 +174,6 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let readerByline = try doc.getElementById("reader-byline")?.text()
         let readerContentText = try XCTUnwrap(doc.getElementById("reader-content")?.text())
         let readerContentHTML = try XCTUnwrap(doc.getElementById("reader-content")?.html())
-        debugPrint(
-            "# ASAHI_READABILITY",
-            "title=\(readerTitle ?? "nil")",
-            "byline=\(readerByline ?? "nil")",
-            "text=\(String(readerContentText.prefix(1200)))",
-            "html=\(String(readerContentHTML.prefix(1200)))"
-        )
 
         XCTAssertEqual(readerTitle, entry.title)
         XCTAssertEqual(readerByline, "朝日新聞")

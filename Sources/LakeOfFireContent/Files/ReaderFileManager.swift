@@ -656,7 +656,7 @@ public class ReaderFileManager: ObservableObject {
                             // TODO: Return pks instead of threadsafereferences (faster)
                             if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                                 try Task.checkCancellation()
-                                if setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive) {
+                                if try setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive) {
                                     updatedFiles.append(existing)
                                 }
                                 allFileRefs.append(ThreadSafeReference(to: existing))
@@ -665,7 +665,7 @@ public class ReaderFileManager: ObservableObject {
                                 let contentFile = ContentFile()
                                 contentFile.url = readerFileURL
                                 try Task.checkCancellation()
-                                if setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
+                                if try setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
                                     contentFile.updateCompoundKey()
                                     contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
                                         mimeType: contentFile.mimeType,
@@ -695,7 +695,8 @@ public class ReaderFileManager: ObservableObject {
     
     /// Note that ReaderContentMetadataSynchronizer keeps associated records in sync
     @RealmBackgroundActor
-    private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) -> Bool {
+    private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) throws -> Bool {
+        try Task.checkCancellation()
         var metadataUpdated = false
         let fileModifiedAt = Self.fileModificationDate(url: fileURL, drive: drive)
         
@@ -704,7 +705,8 @@ public class ReaderFileManager: ObservableObject {
             metadataUpdated = true
         }
 
-        let payloadAvailableLocally = isPayloadReadableLocallyForMetadata(readerBackingURL: fileURL)
+        let payloadAvailableLocally = try isPayloadReadableLocallyForMetadata(readerBackingURL: fileURL)
+        try Task.checkCancellation()
         
         if metadataUpdated || contentFile.fileMetadataRefreshedAt ?? .distantPast <= fileModifiedAt ?? .distantPast {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -844,7 +846,8 @@ public class ReaderFileManager: ObservableObject {
         var missingPayloadURLs = [URL]()
 
         for payloadURL in payloadURLs {
-            switch Self.payloadState(at: payloadURL) {
+            try Task.checkCancellation()
+            switch try Self.payloadState(at: payloadURL) {
             case .current:
                 continue
             case .downloading:
@@ -898,10 +901,12 @@ public class ReaderFileManager: ObservableObject {
         case notLocal
     }
 
-    private static func payloadState(at url: URL) -> PayloadState {
+    private static func payloadState(at url: URL) throws -> PayloadState {
+        try Task.checkCancellation()
         guard fileSystemEntryExists(at: url) else {
             return .notLocal
         }
+        try Task.checkCancellation()
         let values = try? url.resourceValues(forKeys: [
             .isUbiquitousItemKey,
             .ubiquitousItemIsDownloadingKey,
@@ -924,6 +929,7 @@ public class ReaderFileManager: ObservableObject {
     }
 
     private static func requiredPayloadURLs(at rootURL: URL) throws -> [URL] {
+        try Task.checkCancellation()
         var isDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
             return []
@@ -938,6 +944,7 @@ public class ReaderFileManager: ObservableObject {
             options: [.skipsHiddenFiles]
         ) {
             for case let fileURL as URL in enumerator {
+                try Task.checkCancellation()
                 if (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
                     payloadURLs.append(fileURL)
                 }
@@ -964,7 +971,8 @@ public class ReaderFileManager: ObservableObject {
         return true
     }
 
-    private func isPayloadReadableLocallyForMetadata(readerBackingURL: URL) -> Bool {
+    private func isPayloadReadableLocallyForMetadata(readerBackingURL: URL) throws -> Bool {
+        try Task.checkCancellation()
         guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL),
               let context = try? readerBackingPathContext(for: canonicalURL),
               let activeRootURL = context.activeRootURL else {
@@ -978,9 +986,15 @@ public class ReaderFileManager: ObservableObject {
             guard context.cloudRootExists else {
                 return false
             }
-            let requiredPayloadURLs = (try? Self.requiredPayloadURLs(at: activeRootURL)) ?? []
+            let requiredPayloadURLs = try Self.requiredPayloadURLs(at: activeRootURL)
             let payloadURLs = requiredPayloadURLs.isEmpty ? [activeRootURL] : requiredPayloadURLs
-            return payloadURLs.allSatisfy { Self.payloadState(at: $0) == .current }
+            for payloadURL in payloadURLs {
+                try Task.checkCancellation()
+                guard try Self.payloadState(at: payloadURL) == .current else {
+                    return false
+                }
+            }
+            return true
         }
     }
 
