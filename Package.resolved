@@ -1,5 +1,5 @@
 {
-  "originHash" : "076c38ddd58677c3c89d44f190a30085700f9c9ff98a3aa9aee195ed618b5bbd",
+  "originHash" : "575b5c80562e0fd7c98b9676b5d2fc90fe983e42530c7f97cf4783ea1242e33c",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -141,6 +141,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/johnpatrickmorgan/NavigationBackport.git",
       "state" : {
+        "branch" : "main",
         "revision" : "540d823fdfbbe495cbbe0afc80c409d63c9995c0"
       }
     },
@@ -163,21 +164,11 @@
       }
     },
     {
-      "identity" : "opml",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/opml.git",
-      "state" : {
-        "branch" : "master",
-        "revision" : "5e0e3a9b8a2197f8f48c5b034e763d8bd4809b56"
-      }
-    },
-    {
       "identity" : "persistedlrucache",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/PersistedLRUCache.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "92c910e0223cb415a7bf0a72d0e5e01eaa95e5b7"
+        "revision" : "b86f15682d134978962eb0f7d88f9b9d23edff0a"
       }
     },
     {
@@ -185,6 +176,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/EmergeTools/Pow.git",
       "state" : {
+        "branch" : "main",
         "revision" : "1b4b1dda28c50b95f0872927ee2226fe8b58950e"
       }
     },
@@ -256,17 +248,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-async-algorithms.git",
       "state" : {
-        "branch" : "main",
-        "revision" : "9d349bcc328ac3c31ce40e746b5882742a0d1272"
-      }
-    },
-    {
-      "identity" : "swift-atomics",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-atomics.git",
-      "state" : {
-        "revision" : "b601256eab081c0f92f059e12818ac1d4f178ff7",
-        "version" : "1.3.0"
+        "revision" : "d0b4a06d0f173a2f3be27d3ea21b3c3aa18db440",
+        "version" : "1.1.4"
       }
     },
     {
@@ -315,15 +298,6 @@
       }
     },
     {
-      "identity" : "swift-html",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/pointfreeco/swift-html",
-      "state" : {
-        "revision" : "662619ff6c39c389694b9f5d522c72291d034928",
-        "version" : "0.5.0"
-      }
-    },
-    {
       "identity" : "swift-identified-collections",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-identified-collections",
@@ -357,6 +331,15 @@
       "state" : {
         "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "swift-opml",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lake-of-fire/swift-opml.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "30d2325dc048efc0ace42da99962b323c31710f6"
       }
     },
     {

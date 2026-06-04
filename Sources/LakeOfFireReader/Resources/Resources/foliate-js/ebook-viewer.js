@@ -2124,6 +2124,11 @@ const applyResolvedChromeInsetState = (state) => {
         target.style.setProperty('--mnb-reader-stage-top-inset', state.obscuredTopInset);
         target.style.setProperty('--mnb-toolbar-bottom-offset', state.toolbarBottomOffset);
     }
+    const readerStage = document.getElementById('reader-stage');
+    if (readerStage) {
+        readerStage.style.top = state.obscuredTopInset;
+        readerStage.style.bottom = 'var(--mnb-reader-stage-bottom-inset, 0px)';
+    }
 };
 
 const formatLandscapeInsetRect = (rect) => {

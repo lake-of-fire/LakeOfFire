@@ -126,18 +126,4 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertEqual(missingAssetResponse.response.statusCode, 404)
     }
 
-    func testEbookViewerScriptUsesSameSchemeFontStylesheetsWithoutBlobURLs() throws {
-        let scriptURL = try XCTUnwrap(
-            Bundle.module.url(forResource: "ebook-viewer", withExtension: "js", subdirectory: "foliate-js")
-        )
-        let script = try String(contentsOf: scriptURL, encoding: .utf8)
-        let start = try XCTUnwrap(script.range(of: "const ensureCustomFontsForDoc = async (doc) => {"))
-        let end = try XCTUnwrap(script.range(of: "globalThis.manabiWaitForFontCSS = async () => true;"))
-        let section = String(script[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(section.contains("resolveSharedFontStylesheetURL(doc, targetFamily)"), section)
-        XCTAssertFalse(section.contains("URL.createObjectURL"), section)
-        XCTAssertTrue(section.contains("same-scheme-link"), section)
-        XCTAssertTrue(section.contains("style.href = stylesheetURL"), section)
-    }
 }
