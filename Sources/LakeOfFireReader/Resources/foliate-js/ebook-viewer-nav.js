@@ -865,6 +865,23 @@ export class NavigationHUD {
         const direction = reportedDirection;
         const shouldHide = direction === 'forward';
         const now = Date.now();
+        if (shouldHide) {
+            const lastExplicitRevealAtMs = Number(globalThis.__manabiLastExplicitNavigationRevealAtMs || 0);
+            const explicitRevealAgeMs = lastExplicitRevealAtMs > 0 ? now - lastExplicitRevealAtMs : Number.POSITIVE_INFINITY;
+            if (explicitRevealAgeMs >= 0 && explicitRevealAgeMs < 900) {
+                logMay15('ebook.navVisibility.pageTurn.suppressedAfterExplicitReveal', {
+                    direction,
+                    reportedDirection,
+                    reason: detail?.reason ?? null,
+                    explicitRevealAgeMs,
+                    lastExplicitRevealAtMs,
+                    sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+                    pageNumber: this.rendererPageSnapshot?.current ?? null,
+                    pageCount: this.rendererPageSnapshot?.total ?? null,
+                });
+                return;
+            }
+        }
         if (direction === 'forward') {
             globalThis.__manabiLastForwardPageTurnHideAtMs = now;
         } else if (direction === 'backward') {

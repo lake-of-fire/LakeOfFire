@@ -1909,6 +1909,12 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         }
     } else {
         const now = Date.now();
+        if (
+            source === 'touchstartCallbackHandler.noElement.nativeToggle'
+            || source?.startsWith?.('explicitReveal.')
+        ) {
+            globalThis.__manabiLastExplicitNavigationRevealAtMs = now;
+        }
         const lastForwardPageTurnHideAtMs = Number(globalThis.__manabiLastForwardPageTurnHideAtMs || 0);
         const lastBackwardPageTurnRevealAtMs = Number(globalThis.__manabiLastBackwardPageTurnRevealAtMs || 0);
         const isStaleSwiftRevealAfterForwardPageTurn =
