@@ -652,26 +652,71 @@ export class NavigationHUD {
         target.style.setProperty('line-height', '12px', 'important');
     }
 
+    _titleLocationTextLayers() {
+        const target = this.navTitleLocationLabel;
+        if (!target) return null;
+        let layers = Array.from(target.querySelectorAll(':scope > .nav-title-location-text'));
+        if (layers.length === 2) {
+            return layers;
+        }
+        const existingText = target.textContent ?? '';
+        target.textContent = '';
+        layers = [document.createElement('span'), document.createElement('span')];
+        for (const layer of layers) {
+            layer.className = 'nav-title-location-text';
+            layer.setAttribute('aria-hidden', 'true');
+            target.append(layer);
+        }
+        if (existingText) {
+            layers[0].textContent = existingText;
+            layers[0].dataset.active = 'true';
+            target.dataset.activeTitleLocationLayer = '0';
+        }
+        return layers;
+    }
+
     _setTitleLocationLabel(visible, label = '') {
         const target = this.navTitleLocationLabel;
         if (!target) return;
         this._applyTitleLocationUIFont();
+        const layers = this._titleLocationTextLayers();
+        if (!layers) return;
         if (target.__titleLocationFadeTimer) {
             clearTimeout(target.__titleLocationFadeTimer);
             target.__titleLocationFadeTimer = null;
         }
         if (visible && label) {
             target.hidden = false;
-            target.textContent = label;
+            const activeIndex = target.dataset.activeTitleLocationLayer === '1' ? 1 : 0;
+            const activeLayer = layers[activeIndex];
+            if (target.dataset.visible === 'true' && activeLayer?.textContent === label) {
+                target.removeAttribute('aria-hidden');
+                return;
+            }
+            const nextIndex = activeLayer?.textContent ? 1 - activeIndex : activeIndex;
+            const nextLayer = layers[nextIndex];
+            nextLayer.textContent = label;
+            nextLayer.dataset.active = 'true';
+            if (nextLayer !== activeLayer) {
+                activeLayer.dataset.active = 'false';
+            }
+            target.dataset.activeTitleLocationLayer = `${nextIndex}`;
+            target.dataset.titleLocationText = label;
             target.dataset.visible = 'true';
             target.removeAttribute('aria-hidden');
             return;
         }
         target.dataset.visible = 'false';
         target.setAttribute('aria-hidden', 'true');
+        for (const layer of layers) {
+            layer.dataset.active = 'false';
+        }
         target.__titleLocationFadeTimer = setTimeout(() => {
             if (target.dataset.visible === 'false') {
-                target.textContent = '';
+                for (const layer of layers) {
+                    layer.textContent = '';
+                }
+                target.dataset.titleLocationText = '';
                 target.hidden = true;
             }
             target.__titleLocationFadeTimer = null;

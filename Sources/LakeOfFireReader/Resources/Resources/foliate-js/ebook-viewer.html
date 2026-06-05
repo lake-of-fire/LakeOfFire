@@ -79,10 +79,7 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --mnb-nav-bar-height-expanded: calc(
-                        var(--mnb-floating-percent-label-height)
-                        + var(--mnb-floating-percent-label-gap)
-                    );
+                    --mnb-nav-bar-height-expanded: var(--mnb-floating-percent-label-height);
                     --mnb-nav-bar-height-compact: var(--mnb-nav-bar-height-expanded);
                     --mnb-nav-bar-height-mark-read-hidden: var(--mnb-nav-bar-height-expanded);
                     --mnb-nav-bar-height: var(--mnb-nav-bar-height-expanded);
@@ -302,7 +299,7 @@
                     align-self: center;
                     justify-self: center;
                     z-index: 3;
-                    display: block;
+                    display: grid;
                     max-width: min(20em, calc(100vw - (var(--nav-horizontal-padding) * 2)));
                     overflow: hidden;
                     text-overflow: ellipsis;
@@ -322,6 +319,18 @@
                     transition: opacity 240ms ease;
                 }
                 #nav-title-location-label[data-visible="true"] {
+                    opacity: 1;
+                }
+                #nav-title-location-label .nav-title-location-text {
+                    grid-area: 1 / 1;
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    opacity: 0;
+                    transition: opacity 220ms ease;
+                }
+                #nav-title-location-label .nav-title-location-text[data-active="true"] {
                     opacity: 1;
                 }
                 body[data-mnb-ebook-title-location-visibility="automatic"] #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {

@@ -4508,7 +4508,17 @@ class Reader {
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
-            onHideNavigationDueToScrollChange: hidden => this.#applyHideNavigationDueToScrollToBookContent(hidden),
+            onHideNavigationDueToScrollChange: (hidden, details = {}) => {
+                this.#applyHideNavigationDueToScrollToBookContent(hidden);
+                postEbookNavigationVisibilityToNative(
+                    hidden,
+                    `navHUD.visibilityChange.${details?.source || 'unknown'}`,
+                    {
+                        previous: details?.previous ?? null,
+                        context: details?.context ?? null,
+                    }
+                );
+            },
         });
         this.scheduleGoToPageNumber = debounce((pageNumber) => {
             this.goToLocationNumber(pageNumber, 'schedule-location-number')
@@ -5020,7 +5030,9 @@ class Reader {
             navPrimaryFontSize: navPrimaryStyle?.fontSize ?? null,
             navPrimaryFontWeight: navPrimaryStyle?.fontWeight ?? null,
             navPrimaryLineHeight: navPrimaryStyle?.lineHeight ?? null,
-            navTitleLocationText: navTitleLocationLabel?.textContent ?? null,
+            navTitleLocationText: navTitleLocationLabel?.dataset?.titleLocationText
+                ?? navTitleLocationLabel?.textContent
+                ?? null,
             navTitleLocationRect: this.#formatRect(navTitleLocationRect),
             navTitleLocationFontFamily: navTitleLocationStyle?.fontFamily ?? null,
             navTitleLocationFontSize: navTitleLocationStyle?.fontSize ?? null,
