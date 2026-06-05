@@ -268,6 +268,8 @@ export class NavigationHUD {
         this.lastTerminalPagesLeftPageNumber = null;
         this.sectionProgressRequestToken = 0;
         this.latestPrimaryLabel = '';
+        this.bookTitle = '';
+        this.lastPagesLeftLabel = '';
         this.previousRelocateVisibility = {
             back: null,
             forward: null,
@@ -442,9 +444,25 @@ export class NavigationHUD {
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
+                source,
+                previous,
+                context: {
+                    ...(context || {}),
+                    resyncReason: 'preservedHiddenNavigation',
+                },
+            });
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
+            this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
+                source,
+                previous,
+                context: {
+                    ...(context || {}),
+                    resyncReason: 'noop',
+                },
+            });
             logEPUBNav('nav.visibility.scroll-toggle-noop', {
                 source,
                 shouldHide: next,
@@ -544,6 +562,10 @@ export class NavigationHUD {
         }
         // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
         this._updateRelocateButtons();
+        this.syncPageTrackingButtonsNavigationDisabled();
+        this.refreshTitleLocationVisibility(`setHide:${source}`);
+        void this._updateSectionProgress({ refreshSnapshot: false, source: `setHide:${source}` });
+        this._postNativeOverlayState(`setHide:${source}`);
         this._requestAuxiliaryInsetsUpdate();
         globalThis.reader?.queueLayoutDiagnostics?.('nav-hide-due-to-scroll', {
             source,
@@ -575,6 +597,9 @@ export class NavigationHUD {
         if (descriptor) {
             this._updatePrimaryLine(descriptor);
         }
+        this.syncPageTrackingButtonsNavigationDisabled();
+        this.refreshTitleLocationVisibility('nav-hidden-state');
+        this._postNativeOverlayState('nav-hidden-state');
         logEPUBNav('nav.visibility.hidden-toggle', {
             previous,
             shouldHide: this.navHidden,
@@ -588,6 +613,143 @@ export class NavigationHUD {
         globalThis.reader?.queueLayoutDiagnostics?.('nav-hidden-state', {
             shouldHide: this.navHidden,
         });
+    }
+
+    setBookTitle(title) {
+        const normalized = typeof title === 'string' ? title.replace(/\s+/g, ' ').trim() : '';
+        this.bookTitle = normalized;
+        this.refreshTitleLocationVisibility('book-title');
+    }
+
+    refreshTitleLocationVisibility(source = 'refresh') {
+        this._updateTitleLocationLabel({ source });
+    }
+
+    syncPageTrackingButtonsNavigationDisabled() {
+        const shouldDisable =
+            document.body?.dataset?.mnbMarkReadButtonsHideWithNavigation === 'true'
+            && (this.hideNavigationDueToScroll || this.navHidden);
+        const buttons = this.pageTrackingButtons?.querySelectorAll?.('button.page-read-button') ?? [];
+        for (const button of buttons) {
+            if (!(button instanceof HTMLButtonElement)) continue;
+            if (shouldDisable) {
+                if (!button.disabled) {
+                    button.dataset.mnbDisabledForHiddenNavigation = 'true';
+                    button.disabled = true;
+                }
+            } else if (button.dataset.mnbDisabledForHiddenNavigation === 'true') {
+                delete button.dataset.mnbDisabledForHiddenNavigation;
+                button.disabled = false;
+            }
+        }
+    }
+
+    _titleLocationVisibilityMode() {
+        const raw = document.body?.dataset?.mnbEbookTitleLocationVisibility;
+        return raw === 'automatic' ? 'automatic' : 'alwaysVisible';
+    }
+
+    _applyTitleLocationUIFont() {
+        const target = this.navTitleLocationLabel;
+        if (!target?.style) return;
+        target.style.setProperty('font-family', '-apple-system, BlinkMacSystemFont, system-ui, sans-serif', 'important');
+        target.style.setProperty('font-size', '10px', 'important');
+        target.style.setProperty('font-weight', '600', 'important');
+        target.style.setProperty('line-height', '12px', 'important');
+    }
+
+    _titleLocationTextLayers() {
+        const target = this.navTitleLocationLabel;
+        if (!target) return null;
+        let layers = Array.from(target.querySelectorAll(':scope > .nav-title-location-text'));
+        if (layers.length === 2) {
+            return layers;
+        }
+        const existingText = target.textContent ?? '';
+        target.textContent = '';
+        layers = [document.createElement('span'), document.createElement('span')];
+        for (const layer of layers) {
+            layer.className = 'nav-title-location-text';
+            layer.setAttribute('aria-hidden', 'true');
+            target.append(layer);
+        }
+        if (existingText) {
+            layers[0].textContent = existingText;
+            layers[0].dataset.active = 'true';
+            target.dataset.activeTitleLocationLayer = '0';
+        }
+        return layers;
+    }
+
+    _setTitleLocationLabel(visible, label = '') {
+        const target = this.navTitleLocationLabel;
+        if (!target) return;
+        this._applyTitleLocationUIFont();
+        const layers = this._titleLocationTextLayers();
+        if (!layers) return;
+        if (target.__titleLocationFadeTimer) {
+            clearTimeout(target.__titleLocationFadeTimer);
+            target.__titleLocationFadeTimer = null;
+        }
+        if (visible && label) {
+            target.hidden = false;
+            const activeIndex = target.dataset.activeTitleLocationLayer === '1' ? 1 : 0;
+            const activeLayer = layers[activeIndex];
+            if (target.dataset.visible === 'true' && activeLayer?.textContent === label) {
+                target.removeAttribute('aria-hidden');
+                return;
+            }
+            const nextIndex = activeLayer?.textContent ? 1 - activeIndex : activeIndex;
+            const nextLayer = layers[nextIndex];
+            nextLayer.textContent = label;
+            nextLayer.dataset.active = 'true';
+            if (nextLayer !== activeLayer) {
+                activeLayer.dataset.active = 'false';
+            }
+            target.dataset.activeTitleLocationLayer = `${nextIndex}`;
+            target.dataset.titleLocationText = label;
+            target.dataset.visible = 'true';
+            target.removeAttribute('aria-hidden');
+            return;
+        }
+        target.dataset.visible = 'false';
+        target.setAttribute('aria-hidden', 'true');
+        for (const layer of layers) {
+            layer.dataset.active = 'false';
+        }
+        target.__titleLocationFadeTimer = setTimeout(() => {
+            if (target.dataset.visible === 'false') {
+                for (const layer of layers) {
+                    layer.textContent = '';
+                }
+                target.dataset.titleLocationText = '';
+                target.hidden = true;
+            }
+            target.__titleLocationFadeTimer = null;
+        }, 260);
+    }
+
+    _updateTitleLocationLabel({ pagesLeftLabel = null, pagesLeftVisible = null, source = 'refresh' } = {}) {
+        if (typeof pagesLeftLabel === 'string') {
+            this.lastPagesLeftLabel = pagesLeftLabel;
+        }
+        const mode = this._titleLocationVisibilityMode();
+        const isHidden = this.hideNavigationDueToScroll || this.navHidden;
+        if (isHidden) {
+            if (mode === 'automatic') {
+                this._setTitleLocationLabel(false);
+                this._postNativeOverlayState(`title-location:${source}`);
+                return;
+            }
+            this._setTitleLocationLabel(!!this.bookTitle, this.bookTitle);
+            this._postNativeOverlayState(`title-location:${source}`);
+            return;
+        }
+        const shouldShowPagesLeft = pagesLeftVisible === null
+            ? !!this.lastPagesLeftLabel
+            : !!pagesLeftVisible;
+        this._setTitleLocationLabel(shouldShowPagesLeft, shouldShowPagesLeft ? this.lastPagesLeftLabel : '');
+        this._postNativeOverlayState(`title-location:${source}`);
     }
 
     getCurrentDescriptor() {
@@ -1022,6 +1184,41 @@ export class NavigationHUD {
                 });
             }
         }
+    }
+
+    _relocateButtonEnabled(direction) {
+        const button = direction === 'back'
+            ? this.navRelocateButtons?.back
+            : this.navRelocateButtons?.forward;
+        if (!button) return false;
+        if (button.hidden) return false;
+        if (button.disabled) return false;
+        if (button.getAttribute?.('aria-disabled') === 'true') return false;
+        return button.dataset?.visible !== 'false';
+    }
+
+    _postNativeOverlayState(source = 'refresh') {
+        const percentLabel = this.navHiddenOverlay?.percent?.textContent
+            || this.navPrimaryTextCompact?.textContent
+            || this.navPrimaryTextFull?.textContent
+            || this.latestPrimaryLabel
+            || '';
+        const hideNavigationDueToScroll = this.hideNavigationDueToScroll || this.navHidden;
+        const titleLocationLabel = this.navTitleLocationLabel?.dataset?.titleLocationText || '';
+        const titleLocationVisible = this.navTitleLocationLabel?.dataset?.visible === 'true' && !!titleLocationLabel;
+        const relocateBackEnabled = this._relocateButtonEnabled('back');
+        const relocateForwardEnabled = this._relocateButtonEnabled('forward');
+        try {
+            window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
+                percentLabel,
+                hideNavigationDueToScroll,
+                titleLocationLabel,
+                titleLocationVisible,
+                relocateBackEnabled,
+                relocateForwardEnabled,
+                source,
+            });
+        } catch (_error) {}
     }
 
     _updateCompactPercent(detail) {
@@ -1528,6 +1725,11 @@ export class NavigationHUD {
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) {
                 setCenterPagesLeftVisible(false);
+                this._updateTitleLocationLabel({
+                    pagesLeftVisible: false,
+                    pagesLeftLabel: '',
+                    source,
+                });
                 logPagesLeft('label.skip.hidden-or-completion', {
                     source,
                     requestToken,
@@ -1542,6 +1744,11 @@ export class NavigationHUD {
             }
             if (sectionResolution.index == null) {
                 setCenterPagesLeftVisible(false);
+                this._updateTitleLocationLabel({
+                    pagesLeftVisible: false,
+                    pagesLeftLabel: '',
+                    source,
+                });
                 logPagesLeft('label.skip.no-section', {
                     source,
                     requestToken,
@@ -1553,6 +1760,11 @@ export class NavigationHUD {
                 this.lastTerminalPagesLeftSection = sectionResolution.index;
                 this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
                 setCenterPagesLeftVisible(false);
+                this._updateTitleLocationLabel({
+                    pagesLeftVisible: false,
+                    pagesLeftLabel: '',
+                    source,
+                });
                 logPagesLeft('label.hide.terminal', {
                     source,
                     requestToken,
@@ -1580,6 +1792,12 @@ export class NavigationHUD {
                 && !isExplicitBackwardRelocate
                 && !movedBeforeTerminalPage
             ) {
+                setCenterPagesLeftVisible(false);
+                this._updateTitleLocationLabel({
+                    pagesLeftVisible: false,
+                    pagesLeftLabel: '',
+                    source,
+                });
                 logPagesLeft('label.suppress-terminal-regression', {
                     source,
                     requestToken,
@@ -1617,7 +1835,12 @@ export class NavigationHUD {
             const label = pagesLeft === 1
                 ? `1 page left in ${progressScope}`
                 : `${pagesLeft} pages left in ${progressScope}`;
-            setCenterPagesLeftVisible(true, label);
+            setCenterPagesLeftVisible(false);
+            this._updateTitleLocationLabel({
+                pagesLeftVisible: true,
+                pagesLeftLabel: label,
+                source,
+            });
             logPagesLeft('label.set', {
                 source,
                 requestToken,

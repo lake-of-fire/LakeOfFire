@@ -4,15 +4,8 @@ private func sharedReaderFontLog(
     _ stage: String,
     _ metadata: [String: String] = [:]
 ) {
-    let payload = metadata
-        .sorted { $0.key < $1.key }
-        .map { "\($0.key)=\($0.value)" }
-        .joined(separator: " ")
-    if payload.isEmpty {
-        print("# EPUB", "sharedReaderFont.\(stage)")
-    } else {
-        print("# EPUB", "sharedReaderFont.\(stage)", payload)
-    }
+    _ = stage
+    _ = metadata
 }
 
 public struct SharedReaderFontAsset: Equatable, Sendable {
@@ -294,7 +287,7 @@ public func sharedReaderFontResponse(
         }
         html,
         body,
-        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(rt) {
+        body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
           font-family: '\(familyName)' !important;
         }
         rt {

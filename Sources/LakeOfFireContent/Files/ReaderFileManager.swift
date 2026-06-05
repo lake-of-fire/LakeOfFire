@@ -608,7 +608,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             try Task.checkCancellation()
-                            if setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
+                            if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
                                 updatedFiles.append(existing)
                             }
                             allFileRefs.append(ThreadSafeReference(to: existing))
@@ -616,7 +616,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             let contentFile = ContentFile()
                             contentFile.url = readerFileURL
                             try Task.checkCancellation()
-                            if setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
+                            if try setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
                                 contentFile.updateCompoundKey()
                                 contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
                                     mimeType: contentFile.mimeType,
@@ -643,7 +643,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     /// Note that ReaderContentMetadataSynchronizer keeps associated records in sync
     @RealmBackgroundActor
-    private func setMetadata(readerFileURL fileURL: URL, absoluteFileURL: URL, contentFile: ContentFile) -> Bool {
+    private func setMetadata(readerFileURL fileURL: URL, absoluteFileURL: URL, contentFile: ContentFile) throws -> Bool {
+        try Task.checkCancellation()
         var metadataUpdated = false
         let fileModifiedAt = Self.fileModificationDate(absoluteFileURL: absoluteFileURL)
         
@@ -652,7 +653,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             metadataUpdated = true
         }
 
-        let payloadAvailableLocally = isPayloadReadableLocallyForMetadata(readerBackingURL: fileURL)
+        let payloadAvailableLocally = try isPayloadReadableLocallyForMetadata(readerBackingURL: fileURL)
+        try Task.checkCancellation()
         
         if metadataUpdated || contentFile.fileMetadataRefreshedAt ?? .distantPast <= fileModifiedAt ?? .distantPast {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -790,7 +792,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         var missingPayloadURLs = [URL]()
 
         for payloadURL in payloadURLs {
-            switch Self.payloadState(at: payloadURL) {
+            try Task.checkCancellation()
+            switch try Self.payloadState(at: payloadURL) {
             case .current:
                 continue
             case .downloading:
@@ -844,10 +847,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         case notLocal
     }
 
-    private static func payloadState(at url: URL) -> PayloadState {
+    private static func payloadState(at url: URL) throws -> PayloadState {
+        try Task.checkCancellation()
         guard fileSystemEntryExists(at: url) else {
             return .notLocal
         }
+        try Task.checkCancellation()
         let values = try? url.resourceValues(forKeys: [
             .isUbiquitousItemKey,
             .ubiquitousItemIsDownloadingKey,
@@ -910,7 +915,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    private func isPayloadReadableLocallyForMetadata(readerBackingURL: URL) -> Bool {
+    private func isPayloadReadableLocallyForMetadata(readerBackingURL: URL) throws -> Bool {
         guard let canonicalURL = canonicalReaderBackingURL(for: readerBackingURL),
               let context = try? readerBackingPathContext(for: canonicalURL),
               let activeRootURL = context.activeRootURL else {
@@ -926,7 +931,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             }
             let requiredPayloadURLs = (try? Self.requiredPayloadURLs(at: activeRootURL)) ?? []
             let payloadURLs = requiredPayloadURLs.isEmpty ? [activeRootURL] : requiredPayloadURLs
-            return payloadURLs.allSatisfy { Self.payloadState(at: $0) == .current }
+            for payloadURL in payloadURLs {
+                try Task.checkCancellation()
+                guard try Self.payloadState(at: payloadURL) == .current else {
+                    return false
+                }
+            }
+            return true
         }
     }
 

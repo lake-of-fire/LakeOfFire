@@ -411,7 +411,13 @@ func syncEbookViewerChromeInsets(
               }
               const targets = [document.documentElement, document.body].filter(Boolean);
               for (const target of targets) {
+                target.style.setProperty('--mnb-reader-stage-top-inset', obscuredTopInset);
                 target.style.setProperty('--mnb-toolbar-bottom-offset', toolbarBottomOffset);
+              }
+              const readerStage = document.getElementById('reader-stage');
+              if (readerStage) {
+                readerStage.style.top = obscuredTopInset;
+                readerStage.style.bottom = 'var(--mnb-reader-stage-bottom-inset, 0px)';
               }
             })();
             """,

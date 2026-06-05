@@ -13,7 +13,18 @@
                     --active-bg: rgba(0, 0, 0, .05);
                     --side-nav-width: 28px;
                     --word-tracking-status-outline-offset: 1px;
-                    --page-read-button-height: 30px;
+                    --mnb-floating-control-size: 43px;
+                    --mnb-floating-icon-size: 21px;
+                    --mnb-floating-visible-icon-top-adjustment: 18px;
+                    --mnb-floating-percent-label-height: 12px;
+                    --mnb-floating-percent-label-gap: 7px;
+                    --mnb-floating-mark-read-hidden-height-reduction: 7px;
+                    --mnb-floating-mark-read-hidden-height: calc(
+                        var(--mnb-floating-control-size)
+                        - var(--mnb-floating-mark-read-hidden-height-reduction)
+                    );
+                    --mnb-floating-mark-read-current-height: var(--mnb-floating-control-size);
+                    --page-read-button-height: var(--mnb-floating-control-size);
                     --completion-action-fill: color-mix(in srgb, CanvasText 16%, transparent);
                     --word-tracking-status-size: calc(
                         var(--page-read-button-height)
@@ -24,7 +35,7 @@
                     --word-tracking-checkmark-left: calc(var(--word-tracking-status-size) / 9.4 + var(--word-tracking-status-size) / 16);
                     --word-tracking-checkmark-height: calc(var(--word-tracking-status-size) / 1.8);
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
-                    --nav-page-read-clearance: 50px;
+                    --nav-page-read-clearance: 54px;
                     --nav-relocate-reserve: 150px;
                     --mnb-tracking-section-border-size: 3px;
                     --mnb-ebook-read-marker-padding: 1px;
@@ -68,31 +79,40 @@
                     --nav-relocate-baseline-offset: 4px;
                     --nav-section-progress-font-size: 16px;
                     --nav-compact-percent-min-width: 72px;
-                    --mnb-nav-bar-height-expanded: 64px;
-                    --mnb-nav-bar-height-compact: 54px;
-                    --mnb-nav-bar-height-mark-read-hidden: 39px;
+                    --mnb-nav-bar-height-expanded: var(--mnb-floating-percent-label-height);
+                    --mnb-nav-bar-height-compact: var(--mnb-nav-bar-height-expanded);
+                    --mnb-nav-bar-height-mark-read-hidden: var(--mnb-nav-bar-height-expanded);
                     --mnb-nav-bar-height: var(--mnb-nav-bar-height-expanded);
                     --mnb-toolbar-bottom-offset: 0px;
                     --mnb-system-bottom-inset: env(safe-area-inset-bottom, 0px);
-                    --mnb-toolbar-content-gap: 10px;
-                    --mnb-toolbar-visual-drop: 6px;
-                    --mnb-toolbar-visual-bottom-inset: max(
-                        0px,
-                        calc(var(--mnb-toolbar-bottom-offset, 0px) - var(--mnb-toolbar-visual-drop, 0px))
+                    --mnb-corner-control-edge-inset: 27px;
+                    --mnb-toolbar-content-gap: var(--mnb-floating-percent-label-gap);
+                    --mnb-toolbar-visual-drop: 0px;
+                    --nav-primary-offset-y: 0px;
+                    --mnb-toolbar-visual-bottom-inset: calc(
+                        var(--mnb-toolbar-bottom-offset, 0px)
+                        + var(--mnb-corner-control-edge-inset, 0px)
+                        + var(--mnb-floating-mark-read-current-height, var(--mnb-floating-control-size))
+                        - var(--mnb-floating-visible-icon-top-adjustment, 0px)
                     );
                     --mnb-toolbar-physical-bottom-inset: max(
-                        var(--mnb-toolbar-visual-bottom-inset, 0px),
+                        var(--mnb-toolbar-bottom-offset, 0px),
                         var(--mnb-system-bottom-inset, 0px)
                     );
-                    --mnb-page-tracking-bottom-inset: var(--mnb-toolbar-physical-bottom-inset, 0px);
+                    --mnb-page-tracking-bottom-inset: 0px;
+                    --mnb-page-tracking-toolbar-bottom-inset: 0px;
                     --nav-primary-hidden-shift-y: 14px;
-                    --mnb-reader-stage-bottom-inset: calc(
-                        var(--mnb-nav-bar-height)
-                        + var(--mnb-toolbar-physical-bottom-inset, 0px)
-                    );
+                    --mnb-reader-stage-bottom-inset: var(--mnb-toolbar-visual-bottom-inset, 0px);
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
+                    --mnb-ebook-top-gutter-height: 28px;
+                    --mnb-native-top-label-height: 12px;
+                    --mnb-read-marker-top-gap: 2px;
+                    --mnb-read-marker-top-offset: calc(
+                        var(--mnb-native-top-label-height)
+                        + var(--mnb-read-marker-top-gap)
+                    );
                     margin: 0 auto;
                     height: 100%;
                     /*height: 100dvh;*/
@@ -249,11 +269,13 @@
                     display: none !important;
                 }
                 #nav-bar {
+                    --mnb-floating-mark-read-current-height: var(--mnb-floating-control-size);
                     z-index: 5;
                     left: 0;
                     right: 0;
-                    bottom: var(--mnb-toolbar-physical-bottom-inset, 0px);
-                    transform: translateY(var(--mnb-toolbar-content-gap, 0px));
+                    bottom: var(--mnb-toolbar-visual-bottom-inset, 0px);
+                    background-color: transparent !important;
+                    transform: none;
                     height: var(--mnb-nav-bar-height) !important;
                     min-height: var(--mnb-nav-bar-height);
                     max-height: var(--mnb-nav-bar-height);
@@ -261,21 +283,68 @@
                     contain: layout size style;
                     padding: 0;
                 }
+                #nav-bar.nav-hidden-due-to-scroll {
+                    --mnb-floating-mark-read-current-height: var(--mnb-floating-mark-read-hidden-height);
+                }
                 #reader-stage {
                     position: absolute;
-                    top: 0;
+                    top: var(--mnb-reader-stage-top-inset, 0px);
                     right: 0;
                     bottom: var(--mnb-reader-stage-bottom-inset, 0px);
                     left: 0;
                     overflow: hidden;
                     z-index: 1;
                     display: grid;
-                    grid-template-rows: 0 minmax(0, 1fr);
+                    grid-template-rows: var(--mnb-ebook-top-gutter-height, 28px) minmax(0, 1fr);
+                }
+                #nav-title-location-label {
+                    position: relative;
+                    align-self: center;
+                    justify-self: center;
+                    z-index: 3;
+                    display: none !important;
+                    max-width: min(20em, calc(100vw - (var(--nav-horizontal-padding) * 2)));
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    color: var(--secondary-color);
+                    font-family: var(--mnb-ui-font-family) !important;
+                    font-size: 10px !important;
+                    font-weight: 600 !important;
+                    line-height: 12px !important;
+                    text-align: center;
+                    writing-mode: horizontal-tb !important;
+                    text-orientation: mixed !important;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    pointer-events: auto;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                }
+                #nav-title-location-label[data-visible="true"] {
+                    opacity: 1;
+                }
+                #nav-title-location-label .nav-title-location-text {
+                    grid-area: 1 / 1;
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    opacity: 0;
+                    transition: opacity 220ms ease;
+                }
+                #nav-title-location-label .nav-title-location-text[data-active="true"] {
+                    opacity: 1;
+                }
+                body[data-mnb-ebook-title-location-visibility="automatic"] #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
+                    opacity: 0 !important;
+                    visibility: hidden !important;
+                    pointer-events: none !important;
                 }
                 #page-read-marker-top {
                     display: block;
                     position: absolute;
-                    top: 0;
+                    top: var(--mnb-read-marker-top-offset, 14px);
                     left: var(--mnb-ebook-read-marker-top-left, var(--side-nav-width, 32px));
                     right: var(--mnb-ebook-read-marker-top-right, var(--side-nav-width, 32px));
                     width: auto;
@@ -383,7 +452,7 @@
                     color: var(--secondary-color);
                     text-align: center;
                     font-size: 10px !important;
-                    line-height: 12px;
+                    line-height: var(--mnb-floating-percent-label-height);
                     position: absolute;
                     top: 0;
                     left: 50%;
@@ -397,10 +466,10 @@
                     direction: ltr;
                     unicode-bidi: isolate;
                     pointer-events: auto;
-                    height: 26px;
+                    height: var(--mnb-floating-percent-label-height);
                     box-sizing: border-box;
                     flex: 0 1 auto;
-                    transform: translate(-50%, 0);
+                    transform: translate(-50%, var(--nav-primary-offset-y, 0px));
                     transition: color 240ms ease, opacity 240ms ease, transform 240ms ease;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
@@ -499,7 +568,7 @@
                     pointer-events: auto !important;
                     transform: translate(-50%, 0);
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container {
                     opacity: 1 !important;
                     visibility: visible !important;
                     pointer-events: auto !important;
@@ -717,7 +786,6 @@
                 }
                 #page-tracking-container {
                     --word-tracking-status-outline-offset: 1px;
-                    --page-read-button-height: 30px;
                     --word-tracking-status-size: calc(
                         var(--page-read-button-height)
                         - (var(--word-tracking-status-outline-offset) * 2)
@@ -727,23 +795,42 @@
                     --word-tracking-checkmark-left: calc(var(--word-tracking-status-size) / 9.4 + var(--word-tracking-status-size) / 16);
                     --word-tracking-checkmark-height: calc(var(--word-tracking-status-size) / 1.8);
                     --word-tracking-checkmark-width: calc(var(--word-tracking-checkmark-height) / 2.15);
-                    position: fixed;
-                    bottom: calc(var(--mnb-page-tracking-bottom-inset, 0px) + 3px);
+                    position: absolute;
+                    bottom: var(--mnb-page-tracking-toolbar-bottom-inset, 0px);
                     left: 50%;
                     right: auto;
                     transform: translateX(-50%);
                     display: flex;
-                    align-items: flex-end;
+                    align-items: center;
                     justify-content: center;
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
                     min-width: 0;
                     z-index: 7;
                     pointer-events: auto;
-                    padding-block: 5px;
+                    padding-block: 0;
                     font-size: 14px !important;
                     line-height: 1;
                 }
+                body[data-book-dir="rtl"] #page-tracking-container {
+                    left: 50%;
+                    right: auto;
+                }
                 body[data-mnb-mark-read-buttons-visible="false"] #page-tracking-container {
                     display: none !important;
+                }
+                body[data-mnb-native-ebook-overlay-active="true"] #page-tracking-container {
+                    display: none !important;
+                }
+                body[data-mnb-mark-read-buttons-hide-with-navigation="true"] #nav-bar.nav-hidden-due-to-scroll #page-tracking-container {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+                body[data-mnb-mark-read-buttons-hide-with-navigation="true"] #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button {
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                 }
                 body[data-mnb-mark-read-buttons-visible="false"] {
                     --mnb-nav-bar-height: var(--mnb-nav-bar-height-expanded);
@@ -752,9 +839,11 @@
                 #page-tracking-buttons {
                     display: flex;
                     flex-direction: row;
-                    align-items: flex-end;
+                    align-items: center;
                     justify-content: center;
                     gap: 0;
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
                     min-width: 0;
                 }
                 body[data-book-dir="rtl"] #page-tracking-buttons {
@@ -832,7 +921,7 @@
                 .page-read-button:focus:not(:focus-visible) {
                     outline: none;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button {
                     box-shadow: none;
                     opacity: 0.68;
                     width: calc(var(--page-read-button-height) * 0.85);
@@ -843,7 +932,7 @@
                     gap: 0;
                     justify-content: center;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button:not([data-mnb-tracking-section-read="true"]):not([data-completion-action]) {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button:not([data-mnb-tracking-section-read="true"]):not([data-completion-action]) {
                     opacity: 0.56;
                 }
                 .page-read-button .mnb-tracking-button-status {
@@ -940,7 +1029,7 @@
                     max-width: 0;
                     opacity: 0;
                 }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) {
+                #nav-bar:not(.nav-hidden-due-to-scroll) #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) {
                     width: calc(var(--page-read-button-height) * 0.85);
                     height: calc(var(--page-read-button-height) * 0.85);
                     min-width: calc(var(--page-read-button-height) * 0.85);
@@ -949,11 +1038,11 @@
                     gap: 0;
                     justify-content: center;
                 }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
+                #nav-bar:not(.nav-hidden-due-to-scroll) #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
                     max-width: 0;
                     opacity: 0;
                 }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
+                #nav-bar:not(.nav-hidden-due-to-scroll) #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
                     opacity: 1;
                     transition-delay: 140ms;
                 }
@@ -987,11 +1076,11 @@
                     opacity: 1;
                     color: CanvasText;
                 }
-                #nav-bar:not(.nav-hidden-due-to-scroll) ~ #page-tracking-container .page-read-button .mnb-tracking-status-checkmark {
+                #nav-bar:not(.nav-hidden-due-to-scroll) #page-tracking-container .page-read-button .mnb-tracking-status-checkmark {
                     opacity: 1;
                     transition-delay: 140ms;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button .mnb-tracking-status-checkmark {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button .mnb-tracking-status-checkmark {
                     opacity: 0;
                     transition-delay: 220ms;
                 }
@@ -1020,7 +1109,7 @@
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]):active {
                     background-color: var(--theme-tracking-read-color);
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
                     box-shadow: none;
                 }
                 .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
@@ -1038,7 +1127,7 @@
                     border-color: var(--mnb-red);
                     box-shadow: none;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-read-state="pending"] {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-read-state="pending"] {
                     box-shadow: none;
                 }
                 .page-read-button[data-read-state="pending"] .mnb-tracking-button-status {
@@ -1048,18 +1137,18 @@
                     border-right-color: white;
                     border-top-color: white;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) {
                     opacity: 1;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-status-checkmark {
                     opacity: 1;
                     transition-delay: 0ms;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-mnb-tracking-section-read="true"]:not([data-completion-action]) .mnb-tracking-button-label {
                     max-width: 0;
                     opacity: 0;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-completion-action] {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-completion-action] {
                     opacity: 1;
                     width: fit-content;
                     height: var(--page-read-button-height);
@@ -1070,7 +1159,7 @@
                     justify-content: center;
                     box-shadow: none;
                 }
-                #nav-bar.nav-hidden-due-to-scroll ~ #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-label {
+                #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-completion-action] .mnb-tracking-button-label {
                     max-width: 180px;
                     opacity: 1;
                 }
@@ -1613,6 +1702,7 @@
             <div id="toc-view"></div>
         </div>
         <div id="reader-stage" aria-hidden="false">
+            <a id="nav-title-location-label" class="nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite" hidden></a>
             <div id="page-read-marker-top" aria-hidden="true"></div>
             <div id="page-read-marker-side" aria-hidden="true"></div>
         </div>
@@ -1654,9 +1744,9 @@
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
             </div>
-        </div>
-        <div id="page-tracking-container" hidden aria-live="polite">
-            <div id="page-tracking-buttons" hidden></div>
+            <div id="page-tracking-container" hidden aria-live="polite">
+                <div id="page-tracking-buttons" hidden></div>
+            </div>
         </div>
         <div id="nav-hidden-overlay" aria-hidden="true">
             <a id="nav-hidden-primary-text" class="nav-hidden-label nav-action-link" href="#" role="button" aria-label="Open Go To sheet"></a>

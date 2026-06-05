@@ -1993,6 +1993,31 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
     return setNativeHideNavigationState(shouldHide, source);
 };
 
+const isCompactNavigationSheetSidePaginationDisabled = () => (
+    document.body?.dataset?.mnbCompactNavigationSheetPresentedAsSheet === 'true'
+    && document.body?.dataset?.mnbCompactNavigationSheetDetentKind !== 'zero'
+);
+
+window.manabiSetCompactNavigationSheetDetentState = (state = {}) => {
+    const presentedAsSheet = state?.presentedAsSheet === true || state?.presentedAsSheet === 'true';
+    const semanticDetentKind = typeof state?.semanticDetentKind === 'string'
+        ? state.semanticDetentKind
+        : 'unknown';
+    const nativeEBookOverlayActive = state?.nativeEBookOverlayActive === true || state?.nativeEBookOverlayActive === 'true';
+    document.body.dataset.mnbCompactNavigationSheetPresentedAsSheet = presentedAsSheet ? 'true' : 'false';
+    document.body.dataset.mnbCompactNavigationSheetDetentKind = semanticDetentKind;
+    document.body.dataset.mnbNativeEbookOverlayActive = nativeEBookOverlayActive ? 'true' : 'false';
+    const sidePaginationDisabled = isCompactNavigationSheetSidePaginationDisabled();
+    document.body.dataset.mnbCompactNavigationSheetSidePaginationDisabled = sidePaginationDisabled ? 'true' : 'false';
+    void globalThis.reader?.updateNavButtons?.();
+    return {
+        presentedAsSheet,
+        semanticDetentKind,
+        nativeEBookOverlayActive,
+        sidePaginationDisabled,
+    };
+};
+
 const normalizeChromeInsetCSSValue = (value) => {
     if (typeof value === 'number' && Number.isFinite(value)) {
         return `${value}px`;
@@ -2121,7 +2146,13 @@ const getNextChromeInsetRevision = () => {
 
 const applyResolvedChromeInsetState = (state) => {
     for (const target of [document.documentElement, document.body].filter(Boolean)) {
+        target.style.setProperty('--mnb-reader-stage-top-inset', state.obscuredTopInset);
         target.style.setProperty('--mnb-toolbar-bottom-offset', state.toolbarBottomOffset);
+    }
+    const readerStage = document.getElementById('reader-stage');
+    if (readerStage) {
+        readerStage.style.top = state.obscuredTopInset;
+        readerStage.style.bottom = 'var(--mnb-reader-stage-bottom-inset, 0px)';
     }
 };
 
@@ -4628,6 +4659,34 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
+        document.getElementById('nav-title-location-label')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            postHideNavLog('control.click', {
+                control: 'nav-title-location-label',
+                wasHidden,
+                target: event.target?.id || event.target?.tagName || null,
+            });
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-title-location-label.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-title-location-label.click.preserve-hidden', {
+                    control: 'nav-title-location-label',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-title-location-label.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-title-location-label.click.preserve-visible', {
+                    control: 'nav-title-location-label',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-title-location-label', 'nav-title-location-label', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
+        });
         document.getElementById('nav-bar')?.addEventListener('click', (event) => {
             const target = event.target;
             const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
@@ -4806,6 +4865,9 @@ class Reader {
             }
             this.#markPageClusterAsRead(stateID).catch((error) => console.error(error));
         });
+        window.manabi_markVisiblePageAsRead = async (source = 'native') => {
+            return await this.markVisiblePageAsRead(source);
+        };
         window.addEventListener('resize', () => {
             postBookRotateLog('window.resize', {
                 innerWidth: window.innerWidth ?? null,
@@ -5944,13 +6006,46 @@ class Reader {
     #renderPageTrackingButtons(reason = 'unspecified') {
         const container = document.getElementById('page-tracking-container');
         const buttonHost = document.getElementById('page-tracking-buttons');
-        if (!(container instanceof HTMLElement) || !(buttonHost instanceof HTMLElement)) {
-            return;
-        }
+        const postNativeMarkReadState = (available, state = null, isBusy = false) => {
+            this.#logMarkRead('nativeMarkReadState', {
+                reason,
+                available: !!available,
+                isRead: !!state?.isRead,
+                isBusy: !!isBusy,
+                stateID: state?.id ?? null,
+                hasAnyMarkedReadContent: !!state?.hasAnyMarkedReadContent,
+            });
+            try {
+                window.webkit?.messageHandlers?.ebookNativeMarkReadState?.postMessage?.({
+                    available: !!available,
+                    isRead: !!state?.isRead,
+                    isBusy: !!isBusy,
+                    hasAnyMarkedReadContent: !!state?.hasAnyMarkedReadContent,
+                    stateID: state?.id ?? null,
+                    reason,
+                });
+            } catch (_error) {}
+        };
         const pageTrackingStates = this.pageTrackingStates || [];
         const hasStates = pageTrackingStates.length > 0;
         const completionAction = this.completionAction;
         const markReadButtonsVisible = document.body?.dataset?.mnbMarkReadButtonsVisible !== 'false';
+        const visibleState = pageTrackingStates.find((state) => state.id === 'visible-screen') ?? null;
+        const nativeMarkReadState = completionAction
+            ? {
+                id: `completion-action:${completionAction.type ?? 'unknown'}`,
+                isRead: false,
+                hasAnyMarkedReadContent: false,
+            }
+            : visibleState;
+        const nativeMarkReadAvailable = markReadButtonsVisible && (!!completionAction || !!nativeMarkReadState);
+        const nativeMarkReadBusy = completionAction
+            ? !!this.completionActionBusy
+            : this.pageTrackingBusyStateIDs.has(nativeMarkReadState?.id);
+        if (!(container instanceof HTMLElement) || !(buttonHost instanceof HTMLElement)) {
+            postNativeMarkReadState(nativeMarkReadAvailable, nativeMarkReadState, nativeMarkReadBusy);
+            return;
+        }
         const shouldShowPageTracking = markReadButtonsVisible && (!!completionAction || hasStates);
         const buttonBefore = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
         container.hidden = !shouldShowPageTracking;
@@ -5985,6 +6080,7 @@ class Reader {
             buttonHost.innerHTML = '';
             this.#updatePageReadMarker(reason, null);
             this.navHUD?.refreshAuxiliaryLayout?.();
+            postNativeMarkReadState(false, visibleState);
             return;
         }
         if (completionAction) {
@@ -6009,8 +6105,14 @@ class Reader {
                 completionAction: completionAction.type,
                 stateCount: 0,
             });
+            postNativeMarkReadState(true, nativeMarkReadState, isBusy);
             return;
         }
+        postNativeMarkReadState(
+            !!visibleState,
+            visibleState,
+            this.pageTrackingBusyStateIDs.has('visible-screen')
+        );
         buttonHost.innerHTML = pageTrackingStates.map((state) => {
             const isBusy = this.pageTrackingBusyStateIDs.has(state.id);
             const readState = isBusy ? 'pending' : (state.isRead ? 'complete' : 'ready');
@@ -6829,6 +6931,55 @@ class Reader {
         });
         await this.#advanceAfterMarkRead();
     }
+    async markVisiblePageAsRead(source = 'native') {
+        const completionAction = this.completionAction;
+        if (completionAction) {
+            if (this.completionActionBusy) {
+                this.#logPageTracking('ebook.pageTracking.markRead.skip', {
+                    reason: 'completion-action-busy',
+                    source,
+                    completionAction: completionAction.type ?? null,
+                });
+                return false;
+            }
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            if (wasHidden) {
+                globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
+                postEbookNavigationVisibilityToNative(true, 'native-page-tracking-button.preserve-hidden', {
+                    completionAction: completionAction.type ?? null,
+                    source,
+                });
+                ignoreNextIncomingRevealNavigation('native-page-tracking-button');
+            } else {
+                ignoreNextIncomingHideNavigation('native-page-tracking-button');
+            }
+            await this.#handleCompletionAction(completionAction.type);
+            return true;
+        }
+        const stateID = 'visible-screen';
+        const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
+        if (!pageTrackingState) {
+            this.#logPageTracking('ebook.pageTracking.markRead.skip', {
+                reason: 'missing-visible-screen-state',
+                source,
+            });
+            return false;
+        }
+        const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+        if (wasHidden) {
+            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
+            postEbookNavigationVisibilityToNative(true, 'native-page-tracking-button.preserve-hidden', {
+                stateID,
+                source,
+            });
+            ignoreNextIncomingRevealNavigation('native-page-tracking-button');
+        } else {
+            globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = true;
+            ignoreNextIncomingHideNavigation('native-page-tracking-button');
+        }
+        await this.#markPageClusterAsRead(stateID);
+        return true;
+    }
     async open(file) {
         postEPUBFlashLog('js.reader.open.beforeLoading', {
             fileKind: file?.kind || 'nil',
@@ -6971,6 +7122,9 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            if (button?.disabled || isCompactNavigationSheetSidePaginationDisabled()) {
+                return;
+            }
             this.#clearVisiblePageReadChrome('page-turn-start');
             this.#applyPageTurnNavigationVisibility(method, 'page-turn.side-button');
             if (method === 'goLeft') {
@@ -7001,12 +7155,14 @@ class Reader {
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
             nav.addEventListener('touchstart', () => {
+                if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
             nav.addEventListener('touchend', (event) => {
                 nav.classList.remove('pressed');
+                if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
                 const method = side === 'left' ? 'goLeft' : (side === 'right' ? 'goRight' : null);
                 if (side && method) {
@@ -7257,6 +7413,7 @@ class Reader {
         const title = book.metadata?.title ?? 'Untitled Book'
         document.title = title
         $('#side-bar-title').innerText = title
+        this.navHUD?.setBookTitle?.(title)
         const author = book.metadata?.author
         let authorText = typeof author === 'string' ? author :
         author
@@ -7498,16 +7655,17 @@ class Reader {
         const btnScrollLeft = document.getElementById('btn-scroll-left');
         const btnScrollRight = document.getElementById('btn-scroll-right');
         if (btnScrollLeft && btnScrollRight) {
+            const compactSheetSidePaginationDisabled = isCompactNavigationSheetSidePaginationDisabled();
             if (this.isRTL) {
                 // In RTL, left chevron = go forward, right chevron = go backward
                 // Disable left at end, right at start
-                btnScrollLeft.disabled = (atSectionEnd && !hasNextSection);
-                btnScrollRight.disabled = (atSectionStart && !hasPrevSection);
+                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || (atSectionEnd && !hasNextSection);
+                btnScrollRight.disabled = compactSheetSidePaginationDisabled || (atSectionStart && !hasPrevSection);
             } else {
                 // LTR, left chevron = backward, right chevron = forward
                 // Disable left at start, right at end
-                btnScrollLeft.disabled = (atSectionStart && !hasPrevSection);
-                btnScrollRight.disabled = (atSectionEnd && !hasNextSection);
+                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || (atSectionStart && !hasPrevSection);
+                btnScrollRight.disabled = compactSheetSidePaginationDisabled || (atSectionEnd && !hasNextSection);
             }
         }
 

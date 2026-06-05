@@ -958,6 +958,7 @@ export class Paginator extends HTMLElement {
     #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
+    #suspendOnExpandAnchor = false
     #scrolledToAnchorOnLoad = false
     #pendingPageTurnDirection = null
     #queuedPageTurn = null
@@ -1177,8 +1178,13 @@ export class Paginator extends HTMLElement {
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
     open(book, isCacheWarmer) {
-        // hide the view until final relocate needs
-        this.style.display = 'none'
+        // Keep layout measurable; hide visually until the first anchor is settled.
+        if (isCacheWarmer) {
+            this.style.display = 'none'
+        } else {
+            this.style.display = 'block'
+            this.style.visibility = 'hidden'
+        }
 
         this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
@@ -1272,7 +1278,7 @@ export class Paginator extends HTMLElement {
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
 
-        if (this.#scrolledToAnchorOnLoad) {
+        if (!this.#suspendOnExpandAnchor && this.#scrolledToAnchorOnLoad) {
             // wait a frame to ensure layout has settled before scrolling
             await new Promise(resolve => requestAnimationFrame(resolve));
             await this.#scrollToAnchor(this.#anchor);
@@ -2683,6 +2689,7 @@ export class Paginator extends HTMLElement {
     }
     async #display(promise) {
         //            console.log("#display...")
+        this.#suspendOnExpandAnchor = false
         this.#setLoading(true)
         const displayStartedAt = manabiPerfNow();
         postEPUBLoadLog('js.paginator.display.start', {
@@ -2728,6 +2735,7 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display...awaited promise")
         this.#index = index
+        const hasFocus = this.#view?.document?.hasFocus?.()
         if (src) {
             const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
@@ -2761,6 +2769,7 @@ export class Paginator extends HTMLElement {
                 await afterLoad(doc)
             } else {
                 this.#skipTouchEndOpacity = true
+                this.#suspendOnExpandAnchor = true
                 const view = this.#createView()
                 const beforeRender = this.#beforeRender.bind(this)
 
@@ -2855,6 +2864,11 @@ export class Paginator extends HTMLElement {
                 once: true,
             });
         }
+        this.#suspendOnExpandAnchor = false
+        if (hasFocus) this.focusView()
+        if (!this.#isCacheWarmer && this.style.visibility === 'hidden') {
+            this.style.visibility = 'visible'
+        }
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
         postEPUBLoadLog('js.paginator.display.didDisplay.dispatch', {
@@ -2874,6 +2888,7 @@ export class Paginator extends HTMLElement {
         } catch (error) {
             throw error
         } finally {
+            this.#suspendOnExpandAnchor = false
             this.#setLoading(false)
         }
     }
@@ -3044,8 +3059,10 @@ export class Paginator extends HTMLElement {
                 elapsedMs: manabiRound(manabiPerfNow() - goToStartedAt, 1),
             });
         } else {
-            // hide the view until final relocate needs
-            this.style.display = 'none'
+            // Hide visually while preserving layout metrics for same-section relocations.
+            if (!this.#isCacheWarmer) {
+                this.style.visibility = 'hidden'
+            }
 
             let prefetchEntry = null
             let usedPrefetchPromise = false
@@ -3243,6 +3260,9 @@ export class Paginator extends HTMLElement {
 
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+    }
+    focusView() {
+        this.#view?.document?.defaultView?.focus?.()
     }
     destroy() {
         this.#disconnectElementVisibilityObserver()
