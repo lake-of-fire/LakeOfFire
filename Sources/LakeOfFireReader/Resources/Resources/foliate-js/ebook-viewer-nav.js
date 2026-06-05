@@ -413,6 +413,14 @@ export class NavigationHUD {
             });
         } catch (_error) {}
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
+            this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
+                source,
+                previous,
+                context: {
+                    ...(context || {}),
+                    resyncReason: 'preservedHiddenNavigation',
+                },
+            });
             logMay15('ebook.navHUD.setHide.return', {
                 sequence,
                 source,
@@ -441,6 +449,14 @@ export class NavigationHUD {
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
+            this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
+                source,
+                previous,
+                context: {
+                    ...(context || {}),
+                    resyncReason: 'noop',
+                },
+            });
             logMay15('ebook.navHUD.setHide.return', {
                 sequence,
                 source,
@@ -564,6 +580,7 @@ export class NavigationHUD {
         this.syncPageTrackingButtonsNavigationDisabled();
         this.refreshTitleLocationVisibility(`setHide:${source}`);
         void this._updateSectionProgress({ refreshSnapshot: false, source: `setHide:${source}` });
+        this._postNativeOverlayState(`setHide:${source}`);
         logMay15('ebook.navHUD.setHide.beforeAuxiliaryInsets', {
             sequence,
             source,
@@ -597,6 +614,7 @@ export class NavigationHUD {
             this._updatePrimaryLine(descriptor);
         }
         this.refreshTitleLocationVisibility('nav-hidden-state');
+        this._postNativeOverlayState('nav-hidden-state');
         logEPUBNav('nav.visibility.hidden-toggle', {
             previous,
             shouldHide: this.navHidden,
@@ -724,7 +742,6 @@ export class NavigationHUD {
     }
 
     _updateTitleLocationLabel({ pagesLeftLabel = null, pagesLeftVisible = null, source = 'refresh' } = {}) {
-        void source;
         if (typeof pagesLeftLabel === 'string') {
             this.lastPagesLeftLabel = pagesLeftLabel;
         }
@@ -733,15 +750,18 @@ export class NavigationHUD {
         if (isHidden) {
             if (mode === 'automatic') {
                 this._setTitleLocationLabel(false);
+                this._postNativeOverlayState(`title-location:${source}`);
                 return;
             }
             this._setTitleLocationLabel(!!this.bookTitle, this.bookTitle);
+            this._postNativeOverlayState(`title-location:${source}`);
             return;
         }
         const shouldShowPagesLeft = pagesLeftVisible === null
             ? !!this.lastPagesLeftLabel
             : !!pagesLeftVisible;
         this._setTitleLocationLabel(shouldShowPagesLeft, shouldShowPagesLeft ? this.lastPagesLeftLabel : '');
+        this._postNativeOverlayState(`title-location:${source}`);
     }
 
     getCurrentDescriptor() {
@@ -1179,6 +1199,51 @@ export class NavigationHUD {
         }
     }
 
+    _postNativeOverlayState(source = 'refresh') {
+        const percentLabel = this.navHiddenOverlay?.percent?.textContent
+            || this.navPrimaryTextCompact?.textContent
+            || this.navPrimaryTextFull?.textContent
+            || this.latestPrimaryLabel
+            || '';
+        const hideNavigationDueToScroll = this.hideNavigationDueToScroll || this.navHidden;
+        const titleLocationLabel = this.navTitleLocationLabel?.dataset?.titleLocationText || '';
+        const titleLocationVisible = this.navTitleLocationLabel?.dataset?.visible === 'true' && !!titleLocationLabel;
+        const relocateBackEnabled = this._relocateButtonEnabled('back');
+        const relocateForwardEnabled = this._relocateButtonEnabled('forward');
+        try {
+            window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
+                percentLabel,
+                hideNavigationDueToScroll,
+                titleLocationLabel,
+                titleLocationVisible,
+                relocateBackEnabled,
+                relocateForwardEnabled,
+                source,
+            });
+        } catch (_error) {}
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.({
+                message: '# TOOLBAR js.nativeOverlayState.post',
+                percentLabel,
+                hideNavigationDueToScroll,
+                titleLocationLabel,
+                titleLocationVisible,
+                relocateBackEnabled,
+                relocateForwardEnabled,
+                source,
+            });
+        } catch (_error) {}
+    }
+
+    _relocateButtonEnabled(direction) {
+        const button = this.navRelocateButtons?.[direction] ?? null;
+        return !!button
+            && button.hidden !== true
+            && button.disabled !== true
+            && button.getAttribute('aria-hidden') !== 'true'
+            && button.getAttribute('aria-disabled') !== 'true';
+    }
+
     _updateCompactPercent(detail) {
         const overlay = this.navHiddenOverlay?.percent;
         const fraction = this._fractionForPercent(detail);
@@ -1209,6 +1274,7 @@ export class NavigationHUD {
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             navHidden: this.navHidden,
         });
+        this._postNativeOverlayState('compact-percent');
     }
 
     _fractionForPercent(detail) {
@@ -2786,6 +2852,7 @@ export class NavigationHUD {
             backEdge: backBtn?.dataset?.navEdge ?? null,
             forwardEdge: forwardBtn?.dataset?.navEdge ?? null,
         });
+        this._postNativeOverlayState(`relocate-buttons:${source}`);
         this._updateSectionProgress({ source: 'relocate-buttons' });
         logMay15('ebook.navHUD.relocateButtons.afterSectionProgressDispatch', {
             source,

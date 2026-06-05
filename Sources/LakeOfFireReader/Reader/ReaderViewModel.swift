@@ -27,6 +27,17 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public var state: WebViewState = .empty
     @Published public private(set) var ebookViewerLoadedProbeSummary: String?
     @Published public private(set) var ebookChromeInsetsResyncID: UInt64 = 0
+    @Published public private(set) var ebookNativeOverlayPercentLabel: String = ""
+    @Published public private(set) var ebookNativeOverlayNavigationHidden: Bool = false
+    @Published public private(set) var ebookNativeOverlayTitleLocationLabel: String = ""
+    @Published public private(set) var ebookNativeOverlayTitleLocationVisible: Bool = false
+    @Published public private(set) var ebookNativeOverlayRelocateBackEnabled: Bool = false
+    @Published public private(set) var ebookNativeOverlayRelocateForwardEnabled: Bool = false
+    @Published public private(set) var ebookNativeMarkReadAvailable: Bool = false
+    @Published public private(set) var ebookNativeMarkReadIsRead: Bool = false
+    @Published public private(set) var ebookNativeMarkReadIsBusy: Bool = false
+    @Published public private(set) var ebookNativeMarkReadStateVersion: UInt64 = 0
+    @Published public private(set) var ebookNativeMarkReadStateReason: String = ""
     
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
@@ -51,6 +62,55 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func triggerEbookChromeInsetsResync() {
         ebookChromeInsetsResyncID &+= 1
+    }
+
+    @MainActor
+    public func setEbookNativeOverlayState(
+        percentLabel: String,
+        navigationHidden: Bool,
+        titleLocationLabel: String,
+        titleLocationVisible: Bool,
+        relocateBackEnabled: Bool,
+        relocateForwardEnabled: Bool
+    ) {
+        if ebookNativeOverlayPercentLabel != percentLabel {
+            ebookNativeOverlayPercentLabel = percentLabel
+        }
+        if ebookNativeOverlayNavigationHidden != navigationHidden {
+            ebookNativeOverlayNavigationHidden = navigationHidden
+        }
+        if ebookNativeOverlayTitleLocationLabel != titleLocationLabel {
+            ebookNativeOverlayTitleLocationLabel = titleLocationLabel
+        }
+        if ebookNativeOverlayTitleLocationVisible != titleLocationVisible {
+            ebookNativeOverlayTitleLocationVisible = titleLocationVisible
+        }
+        if ebookNativeOverlayRelocateBackEnabled != relocateBackEnabled {
+            ebookNativeOverlayRelocateBackEnabled = relocateBackEnabled
+        }
+        if ebookNativeOverlayRelocateForwardEnabled != relocateForwardEnabled {
+            ebookNativeOverlayRelocateForwardEnabled = relocateForwardEnabled
+        }
+    }
+
+    @MainActor
+    public func setEbookNativeMarkReadState(
+        available: Bool,
+        isRead: Bool,
+        isBusy: Bool,
+        reason: String
+    ) {
+        ebookNativeMarkReadStateVersion &+= 1
+        ebookNativeMarkReadStateReason = reason
+        if ebookNativeMarkReadAvailable != available {
+            ebookNativeMarkReadAvailable = available
+        }
+        if ebookNativeMarkReadIsRead != isRead {
+            ebookNativeMarkReadIsRead = isRead
+        }
+        if ebookNativeMarkReadIsBusy != isBusy {
+            ebookNativeMarkReadIsBusy = isBusy
+        }
     }
     
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
