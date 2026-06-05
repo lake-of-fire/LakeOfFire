@@ -751,20 +751,8 @@ const postReaderLog = (event, details = {}) => {
 };
 
 const postLookupPositionLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = {
-        message: '# LOOKUPPOS',
-        event,
-    };
-    for (const [key, value] of Object.entries(details)) {
-        if (value === undefined || value === null) {
-            continue;
-        }
-        payload[key] = value;
-    }
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-    } catch (_error) {}
+    void event;
+    void details;
 };
 
 const postEBookBugLog = (event, details = {}) => {
@@ -5070,19 +5058,8 @@ class Reader {
         postReaderLog(event, details);
     }
     #logRead(event, details = {}) {
-        const payload = {
-            message: '# READ',
-            event,
-        };
-        for (const [key, value] of Object.entries(details)) {
-            if (value === undefined || value === null) {
-                continue;
-            }
-            payload[key] = value;
-        }
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-        } catch (_error) {}
+        void event;
+        void details;
     }
     #logPageTrackingLayout(reason, phase, container, buttonHost) {
         const button = buttonHost instanceof HTMLElement
@@ -9821,17 +9798,6 @@ window.refreshBookReadingProgress = async (articleReadingProgress) => {
         return;
     }
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.({
-            message: '# READ',
-            event: 'progressRefreshReceived',
-            articleMarkedAsFinished: normalizedProgress.articleMarkedAsFinished,
-            sentenceIdentifiersRead: normalizedProgress.sentenceIdentifiersRead.length,
-            readSegmentIdentifiers: normalizedProgress.readSegmentIdentifiers.length,
-            readSegmentIdentifierSample: normalizedProgress.readSegmentIdentifiers.slice(0, 5).join(','),
-            articleSentenceCount: normalizedProgress.articleSentenceCount,
-        });
-    } catch (_error) {}
     postReaderLog('ebook.pageTracking.progressRefresh.received', {
         articleMarkedAsFinished: normalizedProgress.articleMarkedAsFinished,
         sentenceIdentifiersRead: normalizedProgress.sentenceIdentifiersRead.length,
