@@ -1164,16 +1164,42 @@ const ignoreNextIncomingRevealNavigation = (source) => {
     globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 1;
 };
 
+const postReaderBridgeDebug = (message, details = {}) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.({
+            message,
+            ...details,
+        });
+    } catch (_error) {}
+};
+
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
     const requestedHide = !!shouldHide;
+    postReaderBridgeDebug('# HIDENAV js.ebookNavigationVisibility.post', {
+        requestedHide,
+        source,
+        navHUDHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll ?? null,
+        bodyDatasetHidden: document?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+        bodyClassHidden: document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        ...details,
+    });
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: requestedHide,
             source,
             ...details,
         });
+        postReaderBridgeDebug('# HIDENAV js.ebookNavigationVisibility.sent', {
+            requestedHide,
+            source,
+        });
         return true;
     } catch (error) {
+        postReaderBridgeDebug('# HIDENAV js.ebookNavigationVisibility.error', {
+            requestedHide,
+            source,
+            error: error?.message || String(error),
+        });
         return false;
     }
 };
@@ -1991,6 +2017,28 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
         result,
     });
     return result;
+};
+
+const isCompactNavigationSheetSidePaginationDisabled = () => (
+    document.body?.dataset?.mnbCompactNavigationSheetPresentedAsSheet === 'true'
+    && document.body?.dataset?.mnbCompactNavigationSheetDetentKind !== 'zero'
+);
+
+window.manabiSetCompactNavigationSheetDetentState = (state = {}) => {
+    const presentedAsSheet = state?.presentedAsSheet === true || state?.presentedAsSheet === 'true';
+    const semanticDetentKind = typeof state?.semanticDetentKind === 'string'
+        ? state.semanticDetentKind
+        : 'unknown';
+    document.body.dataset.mnbCompactNavigationSheetPresentedAsSheet = presentedAsSheet ? 'true' : 'false';
+    document.body.dataset.mnbCompactNavigationSheetDetentKind = semanticDetentKind;
+    const sidePaginationDisabled = isCompactNavigationSheetSidePaginationDisabled();
+    document.body.dataset.mnbCompactNavigationSheetSidePaginationDisabled = sidePaginationDisabled ? 'true' : 'false';
+    void globalThis.reader?.updateNavButtons?.();
+    return {
+        presentedAsSheet,
+        semanticDetentKind,
+        sidePaginationDisabled,
+    };
 };
 
 const normalizeChromeInsetCSSValue = (value) => {
@@ -4447,6 +4495,12 @@ class Reader {
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
         }
+        requestAnimationFrame(() => this.#logPageTrackingLayout(
+            'hide-navigation-due-to-scroll',
+            hidden ? 'nav-hidden' : 'nav-visible',
+            null,
+            null
+        ));
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
@@ -4630,6 +4684,29 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
+        document.getElementById('nav-title-location-label')?.addEventListener('click', (event) => {
+            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+            if (wasHidden) {
+                ignoreNextIncomingRevealNavigation('nav-title-location-label.click');
+                postEbookNavigationVisibilityToNative(true, 'nav-title-location-label.click.preserve-hidden', {
+                    control: 'nav-title-location-label',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            } else {
+                ignoreNextIncomingHideNavigation('nav-title-location-label.click');
+                postEbookNavigationVisibilityToNative(false, 'nav-title-location-label.click.preserve-visible', {
+                    control: 'nav-title-location-label',
+                    target: event.target?.id || event.target?.tagName || null,
+                });
+            }
+            postOpenReaderGoToSheetRequest('nav-title-location-label', 'nav-title-location-label', {
+                preserveHiddenNavigation: wasHidden,
+                preserveVisibleNavigation: !wasHidden,
+            });
+        });
         document.getElementById('nav-bar')?.addEventListener('click', (event) => {
             const target = event.target;
             const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
@@ -4770,6 +4847,9 @@ class Reader {
             }
             this.#markPageClusterAsRead(stateID).catch((error) => console.error(error));
         });
+        window.manabi_markVisiblePageAsRead = async (source = 'native') => {
+            return await this.markVisiblePageAsRead(source);
+        };
         window.addEventListener('resize', () => {
             postBookRotateLog('window.resize', {
                 innerWidth: window.innerWidth ?? null,
@@ -4820,35 +4900,134 @@ class Reader {
         postReaderLog(event, details);
     }
     #logPageTrackingLayout(reason, phase, container, buttonHost) {
-        if (!(container instanceof HTMLElement) || !(buttonHost instanceof HTMLElement)) {
-            return;
-        }
-        const button = buttonHost.querySelector('.page-read-button');
+        const button = buttonHost instanceof HTMLElement
+            ? buttonHost.querySelector('.page-read-button')
+            : null;
         const navBar = document.getElementById('nav-bar');
+        const navPrimaryText = document.getElementById('nav-primary-text');
+        const navTitleLocationLabel = document.getElementById('nav-title-location-label');
         const computedStyle = window.getComputedStyle(document.body ?? document.documentElement);
+        const docStyle = window.getComputedStyle(document.documentElement);
+        const navPrimaryStyle = navPrimaryText instanceof Element ? window.getComputedStyle(navPrimaryText) : null;
+        const navTitleLocationStyle = navTitleLocationLabel instanceof Element ? window.getComputedStyle(navTitleLocationLabel) : null;
+        const navBarStyle = navBar instanceof Element ? window.getComputedStyle(navBar) : null;
         const viewportHeight = window.visualViewport?.height ?? window.innerHeight ?? null;
-        const containerRect = container.getBoundingClientRect();
+        const viewportWidth = window.visualViewport?.width ?? window.innerWidth ?? null;
+        const controlSize = parseFloat(computedStyle?.getPropertyValue('--mnb-floating-control-size')) || 43;
+        const iconSize = parseFloat(computedStyle?.getPropertyValue('--mnb-floating-icon-size')) || 21;
+        const edgeInset = parseFloat(computedStyle?.getPropertyValue('--mnb-corner-control-edge-inset')) || 27;
+        const percentLabelHeight = parseFloat(computedStyle?.getPropertyValue('--mnb-floating-percent-label-height')) || 12;
+        const hiddenHeightReduction = parseFloat(computedStyle?.getPropertyValue('--mnb-floating-mark-read-hidden-height-reduction')) || 7;
+        const hiddenMarkReadHeight = parseFloat(computedStyle?.getPropertyValue('--mnb-floating-mark-read-hidden-height'))
+            || Math.max(0, controlSize - hiddenHeightReduction);
         const buttonRect = button instanceof Element ? button.getBoundingClientRect() : null;
         const navBarRect = navBar instanceof Element ? navBar.getBoundingClientRect() : null;
-        postPageTrackingBookLayoutLog('ebook.pageTracking.layout', {
+        const navPrimaryTextRect = navPrimaryText instanceof Element ? navPrimaryText.getBoundingClientRect() : null;
+        const navTitleLocationRect = navTitleLocationLabel instanceof Element ? navTitleLocationLabel.getBoundingClientRect() : null;
+        const navHidden = navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null;
+        const expectedMarkReadHeight = navHidden ? hiddenMarkReadHeight : controlSize;
+        const expectedMarkReadRect = Number.isFinite(viewportHeight) && Number.isFinite(viewportWidth)
+            ? {
+                x: safeRound((viewportWidth - controlSize) / 2, 1),
+                y: safeRound(viewportHeight - edgeInset - expectedMarkReadHeight, 1),
+                w: safeRound(controlSize, 1),
+                h: safeRound(expectedMarkReadHeight, 1),
+            }
+            : null;
+        const expectedCornerRect = Number.isFinite(viewportHeight) && Number.isFinite(viewportWidth)
+            ? {
+                x: safeRound(viewportWidth - edgeInset - controlSize, 1),
+                y: safeRound(viewportHeight - edgeInset - controlSize, 1),
+                w: safeRound(controlSize, 1),
+                h: safeRound(controlSize, 1),
+            }
+            : null;
+        const expectedMarkReadIconRect = expectedMarkReadRect
+            ? {
+                x: safeRound(expectedMarkReadRect.x + ((expectedMarkReadRect.w - iconSize) / 2), 1),
+                y: safeRound(expectedMarkReadRect.y + ((expectedMarkReadRect.h - iconSize) / 2), 1),
+                w: safeRound(iconSize, 1),
+                h: safeRound(iconSize, 1),
+            }
+            : null;
+        const expectedPercentGap = expectedMarkReadRect && navPrimaryTextRect
+            ? safeRound(expectedMarkReadRect.y - navPrimaryTextRect.bottom, 1)
+            : null;
+        const expectedIconPercentGap = expectedMarkReadIconRect && navPrimaryTextRect
+            ? safeRound(expectedMarkReadIconRect.y - navPrimaryTextRect.bottom, 1)
+            : null;
+        const payload = {
             reason,
             phase,
             stateCount: this.pageTrackingStates?.length ?? 0,
             hasCompletionAction: !!this.completionAction,
             markReadButtonsVisible: document.body?.dataset?.mnbMarkReadButtonsVisible ?? null,
-            navHidden: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            navHidden,
+            bodyDatasetNavigationHidden: document.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
             cssToolbarBottom: computedStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
+            cssToolbarContentGap: computedStyle?.getPropertyValue('--mnb-toolbar-content-gap')?.trim() || null,
+            cssToolbarVisualDrop: computedStyle?.getPropertyValue('--mnb-toolbar-visual-drop')?.trim() || null,
+            cssToolbarVisualBottom: computedStyle?.getPropertyValue('--mnb-toolbar-visual-bottom-inset')?.trim() || null,
             cssSystemBottom: computedStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
             cssPhysicalBottom: computedStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
             cssPageTrackingBottom: computedStyle?.getPropertyValue('--mnb-page-tracking-bottom-inset')?.trim() || null,
+            cssPageTrackingToolbarBottom: computedStyle?.getPropertyValue('--mnb-page-tracking-toolbar-bottom-inset')?.trim() || null,
             cssStageBottom: computedStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
+            cssCornerEdgeInset: computedStyle?.getPropertyValue('--mnb-corner-control-edge-inset')?.trim()
+                || docStyle?.getPropertyValue('--mnb-corner-control-edge-inset')?.trim()
+                || null,
+            cssPageReadButtonHeight: computedStyle?.getPropertyValue('--page-read-button-height')?.trim()
+                || docStyle?.getPropertyValue('--page-read-button-height')?.trim()
+                || null,
+            cssFloatingControlSize: computedStyle?.getPropertyValue('--mnb-floating-control-size')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-control-size')?.trim()
+                || null,
+            cssFloatingIconSize: computedStyle?.getPropertyValue('--mnb-floating-icon-size')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-icon-size')?.trim()
+                || null,
+            cssFloatingVisibleIconTopAdjustment: computedStyle?.getPropertyValue('--mnb-floating-visible-icon-top-adjustment')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-visible-icon-top-adjustment')?.trim()
+                || null,
+            cssFloatingPercentLabelHeight: computedStyle?.getPropertyValue('--mnb-floating-percent-label-height')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-percent-label-height')?.trim()
+                || null,
+            cssFloatingPercentLabelGap: computedStyle?.getPropertyValue('--mnb-floating-percent-label-gap')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-percent-label-gap')?.trim()
+                || null,
+            cssFloatingHiddenMarkReadHeightReduction: computedStyle?.getPropertyValue('--mnb-floating-mark-read-hidden-height-reduction')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-mark-read-hidden-height-reduction')?.trim()
+                || null,
+            cssFloatingHiddenMarkReadHeight: computedStyle?.getPropertyValue('--mnb-floating-mark-read-hidden-height')?.trim()
+                || docStyle?.getPropertyValue('--mnb-floating-mark-read-hidden-height')?.trim()
+                || null,
             windowInnerHeight: window.innerHeight ?? null,
+            windowInnerWidth: window.innerWidth ?? null,
             visualViewportHeight: window.visualViewport?.height ?? null,
-            containerRect: this.#formatRect(containerRect),
+            visualViewportWidth: window.visualViewport?.width ?? null,
+            containerRect: this.#formatRect(container?.getBoundingClientRect?.()),
             buttonRect: this.#formatRect(buttonRect),
             navBarRect: this.#formatRect(navBarRect),
-            containerBottomGapToViewport: Number.isFinite(viewportHeight)
-                ? safeRound(viewportHeight - containerRect.bottom, 1)
+            navBarComputedBottom: navBarStyle?.bottom ?? null,
+            navBarComputedHeight: navBarStyle?.height ?? null,
+            navBarCurrentMarkReadHeight: navBarStyle?.getPropertyValue('--mnb-floating-mark-read-current-height')?.trim() || null,
+            navPrimaryTextRect: this.#formatRect(navPrimaryTextRect),
+            expectedNativeMarkReadRect: expectedMarkReadRect ? `x=${expectedMarkReadRect.x} y=${expectedMarkReadRect.y} w=${expectedMarkReadRect.w} h=${expectedMarkReadRect.h}` : null,
+            expectedNativeMarkReadIconRect: expectedMarkReadIconRect ? `x=${expectedMarkReadIconRect.x} y=${expectedMarkReadIconRect.y} w=${expectedMarkReadIconRect.w} h=${expectedMarkReadIconRect.h}` : null,
+            expectedNativeCornerRect: expectedCornerRect ? `x=${expectedCornerRect.x} y=${expectedCornerRect.y} w=${expectedCornerRect.w} h=${expectedCornerRect.h}` : null,
+            expectedPercentGap,
+            expectedIconPercentGap,
+            navPrimaryFontFamily: navPrimaryStyle?.fontFamily ?? null,
+            navPrimaryFontSize: navPrimaryStyle?.fontSize ?? null,
+            navPrimaryFontWeight: navPrimaryStyle?.fontWeight ?? null,
+            navPrimaryLineHeight: navPrimaryStyle?.lineHeight ?? null,
+            navTitleLocationText: navTitleLocationLabel?.textContent ?? null,
+            navTitleLocationRect: this.#formatRect(navTitleLocationRect),
+            navTitleLocationFontFamily: navTitleLocationStyle?.fontFamily ?? null,
+            navTitleLocationFontSize: navTitleLocationStyle?.fontSize ?? null,
+            navTitleLocationFontWeight: navTitleLocationStyle?.fontWeight ?? null,
+            navTitleLocationLineHeight: navTitleLocationStyle?.lineHeight ?? null,
+            containerBottomGapToViewport: container instanceof Element && Number.isFinite(viewportHeight)
+                ? safeRound(viewportHeight - container.getBoundingClientRect().bottom, 1)
                 : null,
             buttonBottomGapToViewport: buttonRect && Number.isFinite(viewportHeight)
                 ? safeRound(viewportHeight - buttonRect.bottom, 1)
@@ -4856,7 +5035,26 @@ class Reader {
             navBarBottomGapToViewport: navBarRect && Number.isFinite(viewportHeight)
                 ? safeRound(viewportHeight - navBarRect.bottom, 1)
                 : null,
-        });
+        };
+        const logKey = [
+            navHidden,
+            phase,
+            payload.navBarRect,
+            payload.navPrimaryTextRect,
+            payload.expectedNativeMarkReadRect,
+            payload.expectedNativeMarkReadIconRect,
+            payload.expectedNativeCornerRect,
+            payload.expectedPercentGap,
+            payload.expectedIconPercentGap,
+        ].join('|');
+        const now = performanceNowMs();
+        if (this.lastToolbarLayoutLogKey === logKey && now - (this.lastToolbarLayoutLogAt ?? 0) < 1000) {
+            return;
+        }
+        this.lastToolbarLayoutLogKey = logKey;
+        this.lastToolbarLayoutLogAt = now;
+        postPageTrackingBookLayoutLog('ebook.pageTracking.layout', payload);
+        postReaderBridgeDebug('# TOOLBAR js.pageTracking.layout', payload);
     }
     #pageReadMarkerDiagnosticState(details = {}) {
         const readerStage = document.getElementById('reader-stage');
@@ -5783,6 +5981,10 @@ class Reader {
         const container = document.getElementById('page-tracking-container');
         const buttonHost = document.getElementById('page-tracking-buttons');
         if (!(container instanceof HTMLElement) || !(buttonHost instanceof HTMLElement)) {
+            this.lastPageTrackingVisibility = false;
+            this.#updatePageReadMarker(reason, null);
+            this.navHUD?.refreshAuxiliaryLayout?.();
+            this.#logPageTrackingLayout(reason, 'native-overlay-no-html-container', container, buttonHost);
             return;
         }
         const pageTrackingStates = this.pageTrackingStates || [];
@@ -5832,6 +6034,7 @@ class Reader {
                 </button>
             `;
             this.#updatePageReadMarker(reason, null);
+            this.navHUD?.syncPageTrackingButtonsNavigationDisabled?.();
             this.navHUD?.refreshAuxiliaryLayout?.();
             this.#scheduleInitialPaginatorSettle('page-tracking-render.completion-action');
             requestAnimationFrame(() => this.#logPageTrackingLayout(reason, 'completion-action', container, buttonHost));
@@ -5874,6 +6077,7 @@ class Reader {
             `;
         }).join('');
         this.#updatePageReadMarker(reason);
+        this.navHUD?.syncPageTrackingButtonsNavigationDisabled?.();
         const buttonAfter = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
         requestAnimationFrame(() => {
             const buttonFrame = document.querySelector('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]');
@@ -6585,6 +6789,31 @@ class Reader {
         });
         await this.#advanceAfterMarkRead();
     }
+    async markVisiblePageAsRead(source = 'native') {
+        const stateID = 'visible-screen';
+        const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
+        if (!pageTrackingState) {
+            this.#logPageTracking('ebook.pageTracking.markRead.skip', {
+                reason: 'missing-visible-screen-state',
+                source,
+            });
+            return false;
+        }
+        const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
+        if (wasHidden) {
+            globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay = true;
+            postEbookNavigationVisibilityToNative(true, 'native-page-tracking-button.preserve-hidden', {
+                stateID,
+                source,
+            });
+            ignoreNextIncomingRevealNavigation('native-page-tracking-button');
+        } else {
+            globalThis.__manabiApplyIgnoredHideNavigationOnPageTrackingAdvance = true;
+            ignoreNextIncomingHideNavigation('native-page-tracking-button');
+        }
+        await this.#markPageClusterAsRead(stateID);
+        return true;
+    }
     async open(file) {
         this.setLoadingIndicator(true);
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -6702,6 +6931,17 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            if (button?.disabled || isCompactNavigationSheetSidePaginationDisabled()) {
+                postLayoutLog('pageTurn.sideButton.skip', collectEBookLayoutSnapshot(this.view, {
+                    side,
+                    method,
+                    eventType,
+                    disabled: button?.disabled ?? null,
+                    compactSheetSidePaginationDisabled: isCompactNavigationSheetSidePaginationDisabled(),
+                    compactSheetDetentKind: document.body?.dataset?.mnbCompactNavigationSheetDetentKind ?? null,
+                }));
+                return;
+            }
             postLayoutLog('pageTurn.sideButton.begin', collectEBookLayoutSnapshot(this.view, {
                 side,
                 method,
@@ -6752,12 +6992,14 @@ class Reader {
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
             nav.addEventListener('touchstart', (event) => {
+                if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
             nav.addEventListener('touchend', (event) => {
                 nav.classList.remove('pressed');
+                if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
                 const method = side === 'left' ? 'goLeft' : (side === 'right' ? 'goRight' : null);
                 if (side && method) {
@@ -6925,6 +7167,13 @@ class Reader {
                 globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                 || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                 || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+            postReaderBridgeDebug('# HIDENAV js.noElement.post', {
+                source,
+                eventType: event.type,
+                touchstartAtMs,
+                ebookNavigationHidden,
+                lookupPopoverActive: window.__manabiLookupPopoverActive === true,
+            });
             window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
@@ -6945,7 +7194,6 @@ class Reader {
             return (dx * dx + dy * dy) > (mainDocumentBlankNavigationMoveThreshold * mainDocumentBlankNavigationMoveThreshold);
         };
         const postNavigationTouchDebug = (event, stage, extra = {}) => {
-            if (!manabiDiagnosticsEnabled()) return;
             const target = event.target;
             const point = event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
             const targetElement = target instanceof Element ? target : target?.parentElement;
@@ -6961,7 +7209,7 @@ class Reader {
                 };
             };
             window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: '# NAV js.ebookToolbarTouch',
+                message: '# HIDENAV js.blankTouch',
                 stage,
                 eventType: event.type,
                 x: roundLayoutNumber(point?.clientX),
@@ -6994,10 +7242,16 @@ class Reader {
                 ownerIsMainDocument: !target || target.ownerDocument === document,
             };
             if (target && target.ownerDocument !== document) {
+                postNavigationTouchDebug(event, 'main-document.skip.foreignDocument', targetSummary);
                 return
             }
-            const excludedTarget = target?.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]');
+            const excludedTarget = target?.closest?.('#side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]');
             if (excludedTarget) {
+                postNavigationTouchDebug(event, 'main-document.skip.excludedTarget', {
+                    ...targetSummary,
+                    excludedID: excludedTarget?.id || null,
+                    excludedClass: typeof excludedTarget?.className === 'string' ? excludedTarget.className : null,
+                });
                 clearPendingMainDocumentBlankNavigationTouch();
                 return
             }
@@ -7011,8 +7265,13 @@ class Reader {
                         startAtMs: Date.now(),
                     }
                     : null;
+                postNavigationTouchDebug(event, 'main-document.pending', {
+                    ...targetSummary,
+                    hasPending: !!pendingMainDocumentBlankNavigationTouch,
+                });
                 return;
             }
+            postNavigationTouchDebug(event, 'main-document.post.mouse', targetSummary);
             postNoElementNavigationTouchStart(event, 'main-document.blank')
         }
         const processMainDocumentBlankNavigationTouchMove = function(event) {
@@ -7021,6 +7280,9 @@ class Reader {
                 return;
             }
             if (movedPastBlankNavigationTapThreshold(event, pending)) {
+                postNavigationTouchDebug(event, 'main-document.skip.moved', {
+                    startAtMs: pending.startAtMs,
+                });
                 clearPendingMainDocumentBlankNavigationTouch();
             }
         }
@@ -7028,11 +7290,20 @@ class Reader {
             const pending = pendingMainDocumentBlankNavigationTouch;
             clearPendingMainDocumentBlankNavigationTouch();
             if (!pending || event.type === 'touchcancel') {
+                postNavigationTouchDebug(event, 'main-document.skip.noPendingOrCancel', {
+                    hadPending: !!pending,
+                });
                 return;
             }
             if (movedPastBlankNavigationTapThreshold(event, pending)) {
+                postNavigationTouchDebug(event, 'main-document.skip.endMoved', {
+                    startAtMs: pending.startAtMs,
+                });
                 return;
             }
+            postNavigationTouchDebug(event, 'main-document.post.touchend', {
+                startAtMs: pending.startAtMs,
+            });
             postNoElementNavigationTouchStart(event, 'main-document.blank', pending.startAtMs)
         }
         let pendingChromeBlankNavigationTouch = null;
@@ -7170,6 +7441,7 @@ class Reader {
         const title = book.metadata?.title ?? 'Untitled Book'
         document.title = title
         $('#side-bar-title').innerText = title
+        this.navHUD?.setBookTitle?.(title)
         const author = book.metadata?.author
         let authorText = typeof author === 'string' ? author :
         author
@@ -7387,16 +7659,17 @@ class Reader {
         const btnScrollLeft = document.getElementById('btn-scroll-left');
         const btnScrollRight = document.getElementById('btn-scroll-right');
         if (btnScrollLeft && btnScrollRight) {
+            const compactSheetSidePaginationDisabled = isCompactNavigationSheetSidePaginationDisabled();
             if (this.isRTL) {
                 // In RTL, left chevron = go forward, right chevron = go backward
                 // Disable left at end, right at start
-                btnScrollLeft.disabled = (atSectionEnd && !hasNextSection);
-                btnScrollRight.disabled = (atSectionStart && !hasPrevSection);
+                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || (atSectionEnd && !hasNextSection);
+                btnScrollRight.disabled = compactSheetSidePaginationDisabled || (atSectionStart && !hasPrevSection);
             } else {
                 // LTR, left chevron = backward, right chevron = forward
                 // Disable left at start, right at end
-                btnScrollLeft.disabled = (atSectionStart && !hasPrevSection);
-                btnScrollRight.disabled = (atSectionEnd && !hasNextSection);
+                btnScrollLeft.disabled = compactSheetSidePaginationDisabled || (atSectionStart && !hasPrevSection);
+                btnScrollRight.disabled = compactSheetSidePaginationDisabled || (atSectionEnd && !hasNextSection);
             }
         }
         
@@ -7433,6 +7706,8 @@ class Reader {
             atSectionEnd,
             hasPrevSection,
             hasNextSection,
+            compactSheetSidePaginationDisabled: isCompactNavigationSheetSidePaginationDisabled(),
+            compactSheetDetentKind: document.body?.dataset?.mnbCompactNavigationSheetDetentKind ?? null,
             markedAsFinished: this.markedAsFinished,
             restartHiddenForMiddlePageWhileNavHidden: isRestartHiddenForMiddlePageWhileNavHidden,
             showingFinish: !!(completionAction?.type === 'finish'),
@@ -7688,6 +7963,15 @@ class Reader {
                 const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
                 const now = Date.now();
                 if (excludedTarget) {
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.excludedTarget', {
+                        source,
+                        eventType: event.type,
+                        targetTag: target?.tagName || target?.nodeName || null,
+                        targetID: target?.id || null,
+                        excludedTag: excludedTarget?.tagName || excludedTarget?.nodeName || null,
+                        excludedID: excludedTarget?.id || null,
+                        excludedClass: typeof excludedTarget?.className === 'string' ? excludedTarget.className : null,
+                    });
                     return;
                 }
                 const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
@@ -7698,6 +7982,15 @@ class Reader {
                         || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                         || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
                     globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.post', {
+                        source,
+                        eventType: event.type,
+                        touchstartAtMs,
+                        ebookNavigationHidden,
+                        targetTag: target?.tagName || target?.nodeName || null,
+                        targetID: target?.id || null,
+                        targetClass: typeof target?.className === 'string' ? target.className : null,
+                    });
                     window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
@@ -7706,12 +7999,25 @@ class Reader {
                         ebookNavigationHidden,
                         source,
                     });
+                } else {
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.debounce', {
+                        source,
+                        eventType: event.type,
+                        ageMs: now - lastPostedAt,
+                    });
                 }
             };
             const handleBlankPointerTouchStart = (event) => {
                 const target = event.target;
                 const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
                 if (excludedTarget) {
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.touchstart.excludedTarget', {
+                        eventType: event.type,
+                        targetTag: target?.tagName || target?.nodeName || null,
+                        targetID: target?.id || null,
+                        excludedTag: excludedTarget?.tagName || excludedTarget?.nodeName || null,
+                        excludedID: excludedTarget?.id || null,
+                    });
                     clearPendingBlankPointerTap();
                     return;
                 }
@@ -7723,11 +8029,23 @@ class Reader {
                         startAtMs: Date.now(),
                     }
                     : null;
+                postReaderBridgeDebug('# HIDENAV js.contentBlank.touchstart.pending', {
+                    eventType: event.type,
+                    hasPending: !!pendingBlankPointerTap,
+                    targetTag: target?.tagName || target?.nodeName || null,
+                    targetID: target?.id || null,
+                    x: roundLayoutNumber(point?.clientX),
+                    y: roundLayoutNumber(point?.clientY),
+                });
             };
             const handleBlankPointerTouchMove = (event) => {
                 const pending = pendingBlankPointerTap;
                 if (!pending) return;
                 if (blankPointerMovedPastTapThreshold(event, pending)) {
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.moved', {
+                        eventType: event.type,
+                        startAtMs: pending.startAtMs,
+                    });
                     clearPendingBlankPointerTap();
                 }
             };
@@ -7735,9 +8053,17 @@ class Reader {
                 const pending = pendingBlankPointerTap;
                 clearPendingBlankPointerTap();
                 if (!pending || event.type === 'touchcancel') {
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.noPendingOrCancel', {
+                        eventType: event.type,
+                        hadPending: !!pending,
+                    });
                     return;
                 }
                 if (blankPointerMovedPastTapThreshold(event, pending)) {
+                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.endMoved', {
+                        eventType: event.type,
+                        startAtMs: pending.startAtMs,
+                    });
                     return;
                 }
                 postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
