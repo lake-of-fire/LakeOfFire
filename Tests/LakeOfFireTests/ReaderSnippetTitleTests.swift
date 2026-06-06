@@ -115,7 +115,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
             )
             XCTAssertTrue(bookmark.url.isSnippetURL)
             XCTAssertEqual(ReaderContentLoader.extractHTML(from: bookmark), snippetHTML)
-            XCTAssertEqual(bookmark.locationBarTitle, "Snippet: \(bookmark.createdAt.formatted())")
+            XCTAssertEqual(bookmark.locationBarTitle, "Snippet — \(bookmark.createdAt.readerSnippetChromeDateString)")
         }
     }
 }

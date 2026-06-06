@@ -465,7 +465,7 @@ private struct FeedEntryCollectionHeader: View {
 }
 
 private struct FeedEntryCollectionTitleVisibilityPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = .greatestFiniteMagnitude
+    static let defaultValue: CGFloat = .greatestFiniteMagnitude
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = min(value, nextValue())

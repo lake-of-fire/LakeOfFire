@@ -60,11 +60,11 @@ final class LakeOfFireTests: XCTestCase {
             WEBVTT
 
             1
-            00:00.000 --> 00:01.250
+            00:00:00.000 --> 00:00:01.250
             Hello <c.voice>world</c>
 
             2
-            00:02.000 --> 00:03.500
+            00:00:02.000 --> 00:00:03.500
             Goodbye
             """
         )
@@ -72,8 +72,8 @@ final class LakeOfFireTests: XCTestCase {
         XCTAssertTrue(asset.html.contains(#"data-mnb-transcript-page="true""#))
         XCTAssertTrue(asset.html.contains(#"id="reader-content""#))
         XCTAssertTrue(asset.html.contains("Hello world"))
-        XCTAssertTrue(asset.html.contains(#"data-transcript-start="00:00.000""#))
-        XCTAssertTrue(asset.html.contains(#"data-transcript-end="00:03.500""#))
+        XCTAssertTrue(asset.html.contains(#"data-transcript-start="00:00:00.000""#))
+        XCTAssertTrue(asset.html.contains(#"data-transcript-end="00:00:03.500""#))
         XCTAssertEqual(TranscriptPageAsset.cues(fromWebVTT: asset.webVTT ?? "").count, 2)
     }
 

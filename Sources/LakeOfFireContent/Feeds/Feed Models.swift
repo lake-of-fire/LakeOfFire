@@ -1111,28 +1111,28 @@ fileprivate final class ManabiAtomCollectionParser: NSObject, XMLParserDelegate 
     }
 
     private static func parseDate(_ rawValue: String) -> Date? {
-        dateTimeWithFractionalSeconds.date(from: rawValue)
-            ?? dateTime.date(from: rawValue)
-            ?? dateOnly.date(from: rawValue)
+        makeDateTimeWithFractionalSecondsFormatter().date(from: rawValue)
+            ?? makeDateTimeFormatter().date(from: rawValue)
+            ?? makeDateOnlyFormatter().date(from: rawValue)
     }
 
-    private static let dateTimeWithFractionalSeconds: ISO8601DateFormatter = {
+    private static func makeDateTimeWithFractionalSecondsFormatter() -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
-    }()
+    }
 
-    private static let dateTime: ISO8601DateFormatter = {
+    private static func makeDateTimeFormatter() -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
-    }()
+    }
 
-    private static let dateOnly: ISO8601DateFormatter = {
+    private static func makeDateOnlyFormatter() -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withFullDate]
         return formatter
-    }()
+    }
 }
 
 fileprivate func parseManabiAtomCollections(from data: Data) -> [ParsedFeedEntryCollection] {
@@ -1155,15 +1155,50 @@ fileprivate enum FeedFetchResult {
     case fetched(Data, metadata: FeedFetchMetadata)
 }
 
-fileprivate let feedHTTPDateFormatter: DateFormatter = {
+fileprivate func makeFeedHTTPDateFormatter() -> DateFormatter {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.timeZone = TimeZone(secondsFromGMT: 0)
     formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
     return formatter
-}()
+}
 
-var makeFeedSessionOverrideForTesting: (() -> URLSession)?
+fileprivate func formatFeedHTTPDate(_ date: Date) -> String {
+    makeFeedHTTPDateFormatter().string(from: date)
+}
+
+fileprivate func parseFeedHTTPDate(_ rawValue: String) -> Date? {
+    makeFeedHTTPDateFormatter().date(from: rawValue)
+}
+
+private final class FeedSessionOverrideStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var override: (() -> URLSession)?
+
+    var value: (() -> URLSession)? {
+        get {
+            lock.withLock {
+                override
+            }
+        }
+        set {
+            lock.withLock {
+                override = newValue
+            }
+        }
+    }
+}
+
+private let feedSessionOverrideStorage = FeedSessionOverrideStorage()
+
+var makeFeedSessionOverrideForTesting: (() -> URLSession)? {
+    get {
+        feedSessionOverrideStorage.value
+    }
+    set {
+        feedSessionOverrideStorage.value = newValue
+    }
+}
 
 fileprivate func makeFeedSession() -> URLSession {
     if let makeFeedSessionOverrideForTesting {
@@ -1191,7 +1226,7 @@ fileprivate func makeFeedRequest(
     }
     if let lastFetchedModifiedAt {
         request.setValue(
-            feedHTTPDateFormatter.string(from: lastFetchedModifiedAt),
+            formatFeedHTTPDate(lastFetchedModifiedAt),
             forHTTPHeaderField: "If-Modified-Since"
         )
     }
@@ -1205,7 +1240,7 @@ fileprivate func feedFetchMetadata(from response: URLResponse) -> FeedFetchMetad
     let etag = httpResponse.value(forHTTPHeaderField: "Etag")
         ?? httpResponse.value(forHTTPHeaderField: "ETag")
     let lastModifiedAt = httpResponse.value(forHTTPHeaderField: "Last-Modified")
-        .flatMap { feedHTTPDateFormatter.date(from: $0) }
+        .flatMap(parseFeedHTTPDate)
     return FeedFetchMetadata(etag: etag, lastModifiedAt: lastModifiedAt)
 }
 
@@ -1240,7 +1275,7 @@ fileprivate func getRssData(
 ) async throws -> FeedFetchResult {
     let session = makeFeedSession()
     logRSS(
-        "stage=http.head.start url=\(rssUrl.absoluteString) ifNoneMatch=\(lastFetchedETag ?? "nil") ifModifiedSince=\(lastFetchedModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+        "stage=http.head.start url=\(rssUrl.absoluteString) ifNoneMatch=\(lastFetchedETag ?? "nil") ifModifiedSince=\(lastFetchedModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )
     let headRequest = makeFeedRequest(
         url: rssUrl,
@@ -1255,7 +1290,7 @@ fileprivate func getRssData(
 
     let headMetadata = feedFetchMetadata(from: headHTTPResponse)
     logRSS(
-        "stage=http.head.response url=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode) etag=\(headMetadata.etag ?? "nil") lastModified=\(headMetadata.lastModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+        "stage=http.head.response url=\(rssUrl.absoluteString) status=\(headHTTPResponse.statusCode) etag=\(headMetadata.etag ?? "nil") lastModified=\(headMetadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )
     switch headHTTPResponse.statusCode {
     case 304:
@@ -1289,7 +1324,7 @@ fileprivate func getRssData(
 
     let getMetadata = headMetadata.merged(with: feedFetchMetadata(from: getHTTPResponse))
     logRSS(
-        "stage=http.get.response url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode) bytes=\(data.count) etag=\(getMetadata.etag ?? "nil") lastModified=\(getMetadata.lastModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+        "stage=http.get.response url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode) bytes=\(data.count) etag=\(getMetadata.etag ?? "nil") lastModified=\(getMetadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
     )
     switch getHTTPResponse.statusCode {
     case 304:
@@ -1332,7 +1367,7 @@ public extension Feed {
         let feedID = id
         let rssUrl = rssUrl
         logRSS(
-            "stage=metadata.persist.start feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModified=\(metadata.lastModifiedAt.map { feedHTTPDateFormatter.string(from: $0) } ?? "nil")"
+            "stage=metadata.persist.start feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModified=\(metadata.lastModifiedAt.map(formatFeedHTTPDate) ?? "nil")"
         )
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -1676,66 +1711,45 @@ public extension Feed {
             rssData = cleanRssData(rssData)
             logRSS("stage=fetch.cleaned feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) bytesAfterClean=\(rssData.count)")
             let parser = FeedKit.FeedParser(data: rssData)
-            return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
-                parser.parseAsync { parserResult in
-                    switch parserResult {
-                    case .success(let feed):
-                        switch feed {
-                        case .rss(let rssFeed):
-                            guard let items = rssFeed.items else {
-                                logRSS("stage=parse.rss.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) reason=missingItems")
-                                continuation.resume(throwing: FeedError.parserFailed)
-                                return
-                            }
-                            logRSS("stage=parse.rss.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) items=\(items.count)")
-                            Task { @MainActor in
-                                do {
-                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: self.deleteOrphans)
-                                    try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
-                                    logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=rss")
-                                    continuation.resume(returning: ())
-                                } catch {
-                                    logRSS("stage=fetch.persist.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
-                                    continuation.resume(throwing: error)
-                                }
-                            }
-                            return
-                        case .atom(let atomFeed):
-                            guard let items = atomFeed.entries else {
-                                logRSS("stage=parse.atom.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) reason=missingEntries")
-                                continuation.resume(throwing: FeedError.parserFailed)
-                                return
-                            }
-                            logRSS("stage=parse.atom.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) entries=\(items.count)")
-                            Task { @MainActor in
-                                do {
-                                    try await self.persist(
-                                        atomItems: items,
-                                        collections: parseManabiAtomCollections(from: rssData),
-                                        realmConfiguration: realmConfiguration,
-                                        deleteOrphans: self.deleteOrphans
-                                    )
-                                    try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
-                                    logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
-                                    continuation.resume(returning: ())
-                                } catch {
-                                    logRSS("stage=fetch.persist.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
-                                    continuation.resume(throwing: error)
-                                }
-                            }
-                            return
-                        case .json:
-                            logRSS("stage=parse.json.unsupported feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
-                            continuation.resume(throwing: FeedError.parserFailed)
-                            return
+            switch parser.parse() {
+            case .success(let feed):
+                do {
+                    switch feed {
+                    case .rss(let rssFeed):
+                        guard let items = rssFeed.items else {
+                            logRSS("stage=parse.rss.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) reason=missingItems")
+                            throw FeedError.parserFailed
                         }
-                    case .failure:
-                        logRSS("stage=parse.failure feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
-                        continuation.resume(throwing: FeedError.parserFailed)
-                        return
+                        logRSS("stage=parse.rss.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) items=\(items.count)")
+                        try await persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                        try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                        logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=rss")
+                    case .atom(let atomFeed):
+                        guard let items = atomFeed.entries else {
+                            logRSS("stage=parse.atom.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) reason=missingEntries")
+                            throw FeedError.parserFailed
+                        }
+                        logRSS("stage=parse.atom.success feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) entries=\(items.count)")
+                        try await persist(
+                            atomItems: items,
+                            collections: parseManabiAtomCollections(from: rssData),
+                            realmConfiguration: realmConfiguration,
+                            deleteOrphans: deleteOrphans
+                        )
+                        try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                        logRSS("stage=fetch.finished feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) result=atom")
+                    case .json:
+                        logRSS("stage=parse.json.unsupported feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
+                        throw FeedError.parserFailed
                     }
+                } catch {
+                    logRSS("stage=fetch.persist.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
+                    throw error
                 }
-            })
+            case .failure:
+                logRSS("stage=parse.failure feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString)")
+                throw FeedError.parserFailed
+            }
         }
     }
 }

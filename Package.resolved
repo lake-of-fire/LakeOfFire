@@ -1,5 +1,5 @@
 {
-  "originHash" : "78509715fdf435fce5105f91c8072f3149851ec0d46a7f5747a1ca678f9800ff",
+  "originHash" : "970e3142688c3151854546b72fb7e5f20ce1b5c29395bd3cd559e890279474f5",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/combine-schedulers",
       "state" : {
-        "revision" : "fd16d76fd8b9a976d88bfb6cacc05ca8d19c91b6",
-        "version" : "1.1.0"
+        "revision" : "dcccb979a2183b8df3334237e3dc1ae2b4116a86",
+        "version" : "1.2.0"
       }
     },
     {
@@ -62,15 +62,6 @@
       "state" : {
         "branch" : "main",
         "revision" : "2b8fe511d76a6aeb46afa2242d18b6cd9f7455d1"
-      }
-    },
-    {
-      "identity" : "faviconfinder",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/FaviconFinder.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "9c52cbc77fb4288cc2fac5c8d74ec1f433e31b46"
       }
     },
     {
@@ -98,15 +89,6 @@
       "state" : {
         "revision" : "36e30a6f1ef10e4194f6af0cff90888526f0c115",
         "version" : "7.10.0"
-      }
-    },
-    {
-      "identity" : "japaneselanguagetools",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/JapaneseLanguageTools.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "be71ba229d0c3335de443c38b50aae4524800362"
       }
     },
     {
@@ -177,7 +159,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/PersistedLRUCache.git",
       "state" : {
-        "revision" : "b86f15682d134978962eb0f7d88f9b9d23edff0a"
+        "branch" : "main",
+        "revision" : "92c910e0223cb415a7bf0a72d0e5e01eaa95e5b7"
       }
     },
     {
@@ -293,8 +276,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-concurrency-extras",
       "state" : {
-        "revision" : "5a3825302b1a0d744183200915a47b508c828e6f",
-        "version" : "1.3.2"
+        "revision" : "a90e2e40a7a840a853dd29e57cbef5dbb72c9d5b",
+        "version" : "1.4.0"
       }
     },
     {
@@ -311,8 +294,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-dependencies",
       "state" : {
-        "revision" : "706feb7858a7f6c242879d137b8ee30926aa5b26",
-        "version" : "1.12.0"
+        "revision" : "f80552807ec92f72fe3fe4543d71879182b0bfd5",
+        "version" : "1.13.0"
       }
     },
     {
@@ -379,15 +362,6 @@
       }
     },
     {
-      "identity" : "swift-readability",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/swift-readability.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "0f46dfeace3b4c44e89eb4503649c797225c8bd6"
-      }
-    },
-    {
       "identity" : "swift-sharing",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-sharing",
@@ -410,8 +384,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-structured-queries",
       "state" : {
-        "revision" : "20db4a2a446f51e67e1207d54a23ad0a03471a7b",
-        "version" : "0.31.0"
+        "revision" : "8da8818fccd9959bd683934ddc62cf45bb65b3c8",
+        "version" : "0.31.1"
       }
     },
     {
@@ -419,8 +393,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax",
       "state" : {
-        "revision" : "4799286537280063c85a32f09884cfbca301b1a1",
-        "version" : "602.0.0"
+        "revision" : "9de99a78f099e59caf2b2beec65a4c45d54b2081",
+        "version" : "603.0.1"
       }
     },
     {
@@ -439,15 +413,6 @@
       "state" : {
         "branch" : "main",
         "revision" : "0a84ea27d394fe0ed92e9b7809d84cfaa1942442"
-      }
-    },
-    {
-      "identity" : "swiftsoup",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/scinfu/SwiftSoup.git",
-      "state" : {
-        "branch" : "master",
-        "revision" : "6c7915e16f729857aec3e99068c361e58a00ed68"
       }
     },
     {

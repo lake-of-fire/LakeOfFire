@@ -254,6 +254,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let status = try await cloudDriveSyncStatus(forReaderBackingURL: readerBackingURL)
         if status == .fileMissing {
             try await markDeleted(contentURL: contentURL)
+            await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
             Task { @MainActor [weak self] in
                 try await self?.refreshAllFilesMetadata()
             }
@@ -276,6 +277,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             throw ReaderFileDeleteError.removeFailed(underlyingDescription: error.localizedDescription)
         }
         try await markDeleted(contentURL: contentURL)
+        await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
         Task { @MainActor [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
@@ -699,14 +701,44 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         return try relativePath.directoryURL(forRoot: drive.rootDirectory)
     }
 
+    @MainActor
+    private func removeDeletedFileFromPublishedFiles(matching readerBackingURL: URL) {
+        guard let canonicalDeletedURL = canonicalReaderBackingURL(for: readerBackingURL),
+              let files else {
+            return
+        }
+        let remainingFiles = files.filter { contentFile in
+            guard let fileBackingURL = canonicalReaderBackingURL(for: contentFile.url) else {
+                return true
+            }
+            return fileBackingURL != canonicalDeletedURL
+        }
+        guard remainingFiles.count != files.count else {
+            return
+        }
+        self.files = remainingFiles
+    }
+
     @RealmBackgroundActor
     private func markDeleted(contentURL: URL) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-        let contentURLString = contentURL.absoluteString
+        let canonicalContentURL = canonicalReaderBackingURL(for: contentURL)
+        let contentFiles = Array(
+            realm.objects(ContentFile.self)
+                .where { !$0.isDeleted }
+                .filter { contentFile in
+                    if contentFile.url == contentURL {
+                        return true
+                    }
+                    guard let canonicalContentURL,
+                          let fileBackingURL = self.canonicalReaderBackingURL(for: contentFile.url) else {
+                        return false
+                    }
+                    return fileBackingURL == canonicalContentURL
+                }
+        )
         try await realm.asyncWrite {
-            if let existing = realm.objects(ContentFile.self)
-                .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), contentURLString as CVarArg))
-                .first {
+            for existing in contentFiles {
                 existing.isDeleted = true
                 existing.refreshChangeMetadata(explicitlyModified: true)
                 let packageContentFiles = realm.objects(ContentPackageFile.self)
@@ -875,6 +907,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
 
     private static func requiredPayloadURLs(at rootURL: URL) throws -> [URL] {
+        try Task.checkCancellation()
         var isDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
             return []
@@ -889,6 +922,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             options: [.skipsHiddenFiles]
         ) {
             for case let fileURL as URL in enumerator {
+                try Task.checkCancellation()
                 if (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
                     payloadURLs.append(fileURL)
                 }
@@ -929,7 +963,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             guard context.cloudRootExists else {
                 return false
             }
-            let requiredPayloadURLs = (try? Self.requiredPayloadURLs(at: activeRootURL)) ?? []
+            let requiredPayloadURLs = try Self.requiredPayloadURLs(at: activeRootURL)
             let payloadURLs = requiredPayloadURLs.isEmpty ? [activeRootURL] : requiredPayloadURLs
             for payloadURL in payloadURLs {
                 try Task.checkCancellation()

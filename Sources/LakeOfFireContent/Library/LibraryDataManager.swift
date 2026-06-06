@@ -192,10 +192,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     
     @RealmBackgroundActor
     public static func getConsolidatedOrCreate(realmConfiguration: Realm.Configuration = LibraryDataManager.realmConfiguration) async throws -> LibraryConfiguration {
-        let realm = try await Realm(
-            configuration: realmConfiguration,
-            actor: RealmBackgroundActor.shared
-        )
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         
         // Take oldest as primary. Consolidate newer ones into it.
         let configurations = Array(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted } .sorted(by: \.modifiedAt, ascending: true))
@@ -294,6 +291,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     @MainActor
     var cancellables = Set<AnyCancellable>()
 
+    nonisolated(unsafe) public static var observesDownloadController = true
+
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
 
     @MainActor
@@ -303,6 +302,8 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     
     public override init() {
         super.init()
+
+        guard Self.observesDownloadController else { return }
         
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
         Task { @MainActor in
@@ -397,10 +398,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
         let realmConfiguration = Self.realmConfiguration
         Task { @RealmBackgroundActor in
             guard realmConfiguration.fileURL != nil || realmConfiguration.inMemoryIdentifier != nil else { return }
-            let realm = try await Realm(
-                configuration: realmConfiguration,
-                actor: RealmBackgroundActor.shared
-            )
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -452,10 +450,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     
     @RealmBackgroundActor
     public func createEmptyCategory(addToLibrary: Bool) async throws -> UUID {
-        let realm = try await Realm(
-            configuration: LibraryDataManager.realmConfiguration,
-            actor: RealmBackgroundActor.shared
-        )
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         let category = FeedCategory()
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -577,10 +572,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
     
     @RealmBackgroundActor
     public func createEmptyScript(addToLibrary: Bool) async throws -> UUID {
-        let realm = try await Realm(
-            configuration: LibraryDataManager.realmConfiguration,
-            actor: RealmBackgroundActor.shared
-        )
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         let script = UserScript()
         script.title = ""
         if addToLibrary {
@@ -921,10 +913,7 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
            !Self.isCurrentAppVersionAtLeast(minimumVersion) {
             return (importedCategories, importedDirectories, importedFeeds, importedScripts)
         }
-        let realm = try await Realm(
-            configuration: realmConfiguration,
-            actor: RealmBackgroundActor.shared
-        )
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {

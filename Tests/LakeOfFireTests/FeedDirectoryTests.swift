@@ -63,8 +63,16 @@ final class FeedDirectoryTests: XCTestCase {
     }
 
     func testOPMLDirectoryImportAndManagedRootFeedMigration() async throws {
-        Self.realmConfigurationSemaphore.wait()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                Self.realmConfigurationSemaphore.wait()
+                continuation.resume()
+            }
+        }
         defer { Self.realmConfigurationSemaphore.signal() }
+        let originalObservesDownloadController = LibraryDataManager.observesDownloadController
+        LibraryDataManager.observesDownloadController = false
+        defer { LibraryDataManager.observesDownloadController = originalObservesDownloadController }
 
         try await verifyNestedOPMLImportAssignsMetadataAndSiblingOrdinals()
         try await verifyManagedOPMLImportMovesExistingRootFeedIntoNewDirectory()

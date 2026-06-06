@@ -57,7 +57,7 @@ public struct TranscriptPageAsset: Sendable, Hashable {
         canonicalContentURL: URL,
         cues: [Cue]
     ) -> String {
-        let cueMarkup = cues.enumerated().map { index, cue in
+        let cueMarkup = cues.enumerated().map { index, cue -> String in
             let identifierAttribute = cue.identifier.map {
                 #" data-transcript-cue-id="\#(escapeHTML($0))""#
             } ?? ""

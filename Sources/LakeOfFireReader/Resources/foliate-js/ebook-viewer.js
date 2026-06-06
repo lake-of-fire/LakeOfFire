@@ -2717,6 +2717,23 @@ const segmentIdentifierForNode = (segmentNode) => {
     return segmentNode?.id || null;
 };
 
+const segmentIdentifierAliasesForNode = (segmentNode) => {
+    const metadata = segmentMetadataForNode(segmentNode);
+    const aliases = [];
+    const addAlias = (identifier) => {
+        if (typeof identifier !== 'string' || identifier.length === 0) return;
+        if (!aliases.includes(identifier)) aliases.push(identifier);
+    };
+    addAlias(metadata?.sid);
+    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
+    if (sentenceIdentifier && typeof metadata?.sid === 'string' && !metadata.sid.includes('-')) {
+        addAlias(`${sentenceIdentifier}-${metadata.sid}`);
+    }
+    addAlias(metadata?.i);
+    addAlias(segmentNode?.id);
+    return aliases;
+};
+
 const buildExampleSentenceForSegment = (segmentNode) => {
     const sentenceNode = segmentNode?.closest?.('mnb-sen');
     if (!(sentenceNode instanceof Element)) {
@@ -2890,6 +2907,7 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, viewportWidt
             rect,
             rects,
             segmentIdentifier,
+            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
@@ -3115,6 +3133,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             rect,
             rects,
             segmentIdentifier,
+            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
@@ -3151,6 +3170,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
                 rect,
                 rects,
                 segmentIdentifier,
+                segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
                 sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
             });
         }
@@ -3344,6 +3364,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
 const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null, visibleSegmentsResult = null) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
+    const readSentenceIdentifiers = new Set(normalizedProgress.sentenceIdentifiersRead);
     const hasAnyMarkedReadContent = readSegmentIdentifiers.size > 0
         || normalizedProgress.sentenceIdentifiersRead.length > 0;
     const {
@@ -3359,7 +3380,94 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     let recoveredTextSearchStringCount = 0;
     let skippedMissingSearchStringCount = 0;
     const dedupedSegments = new Map();
-    const visibleSegmentIdentifiers = new Set();
+    const visibleSegmentIdentifiers = new Set(
+        visibleSegments
+            .map((item) => item.segmentIdentifier)
+            .filter((identifier) => typeof identifier === 'string' && identifier.length > 0)
+    );
+    const visibleSegmentItemsByIdentifier = new Map();
+    for (const item of visibleSegments) {
+        if (typeof item.segmentIdentifier === 'string' && item.segmentIdentifier.length > 0) {
+            visibleSegmentItemsByIdentifier.set(item.segmentIdentifier, item);
+        }
+    }
+    const segmentMatchesReadProgress = (segmentIdentifier) => {
+        const item = visibleSegmentItemsByIdentifier.get(segmentIdentifier);
+        if (item?.sentenceIdentifier && readSentenceIdentifiers.has(item.sentenceIdentifier)) {
+            return true;
+        }
+        const aliases = Array.isArray(item?.segmentIdentifierAliases) && item.segmentIdentifierAliases.length > 0
+            ? item.segmentIdentifierAliases
+            : [segmentIdentifier];
+        return aliases.some((identifier) => readSegmentIdentifiers.has(identifier));
+    };
+    const visibleSegmentIdentifierList = Array.from(visibleSegmentIdentifiers);
+    const unreadVisibleSegmentIdentifiers = visibleSegmentIdentifierList
+        .filter((segmentIdentifier) => !segmentMatchesReadProgress(segmentIdentifier));
+    const readVisibleSegmentIdentifiers = visibleSegmentIdentifierList
+        .filter((segmentIdentifier) => segmentMatchesReadProgress(segmentIdentifier));
+    const unreadVisibleSegmentCount = unreadVisibleSegmentIdentifiers.length;
+    const isRead = visibleSegmentIdentifiers.size > 0 && unreadVisibleSegmentCount === 0;
+    const readSegmentIdentifierSample = Array.from(readSegmentIdentifiers).slice(0, 5);
+    const visibleSegmentIdentifierSample = visibleSegmentIdentifierList.slice(0, 5);
+    const visibleSegmentIdentifierAliasSample = visibleSegmentIdentifierList
+        .slice(0, 3)
+        .map((segmentIdentifier) => {
+            const aliases = visibleSegmentItemsByIdentifier.get(segmentIdentifier)?.segmentIdentifierAliases;
+            return Array.isArray(aliases) ? aliases.join('|') : segmentIdentifier;
+        });
+    const unreadVisibleSegmentIdentifierSample = unreadVisibleSegmentIdentifiers.slice(0, 5);
+    const readVisibleSegmentIdentifierSample = readVisibleSegmentIdentifiers.slice(0, 5);
+    const visibleReadSentenceIntersectionCount = Array.from(new Set(
+        visibleSegments
+            .map((item) => item.sentenceIdentifier)
+            .filter((identifier) => typeof identifier === 'string' && identifier.length > 0)
+    ))
+        .filter((identifier) => readSentenceIdentifiers.has(identifier))
+        .length;
+    if (isRead) {
+        const states = [{
+            id: 'visible-screen',
+            payload: {
+                segments: [],
+                sentenceIdentifiers: [],
+            },
+            isRead,
+            hasAnyMarkedReadContent,
+            unreadVisibleSegmentCount,
+            visibleSegmentCount: visibleSegmentIdentifiers.size,
+            fullLabel: 'Read',
+            shortLabel: 'Read',
+        }];
+        return {
+            states,
+            diagnostics: {
+                documentURL: doc.location?.href || null,
+                viewportWidth,
+                viewportHeight,
+                clusterAxis,
+                totalSegmentCount,
+                visibleSegmentCount: visibleSegments.length,
+                hiddenTooltipCount,
+                missingIdentifierCount,
+                outOfViewportCount,
+                recoveredTextSearchStringCount,
+                skippedMissingSearchStringCount,
+                clusterCount: 1,
+                stateCount: states.length,
+                completedStateCount: 1,
+                readSegmentCount: readSegmentIdentifiers.size,
+                readSentenceCount: normalizedProgress.sentenceIdentifiersRead.length,
+                visibleReadIntersectionCount: readVisibleSegmentIdentifiers.length,
+                visibleReadSentenceIntersectionCount,
+                visibleSegmentIdentifierSample,
+                visibleSegmentIdentifierAliasSample,
+                readSegmentIdentifierSample,
+                unreadVisibleSegmentIdentifierSample,
+                readVisibleSegmentIdentifierSample,
+            },
+        };
+    }
     const sentencesByIdentifier = new Map();
     for (const item of visibleSegments) {
         if (!dedupedSegments.has(item.segmentIdentifier)) {
@@ -3374,7 +3482,6 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
                 searchString = textSearchString;
                 recoveredTextSearchStringCount += 1;
             }
-            visibleSegmentIdentifiers.add(item.segmentIdentifier);
             const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node);
             dedupedSegments.set(item.segmentIdentifier, {
                 jmdictEntryIds: segmentEntryIDsForNode(item.node, 'jmdict'),
@@ -3388,22 +3495,19 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
         }
         if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
             const sentenceNode = item.node.closest('mnb-sen');
-            const allSegmentIdentifiers = Array.from(sentenceNode?.querySelectorAll?.('mnb-seg') || [])
-                .map((segmentNode) => segmentIdentifierForNode(segmentNode))
-                .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
-            sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifiers);
+            const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('mnb-seg') || [])
+                .map((segmentNode) => segmentIdentifierAliasesForNode(segmentNode))
+                .filter((aliases) => aliases.length > 0);
+            sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifierAliasSets);
         }
     }
-    const unreadVisibleSegmentCount = Array.from(visibleSegmentIdentifiers)
-        .filter((segmentIdentifier) => !readSegmentIdentifiers.has(segmentIdentifier))
-        .length;
     const sentenceIdentifiers = Array.from(sentencesByIdentifier.entries())
-        .filter(([, allSegmentIdentifiers]) => allSegmentIdentifiers.length > 0
-            && allSegmentIdentifiers.every((segmentIdentifier) =>
-                readSegmentIdentifiers.has(segmentIdentifier)
-                || visibleSegmentIdentifiers.has(segmentIdentifier)))
+        .filter(([, allSegmentIdentifierAliasSets]) => allSegmentIdentifierAliasSets.length > 0
+            && allSegmentIdentifierAliasSets.every((aliases) =>
+                aliases.some((segmentIdentifier) =>
+                    readSegmentIdentifiers.has(segmentIdentifier)
+                    || visibleSegmentIdentifiers.has(segmentIdentifier))))
         .map(([sentenceIdentifier]) => sentenceIdentifier);
-    const isRead = visibleSegmentIdentifiers.size > 0 && unreadVisibleSegmentCount === 0;
     const states = dedupedSegments.size > 0 ? [{
         id: 'visible-screen',
         payload: {
@@ -3436,6 +3540,13 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             completedStateCount: states.filter((state) => state.isRead).length,
             readSegmentCount: readSegmentIdentifiers.size,
             readSentenceCount: normalizedProgress.sentenceIdentifiersRead.length,
+            visibleReadIntersectionCount: readVisibleSegmentIdentifiers.length,
+            visibleReadSentenceIntersectionCount,
+            visibleSegmentIdentifierSample,
+            visibleSegmentIdentifierAliasSample,
+            readSegmentIdentifierSample,
+            unreadVisibleSegmentIdentifierSample,
+            readVisibleSegmentIdentifierSample,
         },
     };
 };
@@ -4468,7 +4579,17 @@ class Reader {
             formatPercent: value => percentFormat.format(value),
             getRenderer: () => this.view?.renderer,
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
-            onHideNavigationDueToScrollChange: hidden => this.#applyHideNavigationDueToScrollToBookContent(hidden),
+            onHideNavigationDueToScrollChange: (hidden, details = {}) => {
+                this.#applyHideNavigationDueToScrollToBookContent(hidden);
+                postEbookNavigationVisibilityToNative(
+                    hidden,
+                    `navHUD.visibilityChange.${details?.source || 'unknown'}`,
+                    {
+                        previous: details?.previous ?? null,
+                        context: details?.context ?? null,
+                    }
+                );
+            },
         });
         this.scheduleGoToPageNumber = debounce((pageNumber) => {
             this.goToLocationNumber(pageNumber, 'schedule-location-number')
@@ -6692,6 +6813,12 @@ class Reader {
         const segmentIdentifiers = Array.from(doc.querySelectorAll('mnb-seg'))
             .map((segmentNode) => segmentIdentifierForNode(segmentNode))
             .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
+        const segmentIdentifierAliasSets = Array.from(doc.querySelectorAll('mnb-seg'))
+            .map((segmentNode) => ({
+                aliases: segmentIdentifierAliasesForNode(segmentNode),
+                sentenceIdentifier: sentenceIdentifierForNode(segmentNode.closest?.('mnb-sen')),
+            }))
+            .filter((item) => item.aliases.length > 0);
         if (segmentIdentifiers.length === 0) {
             return {
                 allSectionsRead: true,
@@ -6710,12 +6837,20 @@ class Reader {
             ...normalizeArticleReadingProgress(this.articleReadingProgress).readSegmentIdentifiers,
             ...this.optimisticReadSegmentIdentifiers,
         ]);
-        const unreadSegmentCount = segmentIdentifiers
-            .filter((identifier) => !readSegmentIdentifiers.has(identifier))
+        const readSentenceIdentifiers = new Set([
+            ...normalizeArticleReadingProgress(this.articleReadingProgress).sentenceIdentifiersRead,
+            ...this.optimisticSentenceIdentifiersRead,
+        ]);
+        const unreadSegmentCount = segmentIdentifierAliasSets
+            .filter((item) => !(item.sentenceIdentifier && readSentenceIdentifiers.has(item.sentenceIdentifier))
+                && !item.aliases.some((identifier) => readSegmentIdentifiers.has(identifier)))
             .length;
         if (unreadSegmentCount > 0) {
-            const unreadSegmentIdentifiers = segmentIdentifiers
-                .filter((identifier) => !readSegmentIdentifiers.has(identifier));
+            const unreadSegmentIdentifiers = segmentIdentifierAliasSets
+                .filter((item) => !(item.sentenceIdentifier && readSentenceIdentifiers.has(item.sentenceIdentifier))
+                    && !item.aliases.some((identifier) => readSegmentIdentifiers.has(identifier)))
+                .map((item) => item.aliases[0])
+                .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
         }
         return {
             allSectionsRead: unreadSegmentCount === 0,

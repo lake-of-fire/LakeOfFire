@@ -68,6 +68,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(bookmark.contentSubtitleURL, subtitleURL)
     }
 
+    @MainActor
     func testBookmarkAndHistoryRecordCopyFeedEntryCollectionMetadata() async throws {
         let configuration = makeRealmConfiguration()
         let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
@@ -92,7 +93,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
         try await entry.addBookmark(realmConfiguration: configuration)
         _ = try await entry.addHistoryRecord(realmConfiguration: configuration, pageURL: entry.url)
 
-        let realm = try Realm(configuration: configuration)
+        let realm = try await Realm(configuration: configuration)
         let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
         XCTAssertEqual(bookmark.readerContentKind, .contentListing)
         XCTAssertEqual(bookmark.feedEntryCollectionKey, "feed|scheme|issue-38")

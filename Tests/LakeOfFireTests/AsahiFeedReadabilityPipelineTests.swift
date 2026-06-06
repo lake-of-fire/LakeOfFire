@@ -99,13 +99,16 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
         let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
+        let originalObservesDownloadController = LibraryDataManager.observesDownloadController
         defer {
             LibraryDataManager.realmConfiguration = originalLibraryConfiguration
             ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
             ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
             makeFeedSessionOverrideForTesting = originalFeedSessionOverride
+            LibraryDataManager.observesDownloadController = originalObservesDownloadController
         }
+        LibraryDataManager.observesDownloadController = false
         LibraryDataManager.realmConfiguration = configuration
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration

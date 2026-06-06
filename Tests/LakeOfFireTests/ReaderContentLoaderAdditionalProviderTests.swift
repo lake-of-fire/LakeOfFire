@@ -160,8 +160,21 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
             content.updateCompoundKey()
             realm.add(content, update: .modified)
         }
+        ReaderContentLoader.registerAdditionalContentProvider(
+            .init(id: "external-book-test-no-cache") { url in
+                try await MainActor.run {
+                    let realm = try Realm(configuration: configuration)
+                    guard let content = ExternalBookContent.get(forURL: url, realm: realm),
+                          let reference = ReaderContentLoader.ContentReference(content: content) else {
+                        return []
+                    }
+                    return [reference]
+                }
+            }
+        )
 
-        let content = try XCTUnwrap(try await ReaderContentLoader.lookupStoredContent(url: contentURL))
+        let storedContent = try await ReaderContentLoader.lookupStoredContent(url: contentURL)
+        let content = try XCTUnwrap(storedContent)
         XCTAssertFalse(content.hasHTML)
         let navigationURL = try await ReaderContentLoader.load(
             content: content,

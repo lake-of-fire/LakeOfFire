@@ -1,7 +1,7 @@
 import SwiftUI
 @preconcurrency import WebKit
 
-public typealias ReaderNavigationActionHandler = (WKNavigationAction) async -> WKNavigationActionPolicy?
+public typealias ReaderNavigationActionHandler = @Sendable (WKNavigationAction) async -> WKNavigationActionPolicy?
 
 private struct ReaderNavigationActionHandlerKey: EnvironmentKey {
     static let defaultValue: ReaderNavigationActionHandler? = nil
@@ -23,13 +23,13 @@ public struct ReaderNativeViewContext {
     }
 }
 
-public struct ReaderNativeViewProvider {
-    private let canHandleURL: @MainActor (URL) -> Bool
-    private let makeView: @MainActor (ReaderNativeViewContext) -> AnyView?
+public struct ReaderNativeViewProvider: @unchecked Sendable {
+    private let canHandleURL: @MainActor @Sendable (URL) -> Bool
+    private let makeView: @MainActor @Sendable (ReaderNativeViewContext) -> AnyView?
 
     public init(
-        canHandle: @escaping @MainActor (URL) -> Bool,
-        makeView: @escaping @MainActor (ReaderNativeViewContext) -> AnyView?
+        canHandle: @escaping @MainActor @Sendable (URL) -> Bool,
+        makeView: @escaping @MainActor @Sendable (ReaderNativeViewContext) -> AnyView?
     ) {
         self.canHandleURL = canHandle
         self.makeView = makeView
