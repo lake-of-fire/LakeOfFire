@@ -3398,9 +3398,6 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     }
     const segmentMatchesReadProgress = (segmentIdentifier) => {
         const item = visibleSegmentItemsByIdentifier.get(segmentIdentifier);
-        if (item?.sentenceIdentifier && readSentenceIdentifiers.has(item.sentenceIdentifier)) {
-            return true;
-        }
         const aliases = Array.isArray(item?.segmentIdentifierAliases) && item.segmentIdentifierAliases.length > 0
             ? item.segmentIdentifierAliases
             : [segmentIdentifier];
