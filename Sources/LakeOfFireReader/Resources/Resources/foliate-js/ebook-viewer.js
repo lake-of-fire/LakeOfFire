@@ -2215,6 +2215,7 @@ const captureLandscapeInsetLayoutProbe = () => {
         bodyCssToolbarBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
         bodyCssSystemBottom: bodyStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
         bodyCssToolbarPhysicalBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
+        bodyCssToolbarLayoutBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-layout-bottom-inset')?.trim() || null,
         bodyCssStageBottom: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
         readyState: document.readyState ?? null,
         bodyLoading: !!document.body?.classList?.contains?.('loading'),
@@ -2259,6 +2260,67 @@ const postLandscapeInsetRestoreProbe = (stage, restoreState = null, extra = {}) 
             window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify(payload));
         }
     } catch {}
+};
+
+const postReaderUILayoutSnapshot = (event, details = {}) => {
+    let layout = null;
+    try {
+        layout = captureLandscapeInsetLayoutProbe();
+    } catch (error) {
+        layout = { error: error?.message ?? String(error) };
+    }
+    const payload = {
+        event,
+        ...details,
+        layout,
+    };
+    const key = JSON.stringify(payload);
+    if (globalThis.__manabiLastReaderUILayoutLogKey === key) return;
+    globalThis.__manabiLastReaderUILayoutLogKey = key;
+    postReaderBridgeDebug('# READERUI js.layout', payload);
+};
+
+const scheduleReaderUIChromeInsetSettle = (reason, state) => {
+    const signature = JSON.stringify({
+        reason,
+        obscuredTopInset: state?.obscuredTopInset ?? null,
+        toolbarBottomOffset: state?.toolbarBottomOffset ?? null,
+        obscuredBottomInset: state?.obscuredBottomInset ?? null,
+        revision: state?.revision ?? null,
+    });
+    if (globalThis.__manabiLastReaderUIChromeSettleSignature === signature) {
+        return;
+    }
+    globalThis.__manabiLastReaderUIChromeSettleSignature = signature;
+    const run = async (phase) => {
+        const renderer = globalThis.reader?.view?.renderer ?? null;
+        let result = null;
+        let errorMessage = null;
+        try {
+            if (renderer && typeof renderer.renderIfContainerSizeChanged === 'function') {
+                result = await renderer.renderIfContainerSizeChanged(`reader-ui-chrome-insets.${reason}.${phase}`);
+            }
+        } catch (error) {
+            errorMessage = error?.message ?? String(error);
+        }
+        postReaderUILayoutSnapshot(`chromeInsets.${phase}`, {
+            reason,
+            appliedObscuredTopInset: state?.obscuredTopInset ?? null,
+            appliedToolbarBottomOffset: state?.toolbarBottomOffset ?? null,
+            appliedObscuredBottomInset: state?.obscuredBottomInset ?? null,
+            revision: state?.revision ?? null,
+            renderResult: result,
+            renderError: errorMessage,
+        });
+    };
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            run('raf2');
+        });
+    });
+    setTimeout(() => {
+        run('settle250ms');
+    }, 250);
 };
 
 const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
@@ -2359,6 +2421,16 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         globalThis.__manabiLastPositiveChromeInsets = nextState;
     }
     applyResolvedChromeInsetState(nextState);
+    scheduleReaderUIChromeInsetSettle(reason, nextState);
+    postReaderUILayoutSnapshot('chromeInsets.applied', {
+        reason,
+        incomingObscuredTopInset: incomingState?.obscuredTopInset ?? null,
+        appliedObscuredTopInset: nextState.obscuredTopInset,
+        appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
+        appliedObscuredBottomInset: nextState.obscuredBottomInset,
+        source: nextState.source,
+        revision: nextState.revision,
+    });
     if (reason === 'native-sync' || reason === 'reader.open' || reason === 'reader.didDisplay' || reason === 'setEbookViewerLayout') {
         postEBookSafeAreaTopSnapshot('ebook.safeAreaTop.chromeInsetsApplied', {
             reason,
@@ -5127,6 +5199,7 @@ class Reader {
             cssToolbarContentGap: computedStyle?.getPropertyValue('--mnb-toolbar-content-gap')?.trim() || null,
             cssToolbarVisualDrop: computedStyle?.getPropertyValue('--mnb-toolbar-visual-drop')?.trim() || null,
             cssToolbarVisualBottom: computedStyle?.getPropertyValue('--mnb-toolbar-visual-bottom-inset')?.trim() || null,
+            cssToolbarLayoutBottom: computedStyle?.getPropertyValue('--mnb-toolbar-layout-bottom-inset')?.trim() || null,
             cssSystemBottom: computedStyle?.getPropertyValue('--mnb-system-bottom-inset')?.trim() || null,
             cssPhysicalBottom: computedStyle?.getPropertyValue('--mnb-toolbar-physical-bottom-inset')?.trim() || null,
             cssPageTrackingBottom: computedStyle?.getPropertyValue('--mnb-page-tracking-bottom-inset')?.trim() || null,
@@ -5216,6 +5289,7 @@ class Reader {
         this.lastToolbarLayoutLogAt = now;
         postPageTrackingBookLayoutLog('ebook.pageTracking.layout', payload);
         postReaderBridgeDebug('# TOOLBAR js.pageTracking.layout', payload);
+        postReaderBridgeDebug('# READERUI js.pageTracking.layout', payload);
     }
     #pageReadMarkerDiagnosticState(details = {}) {
         const readerStage = document.getElementById('reader-stage');

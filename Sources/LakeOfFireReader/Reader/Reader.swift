@@ -34,6 +34,12 @@ private func logBook(_ message: @autoclosure () -> String) {
     _ = message
 }
 
+private func logReaderUI(_ message: @autoclosure () -> String) {
+#if DEBUG
+    debugPrint("# READERUI \(message())")
+#endif
+}
+
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
@@ -442,6 +448,7 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
+    logReaderUI("lakeReader.syncChromeInsets.begin pageURL=\(pageURL.absoluteString) revision=\(revision) top=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) bottom=\(obscuredBottomInset)")
     logMay8("native.lakeReader.syncChromeInsets.begin pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     do {
         try await evaluateJavaScript(
@@ -488,8 +495,10 @@ func syncEbookViewerChromeInsets(
             """,
             true
         )
+        logReaderUI("lakeReader.syncChromeInsets.end pageURL=\(pageURL.absoluteString) revision=\(revision) top=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) bottom=\(obscuredBottomInset)")
         logMay8("native.lakeReader.syncChromeInsets.end pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     } catch {
+        logReaderUI("lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
         logMay8("native.lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
         logEPUBBack("stage=lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
     }
@@ -1194,6 +1203,7 @@ public struct Reader: View {
             debugPrint("# BOTTOM \(safeAreaBottomSignature)")
             logMay8("native.lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             if pageURL.isEBookURL {
+                logReaderUI("lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) effectiveBottom=\(effectiveBottomInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
                 logBook("lakeReader.computeInsets \(safeAreaBottomSignature) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
                 logEPUBBack("stage=lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             }

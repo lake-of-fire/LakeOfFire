@@ -17,7 +17,7 @@
                     --mnb-floating-icon-size: 21px;
                     --mnb-floating-visible-icon-top-adjustment: 18px;
                     --mnb-floating-percent-label-height: 12px;
-                    --mnb-floating-percent-label-gap: 7px;
+                    --mnb-floating-percent-label-gap: 3px;
                     --mnb-floating-mark-read-hidden-height-reduction: 7px;
                     --mnb-floating-mark-read-hidden-height: calc(
                         var(--mnb-floating-control-size)
@@ -95,6 +95,13 @@
                         + var(--mnb-floating-mark-read-current-height, var(--mnb-floating-control-size))
                         - var(--mnb-floating-visible-icon-top-adjustment, 0px)
                     );
+                    --mnb-toolbar-layout-bottom-inset: calc(
+                        var(--mnb-toolbar-bottom-offset, 0px)
+                        + var(--mnb-corner-control-edge-inset, 0px)
+                        + var(--mnb-floating-control-size)
+                        + var(--mnb-floating-percent-label-gap)
+                        + var(--mnb-floating-percent-label-height)
+                    );
                     --mnb-toolbar-physical-bottom-inset: max(
                         var(--mnb-toolbar-bottom-offset, 0px),
                         var(--mnb-system-bottom-inset, 0px)
@@ -102,7 +109,7 @@
                     --mnb-page-tracking-bottom-inset: 0px;
                     --mnb-page-tracking-toolbar-bottom-inset: 0px;
                     --nav-primary-hidden-shift-y: 14px;
-                    --mnb-reader-stage-bottom-inset: var(--mnb-toolbar-visual-bottom-inset, 0px);
+                    --mnb-reader-stage-bottom-inset: var(--mnb-toolbar-layout-bottom-inset, var(--mnb-toolbar-visual-bottom-inset, 0px));
                     --nav-left-aux-inset: 0px;
                     --nav-right-aux-inset: 0px;
                     --nav-side-cluster-gap: 8px;
