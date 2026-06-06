@@ -1369,6 +1369,7 @@ public extension Feed {
     @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
+        let feedTitle = title
         let iconUrl = iconUrl
         let entryContentKind = entryContentKind
         try await { @RealmBackgroundActor in
@@ -1461,7 +1462,7 @@ public extension Feed {
             debugPrint(
                 "# FEEDNEW stage=feed.fetch.persist.rss",
                 "feedID=\(feedID.uuidString)",
-                "title=\(title)",
+                "title=\(feedTitle)",
                 "existingCount=\(existingEntries.count)",
                 "incomingCount=\(feedEntries.count)",
                 "newOrChangedCount=\(entriesToPersist.count)",
@@ -1495,6 +1496,7 @@ public extension Feed {
         deleteOrphans: Bool
     ) async throws {
         let feedID = id
+        let feedTitle = title
         let sourceIconURL = iconUrl
         let entryContentKind = entryContentKind
         try await { @RealmBackgroundActor in
@@ -1649,7 +1651,7 @@ public extension Feed {
             debugPrint(
                 "# FEEDNEW stage=feed.fetch.persist.atom",
                 "feedID=\(feedID.uuidString)",
-                "title=\(title)",
+                "title=\(feedTitle)",
                 "existingCount=\(existingEntries.count)",
                 "incomingCount=\(feedEntries.count)",
                 "newOrChangedCount=\(entriesToPersist.count)",

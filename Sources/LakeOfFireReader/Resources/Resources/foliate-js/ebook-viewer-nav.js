@@ -1208,6 +1208,8 @@ export class NavigationHUD {
         const hideNavigationDueToScroll = this.hideNavigationDueToScroll || this.navHidden;
         const titleLocationLabel = this.navTitleLocationLabel?.dataset?.titleLocationText || '';
         const titleLocationVisible = this.navTitleLocationLabel?.dataset?.visible === 'true' && !!titleLocationLabel;
+        const bookTitleLabel = this.bookTitle || '';
+        const pagesLeftLabel = this.lastPagesLeftLabel || '';
         const relocateBackEnabled = this._relocateButtonEnabled('back');
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
         try {
@@ -1216,6 +1218,8 @@ export class NavigationHUD {
                 hideNavigationDueToScroll,
                 titleLocationLabel,
                 titleLocationVisible,
+                bookTitleLabel,
+                pagesLeftLabel,
                 relocateBackEnabled,
                 relocateForwardEnabled,
                 source,
@@ -1228,6 +1232,8 @@ export class NavigationHUD {
                 hideNavigationDueToScroll,
                 titleLocationLabel,
                 titleLocationVisible,
+                bookTitleLabel,
+                pagesLeftLabel,
                 relocateBackEnabled,
                 relocateForwardEnabled,
                 source,
