@@ -515,6 +515,7 @@ const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
 const CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS = 1800;
 const CACHE_WARMER_IDLE_RETRY_MS = 250;
 const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
+const CACHE_WARMER_MAX_SECTIONS_AHEAD = null;
 const replaceTextResultCache = new Map();
 const replaceTextInFlightCache = new Map();
 
@@ -553,6 +554,9 @@ const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
         return text;
+    }
+    if (!isCacheWarmer) {
+        await ensureCacheWarmerPrecedingSectionsForHref(href);
     }
     const cacheKey = makeReplaceTextCacheKey({
         href,
@@ -1057,16 +1061,36 @@ const cacheWarmerForegroundBusyState = () => {
     };
 };
 
-const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified') => {
+const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified', options = {}) => {
     if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
         return;
     }
+    if (globalThis.__manabiCacheWarmerAdvanceInFlight) {
+        return;
+    }
+    const force = options?.force === true;
+    const cacheWarmerWindowLimitState = (targetIndex) => {
+        const activeIndex = activeForegroundSectionIndex();
+        const minTargetIndex = Number.isInteger(activeIndex) ? Math.max(0, activeIndex) : 0;
+        const maxTargetIndex = Number.isInteger(activeIndex) && Number.isFinite(CACHE_WARMER_MAX_SECTIONS_AHEAD)
+            ? activeIndex + CACHE_WARMER_MAX_SECTIONS_AHEAD
+            : null;
+        return {
+            activeIndex: Number.isInteger(activeIndex) ? activeIndex : null,
+            minTargetIndex,
+            maxTargetIndex,
+            targetIndex: Number.isInteger(targetIndex) ? targetIndex : null,
+            isWithinWindow: !Number.isInteger(targetIndex)
+                || !Number.isInteger(maxTargetIndex)
+                || targetIndex <= maxTargetIndex,
+        };
+    };
     const busyState = cacheWarmerForegroundBusyState();
-    if (busyState.busy) {
+    if (busyState.busy && !(force && busyState.reason === 'foreground-cooldown')) {
         clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
         globalThis.__manabiCacheWarmerLoadNextTimer = setTimeout(() => {
             globalThis.__manabiCacheWarmerLoadNextTimer = null;
-            scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.retry`);
+            scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.retry`, options);
         }, busyState.retryMs);
         postReplaceTextPerfLog('cache-warmer.advance.deferred', {
             reason,
@@ -1081,17 +1105,28 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
     const now = performanceNowMs();
     const lastAdvanceStartedAt = Number(globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs || 0);
     const spacingRemainingMs = Math.max(0, lastAdvanceStartedAt + CACHE_WARMER_ADVANCE_SPACING_MS - now);
-    if (spacingRemainingMs > 0) {
+    if (!force && spacingRemainingMs > 0) {
         clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
         globalThis.__manabiCacheWarmerLoadNextTimer = setTimeout(() => {
             globalThis.__manabiCacheWarmerLoadNextTimer = null;
-            scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.spacing`);
+            scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.spacing`, options);
         }, spacingRemainingMs);
         return;
     }
     const activeIndex = activeForegroundSectionIndex();
+    const precedingTargetIndex = cacheWarmerPrecedingTargetIndex();
+    const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeIndex;
+    const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, minimumIndex);
+    const windowLimitState = cacheWarmerWindowLimitState(targetIndex);
+    if (!Number.isInteger(precedingTargetIndex) && !windowLimitState.isWithinWindow) {
+        return;
+    }
     globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
-    window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, activeIndex)
+    globalThis.__manabiCacheWarmerAdvanceInFlight = true;
+    window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, minimumIndex)
+        ?.finally?.(() => {
+            globalThis.__manabiCacheWarmerAdvanceInFlight = false;
+        })
         ?.catch?.((error) => console.error(error));
 };
 
@@ -1391,6 +1426,84 @@ const activeForegroundSectionHref = () => {
 };
 
 const activeForegroundSectionIndex = () => sectionIndexForHref(activeForegroundSectionHref());
+
+const cacheWarmerPrecedingTargetIndex = () => {
+    const targetIndex = Number(globalThis.__manabiCacheWarmerRequiredPrecedingTargetIndex);
+    return Number.isInteger(targetIndex) && targetIndex > 0 ? targetIndex : null;
+};
+
+const isCacheWarmerPrecedingSectionsComplete = (targetIndex) => {
+    if (!Number.isInteger(targetIndex) || targetIndex <= 0) return true;
+    const highestSectionIndex = Number(globalThis.__manabiCacheWarmerHighestSectionIndex);
+    if (Number.isInteger(highestSectionIndex) && highestSectionIndex >= targetIndex - 1) return true;
+    if (globalThis.__manabiCacheWarmerFinished) return true;
+    return false;
+};
+
+const resolveCacheWarmerPrecedingSectionWaiters = () => {
+    const waiters = Array.isArray(globalThis.__manabiCacheWarmerPrecedingSectionWaiters)
+        ? globalThis.__manabiCacheWarmerPrecedingSectionWaiters
+        : [];
+    if (waiters.length === 0) return;
+    globalThis.__manabiCacheWarmerPrecedingSectionWaiters = waiters.filter((waiter) => {
+        if (!isCacheWarmerPrecedingSectionsComplete(waiter?.targetIndex)) return true;
+        clearTimeout(waiter.timer);
+        waiter.resolve?.();
+        return false;
+    });
+    const requiredTarget = cacheWarmerPrecedingTargetIndex();
+    if (Number.isInteger(requiredTarget) && isCacheWarmerPrecedingSectionsComplete(requiredTarget)) {
+        globalThis.__manabiCacheWarmerRequiredPrecedingTargetIndex = null;
+    }
+};
+
+const ensureCacheWarmerPrecedingSectionsForHref = async (href) => {
+    const targetIndex = sectionIndexForHref(href);
+    if (!Number.isInteger(targetIndex) || targetIndex <= 0) return;
+    if (isCacheWarmerPrecedingSectionsComplete(targetIndex)) return;
+    const existingTarget = cacheWarmerPrecedingTargetIndex();
+    const nextTarget = Math.max(existingTarget ?? 0, targetIndex);
+    globalThis.__manabiCacheWarmerRequiredPrecedingTargetIndex = nextTarget;
+    if (!globalThis.__manabiCacheWarmerPrecedingSectionWaiters) {
+        globalThis.__manabiCacheWarmerPrecedingSectionWaiters = [];
+    }
+    postReplaceTextPerfLog('cache-warmer.preceding-sections.wait', {
+        href,
+        targetIndex,
+        requiredPrecedingTargetIndex: nextTarget,
+        highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+        ...captureEPUBOverlapState(),
+    });
+    if (
+        !globalThis.__manabiCacheWarmerReady
+        && !globalThis.__manabiCacheWarmerOpenInFlight
+        && !globalThis.__manabiCacheWarmerOpenRequested
+    ) {
+        scheduleDeferredCacheWarmerOpen('preceding-sections-required', 0);
+    }
+    if (globalThis.__manabiCacheWarmerOpenRequested) {
+        void maybeOpenDeferredCacheWarmer();
+    }
+    scheduleLoadNextCacheWarmerSection([], 'preceding-sections-required', { force: true });
+    await new Promise((resolve) => {
+        const waiter = { targetIndex, resolve };
+        globalThis.__manabiCacheWarmerPrecedingSectionWaiters.push(waiter);
+        const poll = () => {
+            if (isCacheWarmerPrecedingSectionsComplete(targetIndex)) {
+                resolve();
+                return;
+            }
+            waiter.timer = setTimeout(poll, 50);
+        };
+        poll();
+    });
+    postReplaceTextPerfLog('cache-warmer.preceding-sections.complete', {
+        href,
+        targetIndex,
+        highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+        ...captureEPUBOverlapState(),
+    });
+};
 
 const activeForegroundSectionHrefSet = () => {
     const href = activeForegroundSectionHref();
@@ -4040,7 +4153,8 @@ const getCSSForBookContent = ({
     }
 
     mnb-sen ruby.mnb-gen > rt,
-    mnb-sen ruby.mbn-src > rt {
+    mnb-sen ruby.mbn-src > rt,
+    mnb-sen ruby.mbn-src-fwd > rt {
         /*
            Keep Manabi-owned ruby annotations in the historical Japanese sans stack.
            Reader-selected surface fonts such as YuKyokasho should apply to the
@@ -8792,7 +8906,7 @@ class CacheWarmer {
                 : []
         )
         const activeHref = activeForegroundSectionHref()
-        if (activeHref) settled.add(activeHref)
+        if (activeHref && !Number.isInteger(cacheWarmerPrecedingTargetIndex())) settled.add(activeHref)
         const currentIndex = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex : -1
         const startIndex = Math.max(currentIndex + 1, Number.isInteger(minimumIndex) ? minimumIndex : 0)
         for (let index = startIndex; index < sections.length; index += 1) {
@@ -8809,7 +8923,8 @@ class CacheWarmer {
     }
     async #openFirstUnsettledSection() {
         const settledSectionHrefs = this.#mergeSettledSectionHrefs()
-        const minimumIndex = activeForegroundSectionIndex()
+        const precedingTargetIndex = cacheWarmerPrecedingTargetIndex()
+        const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeForegroundSectionIndex()
         const firstUnsettledIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         const settled = new Set(settledSectionHrefs)
         const activeHref = activeForegroundSectionHref()
@@ -8843,6 +8958,7 @@ class CacheWarmer {
         })
         if (!Number.isInteger(firstUnsettledIndex)) {
             globalThis.__manabiCacheWarmerFinished = true
+            resolveCacheWarmerPrecedingSectionWaiters()
             postEPUBLog('ebook.perf.cache-warmer.finished', {
                 sectionURL: null,
                 sectionIndex: null,
@@ -8900,6 +9016,7 @@ class CacheWarmer {
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         if (!Number.isInteger(targetIndex)) {
             globalThis.__manabiCacheWarmerFinished = true
+            resolveCacheWarmerPrecedingSectionWaiters()
             postEPUBLog('ebook.perf.cache-warmer.finished', {
                 sectionURL: this.lastLoadedSectionHref,
                 sectionIndex: this.lastLoadedSectionIndex,
@@ -8994,6 +9111,7 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
+        globalThis.__manabiCacheWarmerAdvanceInFlight = false;
     }
     async open(file) {
         this.destroy()
@@ -9072,6 +9190,7 @@ class CacheWarmer {
             return;
         }
         globalThis.__manabiCacheWarmerFinished = true;
+        resolveCacheWarmerPrecedingSectionWaiters()
         postEPUBLog('ebook.perf.cache-warmer.finished', {
             sectionURL: location,
             sectionIndex,
@@ -9117,6 +9236,7 @@ class CacheWarmer {
                 globalThis.__manabiCacheWarmerHighestSectionIndex ?? -1,
                 index,
             );
+            resolveCacheWarmerPrecedingSectionWaiters();
         }
         postPageNumLog('cacheWarmer.onLoad.begin', {
             sectionIndex: Number.isInteger(index) ? index : null,

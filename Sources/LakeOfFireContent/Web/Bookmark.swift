@@ -230,7 +230,7 @@ public extension Bookmark {
         let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
             //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 bookmark.title = sanitizedTitle
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
@@ -311,7 +311,7 @@ public extension Bookmark {
             bookmark.feedEntryCollectionTerm = feedEntryCollectionTerm
             bookmark.feedEntryCollectionTitle = feedEntryCollectionTitle
             //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 realm.add(bookmark, update: .modified)
             }
             return bookmark

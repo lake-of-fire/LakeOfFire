@@ -604,12 +604,12 @@ public extension ReaderContentProtocol {
                 fallbackBookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 fallbackBookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
                 fallbackBookmark.updateCompoundKey()
-                try await realm.asyncWrite {
+                try realm.writeIfNeeded {
                     realm.add(fallbackBookmark, update: .modified)
                 }
                 managedBookmark = fallbackBookmark
             }
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 let canResolveOriginalType = realm.configuration.objectTypes?.contains(where: { $0 == Self.self }) ?? true
                 if canResolveOriginalType, let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
                     content.configureBookmark(managedBookmark)
@@ -633,7 +633,7 @@ public extension ReaderContentProtocol {
             }
 
             if let historyRecord = try await HistoryRecord.get(forURL: url, realm: realm), historyRecord.isDemoted != false {
-                try await historyRecord.realm?.asyncWrite {
+                try historyRecord.realm?.writeIfNeeded {
                     historyRecord.isDemoted = false
                     historyRecord.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -655,7 +655,7 @@ public extension ReaderContentProtocol {
                 return false
             }
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 bookmark.isDeleted = true
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }

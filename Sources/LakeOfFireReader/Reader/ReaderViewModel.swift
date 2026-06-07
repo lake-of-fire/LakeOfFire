@@ -86,6 +86,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeOverlayNavigationHidden: Bool = false
     @Published public private(set) var ebookNativeOverlayTitleLocationLabel: String = ""
     @Published public private(set) var ebookNativeOverlayTitleLocationVisible: Bool = false
+    @Published public private(set) var ebookNativeOverlayBookTitleLabel: String = ""
+    @Published public private(set) var ebookNativeOverlayPagesLeftLabel: String = ""
+    @Published public private(set) var ebookNativeOverlaySource: String = ""
     @Published public private(set) var ebookNativeOverlayRelocateBackEnabled: Bool = false
     @Published public private(set) var ebookNativeOverlayRelocateForwardEnabled: Bool = false
     @Published public private(set) var ebookNativeMarkReadAvailable: Bool = false
@@ -128,6 +131,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
         navigationHidden: Bool,
         titleLocationLabel: String,
         titleLocationVisible: Bool,
+        bookTitleLabel: String,
+        pagesLeftLabel: String,
+        source: String,
         relocateBackEnabled: Bool,
         relocateForwardEnabled: Bool
     ) {
@@ -143,6 +149,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
         if ebookNativeOverlayTitleLocationVisible != titleLocationVisible {
             ebookNativeOverlayTitleLocationVisible = titleLocationVisible
         }
+        if ebookNativeOverlayBookTitleLabel != bookTitleLabel {
+            ebookNativeOverlayBookTitleLabel = bookTitleLabel
+        }
+        if ebookNativeOverlayPagesLeftLabel != pagesLeftLabel {
+            ebookNativeOverlayPagesLeftLabel = pagesLeftLabel
+        }
+        if ebookNativeOverlaySource != source {
+            ebookNativeOverlaySource = source
+        }
         if ebookNativeOverlayRelocateBackEnabled != relocateBackEnabled {
             ebookNativeOverlayRelocateBackEnabled = relocateBackEnabled
         }
@@ -152,12 +167,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    public func clearEbookNativeOverlayState(source _: String) {
+    public func clearEbookNativeOverlayState(source: String) {
         setEbookNativeOverlayState(
             percentLabel: "",
             navigationHidden: false,
             titleLocationLabel: "",
             titleLocationVisible: false,
+            bookTitleLabel: "",
+            pagesLeftLabel: "",
+            source: source,
             relocateBackEnabled: false,
             relocateForwardEnabled: false
         )
