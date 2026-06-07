@@ -3387,6 +3387,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
 const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
+    const nativeLookupFrameKey = doc?.location?.href || doc?.URL || null;
     const viewportWidth = visibleSegmentsResult?.viewportWidth
         ?? window.visualViewport?.width
         ?? window.innerWidth
@@ -3426,6 +3427,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             reason,
+            nativeLookupFrameKey,
             isExplicitReset: false,
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth,
@@ -3472,6 +3474,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
         reason,
+        nativeLookupFrameKey,
         isExplicitReset: false,
         visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
         viewportWidth,
@@ -5568,22 +5571,23 @@ class Reader {
                     return;
                 }
                 this.nativeLookupHitTargetRefreshHandle = null;
-                const doc = isDocumentLike(explicitDoc)
-                    ? explicitDoc
-                    : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
-                if (!isDocumentLike(doc)) {
+                const docs = isDocumentLike(explicitDoc)
+                    ? [explicitDoc]
+                    : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+                if (docs.length === 0) {
                     return;
                 }
-                const visibleRange = this.#visibleRangeForDocument(doc);
                 postVisibleRangeLog('nativeHitTargets.deferredRefresh', {
                     reason,
                     generation,
                     frameDelay: remainingFrames,
-                    hasVisibleRange: !!visibleRange,
-                    rangeCollapsed: typeof visibleRange?.collapsed === 'boolean' ? visibleRange.collapsed : null,
+                    documentCount: docs.length,
                 });
-                this.visiblePageSegmentSnapshot = null;
-                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`);
+                for (const doc of docs) {
+                    const visibleRange = this.#visibleRangeForDocument(doc);
+                    this.visiblePageSegmentSnapshot = null;
+                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`);
+                }
             });
         };
         runAfterFrame(remainingFrames);
@@ -5592,13 +5596,10 @@ class Reader {
         this.#scheduleNativeLookupHitTargetRefresh(`${reason}.raf`, 1, explicitDoc);
         const scheduleLater = (delayMs, label, frameDelay = 1) => {
             setTimeout(() => {
-                const doc = isDocumentLike(explicitDoc)
-                    ? explicitDoc
-                    : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
-                if (!isDocumentLike(doc) || isCacheWarmerDocument(doc)) {
+                if (isDocumentLike(explicitDoc) && isCacheWarmerDocument(explicitDoc)) {
                     return;
                 }
-                this.#scheduleNativeLookupHitTargetRefresh(`${reason}.${label}`, frameDelay, doc);
+                this.#scheduleNativeLookupHitTargetRefresh(`${reason}.${label}`, frameDelay, explicitDoc);
             }, delayMs);
         };
         scheduleLater(120, 'settled-120ms', 1);
