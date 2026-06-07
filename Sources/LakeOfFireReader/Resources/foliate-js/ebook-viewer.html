@@ -564,8 +564,9 @@
                     max-width: 100%;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
-                    opacity: 1 !important;
-                    pointer-events: auto !important;
+                    opacity: 0 !important;
+                    visibility: hidden !important;
+                    pointer-events: none !important;
                     transform: translate(-50%, 0);
                 }
                 #nav-bar.nav-hidden-due-to-scroll #page-tracking-container {
@@ -815,6 +816,9 @@
                 body[data-book-dir="rtl"] #page-tracking-container {
                     left: 50%;
                     right: auto;
+                }
+                body.ebook-viewer #page-tracking-container {
+                    display: none !important;
                 }
                 body[data-mnb-mark-read-buttons-visible="false"] #page-tracking-container {
                     display: none !important;

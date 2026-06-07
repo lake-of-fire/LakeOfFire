@@ -1250,6 +1250,7 @@ export class NavigationHUD {
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             navHidden: this.navHidden,
         });
+        this._postNativeOverlayState('compact-percent');
     }
 
     _fractionForPercent(detail) {

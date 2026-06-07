@@ -4695,6 +4695,15 @@ class Reader {
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
             onHideNavigationDueToScrollChange: (hidden, details = {}) => {
                 this.#applyHideNavigationDueToScrollToBookContent(hidden);
+                if (details?.context?.bridgeSource) {
+                    postReaderLog('ebook.navigationVisibility.bridgeEchoSuppressed', {
+                        hidden: !!hidden,
+                        source: details?.source ?? null,
+                        bridgeSource: details.context.bridgeSource,
+                        previous: details?.previous ?? null,
+                    });
+                    return;
+                }
                 postEbookNavigationVisibilityToNative(
                     hidden,
                     `navHUD.visibilityChange.${details?.source || 'unknown'}`,
@@ -8005,6 +8014,289 @@ class Reader {
         await this.#handleKeydown({ key });
         return true;
     }
+    #lookupNavigationFunctionName(kind, direction) {
+        const normalizedKind = kind === 'sentence' || kind === 'section' ? kind : 'word';
+        const normalizedDirection = direction === 'previous' ? 'Previous' : 'Next';
+        if (normalizedKind === 'sentence') return `manabi_lookup${normalizedDirection}SentenceMatch`;
+        if (normalizedKind === 'section') return `manabi_lookup${normalizedDirection}SectionMatch`;
+        return `manabi_lookup${normalizedDirection}SegmentMatch`;
+    }
+    #lookupContentWindows() {
+        const contents = this.view?.renderer?.getContents?.() || [];
+        return contents
+            .map((content) => content?.doc?.defaultView || content?.document?.defaultView || null)
+            .filter((view) => view && !isCacheWarmerDocument(view.document));
+    }
+    async #waitForLookupContentFunction(functionName, timeoutMs = 1800) {
+        const startedAt = performance.now();
+        while (performance.now() - startedAt < timeoutMs) {
+            const contentWindow = this.#lookupContentWindows().find((view) => typeof view?.[functionName] === 'function');
+            if (contentWindow) return contentWindow;
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        return this.#lookupContentWindows().find((view) => typeof view?.[functionName] === 'function') ?? null;
+    }
+    async #settleAfterLookupPageTurn() {
+        await new Promise((resolve) => setTimeout(resolve, 140));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const docs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+        await Promise.race([
+            Promise.all(docs.map((doc) => Promise.resolve(doc.fonts?.ready).catch(() => null))),
+            new Promise((resolve) => setTimeout(resolve, 500)),
+        ]).catch(() => null);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    #lookupNavigationPositionSnapshot() {
+        const renderer = this.view?.renderer ?? null;
+        const relocateDetail = this.navHUD?.lastRelocateDetail ?? null;
+        return {
+            sectionIndex: getPrimaryRendererContentIndex(renderer),
+            rendererCurrentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
+            pageCurrent: typeof this.navHUD?.rendererPageSnapshot?.current === 'number' ? this.navHUD.rendererPageSnapshot.current : null,
+            pageTotal: typeof this.navHUD?.rendererPageSnapshot?.total === 'number' ? this.navHUD.rendererPageSnapshot.total : null,
+            fraction: typeof relocateDetail?.fraction === 'number' && Number.isFinite(relocateDetail.fraction)
+                ? safeRound(relocateDetail.fraction, 6)
+                : null,
+        };
+    }
+    #lookupNavigationPositionChanged(before, after) {
+        if (!before || !after) return false;
+        return before.sectionIndex !== after.sectionIndex
+            || before.rendererCurrentIndex !== after.rendererCurrentIndex
+            || before.pageCurrent !== after.pageCurrent
+            || before.pageTotal !== after.pageTotal
+            || before.fraction !== after.fraction;
+    }
+    async #invokeLookupNavigationInContent(request, extraOptions = {}) {
+        const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
+        const direction = request?.direction === 'previous' ? 'previous' : 'next';
+        const functionName = this.#lookupNavigationFunctionName(kind, direction);
+        const contentWindow = await this.#waitForLookupContentFunction(functionName);
+        if (!contentWindow) {
+            return {
+                opened: false,
+                failureReason: 'missingContentLookupFunction',
+                functionName,
+            };
+        }
+        return await contentWindow[functionName]({
+            simulateTouchstart: true,
+            currentElementID: typeof request?.currentElementID === 'string' ? request.currentElementID : null,
+            currentSegmentIdentifier: typeof request?.currentSegmentIdentifier === 'string' ? request.currentSegmentIdentifier : null,
+            allowEbookPageTurn: false,
+            ...extraOptions,
+        });
+    }
+    async #openVisibleLookupTargetAfterPageTurn(request) {
+        const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
+        const direction = request?.direction === 'previous' ? 'previous' : 'next';
+        const contentWindow = await this.#waitForLookupContentFunction('manabi_openVisibleLookupTargetAfterPageTurn');
+        if (!contentWindow) {
+            return {
+                opened: false,
+                failureReason: 'missingVisibleLookupFallback',
+                kind,
+                direction,
+            };
+        }
+        return await contentWindow.manabi_openVisibleLookupTargetAfterPageTurn({
+            kind,
+            direction,
+            allowEbookPageTurn: false,
+        });
+    }
+    async #turnLookupNavigationPage(direction) {
+        const renderer = this.view?.renderer;
+        if (!renderer || !this.view) {
+            return {
+                moved: false,
+                failureReason: 'missingRenderer',
+            };
+        }
+        const normalizedDirection = direction === 'previous' ? 'previous' : 'next';
+        const atStart = await renderer.atStart?.();
+        const atEnd = await renderer.atEnd?.();
+        if (normalizedDirection === 'next') {
+            if (atEnd === true) {
+                this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
+                this.#applyLogicalPageTurnNavigationVisibility('forward', 'lookup-navigation.next-section');
+                await renderer.nextSection?.();
+                return { moved: true, mode: 'nextSection' };
+            }
+            this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
+            this.#applyLogicalPageTurnNavigationVisibility('forward', 'lookup-navigation.page');
+            if (this.isRTL) {
+                await this.view.goLeft();
+                return { moved: true, mode: 'goLeft' };
+            }
+            await this.view.goRight();
+            return { moved: true, mode: 'goRight' };
+        }
+        if (atStart === true) {
+            this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
+            this.#applyLogicalPageTurnNavigationVisibility('backward', 'lookup-navigation.previous-section');
+            await renderer.prevSection?.();
+            return { moved: true, mode: 'prevSection' };
+        }
+        this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
+        this.#applyLogicalPageTurnNavigationVisibility('backward', 'lookup-navigation.page');
+        if (this.isRTL) {
+            await this.view.goRight();
+            return { moved: true, mode: 'goRight' };
+        }
+        await this.view.goLeft();
+        return { moved: true, mode: 'goLeft' };
+    }
+    async performLookupNavigationPageTurn(request = {}) {
+        const token = (this.lookupNavigationPageTurnToken ?? 0) + 1;
+        this.lookupNavigationPageTurnToken = token;
+        const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
+        const direction = request?.direction === 'previous' ? 'previous' : 'next';
+        const maxPageTurns = Math.max(1, Math.min(12, Number.isFinite(request?.maxPageTurns) ? Math.round(request.maxPageTurns) : 8));
+        const startedAt = performance.now();
+        const attempts = [];
+        postReaderLog('lookup.navigation.pageTurn.begin', {
+            token,
+            kind,
+            direction,
+            failureReason: request?.failureReason ?? null,
+            currentElementID: request?.currentElementID ?? null,
+            currentSegmentIdentifier: request?.currentSegmentIdentifier ?? null,
+            maxPageTurns,
+        });
+        for (let pageTurnIndex = 0; pageTurnIndex < maxPageTurns; pageTurnIndex += 1) {
+            if (this.lookupNavigationPageTurnToken !== token) {
+                return {
+                    opened: false,
+                    failureReason: 'superseded',
+                    kind,
+                    direction,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                    attempts,
+                };
+            }
+            let turnResult = null;
+            const positionBeforeTurn = this.#lookupNavigationPositionSnapshot();
+            try {
+                turnResult = await this.#turnLookupNavigationPage(direction);
+                await this.#settleAfterLookupPageTurn();
+            } catch (error) {
+                turnResult = {
+                    moved: false,
+                    failureReason: 'pageTurnError',
+                    error: error?.message || String(error),
+                };
+            }
+            const positionAfterTurn = this.#lookupNavigationPositionSnapshot();
+            const positionChanged = this.#lookupNavigationPositionChanged(positionBeforeTurn, positionAfterTurn);
+            if (turnResult) {
+                turnResult.positionBefore = positionBeforeTurn;
+                turnResult.positionAfter = positionAfterTurn;
+                turnResult.positionChanged = positionChanged;
+            }
+            if (turnResult?.moved === false || !positionChanged) {
+                attempts.push({
+                    pageTurnIndex,
+                    turnResult,
+                    retryOpened: false,
+                    retryFailureReason: turnResult?.failureReason ?? (positionChanged ? null : 'pageTurnDidNotMove'),
+                });
+                break;
+            }
+            let retryResult = null;
+            try {
+                retryResult = await this.#invokeLookupNavigationInContent({
+                    ...request,
+                    kind,
+                    direction,
+                });
+            } catch (error) {
+                retryResult = {
+                    opened: false,
+                    failureReason: 'retryError',
+                    error: error?.message || String(error),
+                };
+            }
+            const attempt = {
+                pageTurnIndex,
+                turnResult,
+                retryOpened: retryResult?.opened === true,
+                retryFailureReason: retryResult?.failureReason ?? retryResult?.scrollAndOpen?.failureReason ?? null,
+            };
+            attempts.push(attempt);
+            if (retryResult?.opened === true) {
+                postReaderLog('lookup.navigation.pageTurn.opened', {
+                    token,
+                    kind,
+                    direction,
+                    pageTurnIndex,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                    attempts,
+                });
+                return {
+                    opened: true,
+                    kind,
+                    direction,
+                    pageTurnIndex,
+                    retryResult,
+                    attempts,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                };
+            }
+            const retryFailureReason = retryResult?.failureReason ?? retryResult?.scrollAndOpen?.failureReason ?? null;
+            const shouldTryVisibleFallback = retryFailureReason === 'noCurrent'
+                || retryFailureReason === 'noCandidate'
+                || retryFailureReason === 'missingContentLookupFunction';
+            if (shouldTryVisibleFallback) {
+                let fallbackResult = null;
+                try {
+                    fallbackResult = await this.#openVisibleLookupTargetAfterPageTurn({ kind, direction });
+                } catch (error) {
+                    fallbackResult = {
+                        opened: false,
+                        failureReason: 'fallbackError',
+                        error: error?.message || String(error),
+                    };
+                }
+                attempt.fallbackOpened = fallbackResult?.opened === true;
+                attempt.fallbackFailureReason = fallbackResult?.failureReason ?? null;
+                if (fallbackResult?.opened === true) {
+                    postReaderLog('lookup.navigation.pageTurn.fallbackOpened', {
+                        token,
+                        kind,
+                        direction,
+                        pageTurnIndex,
+                        elapsedMs: Math.round(performance.now() - startedAt),
+                        attempts,
+                    });
+                    return {
+                        opened: true,
+                        kind,
+                        direction,
+                        pageTurnIndex,
+                        fallbackResult,
+                        attempts,
+                        elapsedMs: Math.round(performance.now() - startedAt),
+                    };
+                }
+            }
+        }
+        postReaderLog('lookup.navigation.pageTurn.failed', {
+            token,
+            kind,
+            direction,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            attempts,
+        });
+        return {
+            opened: false,
+            failureReason: 'pageTurnLookupTargetNotFound',
+            kind,
+            direction,
+            attempts,
+            elapsedMs: Math.round(performance.now() - startedAt),
+        };
+    }
     #installVisibleRendererGoToGuard() {
         const renderer = this.view?.renderer;
         if (!renderer || renderer.__manabiVisibleGoToGuardInstalled) return;
@@ -10191,6 +10483,13 @@ window.manabiToggleReaderTableOfContents = () => {
 
 window.manabiHandlePhysicalArrowKey = async (direction) => {
     return await globalThis.reader?.handlePhysicalArrowKey?.(direction) ?? false;
+}
+
+window.manabi_performLookupNavigationPageTurn = async (request = {}) => {
+    return await globalThis.reader?.performLookupNavigationPageTurn?.(request) ?? {
+        opened: false,
+        failureReason: 'missingReader',
+    };
 }
 
 window.manabiGetReaderGoToSheetSnapshot = async () => {
