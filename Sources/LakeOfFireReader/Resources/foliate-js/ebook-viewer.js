@@ -8246,6 +8246,7 @@ class Reader {
             const retryFailureReason = retryResult?.failureReason ?? retryResult?.scrollAndOpen?.failureReason ?? null;
             const shouldTryVisibleFallback = retryFailureReason === 'noCurrent'
                 || retryFailureReason === 'noCandidate'
+                || retryFailureReason === 'targetOutsideNativeHitTargets'
                 || retryFailureReason === 'missingContentLookupFunction';
             if (shouldTryVisibleFallback) {
                 let fallbackResult = null;
