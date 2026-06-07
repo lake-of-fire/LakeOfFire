@@ -151,7 +151,7 @@ public extension Bookmark {
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
@@ -208,7 +208,7 @@ public extension Bookmark {
             bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
             bookmark.autoOpenMediaPlayer = autoOpenMediaPlayer
 //            await realm.asyncRefresh()
-            try await realm.asyncWrite {
+            try realm.writeIfNeeded {
                 realm.add(bookmark, update: .modified)
             }
             return bookmark
