@@ -21,16 +21,8 @@ fileprivate let blockedHosts = Set([
     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
 ])
 
-private func logSafeArea(_ message: @autoclosure () -> String) {
-    _ = message()
-}
 
-private func logEPUBBack(_ message: @autoclosure () -> String) {
-}
 
-private func logBook(_ message: @autoclosure () -> String) {
-    _ = message
-}
 
 // To avoid redraws...
 @MainActor
@@ -273,8 +265,6 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
             ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
-#if DEBUG
-#endif
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -432,18 +422,12 @@ fileprivate struct ReaderWebViewInternal: View {
             webViewPrewarmer: webViewPrewarmer
         )
         .task(id: safeAreaBottomSignature) {
-            logSafeArea(safeAreaBottomSignature)
-            debugPrint("# BOTTOM \(safeAreaBottomSignature)")
             if usesEBookChromeInsets {
-                logBook("readerWebView.resolveInsets \(safeAreaBottomSignature)")
             }
-            logEPUBBack(safeAreaBottomSignature)
         }
         .onAppear {
-            logEPUBBack("stage=readerWebView.appear \(safeAreaBottomSignature) navigatorAttached=\(navigator.hasAttachedWebView)")
         }
         .onDisappear {
-            logEPUBBack("stage=readerWebView.disappear \(safeAreaBottomSignature) navigatorAttached=\(navigator.hasAttachedWebView)")
         }
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset

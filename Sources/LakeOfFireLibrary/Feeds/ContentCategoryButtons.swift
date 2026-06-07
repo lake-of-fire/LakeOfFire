@@ -18,11 +18,6 @@ public extension EnvironmentValues {
     }
 }
 
-private func logNav(_ message: String) {
-#if DEBUG
-    debugPrint("# NAV \(message)")
-#endif
-}
 
 @MainActor
 private func forceCategorySelection(
@@ -158,7 +153,6 @@ public struct MangaCategoryButton: View {
     
     public var body: some View {
         CategoryCardButton(action: {
-            logNav("stage=home.categoryCard.tap kind=manga previousSelection=\(categorySelection ?? "nil")")
             withAnimation {
                 forceCategorySelection("manga", categorySelection: $categorySelection)
             }
@@ -190,7 +184,6 @@ public struct BooksCategoryButton: View {
     
     public var body: some View {
         CategoryCardButton(action: {
-            logNav("stage=home.categoryCard.tap kind=books previousSelection=\(categorySelection ?? "nil")")
             withAnimation {
                 forceCategorySelection("books", categorySelection: $categorySelection)
             }
@@ -219,7 +212,6 @@ public struct FeedCategoryButton: View {
     
     public var body: some View {
         CategoryCardButton(action: {
-            logNav("stage=home.categoryCard.tap kind=feedCategory categoryID=\(category.id.uuidString) title=\(category.title) previousCategory=\(categorySelection ?? "nil") previousFeed=\(feedSelection ?? "nil")")
             forceCategorySelection(
                 category.id.uuidString,
                 categorySelection: $categorySelection,

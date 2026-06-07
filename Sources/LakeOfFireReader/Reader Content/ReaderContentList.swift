@@ -24,8 +24,6 @@ public extension EnvironmentValues {
 }
 #endif
 
-private func logReaderLoad(_ message: String) {
-}
 
 private func logSnippetLoad(_ message: String) {
 #if DEBUG
@@ -33,11 +31,7 @@ private func logSnippetLoad(_ message: String) {
 #endif
 }
 
-private func logDetent(_ message: String) {
-}
 
-private func logFeedFlash(_ message: String) {
-}
 
 public func readerContentListSeparatedRowScrollAnchorID(_ contentID: String) -> String {
     "reader-content-list-section-\(contentID)"
@@ -320,16 +314,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     )
                 }
                 if isAlreadyLoaded {
-                    logReaderLoad(
-                        "# SAMECONTENT stage=list.selectionChanged oldSelection=\(oldValue ?? "nil") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString)"
-                    )
                 }
-                logReaderLoad(
-                    "stage=contentList.selectionChanged selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
-                )
-                logDetent(
-                    "contentList.selectionChanged oldSelection=\(oldValue ?? "nil") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
-                )
 
                 Task { @MainActor in
                     if let onSelection {
@@ -338,17 +323,8 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                                 "selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                             )
                         }
-                        logReaderLoad(
-                            "stage=contentList.selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                        )
-                        logDetent(
-                            "contentList.selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                        )
                         onSelection(selectedContent)
                         if entrySelection == itemSelection {
-                            logDetent(
-                                "contentList.clearEntrySelectionAfterCustomHandler selection=\(itemSelection)"
-                            )
                             entrySelection = nil
                         }
                         return
@@ -360,30 +336,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                             "selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                         )
                     }
-                    logReaderLoad(
-                        "stage=contentList.selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                    )
-                    logDetent(
-                        "contentList.selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                    )
-                    logDetent(
-                        "contentList.navigationHint.before selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                    )
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
-                    logDetent(
-                        "contentList.navigationHint.after selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                    )
                     guard !isAlreadyLoaded else {
-                        logReaderLoad(
-                            "# SAMECONTENT stage=list.skipNavigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                        )
                         if entrySelection == itemSelection {
-                            logReaderLoad(
-                                "# SAMECONTENT stage=list.clearSelection selection=\(itemSelection)"
-                            )
-                            logDetent(
-                                "contentList.clearEntrySelectionSameContent selection=\(itemSelection)"
-                            )
                             entrySelection = nil
                         }
                         return
@@ -395,15 +350,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         )
                     } catch {
                         errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
-                        logReaderLoad(
-                            "stage=contentList.selectionDispatchFailed selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) error=\(error.localizedDescription)"
-                        )
                         debugPrint("Failed to load reader content for selection", error)
                     }
                     if entrySelection == itemSelection {
-                        logDetent(
-                            "contentList.clearEntrySelectionAfterNavigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                        )
                         entrySelection = nil
                     }
                 }
@@ -444,9 +393,6 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
         let refreshStartedAt = Date()
         viewModel.refreshSelectionTask?.cancel()
         guard !isReaderProvisionallyNavigating else {
-            logReaderLoad(
-                "stage=contentList.refreshSelection.skip reason=readerProvisionallyNavigating readerPageURL=\(readerPageURL.absoluteString)"
-            )
             return
         }
 
@@ -463,9 +409,6 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                    !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     async let clearTask = { @MainActor in
                         try Task.checkCancellation()
-                            logReaderLoad(
-                                "stage=contentList.refreshSelection.clear reason=selectionDoesNotMatchReader selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(refreshStartedAt)))"
-                            )
                             self.entrySelection = nil
                         }()
                         try await clearTask
@@ -478,9 +421,6 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                        currentSelection != nil {
                         async let clearTask = { @MainActor in
                             try Task.checkCancellation()
-                            logReaderLoad(
-                                "stage=contentList.refreshSelection.clear reason=readerPageMissingFromList selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(refreshStartedAt)))"
-                            )
                             self.entrySelection = nil
                         }()
                         try await clearTask
@@ -607,9 +547,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
     @MainActor
     private func applyFilteredContents(_ contents: [C], ids: [String]) {
-        logFeedFlash(
-            "readerContentList.applyFilteredContents type=\(String(describing: C.self)) oldCount=\(filteredContents.count) newCount=\(contents.count) oldIDs=\(filteredContentIDs.joined(separator: ",")) newIDs=\(ids.joined(separator: ",")) hasLoadedBefore=\(hasLoadedBefore) isLoading=\(isLoading)"
-        )
         let updateState = {
             self.filteredContentIDs = ids
             self.filteredContents = contents
@@ -651,17 +588,11 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
         let contentIDs = contents.map(\.compoundKey)
-        logFeedFlash(
-            "readerContentList.load.begin type=\(String(describing: C.self)) inputCount=\(contents.count) inputIDs=\(contentIDs.joined(separator: ",")) currentFilteredCount=\(filteredContents.count) currentFilteredIDs=\(filteredContentIDs.joined(separator: ",")) hasLoadedBefore=\(hasLoadedBefore) isLoading=\(isLoading) sortOrder=\(String(describing: sortOrder)) hasFilter=\(contentFilter != nil) hasPostSortTransform=\(postSortTransform != nil)"
-        )
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
             applyFilteredContents(
                 contents.map { $0.realm == nil ? $0 : $0.freeze() },
                 ids: contentIDs
-            )
-            logFeedFlash(
-                "readerContentList.load.endSync type=\(String(describing: C.self)) outputCount=\(contentIDs.count) outputIDs=\(contentIDs.joined(separator: ","))"
             )
             return
         }
@@ -672,9 +603,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
            postSortTransform == nil {
             let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
             applyFilteredContents(initialContents, ids: initialContents.map(\.compoundKey))
-            logFeedFlash(
-                "readerContentList.load.seedInitialContents type=\(String(describing: C.self)) outputCount=\(initialContents.count) outputIDs=\(initialContents.map(\.compoundKey).joined(separator: ",")) sortOrder=\(String(describing: sortOrder))"
-            )
         }
 
         let realmConfig = contents.first?.realm?.configuration
@@ -682,9 +610,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         loadContentsTask?.cancel()
         let loadID = UUID()
         currentLoadID = loadID
-        logFeedFlash(
-            "readerContentList.load.taskScheduled type=\(String(describing: C.self)) inputCount=\(contents.count) hadRealmConfig=\(realmConfig != nil)"
-        )
         let task = Task { @ReaderContentListActor in
             var filtered: [C] = []
 
@@ -758,25 +683,16 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
             let ids = Array(filtered.prefix(10_000)).map(\.compoundKey)
             await MainActor.run {
-                logFeedFlash(
-                    "readerContentList.load.taskFiltered type=\(String(describing: C.self)) filteredCount=\(filtered.count) ids=\(ids.joined(separator: ","))"
-                )
             }
             try await { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.currentLoadID == loadID else {
-                    logFeedFlash(
-                        "readerContentList.load.skipStaleApply type=\(String(describing: C.self)) filteredCount=\(filtered.count) ids=\(ids.joined(separator: ","))"
-                    )
                     return
                 }
                 let resolvedContents: [C]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
                     guard self.currentLoadID == loadID else {
-                        logFeedFlash(
-                            "readerContentList.load.skipStaleApplyAfterResolve type=\(String(describing: C.self)) filteredCount=\(filtered.count) ids=\(ids.joined(separator: ","))"
-                        )
                         return
                     }
                     resolvedContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0)?.freeze() }
@@ -790,15 +706,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
         try? await task.value
         guard currentLoadID == loadID else {
-            logFeedFlash(
-                "readerContentList.load.skipStaleEnd type=\(String(describing: C.self)) filteredCount=\(filteredContents.count) filteredIDs=\(filteredContentIDs.joined(separator: ","))"
-            )
             return
         }
         loadContentsTask = nil
-        logFeedFlash(
-            "readerContentList.load.endAsync type=\(String(describing: C.self)) filteredCount=\(filteredContents.count) filteredIDs=\(filteredContentIDs.joined(separator: ",")) hasLoadedBefore=\(hasLoadedBefore)"
-        )
     }
 }
 
@@ -1383,14 +1293,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private func listBody(scrollProxy: ScrollViewProxy) -> some View {
         listContainerWithSpacing
             .onAppear {
-                logFeedFlash(
-                    "readerContentList.appear type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator) hasLoadedBefore=\(viewModel.hasLoadedBefore) isLoading=\(viewModel.isLoading)"
-                )
             }
             .onDisappear {
-                logFeedFlash(
-                    "readerContentList.disappear type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator) hasLoadedBefore=\(viewModel.hasLoadedBefore) isLoading=\(viewModel.isLoading)"
-                )
             }
             .toolbar {
 #if os(iOS)
@@ -1419,9 +1323,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 }
             }
             .task { @MainActor in
-                logFeedFlash(
-                    "readerContentList.task.begin type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
-                )
                 try? await viewModel.load(
                     contents: contents,
                     contentFilter: contentFilter,
@@ -1429,15 +1330,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     postSortTransform: postSortTransform
                 )
                 refreshGrouping()
-                logFeedFlash(
-                    "readerContentList.task.end type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
-                )
                 scheduleScrollToTarget(with: scrollProxy, reason: "taskEnd")
             }
             .onChange(of: contents) { contents in
-                logFeedFlash(
-                    "readerContentList.contentsChanged type=\(String(describing: C.self)) contents=\(contents.count) filtered=\(viewModel.filteredContents.count) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
-                )
                 Task { @MainActor in
                     try? await viewModel.load(
                         contents: contents,
@@ -1450,9 +1345,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 }
             }
             .onChange(of: viewModel.filteredContents) { _ in
-                logFeedFlash(
-                    "readerContentList.filteredContentsChanged type=\(String(describing: C.self)) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ",")) showEmptyState=\(showEmptyState) showLoadingIndicator=\(viewModel.showLoadingIndicator)"
-                )
                 refreshGrouping()
                 refreshDeleteEligibilityCache()
                 scheduleScrollToTarget(with: scrollProxy, reason: "filteredContentsChanged")
@@ -2064,14 +1956,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             onSelection: onContentSelected
         )
         .onAppear {
-            logFeedFlash(
-                "readerContentListItems.appear type=\(String(describing: C.self)) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ","))"
-            )
         }
         .onDisappear {
-            logFeedFlash(
-                "readerContentListItems.disappear type=\(String(describing: C.self)) filtered=\(viewModel.filteredContents.count) filteredIDs=\(viewModel.filteredContentIDs.joined(separator: ","))"
-            )
         }
     }
 

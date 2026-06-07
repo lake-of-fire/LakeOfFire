@@ -30,9 +30,6 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
     }
 }
 
-private func logBook(_ message: @autoclosure () -> String) {
-    _ = message
-}
 
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
@@ -117,15 +114,8 @@ private extension View {
 #endif
 }
 
-private func logSafeArea(_ message: @autoclosure () -> String) {
-    _ = message()
-}
 
-private func logMay8(_ message: @autoclosure () -> String) {
-}
 
-private func logEPUBBack(_ message: @autoclosure () -> String) {
-}
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
@@ -149,8 +139,6 @@ func applyAdaptiveReaderWidth(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-#if DEBUG
-#endif
         return
     }
     let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
@@ -177,8 +165,6 @@ func syncReaderPaginationTrackingSettingsKey(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-#if DEBUG
-#endif
         return
     }
     let key = readerPaginationTrackingSettingsKey(
@@ -191,11 +177,7 @@ func syncReaderPaginationTrackingSettingsKey(
             "window.paginationTrackingSettingsKey = '" + key + "';",
             true
         )
-#if DEBUG
-#endif
     } catch {
-#if DEBUG
-#endif
     }
 }
 
@@ -248,8 +230,6 @@ func applyReaderFontSize(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-#if DEBUG
-#endif
         return
     }
     do {
@@ -442,7 +422,6 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
-    logMay8("native.lakeReader.syncChromeInsets.begin pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     do {
         try await evaluateJavaScript(
             """
@@ -488,10 +467,7 @@ func syncEbookViewerChromeInsets(
             """,
             true
         )
-        logMay8("native.lakeReader.syncChromeInsets.end pageURL=\(pageURL.absoluteString) revision=\(revision) obscuredTopInset=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) obscuredBottomInset=\(obscuredBottomInset)")
     } catch {
-        logMay8("native.lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
-        logEPUBBack("stage=lakeReader.syncChromeInsets.error pageURL=\(pageURL.absoluteString) revision=\(revision) error=\(error.localizedDescription)")
     }
 }
 
@@ -1124,13 +1100,7 @@ public struct Reader: View {
                                   sampledInsets.top > explicitTopInset {
                             sampledInsets.top = explicitTopInset
                         }
-                        logSafeArea(
-                            "stage=lakeReader.geometryInitialBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
-                        )
                         if pageURL.isEBookURL {
-                            logEPUBBack(
-                                "stage=lakeReader.geometryInitial pageURL=\(pageURL.absoluteString) sampledTop=\(sampledInsets.top) sampledBottom=\(sampledInsets.bottom) previousTop=\(obscuredInsets?.top ?? 0) previousBottom=\(obscuredInsets?.bottom ?? 0) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomInset)"
-                            )
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1161,13 +1131,7 @@ public struct Reader: View {
                                 sampledInsets.top = previousInsets.top
                             }
                         }
-                        logSafeArea(
-                            "stage=lakeReader.geometryChangedBottom pageURL=\(pageURL.absoluteString) sampledBottom=\(sampledInsets.bottom) previousSampledBottom=\(obscuredInsets?.bottom ?? 0) additionalBottom=\(additionalBottomInset)"
-                        )
                         if pageURL.isEBookURL {
-                            logEPUBBack(
-                                "stage=lakeReader.geometryChanged pageURL=\(pageURL.absoluteString) sampledTop=\(sampledInsets.top) sampledBottom=\(sampledInsets.bottom) previousTop=\(obscuredInsets?.top ?? 0) previousBottom=\(obscuredInsets?.bottom ?? 0) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomInset)"
-                            )
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1190,19 +1154,11 @@ public struct Reader: View {
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: safeAreaBottomSignature) {
-            logSafeArea(safeAreaBottomSignature)
-            debugPrint("# BOTTOM \(safeAreaBottomSignature)")
-            logMay8("native.lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             if pageURL.isEBookURL {
-                logBook("lakeReader.computeInsets \(safeAreaBottomSignature) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
-                logEPUBBack("stage=lakeReader.computeInsets \(safeAreaBottomSignature) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbe=\(viewerLoadedProbeSummary) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
             }
         }
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
-            logBook("lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) readerContentPageURL=\(readerContent.pageURL.absoluteString) sampledTop=\(sampledTopInset) explicitTop=\(explicitTopInset) effectiveTop=\(effectiveTopInset) effectiveBottom=\(effectiveBottomInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) readerRenderReady=\(readerViewModel.state.hasReaderRenderReady)")
-            logMay8("native.lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) readerContentPageURL=\(readerContent.pageURL.absoluteString) chromeInsetsTaskID=\(chromeInsetsTaskID) sampledTopInset=\(sampledTopInset) explicitTopInset=\(explicitTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
-            logEPUBBack("stage=lakeReader.chromeInsetsTask.begin pageURL=\(pageURL.absoluteString) sampledTopInset=\(sampledTopInset) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset) viewerLoadedProbeSummary=\(viewerLoadedProbeSummary) hasAsyncCaller=\(scriptCaller.hasAsyncCaller)")
             let retryDelaysInNanoseconds: [UInt64] = [
                 0,
                 80_000_000,
@@ -1218,7 +1174,6 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                logMay8("native.lakeReader.chromeInsetsTask.attempt pageURL=\(pageURL.absoluteString) attempt=\(attempt) delayNs=\(delay) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) effectiveTopInset=\(effectiveTopInset) effectiveBottomInset=\(effectiveBottomInset) effectiveToolbarBottomOffset=\(effectiveToolbarBottomOffset)")
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
                     obscuredTopInset: effectiveTopInset,
@@ -1296,8 +1251,6 @@ public struct Reader: View {
                         duplicateInMultiTargetFrames: true
                     )
                 } catch {
-#if DEBUG
-#endif
                 }
             }
         }

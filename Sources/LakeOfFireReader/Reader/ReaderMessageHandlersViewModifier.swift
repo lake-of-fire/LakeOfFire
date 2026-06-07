@@ -466,8 +466,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 guard let payload = message.body as? [String: Any] else {
-#if DEBUG
-#endif
                     return
                 }
 
@@ -552,8 +550,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         arguments: ["bookKey": bookKey],
                         in: message.frameInfo
                     )
-#if DEBUG
-#endif
                 }
             }),
             ("trackingSizeCache", { [weak self] message in
@@ -616,8 +612,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 in: message.frameInfo
                             )
                         }
-#if DEBUG
-#endif
                     }
                 default:
                     break

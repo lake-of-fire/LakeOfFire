@@ -133,8 +133,6 @@ private enum SwiftReadabilityProcessingOutcome {
     case failed
 }
 
-private func logTitleTrace(_ message: String) {
-}
 
 private extension String {
     var debugTitleFragment: String {
@@ -1002,7 +1000,6 @@ public class ReaderModeViewModel: ObservableObject {
         if let rendered = lastRenderedURL, !pendingKeysMatch(rendered, canonicalURL) {
             lastRenderedURL = nil
         }
-        logStateSnapshot("beginLoad", url: canonicalURL)
         logTrace(.begin, url: canonicalURL, captureStart: !pendingMatches, details: reason)
         loadStartTimes[(pendingReaderModeURL ?? canonicalURL).absoluteString] = Date()
         if !suppressSpinner {
@@ -1016,7 +1013,6 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let completedURL = pendingReaderModeURL ?? url ?? lastRenderedURL
-        logStateSnapshot("cancelLoad", url: completedURL)
         if let url {
             cancelActiveRender(for: url, reason: "cancelReaderModeLoad.\(reason)")
         }
@@ -1062,7 +1058,6 @@ public class ReaderModeViewModel: ObservableObject {
         let elapsed = loadStartTimes[canonicalURL.absoluteString].map { formattedInterval(Date().timeIntervalSince($0)) } ?? "nil"
         if let startedAt = loadStartTimes[canonicalURL.absoluteString] {
         }
-        logStateSnapshot("completeLoad", url: canonicalURL)
         logTrace(.complete, url: canonicalURL, details: "markReaderModeLoadComplete")
         loadStartTimes.removeValue(forKey: canonicalURL.absoluteString)
         clearSyntheticLoadIssued(for: canonicalURL)
@@ -1137,8 +1132,6 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if expectedSyntheticReaderLoaderURL != nil {
-#if DEBUG
-#endif
             return true
         }
 
@@ -1207,8 +1200,6 @@ public class ReaderModeViewModel: ObservableObject {
             metadata["fontCSSBase64Length"] = String(base64.count)
             metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
         }
-#if DEBUG
-#endif
     }
 
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
@@ -1570,8 +1561,6 @@ public class ReaderModeViewModel: ObservableObject {
         normalizedPendingMatchKey(for: url) ?? url.absoluteString
     }
 
-    private func logStateSnapshot(_ label: String, url: URL?) {
-    }
 
     private func logTrace(
         _ stage: ReaderModeLoadStage,
@@ -1617,13 +1606,6 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let canonicalNewValue = newValue?.canonicalReaderContentURLForHotfix()
         let canonicalOldValue = pendingReaderModeURL?.canonicalReaderContentURLForHotfix()
-        debugPrint(
-            "# READERRELOAD pending.update",
-            "reason=\(reason)",
-            "from=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "to=\(canonicalNewValue?.absoluteString ?? "nil")",
-            "change=\(urlsMatchWithoutHash(canonicalOldValue, canonicalNewValue) ? "unchanged" : "updated")"
-        )
         pendingReaderModeURL = canonicalNewValue
     }
 
@@ -2194,9 +2176,6 @@ public class ReaderModeViewModel: ObservableObject {
                 .truncate(36) ?? ""
         }()
         let titleForDisplay = content.titleForDisplay
-        logTitleTrace(
-            "stage=readerMode.showReadabilityContent.preflight contentURL=\(url.absoluteString) pageURL=\(readerContent.pageURL.absoluteString) contentType=\(String(describing: type(of: content))) existingTitle=\(content.title.debugTitleFragment) titleForDisplay=\(titleForDisplay.debugTitleFragment) shouldStoreReaderHTML=\(shouldStoreReaderHTML) resolvedTitleIfNeeded=\(resolvedTitleIfNeeded.debugTitleFragment) rssContainsFullContent=\(content.rssContainsFullContent)"
-        )
         let needsAsyncWrite =
             content.isReaderModeByDefault == false
             || content.isReaderModeAvailable == true
@@ -2226,9 +2205,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 content.refreshChangeMetadata(explicitlyModified: true)
             }
-            logTitleTrace(
-                "stage=readerMode.showReadabilityContent.persisted contentURL=\(url.absoluteString) storedHTML=\(resolvedStoredHTML != nil) resolvedTitleIfNeeded=\(resolvedTitleIfNeeded.debugTitleFragment) rssContainsFullContentSet=\(!url.isEBookURL && !url.isFileURL && !url.isNativeReaderView)"
-            )
         }
         
         if !isReaderMode {
@@ -2293,9 +2269,6 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            logTitleTrace(
-                "stage=readerMode.showReadabilityContent.derived contentURL=\(url.absoluteString) titleForDisplay=\(titleForDisplay.debugTitleFragment) derivedTitle=\(derivedTitle.debugTitleFragment) snippetRawTitle=\(snippetRawTitle.debugTitleFragment) prefersDirectSnippetParse=\(prefersDirectSnippetReadabilityParse)"
-            )
             await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
@@ -2701,10 +2674,7 @@ public class ReaderModeViewModel: ObservableObject {
 
         await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
-        logStateSnapshot("navCommitted", url: committedURL)
         if !scriptCaller.hasAsyncCaller {
-#if DEBUG
-#endif
         } else {
             do {
                 try await scriptCaller.evaluateJavaScript(
@@ -2713,11 +2683,7 @@ public class ReaderModeViewModel: ObservableObject {
                     in: nil,
                     duplicateInMultiTargetFrames: true
                 )
-#if DEBUG
-#endif
             } catch {
-#if DEBUG
-#endif
             }
         }
 

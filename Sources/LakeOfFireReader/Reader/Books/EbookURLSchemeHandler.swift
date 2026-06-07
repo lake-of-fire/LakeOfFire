@@ -55,8 +55,6 @@ fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any])
     return false
 }
 
-fileprivate func logEbookLoad(_ event: String, _ payload: @autoclosure () -> [String: Any] = [:]) {
-}
 
 fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> String {
     guard value.count > limit else { return value }
@@ -374,36 +372,16 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let shouldLogSchemeStart = url.path != "/entry"
             || entrySubpath.map { shouldLogEbookEntry(subpath: $0) } == true
         if shouldLogSchemeStart {
-            logEbookLoad("scheme.start", [
-                "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                "path": url.path,
-                "method": urlSchemeTask.request.httpMethod ?? "nil",
-                "mainDocumentURL": ebookProcessTextSample(urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil", limit: 180),
-                "instrumentation": "scheme-start-v2",
-                "taskHash": urlSchemeTask.hash
-            ])
         }
         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
             let mainDocumentURL = urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil"
             logEbookAsset("# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)")
         }
-        logEbookLoad("scheme.afterStart", [
-            "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-            "path": url.path,
-            "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-            "taskHash": urlSchemeTask.hash
-        ])
         let sharedReaderFontAsset = self.sharedReaderFontAsset
         if let fontResponse = sharedReaderFontResponse(
             for: url,
             asset: sharedReaderFontAsset
         ) {
-            logEbookLoad("scheme.fontResponse", [
-                "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                "path": url.path,
-                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                "taskHash": urlSchemeTask.hash
-            ])
             urlSchemeTask.didReceive(fontResponse.response)
             urlSchemeTask.didReceive(fontResponse.data)
             urlSchemeTask.didFinish()
@@ -412,12 +390,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
-            logEbookLoad("scheme.error", [
-                "path": url.path,
-                "reason": "missingReaderFileManager",
-                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                "taskHash": urlSchemeTask.hash
-            ])
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
             return
         }
@@ -429,28 +401,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
-        logEbookLoad("scheme.task.schedule", [
-            "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-            "path": url.path,
-            "hasReaderFileManager": readerFileManager != nil,
-            "hasCacheHits": ebookTextProcessorCacheHits != nil,
-            "hasReadability": processReadabilityContent != nil,
-            "hasHTMLBytes": processHTMLBytes != nil,
-            "hasHTML": processHTML != nil,
-            "hasSharedFontCSS": sharedFontCSSBase64?.isEmpty == false,
-            "hasSharedFontCSSProvider": sharedFontCSSBase64Provider != nil,
-            "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-            "taskHash": urlSchemeTask.hash
-        ])
         
         Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
-            logEbookLoad("scheme.task.entry", [
-                "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                "path": url.path,
-                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                "taskHash": urlSchemeTask.hash,
-                "selfAlive": self != nil
-            ])
             guard let self else { return }
             if url.path == "/process-text" {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
@@ -463,14 +415,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: isCacheWarmer,
                             text: text
                         )
-                        logEbookLoad("processText.start", [
-                            "contentURL": ebookProcessTextSample(contentURL.absoluteString, limit: 140),
-                            "location": ebookProcessTextSample(replacedTextLocation, limit: 140),
-                            "isCacheWarmer": isCacheWarmer,
-                            "textLength": text.utf8.count,
-                            "textFingerprint": processRequestKey.textFingerprint,
-                            "taskHash": urlSchemeTask.hash
-                        ])
                         if ebookReplaceTextVerboseLoggingEnabled {
                         }
                         let respText: String
@@ -494,16 +438,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 )
                             }
                         } catch {
-                            logEbookLoad("processText.error", [
-                                "contentURL": ebookProcessTextSample(contentURL.absoluteString, limit: 140),
-                                "location": ebookProcessTextSample(replacedTextLocation, limit: 140),
-                                "isCacheWarmer": isCacheWarmer,
-                                "textLength": text.utf8.count,
-                                "textFingerprint": processRequestKey.textFingerprint,
-                                "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1000),
-                                "error": String(describing: error),
-                                "taskHash": urlSchemeTask.hash
-                            ])
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     urlSchemeTask.didFailWithError(error)
@@ -516,18 +450,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         if let respData = respText.data(using: .utf8) {
                             let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
                             let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
-                            logEbookLoad("processText.response", [
-                                "contentURL": ebookProcessTextSample(contentURL.absoluteString, limit: 140),
-                                "location": ebookProcessTextSample(replacedTextLocation, limit: 140),
-                                "isCacheWarmer": isCacheWarmer,
-                                "textLength": text.utf8.count,
-                                "textFingerprint": processRequestKey.textFingerprint,
-                                "didCoalesce": didCoalesce,
-                                "responseLength": respData.count,
-                                "responseDataEncodeMs": responseDataEncodeElapsedMs,
-                                "elapsedMs": responseReadyElapsedMs,
-                                "taskHash": urlSchemeTask.hash
-                            ])
                             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
                             }
                             let httpResponseBuildStartedAt = Date()
@@ -585,13 +507,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } else if url.path == "/entries" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
-                    logEbookLoad("entries.error", [
-                        "reason": "invalidMainDocumentURL",
-                        "requestURL": ebookProcessTextSample(url.absoluteString, limit: 180),
-                        "mainDocumentURL": ebookProcessTextSample(urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil", limit: 180),
-                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                     }()
@@ -599,23 +514,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 do {
-                    logEbookLoad("entries.start", [
-                        "packageURL": ebookProcessTextSample(mainDocumentURL.absoluteString, limit: 180),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
                     let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
                     let data = try JSONEncoder().encode(responseBody)
-                    logEbookLoad("entries.response", [
-                        "packageURL": ebookProcessTextSample(mainDocumentURL.absoluteString, limit: 180),
-                        "entryCount": cachedSource.entries.count,
-                        "responseLength": data.count,
-                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: "application/json",
@@ -631,12 +535,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }
                     }()
                 } catch {
-                    logEbookLoad("entries.error", [
-                        "packageURL": ebookProcessTextSample(mainDocumentURL.absoluteString, limit: 180),
-                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                        "error": String(describing: error),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(error)
                         self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
@@ -648,13 +546,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         .queryItems?
                         .first(where: { $0.name == "subpath" })?
                         .value else {
-                    logEbookLoad("entry.error", [
-                        "reason": "invalidRequest",
-                        "requestURL": ebookProcessTextSample(url.absoluteString, limit: 180),
-                        "mainDocumentURL": ebookProcessTextSample(urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil", limit: 180),
-                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                     }()
@@ -664,11 +555,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 do {
                     let shouldLogEntryStart = shouldLogEbookEntry(subpath: subpath)
                     if shouldLogEntryStart {
-                        logEbookLoad("entry.start", [
-                            "packageURL": ebookProcessTextSample(mainDocumentURL.absoluteString, limit: 180),
-                            "subpath": ebookProcessTextSample(subpath, limit: 180),
-                            "taskHash": urlSchemeTask.hash
-                        ])
                     }
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
@@ -678,15 +564,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let metadata = try cachedSource.source.mimeType(subpath: subpath)
                     let elapsedMs = Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
                     if shouldLogEbookEntry(subpath: subpath, mimeType: metadata.mimeType, elapsedMs: elapsedMs) {
-                        logEbookLoad("entry.response", [
-                            "packageURL": ebookProcessTextSample(mainDocumentURL.absoluteString, limit: 180),
-                            "subpath": ebookProcessTextSample(subpath, limit: 180),
-                            "dataLength": data.count,
-                            "mimeType": metadata.mimeType,
-                            "textEncodingName": metadata.textEncodingName ?? "nil",
-                            "elapsedMs": elapsedMs,
-                            "taskHash": urlSchemeTask.hash
-                        ])
                     }
                     let response = HTTPURLResponse(
                         url: url,
@@ -703,13 +580,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }
                     }()
                 } catch {
-                    logEbookLoad("entry.error", [
-                        "packageURL": ebookProcessTextSample(mainDocumentURL.absoluteString, limit: 180),
-                        "subpath": ebookProcessTextSample(subpath, limit: 180),
-                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                        "error": String(describing: error),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     if let sourceError = error as? ReaderPackageEntrySourceError,
                        case .entryNotFound = sourceError {
                         let response = HTTPURLResponse(
@@ -754,14 +624,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
-                        logEbookLoad("viewer.start", [
-                            "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                            "path": viewerHtmlPath,
-                            "hasSharedFontCSS": sharedFontCSSBase64?.isEmpty == false,
-                            "hasSharedFontCSSProvider": sharedFontCSSBase64Provider != nil,
-                            "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                            "taskHash": urlSchemeTask.hash
-                        ])
                         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                             logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
                         }
@@ -772,13 +634,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 sharedFontCSSBase64: sharedFontCSSBase64,
                                 sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
                             )
-                            logEbookLoad("viewer.response", [
-                                "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                                "dataLength": data.count,
-                                "mimeType": response.mimeType ?? "nil",
-                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                                "taskHash": urlSchemeTask.hash
-                            ])
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     urlSchemeTask.didReceive(response)
@@ -788,25 +643,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 }
                             }()
                         } catch {
-                            logEbookLoad("viewer.error", [
-                                "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                                "path": viewerHtmlPath,
-                                "error": String(describing: error),
-                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                                "taskHash": urlSchemeTask.hash
-                            ])
                             await { @MainActor in
                                 urlSchemeTask.didFailWithError(error)
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                             }()
                         }
                 } else {
-                    logEbookLoad("viewer.error", [
-                        "url": ebookProcessTextSample(url.absoluteString, limit: 180),
-                        "reason": "missingBundledViewerHTML",
-                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
-                        "taskHash": urlSchemeTask.hash
-                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                     }()
@@ -851,36 +693,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
         guard let resolvedSourceURLString = candidateStrings.first,
               let mainDocumentURL = URL(string: resolvedSourceURLString) else {
-            print(
-                "# EBOOKFIX1 missing source URL for \(route)",
-                "requestURL:",
-                request.url?.absoluteString ?? "nil",
-                "requestedSourceURL:",
-                requestedSourceURL ?? "nil",
-                "querySourceURL:",
-                requestSourceURL ?? "nil"
-            )
             return nil
         }
         guard mainDocumentURL.scheme == "ebook",
               mainDocumentURL.host == "ebook",
               mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
-            print(
-                "# EBOOKFIX1 unexpected source URL for \(route)",
-                "mainDocumentURL:",
-                mainDocumentURL.absoluteString
-            )
             return nil
         }
         if !hasLoggedValidatedMainDocumentURL {
             hasLoggedValidatedMainDocumentURL = true
-            print(
-                "# EBOOKFIX1 validated ebook source",
-                "route:",
-                route,
-                "mainDocumentURL:",
-                mainDocumentURL.absoluteString
-            )
         }
         return mainDocumentURL
     }

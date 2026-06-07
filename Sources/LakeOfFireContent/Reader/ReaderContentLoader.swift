@@ -11,8 +11,6 @@ import UIKit
 import RealmSwiftGaps
 import UniformTypeIdentifiers
 
-private func logReaderLoad(_ message: String) {
-}
 
 private func logSnippetEvent(_ stage: String, _ parts: String...) {
 #if DEBUG
@@ -165,9 +163,6 @@ public struct ReaderContentLoader {
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {
             if readerContentLoaderVerboseLoggingEnabled {
-                logReaderLoad(
-                    "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) taskKey=\(taskKey)"
-                )
             }
             return try await resolveContentReferences(existingTask.value)
         }
@@ -175,9 +170,6 @@ public struct ReaderContentLoader {
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
             let startedAt = Date()
             if readerContentLoaderVerboseLoggingEnabled {
-                logReaderLoad(
-                    "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
-                )
             }
             try Task.checkCancellation()
 
@@ -187,26 +179,17 @@ public struct ReaderContentLoader {
                 contentFile = try await ContentFile.get(forURL: url)
                 let elapsed = Date().timeIntervalSince(contentFileStartedAt)
                 if shouldLogLoadAllStep(found: contentFile != nil, elapsed: elapsed) {
-                    logReaderLoad(
-                        "stage=contentLoader.loadAll.contentFile elapsed=\(String(format: "%.3fs", elapsed)) found=\(contentFile != nil) url=\(url.absoluteString)"
-                    )
                 }
             }
             let historyStartedAt = Date()
             let history = try await HistoryRecord.get(forURL: url)
             let historyElapsed = Date().timeIntervalSince(historyStartedAt)
             if shouldLogLoadAllStep(found: history != nil, elapsed: historyElapsed) {
-                logReaderLoad(
-                    "stage=contentLoader.loadAll.history elapsed=\(String(format: "%.3fs", historyElapsed)) found=\(history != nil) url=\(url.absoluteString)"
-                )
             }
             let bookmarkStartedAt = Date()
             let bookmark = try await Bookmark.get(forURL: url)
             let bookmarkElapsed = Date().timeIntervalSince(bookmarkStartedAt)
             if shouldLogLoadAllStep(found: bookmark != nil, elapsed: bookmarkElapsed) {
-                logReaderLoad(
-                    "stage=contentLoader.loadAll.bookmark elapsed=\(String(format: "%.3fs", bookmarkElapsed)) found=\(bookmark != nil) url=\(url.absoluteString)"
-                )
             }
 
             var feed: FeedEntry?
@@ -224,18 +207,12 @@ public struct ReaderContentLoader {
                 }
                 let feedElapsed = Date().timeIntervalSince(feedStartedAt)
                 if shouldLogLoadAllStep(found: feed != nil, elapsed: feedElapsed) {
-                    logReaderLoad(
-                        "stage=contentLoader.loadAll.feed elapsed=\(String(format: "%.3fs", feedElapsed)) found=\(feed != nil) url=\(url.absoluteString)"
-                    )
                 }
             }
 
             let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
             let totalElapsed = Date().timeIntervalSince(startedAt)
             if shouldLogLoadAllSummary(candidateCount: candidates.count, elapsed: totalElapsed) {
-                logReaderLoad(
-                    "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count) elapsed=\(String(format: "%.3fs", totalElapsed))"
-                )
             }
             return candidates.compactMap(ContentReference.init(content:))
         }
@@ -286,46 +263,28 @@ public struct ReaderContentLoader {
         let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
         let taskKey = "\(resolvedURL.absoluteString)|history:\(countsAsHistoryVisit)"
         if let existingTask = inFlightGetContentTasks[taskKey] {
-            logReaderLoad(
-                "stage=contentLoader.getContent.coalesced pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(taskKey) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
-            )
             return try await existingTask.value
         }
         if countsAsHistoryVisit {
             let nonHistoryTaskKey = "\(resolvedURL.absoluteString)|history:false"
             if let existingTask = inFlightGetContentTasks[nonHistoryTaskKey] {
-                logReaderLoad(
-                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(nonHistoryTaskKey) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
-                )
                 let existingContent = try await existingTask.value
                 if existingContent == nil || existingContent is HistoryRecord {
-                    logReaderLoad(
-                        "stage=contentLoader.getContent.reuseNonHistoryTask.accepted pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) contentURL=\(existingContent?.url.absoluteString ?? "nil") contentType=\(existingContent.map { String(describing: type(of: $0)) } ?? "nil") source=\(source)"
-                    )
                     return existingContent
                 }
                 guard let existingContent else {
                     return nil
                 }
-                logReaderLoad(
-                    "stage=contentLoader.getContent.reuseNonHistoryTask.rejected pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) contentURL=\(existingContent.url.absoluteString) contentType=\(String(describing: type(of: existingContent))) source=\(source)"
-                )
             }
         } else {
             let historyTaskKey = "\(resolvedURL.absoluteString)|history:true"
             if let existingTask = inFlightGetContentTasks[historyTaskKey] {
-                logReaderLoad(
-                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(historyTaskKey) source=\(source)"
-                )
                 return try await existingTask.value
             }
         }
 
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
             let startedAt = Date()
-            logReaderLoad(
-                "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) isLoaderURL=\(pageURL.isReaderURLLoaderURL) source=\(source)"
-            )
             if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
                let content = try await ReaderContentLoader.load(
                 url: contentURL,
@@ -333,9 +292,6 @@ public struct ReaderContentLoader {
                 source: "\(source).loaderRedirect"
                ) {
                 try Task.checkCancellation()
-                logReaderLoad(
-                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
-                )
                 return content
             } else if let content = try await ReaderContentLoader.load(
                 url: pageURL,
@@ -344,15 +300,9 @@ public struct ReaderContentLoader {
                 source: "\(source).directLoad"
             ) {
                 try Task.checkCancellation()
-                logReaderLoad(
-                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
-                )
                 return content
             }
             try Task.checkCancellation()
-            logReaderLoad(
-                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
-            )
             return nil
         }
 
@@ -388,23 +338,18 @@ public struct ReaderContentLoader {
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
         let startedAt = Date()
-        logReaderLoad(
-            "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
-        )
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
-                logReaderLoad("stage=contentLoader.load.skip reason=internalLoader url=\(url.absoluteString)")
                 return nil
             } else if url.absoluteString == "about:blank" { //}&& !persist {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 historyRecord.isDemoted = true
                 historyRecord.updateCompoundKey()
-                logReaderLoad("stage=contentLoader.load.aboutBlank url=\(url.absoluteString)")
                 return ReaderContentLoader.ContentReference(content: historyRecord)
             }
             
@@ -414,9 +359,6 @@ public struct ReaderContentLoader {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
-                logReaderLoad(
-                    "stage=contentLoader.load.addHistoryVisit url=\(url.absoluteString) contentType=\(String(describing: type(of: nonHistoryMatch))) key=\(nonHistoryMatch.compoundKey)"
-                )
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
             } else if match == nil, !url.isEBookURL {
                 let historyRecord = HistoryRecord()
@@ -431,9 +373,6 @@ public struct ReaderContentLoader {
                     }
                 }
                 match = historyRecord
-                logReaderLoad(
-                    "stage=contentLoader.load.createdHistory url=\(url.absoluteString) persist=\(persist)"
-                )
             }
             
             try Task.checkCancellation()
@@ -461,11 +400,7 @@ public struct ReaderContentLoader {
         try Task.checkCancellation()
         let content = try await contentRef?.resolveOnMainActor()
         if let content {
-            logReaderLoad(
-                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
-            )
         } else {
-            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)")
         }
         return content
     }
@@ -586,9 +521,6 @@ public struct ReaderContentLoader {
         let startedAt = Date()
         let contentURL = content.url
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentURL)
-        logReaderLoad(
-            "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
-        )
         debugPrint(
             "# READERMODE",
             "stage=contentLoader.loadContent.begin",
@@ -605,20 +537,11 @@ public struct ReaderContentLoader {
             for: content,
             readerFileManager: readerFileManager
         )
-        logReaderLoad(
-            "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlProbeStartedAt)))"
-        )
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
-                logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=snippetLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-                )
                 return loaderURL
             }
-            logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-            )
             return content.url
         }
 
@@ -626,9 +549,6 @@ public struct ReaderContentLoader {
             if content.isReaderModeByDefault,
                contentHasLocallyRetrievableHTML,
                let loaderURL = readerLoaderURL(for: contentURL) {
-                logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-                )
                 debugPrint(
                     "# READERMODE",
                     "stage=contentLoader.loadContent.finish",
@@ -648,9 +568,6 @@ public struct ReaderContentLoader {
                     readerFileManager: readerFileManager
                )) == true,
                let matchingURL = readerLoaderURL(for: matchingContent.url) {
-                logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-                )
                 debugPrint(
                     "# READERMODE",
                     "stage=contentLoader.loadContent.finish",
@@ -662,9 +579,6 @@ public struct ReaderContentLoader {
                 )
                 return matchingURL
             }
-            logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-            )
             debugPrint(
                 "# READERMODE",
                 "stage=contentLoader.loadContent.finish",
@@ -689,15 +603,9 @@ public struct ReaderContentLoader {
         if contentURL.isReaderFileURL,
            contentHasLocallyRetrievableHTML,
            let loaderURL = readerLoaderURL(for: contentURL) {
-            logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-            )
             return loaderURL
         }
         
-        logReaderLoad(
-            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-        )
         return content.url
     }
 
@@ -755,7 +663,6 @@ public struct ReaderContentLoader {
 
     public static func readerLoaderURL(for contentURL: URL) -> URL? {
         guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
-            logReaderLoad("stage=contentLoader.readerLoaderURL.failed contentURL=\(contentURL.absoluteString)")
             return nil
         }
         return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")

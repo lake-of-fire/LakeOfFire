@@ -13,11 +13,7 @@ import LakeKit
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
-private func logDetent(_ message: String) {
-}
 
-private func logFeedFlash(_ message: String) {
-}
 
 private func logNiponica(_ message: String) {
 #if DEBUG
@@ -70,14 +66,8 @@ public class FeedViewModel: ObservableObject {
                 realm.objects(FeedEntry.self)
                     .where { $0.feedID == feedID && !$0.isDeleted }
             )
-            logFeedFlash(
-                "model.reloadEntries instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) entries=\(entries.count) entryIDs=\(entries.map(\.compoundKey).joined(separator: ","))"
-            )
             self.entries = entries
         } catch {
-            logFeedFlash(
-                "model.reloadEntries.error instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) error=\(error.localizedDescription)"
-            )
         }
     }
 
@@ -89,13 +79,7 @@ public class FeedViewModel: ObservableObject {
                 realm.objects(FeedEntryCollection.self)
                     .where { $0.feedID == feedID && !$0.isDeleted }
             ))
-            logFeedFlash(
-                "model.reloadCollections instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) collections=\(collections?.count ?? 0)"
-            )
         } catch {
-            logFeedFlash(
-                "model.reloadCollections.error instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) reason=\(reason) error=\(error.localizedDescription)"
-            )
         }
     }
 
@@ -107,13 +91,7 @@ public class FeedViewModel: ObservableObject {
                 .where { !$0.isDeleted }
                 .filter { $0.canonicalFollowingFeedURLKey == self.canonicalFeedURLKey }
                 .contains(where: \.isFollowed)
-            logFeedFlash(
-                "model.reloadFollowedStatus instanceID=\(instanceID.uuidString) feedURLKey=\(canonicalFeedURLKey) reason=\(reason) isFollowed=\(isFeedGroupFollowed)"
-            )
         } catch {
-            logFeedFlash(
-                "model.reloadFollowedStatus.error instanceID=\(instanceID.uuidString) feedURLKey=\(canonicalFeedURLKey) reason=\(reason) error=\(error.localizedDescription)"
-            )
         }
     }
     
@@ -123,12 +101,6 @@ public class FeedViewModel: ObservableObject {
         isFeedGroupFollowed = feed.isFollowed
         canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         let feedID = feed.id
-        logDetent(
-            "feedViewModel.init instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) title=\(feed.title) initialEntries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
-        )
-        logFeedFlash(
-            "model.init instanceID=\(instanceID.uuidString) feedID=\(feedID.uuidString) title=\(feed.title) initialEntries=\(entries?.count ?? -1) entryIDs=\((entries ?? []).map(\.compoundKey).joined(separator: ",")) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
-        )
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
             realm.objects(FeedEntry.self)
@@ -142,12 +114,6 @@ public class FeedViewModel: ObservableObject {
                     Task { @MainActor [weak self] in
                         let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
                         let entries = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted })
-                        logDetent(
-                            "feedViewModel.entriesChanged instanceID=\(self?.instanceID.uuidString ?? "nil") feedID=\(feedID.uuidString) entries=\(entries.count)"
-                        )
-                        logFeedFlash(
-                            "model.entriesChanged instanceID=\(self?.instanceID.uuidString ?? "nil") feedID=\(feedID.uuidString) entries=\(entries.count) entryIDs=\(entries.map(\.compoundKey).joined(separator: ","))"
-                        )
                         self?.entries = entries
                     }
                 })
@@ -194,15 +160,7 @@ public class FeedViewModel: ObservableObject {
                 "stage=feedViewModel.fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(feed.lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(feed.lastFetchedETag ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
             )
         }
-        logDetent(
-            "feedViewModel.fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
-        )
-        logFeedFlash(
-            "fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
-        )
         if force {
-            logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
-            logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=force")
             do {
                 try await feed.fetch()
             } catch {
@@ -214,8 +172,6 @@ public class FeedViewModel: ObservableObject {
                 throw error
             }
             await reloadEntries(feedID: feed.id, reason: "forceFetchComplete")
-            logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce")
-            logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedForce entries=\(entries?.count ?? -1)")
             if isNiponicaFeed(feed) {
                 logNiponica(
                     "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=fetchedForce entries=\(entries?.count ?? -1)"
@@ -225,8 +181,6 @@ public class FeedViewModel: ObservableObject {
         }
 
         guard feed.shouldRefreshAutomaticallyOnFeedAppear else {
-            logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipFresh")
-            logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipFresh entries=\(entries?.count ?? -1)")
             if isNiponicaFeed(feed) {
                 logNiponica(
                     "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=skipFresh entries=\(entries?.count ?? -1)"
@@ -239,12 +193,6 @@ public class FeedViewModel: ObservableObject {
         if let lastAttempt = Self.recentAutomaticFetchAttempts[feed.id],
            now.timeIntervalSince(lastAttempt) < Self.automaticFetchAttemptSuppressionInterval {
             await reloadEntries(feedID: feed.id, reason: "skipRecentAttempt")
-            logDetent(
-                "feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt)))"
-            )
-            logFeedFlash(
-                "fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt))) entries=\(entries?.count ?? -1)"
-            )
             if isNiponicaFeed(feed) {
                 logNiponica(
                     "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt))) entries=\(entries?.count ?? -1)"
@@ -254,8 +202,6 @@ public class FeedViewModel: ObservableObject {
         }
 
         Self.recentAutomaticFetchAttempts[feed.id] = now
-        logDetent("feedViewModel.fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
-        logFeedFlash("fetchIfNeeded.fetch instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) reason=autoStale")
         do {
             try await feed.fetch()
         } catch {
@@ -267,8 +213,6 @@ public class FeedViewModel: ObservableObject {
             throw error
         }
         await reloadEntries(feedID: feed.id, reason: "autoFetchComplete")
-        logDetent("feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto")
-        logFeedFlash("fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) result=fetchedAuto entries=\(entries?.count ?? -1)")
         if isNiponicaFeed(feed) {
             logNiponica(
                 "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=fetchedAuto entries=\(entries?.count ?? -1)"
@@ -345,9 +289,6 @@ public struct FeedView: View {
 
     private func logFeedViewFlash(_ stage: String, entries: [FeedEntry]?, showInitialContent: Bool? = nil) {
         let showInitialContentDescription = showInitialContent.map(String.init(describing:)) ?? "nil"
-        logFeedFlash(
-            "view.\(stage) feedID=\(feed.id.uuidString) title=\(feed.title) isHorizontal=\(isHorizontal) showsToolbar=\(showsToolbar) entries=\(entries?.count ?? -1) entryIDs=\(entryIDsDescription(entries)) showInitialContent=\(showInitialContentDescription)"
-        )
     }
 
     @ViewBuilder
@@ -453,9 +394,6 @@ public struct FeedView: View {
                     "stage=feedView.asyncOperation.begin feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) force=\(forceRefreshRequested) entries=\(viewModel.entries?.count ?? -1) showInitialContent=\(showInitialContent)"
                 )
             }
-            logDetent(
-                "feedView.asyncOperation feedID=\(feed.id.uuidString) title=\(feed.title) force=\(forceRefreshRequested) entries=\(viewModel.entries?.count ?? -1)"
-            )
             logFeedViewFlash("asyncOperation force=\(forceRefreshRequested)", entries: viewModel.entries, showInitialContent: showInitialContent)
             do {
                 try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
@@ -487,26 +425,14 @@ public struct FeedView: View {
             }
         }
         .onAppear {
-            logDetent(
-                "feedView.appear feedID=\(feed.id.uuidString) title=\(feed.title) isHorizontal=\(isHorizontal) showsToolbar=\(showsToolbar) entries=\(viewModel.entries?.count ?? -1)"
-            )
             logFeedViewFlash("appear", entries: currentEntries, showInitialContent: showInitialContent)
         }
         .onDisappear {
-            logDetent(
-                "feedView.disappear feedID=\(feed.id.uuidString) title=\(feed.title) isHorizontal=\(isHorizontal) showsToolbar=\(showsToolbar) entries=\(viewModel.entries?.count ?? -1)"
-            )
             logFeedViewFlash("disappear", entries: viewModel.entries)
         }
         .onChange(of: viewModel.entries?.map(\.compoundKey) ?? []) { entryIDs in
-            logFeedFlash(
-                "view.entriesChanged feedID=\(feed.id.uuidString) title=\(feed.title) entries=\(viewModel.entries?.count ?? -1) entryIDs=\(entryIDs.joined(separator: ","))"
-            )
         }
         .task(id: feed.id) {
-            logDetent(
-                "feedView.markViewedTask feedID=\(feed.id.uuidString) title=\(feed.title)"
-            )
             try? await markFeedAsViewed()
         }
         .toolbar {

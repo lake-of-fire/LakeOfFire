@@ -162,31 +162,17 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
         currentContentURL = content.url
         let voiceAudioURLs = content.resolvedVoiceAudioURLs
-#if DEBUG
-        mediaDebugPrint(
-            "# AUDIO ReaderMediaPlayerViewModel.onNavigationCommitted url=\(newState.pageURL.absoluteString) voiceCount=\(voiceAudioURLs.count) host=\(newState.pageURL.host ?? "nil") isReaderMode=\(newState.pageURL.isNativeReaderView)"
-        )
-#endif
         if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
             if voiceAudioURLs != audioURLs {
-#if DEBUG
-                mediaDebugPrint(
-                    "# AUDIO ReaderMediaPlayerViewModel.audioURLsUpdated old=\(audioURLs.map { $0.absoluteString }) new=\(voiceAudioURLs.map { $0.absoluteString })"
-                )
-#endif
                 audioURLs = voiceAudioURLs
             }
             if !voiceAudioURLs.isEmpty && content.autoOpenMediaPlayer {
 #if DEBUG
                 if !isMediaPlayerPresented {
-                    mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.presentingNowPlaying reason=navigation voiceCount=\(voiceAudioURLs.count)")
                 }
 #endif
                 isMediaPlayerPresented = true
             } else if playbackSource == .recordedAudio, isMediaPlayerPresented {
-#if DEBUG
-                mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=noRecordedAudio")
-#endif
                 cancelAutoplayRequest(reason: "navigation.noRecordedAudio")
                 isMediaPlayerPresented = false
             }
@@ -195,15 +181,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                 try Task.checkCancellation()
                 guard let self = self else { return }
                 if self.isMediaPlayerPresented {
-#if DEBUG
-                    mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.dismissNowPlaying reason=readerMode")
-#endif
                     self.isMediaPlayerPresented = false
                 }
                 if voiceAudioURLs != audioURLs {
-#if DEBUG
-                    mediaDebugPrint("# AUDIO ReaderMediaPlayerViewModel.audioURLsUpdated reason=readerMode old=\(audioURLs.map { $0.absoluteString }) new=\(voiceAudioURLs.map { $0.absoluteString })")
-#endif
                     audioURLs = voiceAudioURLs
                 }
                 self.stopAITTSPlayback(clearQueue: true)
@@ -293,7 +273,6 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
                     return true
                 }
             } catch {
-                mediaDebugPrint("# AUDIO autoOpenMediaPlayer.persist.error", error.localizedDescription)
             }
         }
     }
