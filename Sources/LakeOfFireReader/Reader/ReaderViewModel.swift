@@ -109,6 +109,21 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
+    public func clearEbookNativeOverlayState(source: String) {
+        setEbookNativeOverlayState(
+            percentLabel: "",
+            navigationHidden: false,
+            titleLocationLabel: "",
+            titleLocationVisible: false,
+            bookTitleLabel: "",
+            pagesLeftLabel: "",
+            source: source,
+            relocateBackEnabled: false,
+            relocateForwardEnabled: false
+        )
+    }
+
+    @MainActor
     public func setEbookNativeMarkReadState(
         available: Bool,
         isRead: Bool,

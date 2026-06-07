@@ -1163,31 +1163,14 @@ const postReaderBridgeDebug = (message, details = {}) => {
 
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
     const requestedHide = !!shouldHide;
-    postReaderBridgeDebug('# HIDENAV js.ebookNavigationVisibility.post', {
-        requestedHide,
-        source,
-        navHUDHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll ?? null,
-        bodyDatasetHidden: document?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
-        bodyClassHidden: document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-        ...details,
-    });
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: requestedHide,
             source,
             ...details,
         });
-        postReaderBridgeDebug('# HIDENAV js.ebookNavigationVisibility.sent', {
-            requestedHide,
-            source,
-        });
         return true;
-    } catch (error) {
-        postReaderBridgeDebug('# HIDENAV js.ebookNavigationVisibility.error', {
-            requestedHide,
-            source,
-            error: error?.message || String(error),
-        });
+    } catch (_error) {
         return false;
     }
 };
@@ -2262,24 +2245,6 @@ const postLandscapeInsetRestoreProbe = (stage, restoreState = null, extra = {}) 
     } catch {}
 };
 
-const postReaderUILayoutSnapshot = (event, details = {}) => {
-    let layout = null;
-    try {
-        layout = captureLandscapeInsetLayoutProbe();
-    } catch (error) {
-        layout = { error: error?.message ?? String(error) };
-    }
-    const payload = {
-        event,
-        ...details,
-        layout,
-    };
-    const key = JSON.stringify(payload);
-    if (globalThis.__manabiLastReaderUILayoutLogKey === key) return;
-    globalThis.__manabiLastReaderUILayoutLogKey = key;
-    postReaderBridgeDebug('# READERUI js.layout', payload);
-};
-
 const scheduleReaderUIChromeInsetSettle = (reason, state) => {
     const signature = JSON.stringify({
         reason,
@@ -2294,24 +2259,11 @@ const scheduleReaderUIChromeInsetSettle = (reason, state) => {
     globalThis.__manabiLastReaderUIChromeSettleSignature = signature;
     const run = async (phase) => {
         const renderer = globalThis.reader?.view?.renderer ?? null;
-        let result = null;
-        let errorMessage = null;
         try {
             if (renderer && typeof renderer.renderIfContainerSizeChanged === 'function') {
-                result = await renderer.renderIfContainerSizeChanged(`reader-ui-chrome-insets.${reason}.${phase}`);
+                await renderer.renderIfContainerSizeChanged(`reader-ui-chrome-insets.${reason}.${phase}`);
             }
-        } catch (error) {
-            errorMessage = error?.message ?? String(error);
-        }
-        postReaderUILayoutSnapshot(`chromeInsets.${phase}`, {
-            reason,
-            appliedObscuredTopInset: state?.obscuredTopInset ?? null,
-            appliedToolbarBottomOffset: state?.toolbarBottomOffset ?? null,
-            appliedObscuredBottomInset: state?.obscuredBottomInset ?? null,
-            revision: state?.revision ?? null,
-            renderResult: result,
-            renderError: errorMessage,
-        });
+        } catch (_error) {}
     };
     requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -5288,8 +5240,6 @@ class Reader {
         this.lastToolbarLayoutLogKey = logKey;
         this.lastToolbarLayoutLogAt = now;
         postPageTrackingBookLayoutLog('ebook.pageTracking.layout', payload);
-        postReaderBridgeDebug('# TOOLBAR js.pageTracking.layout', payload);
-        postReaderBridgeDebug('# READERUI js.pageTracking.layout', payload);
     }
     #pageReadMarkerDiagnosticState(details = {}) {
         const readerStage = document.getElementById('reader-stage');
@@ -7539,9 +7489,6 @@ class Reader {
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
             const now = Date.now();
             if (shouldSuppressMainDocumentSyntheticMouseBlankTap(event, now)) {
-                postNavigationTouchDebug(event, 'main-document.skip.syntheticMouseAfterTouch', {
-                    ageMs: now - lastPostedMainDocumentBlankTouchTap.postedAtMs,
-                });
                 return;
             }
             if (window.__manabiLookupPopoverActive === true) {
@@ -7551,13 +7498,6 @@ class Reader {
                 globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                 || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                 || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-            postReaderBridgeDebug('# HIDENAV js.noElement.post', {
-                source,
-                eventType: event.type,
-                touchstartAtMs,
-                ebookNavigationHidden,
-                lookupPopoverActive: window.__manabiLookupPopoverActive === true,
-            });
             if (event.type === 'touchend') {
                 const point = navigationGesturePoint(event);
                 lastPostedMainDocumentBlankTouchTap = point && point.x !== null && point.y !== null
@@ -7587,65 +7527,14 @@ class Reader {
             const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
             return (dx * dx + dy * dy) > (mainDocumentBlankNavigationMoveThreshold * mainDocumentBlankNavigationMoveThreshold);
         };
-        const postNavigationTouchDebug = (event, stage, extra = {}) => {
-            const target = event.target;
-            const point = event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
-            const targetElement = target instanceof Element ? target : target?.parentElement;
-            const rectFor = element => {
-                if (!(element instanceof Element)) return null;
-                const rect = element.getBoundingClientRect();
-                return {
-                    x: roundLayoutNumber(rect.x),
-                    y: roundLayoutNumber(rect.y),
-                    width: roundLayoutNumber(rect.width),
-                    height: roundLayoutNumber(rect.height),
-                    bottom: roundLayoutNumber(rect.bottom),
-                };
-            };
-            window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: '# HIDENAV js.blankTouch',
-                stage,
-                eventType: event.type,
-                x: roundLayoutNumber(point?.clientX),
-                y: roundLayoutNumber(point?.clientY),
-                targetTag: target?.tagName || target?.nodeName || null,
-                targetID: target?.id || null,
-                targetClass: typeof target?.className === 'string' ? target.className : null,
-                closestNavBar: !!targetElement?.closest?.('#nav-bar'),
-                closestPageTracking: !!targetElement?.closest?.('#page-tracking-container'),
-                closestPageTrackingButtons: !!targetElement?.closest?.('#page-tracking-buttons'),
-                closestButton: targetElement?.closest?.('button')?.id || null,
-                navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
-                    || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
-                    || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true,
-                navBarRect: rectFor(document.getElementById('nav-bar')),
-                pageTrackingRect: rectFor(document.getElementById('page-tracking-container')),
-                pageTrackingButtonsRect: rectFor(document.getElementById('page-tracking-buttons')),
-                progressWrapperRect: rectFor(document.getElementById('progress-wrapper')),
-                ...extra,
-            });
-        };
         const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
             const target = event.target;
-            const targetSummary = {
-                eventType: event.type,
-                tagName: target?.tagName || target?.nodeName || null,
-                id: target?.id || null,
-                className: target?.className || null,
-                ownerIsMainDocument: !target || target.ownerDocument === document,
-            };
             if (target && target.ownerDocument !== document) {
-                postNavigationTouchDebug(event, 'main-document.skip.foreignDocument', targetSummary);
                 return
             }
             const excludedTarget = target?.closest?.('#side-bar, #page-tracking-container, #nav-bar, #nav-hidden-overlay, .side-nav, input, textarea, select, [contenteditable="true"]');
             if (excludedTarget) {
-                postNavigationTouchDebug(event, 'main-document.skip.excludedTarget', {
-                    ...targetSummary,
-                    excludedID: excludedTarget?.id || null,
-                    excludedClass: typeof excludedTarget?.className === 'string' ? excludedTarget.className : null,
-                });
                 clearPendingMainDocumentBlankNavigationTouch();
                 return
             }
@@ -7659,13 +7548,8 @@ class Reader {
                         startAtMs: Date.now(),
                     }
                     : null;
-                postNavigationTouchDebug(event, 'main-document.pending', {
-                    ...targetSummary,
-                    hasPending: !!pendingMainDocumentBlankNavigationTouch,
-                });
                 return;
             }
-            postNavigationTouchDebug(event, 'main-document.post.mouse', targetSummary);
             postNoElementNavigationTouchStart(event, 'main-document.blank')
         }
         const processMainDocumentBlankNavigationTouchMove = function(event) {
@@ -7674,9 +7558,6 @@ class Reader {
                 return;
             }
             if (movedPastBlankNavigationTapThreshold(event, pending)) {
-                postNavigationTouchDebug(event, 'main-document.skip.moved', {
-                    startAtMs: pending.startAtMs,
-                });
                 clearPendingMainDocumentBlankNavigationTouch();
             }
         }
@@ -7684,20 +7565,11 @@ class Reader {
             const pending = pendingMainDocumentBlankNavigationTouch;
             clearPendingMainDocumentBlankNavigationTouch();
             if (!pending || event.type === 'touchcancel') {
-                postNavigationTouchDebug(event, 'main-document.skip.noPendingOrCancel', {
-                    hadPending: !!pending,
-                });
                 return;
             }
             if (movedPastBlankNavigationTapThreshold(event, pending)) {
-                postNavigationTouchDebug(event, 'main-document.skip.endMoved', {
-                    startAtMs: pending.startAtMs,
-                });
                 return;
             }
-            postNavigationTouchDebug(event, 'main-document.post.touchend', {
-                startAtMs: pending.startAtMs,
-            });
             postNoElementNavigationTouchStart(event, 'main-document.blank', pending.startAtMs)
         }
         let pendingChromeBlankNavigationTouch = null;
@@ -7749,11 +7621,6 @@ class Reader {
                 return;
             }
             const interactiveTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button');
-            postNavigationTouchDebug(event, 'nav-bar.touchstart', {
-                interactive: !!interactiveTarget,
-                interactiveID: interactiveTarget?.id || null,
-                interactiveTag: interactiveTarget?.tagName || null,
-            });
             if (interactiveTarget) {
                 clearPendingChromeBlankNavigationTouch();
                 return;
@@ -7770,12 +7637,6 @@ class Reader {
                 return;
             }
             const pageReadButton = target?.closest?.('.page-read-button');
-            postNavigationTouchDebug(event, 'page-tracking.touchstart', {
-                interactive: !!pageReadButton,
-                interactiveID: pageReadButton?.id || null,
-                trackingID: pageReadButton?.dataset?.pageTrackingId || null,
-                completionAction: pageReadButton?.dataset?.completionAction || null,
-            });
             if (pageReadButton) {
                 clearPendingChromeBlankNavigationTouch();
                 return;
@@ -8385,23 +8246,9 @@ class Reader {
                 const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
                 const now = Date.now();
                 if (shouldSuppressSyntheticMouseBlankTap(event, now)) {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.syntheticMouseAfterTouch', {
-                        source,
-                        eventType: event.type,
-                        ageMs: now - lastPostedBlankTouchTap.postedAtMs,
-                    });
                     return;
                 }
                 if (excludedTarget) {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.excludedTarget', {
-                        source,
-                        eventType: event.type,
-                        targetTag: target?.tagName || target?.nodeName || null,
-                        targetID: target?.id || null,
-                        excludedTag: excludedTarget?.tagName || excludedTarget?.nodeName || null,
-                        excludedID: excludedTarget?.id || null,
-                        excludedClass: typeof excludedTarget?.className === 'string' ? excludedTarget.className : null,
-                    });
                     return;
                 }
                 const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
@@ -8422,15 +8269,6 @@ class Reader {
                             }
                             : null;
                     }
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.post', {
-                        source,
-                        eventType: event.type,
-                        touchstartAtMs,
-                        ebookNavigationHidden,
-                        targetTag: target?.tagName || target?.nodeName || null,
-                        targetID: target?.id || null,
-                        targetClass: typeof target?.className === 'string' ? target.className : null,
-                    });
                     window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
@@ -8440,24 +8278,12 @@ class Reader {
                         source,
                     });
                 } else {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.debounce', {
-                        source,
-                        eventType: event.type,
-                        ageMs: now - lastPostedAt,
-                    });
                 }
             };
             const handleBlankPointerTouchStart = (event) => {
                 const target = event.target;
                 const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
                 if (excludedTarget) {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.touchstart.excludedTarget', {
-                        eventType: event.type,
-                        targetTag: target?.tagName || target?.nodeName || null,
-                        targetID: target?.id || null,
-                        excludedTag: excludedTarget?.tagName || excludedTarget?.nodeName || null,
-                        excludedID: excludedTarget?.id || null,
-                    });
                     clearPendingBlankPointerTap();
                     return;
                 }
@@ -8469,23 +8295,11 @@ class Reader {
                         startAtMs: Date.now(),
                     }
                     : null;
-                postReaderBridgeDebug('# HIDENAV js.contentBlank.touchstart.pending', {
-                    eventType: event.type,
-                    hasPending: !!pendingBlankPointerTap,
-                    targetTag: target?.tagName || target?.nodeName || null,
-                    targetID: target?.id || null,
-                    x: roundLayoutNumber(point?.clientX),
-                    y: roundLayoutNumber(point?.clientY),
-                });
             };
             const handleBlankPointerTouchMove = (event) => {
                 const pending = pendingBlankPointerTap;
                 if (!pending) return;
                 if (blankPointerMovedPastTapThreshold(event, pending)) {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.moved', {
-                        eventType: event.type,
-                        startAtMs: pending.startAtMs,
-                    });
                     clearPendingBlankPointerTap();
                 }
             };
@@ -8493,17 +8307,9 @@ class Reader {
                 const pending = pendingBlankPointerTap;
                 clearPendingBlankPointerTap();
                 if (!pending || event.type === 'touchcancel') {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.noPendingOrCancel', {
-                        eventType: event.type,
-                        hadPending: !!pending,
-                    });
                     return;
                 }
                 if (blankPointerMovedPastTapThreshold(event, pending)) {
-                    postReaderBridgeDebug('# HIDENAV js.contentBlank.skip.endMoved', {
-                        eventType: event.type,
-                        startAtMs: pending.startAtMs,
-                    });
                     return;
                 }
                 postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);

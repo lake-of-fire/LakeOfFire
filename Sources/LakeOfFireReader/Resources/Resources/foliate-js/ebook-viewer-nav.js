@@ -401,17 +401,6 @@ export class NavigationHUD {
             context,
             stack: may15Stack(),
         });
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: '# HIDENAV js.navHUD.setHide.entered',
-                sequence,
-                source,
-                previous,
-                requested: next,
-                previousClass,
-                context,
-            });
-        } catch (_error) {}
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
                 source,
@@ -436,16 +425,6 @@ export class NavigationHUD {
                 context,
                 state: this._captureHideNavState(),
             });
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.({
-                    message: '# HIDENAV js.navHUD.setHide.return',
-                    sequence,
-                    source,
-                    verdict: 'preservedHiddenNavigation',
-                    previous,
-                    requested: next,
-                });
-            } catch (_error) {}
             return this.hideNavigationDueToScroll;
         }
         if (previous === next && previousClass === next) {
@@ -484,19 +463,6 @@ export class NavigationHUD {
                 navHiddenScrollClass: previousClass,
                 context,
             });
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.({
-                    message: '# HIDENAV js.navHUD.setHide.return',
-                    sequence,
-                    source,
-                    verdict: 'noop',
-                    previous,
-                    requested: next,
-                    previousClass,
-                    navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                    navHiddenScrollClass: previousClass,
-                });
-            } catch (_error) {}
             return this.hideNavigationDueToScroll;
         }
         this.hideNavigationDueToScroll = next;
@@ -534,19 +500,6 @@ export class NavigationHUD {
             progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
             context,
         });
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: '# HIDENAV js.navHUD.setHide.applied',
-                sequence,
-                source,
-                previous,
-                shouldHide: this.hideNavigationDueToScroll,
-                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-                progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
-                context,
-            });
-        } catch (_error) {}
         logBug?.('navhud-hide', {
             shouldHide: this.hideNavigationDueToScroll,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
@@ -1214,20 +1167,6 @@ export class NavigationHUD {
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
-                percentLabel,
-                hideNavigationDueToScroll,
-                titleLocationLabel,
-                titleLocationVisible,
-                bookTitleLabel,
-                pagesLeftLabel,
-                relocateBackEnabled,
-                relocateForwardEnabled,
-                source,
-            });
-        } catch (_error) {}
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: '# TOOLBAR js.nativeOverlayState.post',
                 percentLabel,
                 hideNavigationDueToScroll,
                 titleLocationLabel,
