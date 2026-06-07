@@ -70,11 +70,11 @@ const postBlankPageLog = (event, details = {}) => {
         try { console.log(line); } catch (_) {}
     }
 };
-const manabiPageSummaryIsVisiblyBlank = summary =>
+export const manabiPageSummaryIsVisiblyBlank = summary =>
     !!summary
     && (summary.textCharCount ?? 0) === 0
     && (summary.mediaCount ?? 0) === 0;
-const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summariesByPage = null } = {}) => {
+export const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summariesByPage = null } = {}) => {
     if (!Number.isFinite(page) || !Number.isFinite(pages) || !Number.isFinite(direction) || direction === 0) {
         return page;
     }
