@@ -5476,13 +5476,14 @@ class Reader {
     #clearVisiblePageReadChrome(reason = 'unspecified') {
         const transitionMode = this.#pageReadMarkerTransitionMode(reason);
         const visibleButtons = Array.from(document.querySelectorAll('#page-tracking-buttons .page-read-button[data-page-tracking-id="visible-screen"]'));
-        if (reason === 'page-turn-start') {
+        const isPageTurnStart = reason === 'page-turn-start' || reason === 'lookup-navigation-page-turn-start';
+        if (isPageTurnStart) {
             this.#invalidateVisiblePageSegmentSnapshot(reason);
             this.pageReadMarkerAwaitingPageState = true;
         }
         document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
         document.body?.setAttribute?.('data-page-read-marker-read', 'false');
-        if (reason === 'page-turn-start') {
+        if (isPageTurnStart) {
             return;
         }
         visibleButtons.forEach((button) => {
@@ -8111,13 +8112,6 @@ class Reader {
         await this.#handleKeydown({ key });
         return true;
     }
-    #lookupNavigationFunctionName(kind, direction) {
-        const normalizedKind = kind === 'sentence' || kind === 'section' ? kind : 'word';
-        const normalizedDirection = direction === 'previous' ? 'Previous' : 'Next';
-        if (normalizedKind === 'sentence') return `manabi_lookup${normalizedDirection}SentenceMatch`;
-        if (normalizedKind === 'section') return `manabi_lookup${normalizedDirection}SectionMatch`;
-        return `manabi_lookup${normalizedDirection}SegmentMatch`;
-    }
     #lookupContentWindows() {
         const contents = this.view?.renderer?.getContents?.() || [];
         return contents
@@ -8141,6 +8135,11 @@ class Reader {
             Promise.all(docs.map((doc) => Promise.resolve(doc.fonts?.ready).catch(() => null))),
             new Promise((resolve) => setTimeout(resolve, 500)),
         ]).catch(() => null);
+        for (const doc of docs) {
+            const visibleRange = this.#visibleRangeForDocument(doc);
+            this.visiblePageSegmentSnapshot = null;
+            this.#visiblePageSegmentResult(doc, visibleRange, 'lookup-navigation.page-turn-settled');
+        }
         await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     #lookupNavigationPositionSnapshot() {
@@ -8164,31 +8163,17 @@ class Reader {
             || before.pageTotal !== after.pageTotal
             || before.fraction !== after.fraction;
     }
-    async #invokeLookupNavigationInContent(request, extraOptions = {}) {
-        const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
-        const direction = request?.direction === 'previous' ? 'previous' : 'next';
-        const functionName = this.#lookupNavigationFunctionName(kind, direction);
-        const contentWindow = await this.#waitForLookupContentFunction(functionName);
-        if (!contentWindow) {
-            return {
-                opened: false,
-                failureReason: 'missingContentLookupFunction',
-                functionName,
-            };
-        }
-        return await contentWindow[functionName]({
-            simulateTouchstart: true,
-            currentElementID: typeof request?.currentElementID === 'string' ? request.currentElementID : null,
-            currentSegmentIdentifier: typeof request?.currentSegmentIdentifier === 'string' ? request.currentSegmentIdentifier : null,
-            allowEbookPageTurn: false,
-            ...extraOptions,
-        });
-    }
     async #openVisibleLookupTargetAfterPageTurn(request) {
         const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
         const direction = request?.direction === 'previous' ? 'previous' : 'next';
-        const contentWindow = await this.#waitForLookupContentFunction('manabi_openVisibleLookupTargetAfterPageTurn');
-        if (!contentWindow) {
+        const functionName = 'manabi_openVisibleLookupTargetAfterPageTurn';
+        await this.#waitForLookupContentFunction(functionName);
+        const contentWindows = this.#lookupContentWindows()
+            .filter((view) => typeof view?.[functionName] === 'function');
+        const orderedContentWindows = direction === 'previous'
+            ? contentWindows.slice().reverse()
+            : contentWindows;
+        if (orderedContentWindows.length === 0) {
             return {
                 opened: false,
                 failureReason: 'missingVisibleLookupFallback',
@@ -8196,11 +8181,51 @@ class Reader {
                 direction,
             };
         }
-        return await contentWindow.manabi_openVisibleLookupTargetAfterPageTurn({
+        const attempts = [];
+        for (const contentWindow of orderedContentWindows) {
+            let result = null;
+            try {
+                result = await contentWindow[functionName]({
+                    kind,
+                    direction,
+                    allowEbookPageTurn: false,
+                });
+            } catch (error) {
+                result = {
+                    opened: false,
+                    failureReason: 'visibleLookupFallbackError',
+                    error: error?.message || String(error),
+                };
+            }
+            attempts.push({
+                windowURL: contentWindow.location?.href ?? null,
+                opened: result?.opened === true,
+                failureReason: result?.failureReason ?? null,
+                targetElementID: result?.target?.id ?? null,
+            });
+            if (result?.opened === true) {
+                result.contentWindowURL = contentWindow.location?.href ?? null;
+                result.contentWindowAttempts = attempts;
+                return result;
+            }
+            if (result?.failureReason !== 'noVisibleTargetAfterPageTurn') {
+                return {
+                    ...(result ?? {}),
+                    opened: false,
+                    kind,
+                    direction,
+                    contentWindowURL: contentWindow.location?.href ?? null,
+                    contentWindowAttempts: attempts,
+                };
+            }
+        }
+        return {
+            opened: false,
+            failureReason: 'noVisibleTargetAfterPageTurn',
             kind,
             direction,
-            allowEbookPageTurn: false,
-        });
+            contentWindowAttempts: attempts,
+        };
     }
     async #turnLookupNavigationPage(direction) {
         const renderer = this.view?.renderer;
@@ -8295,34 +8320,32 @@ class Reader {
                 attempts.push({
                     pageTurnIndex,
                     turnResult,
-                    retryOpened: false,
-                    retryFailureReason: turnResult?.failureReason ?? (positionChanged ? null : 'pageTurnDidNotMove'),
+                    visibleTargetOpened: false,
+                    visibleTargetFailureReason: turnResult?.failureReason ?? (positionChanged ? null : 'pageTurnDidNotMove'),
                 });
                 break;
-            }
-            let retryResult = null;
-            try {
-                retryResult = await this.#invokeLookupNavigationInContent({
-                    ...request,
-                    kind,
-                    direction,
-                });
-            } catch (error) {
-                retryResult = {
-                    opened: false,
-                    failureReason: 'retryError',
-                    error: error?.message || String(error),
-                };
             }
             const attempt = {
                 pageTurnIndex,
                 turnResult,
-                retryOpened: retryResult?.opened === true,
-                retryFailureReason: retryResult?.failureReason ?? retryResult?.scrollAndOpen?.failureReason ?? null,
+                visibleTargetOpened: false,
+                visibleTargetFailureReason: null,
             };
             attempts.push(attempt);
-            if (retryResult?.opened === true) {
-                postReaderLog('lookup.navigation.pageTurn.opened', {
+            let visibleTargetResult = null;
+            try {
+                visibleTargetResult = await this.#openVisibleLookupTargetAfterPageTurn({ kind, direction });
+            } catch (error) {
+                visibleTargetResult = {
+                    opened: false,
+                    failureReason: 'visibleTargetError',
+                    error: error?.message || String(error),
+                };
+            }
+            attempt.visibleTargetOpened = visibleTargetResult?.opened === true;
+            attempt.visibleTargetFailureReason = visibleTargetResult?.failureReason ?? null;
+            if (visibleTargetResult?.opened === true) {
+                postReaderLog('lookup.navigation.pageTurn.visibleTargetOpened', {
                     token,
                     kind,
                     direction,
@@ -8335,48 +8358,13 @@ class Reader {
                     kind,
                     direction,
                     pageTurnIndex,
-                    retryResult,
+                    visibleTargetResult,
                     attempts,
                     elapsedMs: Math.round(performance.now() - startedAt),
                 };
             }
-            const retryFailureReason = retryResult?.failureReason ?? retryResult?.scrollAndOpen?.failureReason ?? null;
-            const shouldTryVisibleFallback = retryFailureReason === 'noCurrent'
-                || retryFailureReason === 'noCandidate'
-                || retryFailureReason === 'targetOutsideNativeHitTargets'
-                || retryFailureReason === 'missingContentLookupFunction';
-            if (shouldTryVisibleFallback) {
-                let fallbackResult = null;
-                try {
-                    fallbackResult = await this.#openVisibleLookupTargetAfterPageTurn({ kind, direction });
-                } catch (error) {
-                    fallbackResult = {
-                        opened: false,
-                        failureReason: 'fallbackError',
-                        error: error?.message || String(error),
-                    };
-                }
-                attempt.fallbackOpened = fallbackResult?.opened === true;
-                attempt.fallbackFailureReason = fallbackResult?.failureReason ?? null;
-                if (fallbackResult?.opened === true) {
-                    postReaderLog('lookup.navigation.pageTurn.fallbackOpened', {
-                        token,
-                        kind,
-                        direction,
-                        pageTurnIndex,
-                        elapsedMs: Math.round(performance.now() - startedAt),
-                        attempts,
-                    });
-                    return {
-                        opened: true,
-                        kind,
-                        direction,
-                        pageTurnIndex,
-                        fallbackResult,
-                        attempts,
-                        elapsedMs: Math.round(performance.now() - startedAt),
-                    };
-                }
+            if (visibleTargetResult?.failureReason !== 'noVisibleTargetAfterPageTurn') {
+                break;
             }
         }
         postReaderLog('lookup.navigation.pageTurn.failed', {
