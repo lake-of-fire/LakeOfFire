@@ -221,6 +221,7 @@
 		E47875329F47EC333928799F /* ReaderImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
 		E7E3D2C99B45173435E98B02 /* BookGridCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C42D6E7E1ACFA977D35C9E /* BookGridCell.swift */; };
+		E82E2048C705827D69A57163 /* OPMLSendable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120767DD34BD6DAD2AFAF2C5 /* OPMLSendable.swift */; };
 		E9266CEF96F206AF24F0084D /* ReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8DB8BE5FC8753325BDABE3 /* ReaderViewModel.swift */; };
 		E93D8B027EAA158D32354DCA /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
 		E974F874EE94EFA440622E0D /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
@@ -753,6 +754,7 @@
 		0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RealmSwift.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libJapaneseLanguageTools.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		102FAB3669EAF9C880015307 /* EPub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPub.swift; sourceTree = "<group>"; };
+		120767DD34BD6DAD2AFAF2C5 /* OPMLSendable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPMLSendable.swift; sourceTree = "<group>"; };
 		13849EE84EAEA7363556428B /* LibraryCategoriesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoriesViewModel.swift; sourceTree = "<group>"; };
 		1727F4123F8595B844950D30 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
 		172FF3A7BCA8ABCEB46E3520 /* LakeOfFireLibrary.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireLibrary.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1165,6 +1167,7 @@
 			isa = PBXGroup;
 			children = (
 				9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */,
+				120767DD34BD6DAD2AFAF2C5 /* OPMLSendable.swift */,
 			);
 			path = Library;
 			sourceTree = "<group>";
@@ -1989,6 +1992,7 @@
 				0C7266581BE523BF8A3AF885 /* ReaderFileOperationErrors.swift in Sources */,
 				6F00024FF3B7EC7C3C1DA1EE /* URL+ReaderFileURL.swift in Sources */,
 				174D83407D362BD0D1C33361 /* LibraryDataManager.swift in Sources */,
+				E82E2048C705827D69A57163 /* OPMLSendable.swift in Sources */,
 				F019EFC3A98215BE15157C35 /* PlainTextHTMLConverter.swift in Sources */,
 				EEB14862EB4CE90561A2C4F8 /* ReaderContent.swift in Sources */,
 				4AFCA40A35D3BC836EAE559A /* ReaderContentLoader.swift in Sources */,
