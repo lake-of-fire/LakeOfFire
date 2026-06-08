@@ -1250,6 +1250,59 @@ const getLoadedEbookDocuments = (explicitDoc = null) => {
     return docs;
 };
 
+const bookDebugLastLog = new Map();
+
+const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 250) => {
+    const now = Date.now();
+    const last = bookDebugLastLog.get(throttleKey) || 0;
+    if (now - last < minIntervalMs) return;
+    bookDebugLastLog.set(throttleKey, now);
+    const finalPayload = { event, ...payload };
+    try {
+        console.log('# BOOK', event, finalPayload);
+    } catch {}
+    try {
+        if (typeof postReaderLog === 'function') {
+            postReaderLog(`book.${event}`, finalPayload);
+        }
+    } catch {}
+};
+
+const sampleBookHighlightState = (doc, reason = 'unknown') => {
+    const body = doc?.body;
+    if (!body || doc === document) {
+        return {
+            sampled: false,
+            reason: body ? 'outer-document' : 'missing-body',
+        };
+    }
+    const segment = doc.querySelector?.('mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]');
+    const segmentStyle = segment ? doc.defaultView?.getComputedStyle?.(segment) : null;
+    const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
+    return {
+        sampled: !!segment,
+        reason,
+        bodyClass: body.className || '',
+        navHidden: body.classList?.contains?.('nav-hidden') ?? null,
+        navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        dataHideNavigation: body.dataset?.mnbNavigationHiddenDueToScroll ?? body.dataset?.mnbHideNavigationDueToScroll ?? null,
+        writingMode: bodyStyle?.writingMode ?? null,
+        direction: bodyStyle?.direction ?? null,
+        gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        highlightFillOpacity: bodyStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        trackingHighlightAlpha: bodyStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
+        segmentClass: segment?.className ?? null,
+        segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
+        segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
+        segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
+        segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
+        segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        segmentHighlightFillOpacity: segmentStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+    };
+};
+
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     const body = doc?.body;
     if (!body || doc === document) {
@@ -1265,6 +1318,7 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     return {
         applied: true,
         hidden,
+        sample: sampleBookHighlightState(doc, reason),
     };
 };
 
@@ -4752,13 +4806,24 @@ class Reader {
         const hidden = !!shouldHide;
         document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
         const contents = this.view?.renderer?.getContents?.() || [];
+        const samples = [];
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+            if (samples.length < 2) {
+                samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
+            }
         }
+        logBookDebug('hideNav.applyToBookContent', {
+            hidden,
+            contentCount: contents.length,
+            outerBodyClass: document.body?.className || '',
+            outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            samples,
+        }, `hideNav.applyToBookContent.${hidden}.${contents.length}`, 200);
         requestAnimationFrame(() => this.#logPageTrackingLayout(
             'hide-navigation-due-to-scroll',
             hidden ? 'nav-hidden' : 'nav-visible',
