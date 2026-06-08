@@ -536,7 +536,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         var files = [ThreadSafeReference<ContentFile>]()
         var filesToUpdate: [(readerFileURL: URL, absoluteFileURL: URL)] = []
         do {
-            for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
+            for url in try await drive.contentsOfDirectory(
+                at: relativePath ?? .root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles, .producesRelativePathURLs]
+            ) {
                 try Task.checkCancellation()
                 var tryRelativePath = RootRelativePath(path: url.relativePath)
                 if let relativePath, !relativePath.path.isEmpty {
@@ -551,13 +555,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     continue
                 }
                 let lastPathComponent = url.lastPathComponent.lowercased()
+                let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
+                let isDirectory = try await Self.isDiscoveredDirectory(
+                    url,
+                    absoluteFileURL: absoluteFileURL,
+                    drive: drive,
+                    relativePath: tryRelativePath
+                )
                 if !url.isFilePackage(),
                    !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
-                   try await drive.directoryExists(at: tryRelativePath) {
+                   isDirectory {
                     let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
                     files.append(contentsOf: discoveredFiles ?? [])
                 } else {
-                    let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
                     let indexDecision = Self.contentFileIndexDecision(at: absoluteFileURL)
                     switch indexDecision {
                     case .skipArtifact:
@@ -641,6 +651,21 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
 
         return files
+    }
+
+    private static func isDiscoveredDirectory(
+        _ url: URL,
+        absoluteFileURL: URL,
+        drive: CloudDrive,
+        relativePath: RootRelativePath
+    ) async throws -> Bool {
+        if let isDirectory = try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory {
+            return isDirectory == true
+        }
+        if let isDirectory = try? absoluteFileURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory {
+            return isDirectory == true
+        }
+        return try await drive.directoryExists(at: relativePath)
     }
     
     /// Note that ReaderContentMetadataSynchronizer keeps associated records in sync

@@ -1250,6 +1250,129 @@ const getLoadedEbookDocuments = (explicitDoc = null) => {
     return docs;
 };
 
+const bookDebugLastLog = new Map();
+
+const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 250) => {
+    const now = Date.now();
+    const last = bookDebugLastLog.get(throttleKey) || 0;
+    if (now - last < minIntervalMs) return;
+    bookDebugLastLog.set(throttleKey, now);
+    const finalPayload = { event, ...payload };
+    const line = `# BOOK ${event} ${JSON.stringify(finalPayload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch {}
+    try {
+        console.log(line);
+    } catch {}
+    try {
+        if (typeof postReaderLog === 'function') {
+            postReaderLog(`book.${event}`, finalPayload);
+        }
+    } catch {}
+};
+
+const sampleBookHighlightState = (doc, reason = 'unknown') => {
+    const body = doc?.body;
+    if (!body || doc === document) {
+        return {
+            sampled: false,
+            reason: body ? 'outer-document' : 'missing-body',
+        };
+    }
+    const view = doc.defaultView;
+    const highlightSelector = 'mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]';
+    const highlightedSegments = Array.from(doc.querySelectorAll?.(highlightSelector) ?? []);
+    const allSegments = Array.from(doc.querySelectorAll?.('mnb-seg') ?? []);
+    const hasPaint = (style) => {
+        if (!style) return false;
+        const backgroundImage = style.backgroundImage ?? '';
+        const backgroundColor = style.backgroundColor ?? '';
+        return (backgroundImage && backgroundImage !== 'none')
+            || (backgroundColor && backgroundColor !== 'rgba(0, 0, 0, 0)' && backgroundColor !== 'transparent');
+    };
+    const segment = highlightedSegments.find((candidate) => {
+        const surface = candidate.querySelector?.('mnb-sur') ?? null;
+        return hasPaint(view?.getComputedStyle?.(surface)) || hasPaint(view?.getComputedStyle?.(candidate));
+    }) ?? highlightedSegments[0] ?? allSegments[0] ?? null;
+    const surface = segment?.querySelector?.('mnb-sur') ?? null;
+    const segmentStyle = segment ? view?.getComputedStyle?.(segment) : null;
+    const surfaceStyle = surface ? view?.getComputedStyle?.(surface) : null;
+    const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
+    const htmlStyle = doc.documentElement ? doc.defaultView?.getComputedStyle?.(doc.documentElement) : null;
+    const readerContent = doc.getElementById?.('reader-content') ?? null;
+    const readerContentStyle = readerContent ? view?.getComputedStyle?.(readerContent) : null;
+    const bodyDataset = body.dataset
+        ? Object.fromEntries(Object.entries(body.dataset).filter(([key]) => key.startsWith('mnb') || key === 'isEbook'))
+        : {};
+    const bodyClasses = Array.from(body.classList ?? [])
+        .filter((className) => className.includes('reader') || className.includes('vertical') || className.includes('nav'));
+    const sampleRect = (element) => {
+        const rect = element?.getBoundingClientRect?.();
+        if (!rect) return null;
+        return {
+            left: Number(rect.left.toFixed(2)),
+            top: Number(rect.top.toFixed(2)),
+            width: Number(rect.width.toFixed(2)),
+            height: Number(rect.height.toFixed(2)),
+        };
+    };
+    return {
+        sampled: !!segment,
+        reason,
+        url: doc.location?.href ?? null,
+        bodyClasses,
+        bodyDataset,
+        bodyDirAttribute: body.getAttribute?.('dir') ?? null,
+        htmlDirAttribute: doc.documentElement?.getAttribute?.('dir') ?? null,
+        bodyStyleAttribute: body.getAttribute?.('style') ?? null,
+        htmlStyleAttribute: doc.documentElement?.getAttribute?.('style') ?? null,
+        navHidden: body.classList?.contains?.('nav-hidden') ?? null,
+        navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        dataHideNavigation: body.dataset?.mnbNavigationHiddenDueToScroll ?? body.dataset?.mnbHideNavigationDueToScroll ?? null,
+        writingMode: bodyStyle?.writingMode ?? null,
+        direction: bodyStyle?.direction ?? null,
+        htmlWritingMode: htmlStyle?.writingMode ?? null,
+        htmlDirection: htmlStyle?.direction ?? null,
+        readerContentWritingMode: readerContentStyle?.writingMode ?? null,
+        readerContentDirection: readerContentStyle?.direction ?? null,
+        gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        highlightFillOpacity: bodyStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        trackingHighlightAlpha: bodyStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        highlightedSegmentCount: highlightedSegments.length,
+        totalSegmentCount: allSegments.length,
+        segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
+        segmentId: segment?.getAttribute?.('id') ?? null,
+        segmentClass: segment?.className ?? null,
+        segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
+        segmentRect: sampleRect(segment),
+        segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
+        segmentBackgroundColor: segmentStyle?.backgroundColor ?? null,
+        segmentWritingMode: segmentStyle?.writingMode ?? null,
+        segmentDirection: segmentStyle?.direction ?? null,
+        segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
+        segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
+        segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        segmentHighlightFillOpacity: segmentStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
+        surfaceClass: surface?.className ?? null,
+        surfaceRect: sampleRect(surface),
+        surfaceBackgroundImage: surfaceStyle?.backgroundImage ?? null,
+        surfaceBackgroundColor: surfaceStyle?.backgroundColor ?? null,
+        surfaceWritingMode: surfaceStyle?.writingMode ?? null,
+        surfaceDirection: surfaceStyle?.direction ?? null,
+        surfaceTransitionProperty: surfaceStyle?.transitionProperty ?? null,
+        surfaceTransitionDuration: surfaceStyle?.transitionDuration ?? null,
+        surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        surfaceHighlightFillOpacity: surfaceStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        surfaceTrackingHighlightAlpha: surfaceStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        horizontalWritingIsland: !!segment?.closest?.('[data-mnb-horizontal-writing-island="true"]')
+            || surface?.dataset?.mnbHorizontalWritingIsland === 'true'
+            || segment?.dataset?.mnbHorizontalWritingIsland === 'true',
+    };
+};
+
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     const body = doc?.body;
     if (!body || doc === document) {
@@ -1262,9 +1385,13 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     body.classList.toggle('nav-hidden', hidden);
     body.classList.toggle('nav-hidden-due-to-scroll', hidden);
     body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+    try {
+        doc.defaultView?.manabiApplyVerticalWritingCheck?.();
+    } catch (_error) {}
     return {
         applied: true,
         hidden,
+        sample: sampleBookHighlightState(doc, reason),
     };
 };
 
@@ -4752,13 +4879,40 @@ class Reader {
         const hidden = !!shouldHide;
         document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
         const contents = this.view?.renderer?.getContents?.() || [];
+        const samples = [];
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+            try {
+                content?.doc?.defaultView?.manabiApplyVerticalWritingCheck?.();
+            } catch (_error) {}
+            if (samples.length < 2) {
+                samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
+            }
         }
+        logBookDebug('hideNav.applyToBookContent', {
+            hidden,
+            contentCount: contents.length,
+            outerBodyClass: document.body?.className || '',
+            outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            samples,
+        }, `hideNav.applyToBookContent.${hidden}.${contents.length}`, 200);
+        logBookDebug('gradient.state', {
+            reason: `hideNav.${hidden ? 'hidden' : 'visible'}`,
+            hidden,
+            contentCount: contents.length,
+            samples,
+        }, `gradient.state.hideNav.${hidden}.${contents.length}.${JSON.stringify(samples.map((sample) => ({
+            url: sample?.url ?? null,
+            navHidden: sample?.navHidden ?? null,
+            writingMode: sample?.writingMode ?? null,
+            gradientDirection: sample?.gradientDirection ?? null,
+            surfaceGradientDirection: sample?.surfaceGradientDirection ?? null,
+            surfaceBackgroundImage: sample?.surfaceBackgroundImage ?? null,
+        })))}`, 200);
         requestAnimationFrame(() => this.#logPageTrackingLayout(
             'hide-navigation-due-to-scroll',
             hidden ? 'nav-hidden' : 'nav-visible',
@@ -9507,6 +9661,7 @@ window.setEbookViewerLayout = (layoutMode) => {
 window.setEbookViewerWritingDirection = (writingDirection) => {
     const renderer = globalThis.reader?.view?.renderer ?? null;
     const contents = renderer?.getContents?.() || [];
+    const samples = [];
     const applyWritingDirectionToDocument = (doc) => {
         const body = doc?.body;
         if (!body) return false;
@@ -9520,11 +9675,26 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
         try {
             doc.defaultView?.manabiApplyVerticalWritingCheck?.();
         } catch (_error) {}
+        if (samples.length < 2) {
+            samples.push(sampleBookHighlightState(doc, `writingDirection.${writingDirection ?? 'automatic'}`));
+        }
         return true;
     };
     for (const content of contents) {
         applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
     }
+    logBookDebug('gradient.state', {
+        reason: 'setEbookViewerWritingDirection',
+        writingDirection: writingDirection ?? null,
+        contentCount: contents.length,
+        samples,
+    }, `gradient.state.writingDirection.${writingDirection ?? 'automatic'}.${contents.length}.${JSON.stringify(samples.map((sample) => ({
+        url: sample?.url ?? null,
+        writingMode: sample?.writingMode ?? null,
+        gradientDirection: sample?.gradientDirection ?? null,
+        surfaceGradientDirection: sample?.surfaceGradientDirection ?? null,
+        surfaceBackgroundImage: sample?.surfaceBackgroundImage ?? null,
+    })))}`, 200);
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));
