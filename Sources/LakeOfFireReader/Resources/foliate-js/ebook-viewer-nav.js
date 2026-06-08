@@ -48,6 +48,22 @@ const logNavHide = (event, detail = {}) => {
     void detail;
 };
 
+const bookNavDebugLastLog = new Map();
+const logBookNavDebug = (event, detail = {}, throttleKey = event, minIntervalMs = 250) => {
+    const now = Date.now();
+    const last = bookNavDebugLastLog.get(throttleKey) || 0;
+    if (now - last < minIntervalMs) return;
+    bookNavDebugLastLog.set(throttleKey, now);
+    const payload = { event, ...detail };
+    const line = `# BOOK ${event} ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch {}
+    try {
+        console.log(line);
+    } catch {}
+};
+
 const logMay15 = (event, detail = {}) => {
 };
 

@@ -8667,14 +8667,29 @@ class Reader {
         this.setLoadingIndicator(true);
     }
     async #onDidDisplay({}) {
+        const startedAt = performanceNowMs();
         const navVisibilityBefore = captureNavVisibilityState();
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
             && !document.body?.classList?.contains?.('loading');
         if (shouldSkipSameIndexDidDisplay) {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
+            logBookDebug('section.nav', {
+                stage: 'didDisplay.skip',
+                verdict: 'same-index',
+                activeForegroundIndex: activeForegroundSectionIndex(),
+                activeForegroundHref: activeForegroundSectionHref(),
+            }, 'section.nav.didDisplay.skip.sameIndex', 250);
             return;
         }
+        logBookDebug('section.nav', {
+            stage: 'didDisplay.begin',
+            activeForegroundIndex: activeForegroundSectionIndex(),
+            activeForegroundHref: activeForegroundSectionHref(),
+            rendererIndex: this.view?.renderer?.index ?? null,
+            loading: document.body?.classList?.contains?.('loading') ?? null,
+            navHidden: this.navHUD?.hideNavigationDueToScroll ?? null,
+        }, 'section.nav.didDisplay.begin', 250);
         this.#postBookInsetSnapshot('didDisplay.begin', {
             beforeNavigationVisibility: navVisibilityBefore,
         });
@@ -8737,6 +8752,15 @@ class Reader {
             this.#schedulePageReadMarkerUpdate('did-display.raf', 64);
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
+        logBookDebug('section.nav', {
+            stage: 'didDisplay.end',
+            activeForegroundIndex: activeForegroundSectionIndex(),
+            activeForegroundHref: activeForegroundSectionHref(),
+            rendererIndex: this.view?.renderer?.index ?? null,
+            initialSettleResult,
+            postFrameSettleResult,
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        }, 'section.nav.didDisplay.end', 250);
     }
     #onLoad({
         detail: {
