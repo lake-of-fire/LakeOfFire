@@ -1037,10 +1037,25 @@ const cacheWarmerForegroundBusyState = () => {
 };
 
 const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified', options = {}) => {
+    const startedAt = performanceNowMs();
     if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
+        try {
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.schedule.skip',
+                reason,
+                verdict: 'missing-cache-warmer',
+            }, `section.nav.schedule.missing.${reason}`, 500);
+        } catch {}
         return;
     }
     if (globalThis.__manabiCacheWarmerAdvanceInFlight) {
+        try {
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.schedule.skip',
+                reason,
+                verdict: 'advance-in-flight',
+            }, `section.nav.schedule.inFlight.${reason}`, 500);
+        } catch {}
         return;
     }
     const force = options?.force === true;
@@ -1067,6 +1082,16 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
             globalThis.__manabiCacheWarmerLoadNextTimer = null;
             scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.retry`, options);
         }, busyState.retryMs);
+        try {
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.schedule.defer',
+                reason,
+                verdict: busyState.reason,
+                retryMs: busyState.retryMs,
+                pauseRemainingMs: busyState.pauseRemainingMs,
+                liveReplaceTextCount: busyState.liveReplaceTextCount,
+            }, `section.nav.schedule.busy.${busyState.reason}`, 500);
+        } catch {}
         return;
     }
     const now = performanceNowMs();
@@ -1078,6 +1103,14 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
             globalThis.__manabiCacheWarmerLoadNextTimer = null;
             scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.spacing`, options);
         }, spacingRemainingMs);
+        try {
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.schedule.defer',
+                reason,
+                verdict: 'spacing',
+                retryMs: safeRound(spacingRemainingMs, 1),
+            }, `section.nav.schedule.spacing.${reason}`, 500);
+        } catch {}
         return;
     }
     const activeIndex = activeForegroundSectionIndex();
@@ -1086,13 +1119,41 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
     const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, minimumIndex);
     const windowLimitState = cacheWarmerWindowLimitState(targetIndex);
     if (!Number.isInteger(precedingTargetIndex) && !windowLimitState.isWithinWindow) {
+        try {
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.schedule.skip',
+                reason,
+                verdict: 'outside-window',
+                ...windowLimitState,
+            }, `section.nav.schedule.window.${reason}.${windowLimitState.activeIndex}.${windowLimitState.targetIndex}`, 500);
+        } catch {}
         return;
     }
+    try {
+        logBookDebug('section.nav', {
+            stage: 'cacheWarmer.schedule.start',
+            reason,
+            force,
+            activeIndex,
+            precedingTargetIndex: Number.isInteger(precedingTargetIndex) ? precedingTargetIndex : null,
+            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
+            targetIndex: Number.isInteger(targetIndex) ? targetIndex : null,
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        }, `section.nav.schedule.start.${reason}.${activeIndex}.${targetIndex}`, 250);
+    } catch {}
     globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
     globalThis.__manabiCacheWarmerAdvanceInFlight = true;
     window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, minimumIndex)
         ?.finally?.(() => {
             globalThis.__manabiCacheWarmerAdvanceInFlight = false;
+            try {
+                logBookDebug('section.nav', {
+                    stage: 'cacheWarmer.schedule.end',
+                    reason,
+                    targetIndex: Number.isInteger(targetIndex) ? targetIndex : null,
+                    elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+                }, `section.nav.schedule.end.${reason}.${targetIndex}`, 250);
+            } catch {}
         })
         ?.catch?.((error) => console.error(error));
 };
