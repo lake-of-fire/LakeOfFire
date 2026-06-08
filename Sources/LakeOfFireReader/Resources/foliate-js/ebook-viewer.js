@@ -3393,9 +3393,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     };
 };
 
-const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult) => {
+const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
+    const nativeLookupFrameKey = doc?.location?.href || doc?.URL || null;
     const viewportWidth = visibleSegmentsResult?.viewportWidth
         ?? window.visualViewport?.width
         ?? window.innerWidth
@@ -3423,6 +3424,9 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         });
         messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
+            reason,
+            nativeLookupFrameKey,
+            isExplicitReset: false,
             visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
             viewportWidth,
             viewportHeight,
@@ -3466,6 +3470,9 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     });
     messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
         targets,
+        reason,
+        nativeLookupFrameKey,
+        isExplicitReset: false,
         visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
         viewportWidth,
         viewportHeight,
@@ -4072,6 +4079,36 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
+    html.vrtl body,
+    body.reader-vertical-writing {
+        --mnb-highlight-gradient-direction: to right;
+    }
+    body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
+    body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
+    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
+        --mnb-highlight-gradient-direction: to bottom;
+    }
+    @property --word-tracking-unknown-highlight-nav-conditional {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+    @property --word-tracking-familiar-highlight-nav-conditional {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+    @property --word-tracking-learning-highlight-nav-conditional {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+    @property --word-tracking-known-highlight-nav-conditional {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+
     mnb-seg {
         /* Keep book segments atomic so page turns never split a segment across pages. */
         display: inline-block !important;
@@ -4124,7 +4161,19 @@ const getCSSForBookContent = ({
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
+        transition:
+            --word-tracking-unknown-highlight-nav-conditional 350ms ease,
+            --word-tracking-familiar-highlight-nav-conditional 350ms ease,
+            --word-tracking-learning-highlight-nav-conditional 350ms ease,
+            --word-tracking-known-highlight-nav-conditional 350ms ease;
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
+    }
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
+        transition:
+            --word-tracking-unknown-highlight-nav-conditional 350ms ease,
+            --word-tracking-familiar-highlight-nav-conditional 350ms ease,
+            --word-tracking-learning-highlight-nav-conditional 350ms ease,
+            --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
     body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur,
     body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur {
@@ -5463,7 +5512,7 @@ class Reader {
             visibleRange,
             result,
         };
-        postNativeLookupHitTargetsForVisibleSegments(doc, result);
+        postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
         return result;
     }
     #scheduleNativeLookupHitTargetRefresh(reason = 'unspecified', frameDelay = 2, explicitDoc = null) {
@@ -5511,6 +5560,27 @@ class Reader {
             });
         };
         runAfterFrame(remainingFrames);
+    }
+    #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
+        this.#scheduleNativeLookupHitTargetRefresh(`${reason}.raf`, 1, explicitDoc);
+        const delayedRefreshes = [
+            ['settle-80ms', 80, 1],
+            ['settle-240ms', 240, 2],
+            ['settle-600ms', 600, 2],
+        ];
+        delayedRefreshes.forEach(([label, delayMs, frameDelay]) => {
+            setTimeout(() => {
+                this.#scheduleNativeLookupHitTargetRefresh(`${reason}.${label}`, frameDelay, explicitDoc);
+            }, delayMs);
+        });
+        const doc = isDocumentLike(explicitDoc)
+            ? explicitDoc
+            : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
+        if (doc?.fonts?.ready) {
+            doc.fonts.ready.then(() => {
+                this.#scheduleNativeLookupHitTargetRefresh(`${reason}.fonts-ready`, 1, explicitDoc);
+            }).catch(() => {});
+        }
     }
     #updateEbookSubscriptionPreviewPageState({
         sectionIndex = null,
@@ -8774,7 +8844,7 @@ class Reader {
         applyNavigationHiddenStateToEbookDocument(doc, 'document-load');
         this.#schedulePageTrackingSync('document-load', doc, 2, isCacheWarmerDocument(doc) ? 0 : 128);
         if (!isCacheWarmerDocument(doc)) {
-            this.#scheduleNativeLookupHitTargetRefresh('document-load', 1, doc);
+            this.#scheduleNativeLookupHitTargetRefreshSettle('document-load', doc);
         }
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
@@ -8851,7 +8921,7 @@ class Reader {
             totalLocation: location?.total ?? null,
         });
         await this.navHUD?.handleRelocate(detail);
-        this.#scheduleNativeLookupHitTargetRefresh('relocate', 2);
+        this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFraction = getAuthoritativeReaderFraction({
             navHUD: this.navHUD,
