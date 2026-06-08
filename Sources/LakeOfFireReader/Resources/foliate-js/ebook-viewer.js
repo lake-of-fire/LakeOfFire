@@ -2308,14 +2308,25 @@ window.manabiSetCompactNavigationSheetDetentState = (state = {}) => {
     const semanticDetentKind = typeof state?.semanticDetentKind === 'string'
         ? state.semanticDetentKind
         : 'unknown';
+    const nativeEBookOverlayActive = state?.nativeEBookOverlayActive === true || state?.nativeEBookOverlayActive === 'true';
     document.body.dataset.mnbCompactNavigationSheetPresentedAsSheet = presentedAsSheet ? 'true' : 'false';
     document.body.dataset.mnbCompactNavigationSheetDetentKind = semanticDetentKind;
+    document.body.dataset.mnbNativeEBookOverlayActive = nativeEBookOverlayActive ? 'true' : 'false';
     const sidePaginationDisabled = isCompactNavigationSheetSidePaginationDisabled();
     document.body.dataset.mnbCompactNavigationSheetSidePaginationDisabled = sidePaginationDisabled ? 'true' : 'false';
+    logBookDebug('chrome.state', {
+        stage: 'compactNavigationSheetDetentState',
+        presentedAsSheet,
+        semanticDetentKind,
+        nativeEBookOverlayActive,
+        sidePaginationDisabled,
+        source: state?.source ?? null,
+    }, `chrome.state.detent.${semanticDetentKind}.${nativeEBookOverlayActive}.${presentedAsSheet}`, 250);
     void globalThis.reader?.updateNavButtons?.();
     return {
         presentedAsSheet,
         semanticDetentKind,
+        nativeEBookOverlayActive,
         sidePaginationDisabled,
     };
 };

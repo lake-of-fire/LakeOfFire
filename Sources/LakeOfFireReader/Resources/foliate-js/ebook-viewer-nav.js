@@ -404,18 +404,17 @@ export class NavigationHUD {
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
         if (previous !== next || previousClass !== next) {
-            try {
-                console.log('# BOOK', 'navHUD.setHideNavigationDueToScroll', {
-                    sequence,
-                    source,
-                    previous,
-                    requested: next,
-                    previousClass,
-                    semanticContext: context,
-                    navBarRect: this.navBar?.getBoundingClientRect?.()?.toJSON?.() ?? null,
-                    pageTrackingRect: this.pageTrackingContainer?.getBoundingClientRect?.()?.toJSON?.() ?? null,
-                });
-            } catch {}
+            logBookNavDebug('chrome.state', {
+                stage: 'navHUD.setHideNavigationDueToScroll',
+                sequence,
+                source,
+                previous,
+                requested: next,
+                previousClass,
+                semanticContext: context,
+                navBarRect: this.navBar?.getBoundingClientRect?.()?.toJSON?.() ?? null,
+                pageTrackingRect: this.pageTrackingContainer?.getBoundingClientRect?.()?.toJSON?.() ?? null,
+            }, `chrome.state.hide.${sequence}`, 0);
         }
         logMay15('ebook.navHUD.setHide.entered', {
             sequence,
@@ -1190,6 +1189,26 @@ export class NavigationHUD {
         const pagesLeftLabel = this.lastPagesLeftLabel || '';
         const relocateBackEnabled = this._relocateButtonEnabled('back');
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
+        logBookNavDebug('chrome.state', {
+            stage: 'nativeOverlay.post',
+            source,
+            percentLabel,
+            hideNavigationDueToScroll,
+            titleLocationLabel,
+            titleLocationVisible,
+            bookTitleLabel,
+            pagesLeftLabel,
+            duplicatePercentPagesLeft: !!percentLabel && percentLabel === pagesLeftLabel,
+            navHidden: this.navHidden,
+            scrollHidden: this.hideNavigationDueToScroll,
+            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
+            navPrimaryTextCompact: this.navPrimaryTextCompact?.textContent || '',
+            navPrimaryTextFull: this.navPrimaryTextFull?.textContent || '',
+            latestPrimaryLabel: this.latestPrimaryLabel || '',
+            nativeOverlayActive: document.body?.dataset?.mnbNativeEBookOverlayActive ?? null,
+            relocateBackEnabled,
+            relocateForwardEnabled,
+        }, `chrome.state.nativeOverlay.${source}.${percentLabel}.${pagesLeftLabel}.${hideNavigationDueToScroll}`, 250);
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
                 percentLabel,
