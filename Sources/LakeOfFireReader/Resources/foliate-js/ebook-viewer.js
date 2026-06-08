@@ -1373,6 +1373,35 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
     };
 };
 
+const compactBookHighlightState = (sample) => ({
+    sampled: sample?.sampled ?? false,
+    reason: sample?.reason ?? null,
+    url: sample?.url ?? null,
+    bodyClasses: sample?.bodyClasses ?? sample?.bodyClass ?? null,
+    navHidden: sample?.navHidden ?? null,
+    navHiddenDueToScroll: sample?.navHiddenDueToScroll ?? null,
+    writingMode: sample?.writingMode ?? null,
+    direction: sample?.direction ?? null,
+    readerContentWritingMode: sample?.readerContentWritingMode ?? null,
+    readerContentDirection: sample?.readerContentDirection ?? null,
+    gradientDirection: sample?.gradientDirection ?? null,
+    highlightFillOpacity: sample?.highlightFillOpacity ?? null,
+    trackingHighlightAlpha: sample?.trackingHighlightAlpha ?? null,
+    segmentWritingMode: sample?.segmentWritingMode ?? null,
+    segmentDirection: sample?.segmentDirection ?? null,
+    segmentGradientDirection: sample?.segmentGradientDirection ?? null,
+    segmentTransitionProperty: sample?.segmentTransitionProperty ?? null,
+    segmentTransitionDuration: sample?.segmentTransitionDuration ?? null,
+    segmentBackgroundImage: typeof sample?.segmentBackgroundImage === 'string'
+        ? sample.segmentBackgroundImage.slice(0, 180)
+        : sample?.segmentBackgroundImage ?? null,
+    surfaceWritingMode: sample?.surfaceWritingMode ?? null,
+    surfaceGradientDirection: sample?.surfaceGradientDirection ?? null,
+    surfaceTransitionProperty: sample?.surfaceTransitionProperty ?? null,
+    surfaceTransitionDuration: sample?.surfaceTransitionDuration ?? null,
+    horizontalWritingIsland: sample?.horizontalWritingIsland ?? null,
+});
+
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     const body = doc?.body;
     if (!body || doc === document) {
@@ -4890,7 +4919,7 @@ class Reader {
                 content?.doc?.defaultView?.manabiApplyVerticalWritingCheck?.();
             } catch (_error) {}
             if (samples.length < 2) {
-                samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
+                samples.push(compactBookHighlightState(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show')));
             }
         }
         logBookDebug('hideNav.applyToBookContent', {
@@ -4900,19 +4929,6 @@ class Reader {
             outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             samples,
         }, `hideNav.applyToBookContent.${hidden}.${contents.length}`, 200);
-        logBookDebug('gradient.state', {
-            reason: `hideNav.${hidden ? 'hidden' : 'visible'}`,
-            hidden,
-            contentCount: contents.length,
-            samples,
-        }, `gradient.state.hideNav.${hidden}.${contents.length}.${JSON.stringify(samples.map((sample) => ({
-            url: sample?.url ?? null,
-            navHidden: sample?.navHidden ?? null,
-            writingMode: sample?.writingMode ?? null,
-            gradientDirection: sample?.gradientDirection ?? null,
-            surfaceGradientDirection: sample?.surfaceGradientDirection ?? null,
-            surfaceBackgroundImage: sample?.surfaceBackgroundImage ?? null,
-        })))}`, 200);
         requestAnimationFrame(() => this.#logPageTrackingLayout(
             'hide-navigation-due-to-scroll',
             hidden ? 'nav-hidden' : 'nav-visible',
@@ -9676,25 +9692,19 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
             doc.defaultView?.manabiApplyVerticalWritingCheck?.();
         } catch (_error) {}
         if (samples.length < 2) {
-            samples.push(sampleBookHighlightState(doc, `writingDirection.${writingDirection ?? 'automatic'}`));
+            samples.push(compactBookHighlightState(sampleBookHighlightState(doc, `writingDirection.${writingDirection ?? 'automatic'}`)));
         }
         return true;
     };
     for (const content of contents) {
         applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
     }
-    logBookDebug('gradient.state', {
+    logBookDebug('highlight.state', {
         reason: 'setEbookViewerWritingDirection',
         writingDirection: writingDirection ?? null,
         contentCount: contents.length,
         samples,
-    }, `gradient.state.writingDirection.${writingDirection ?? 'automatic'}.${contents.length}.${JSON.stringify(samples.map((sample) => ({
-        url: sample?.url ?? null,
-        writingMode: sample?.writingMode ?? null,
-        gradientDirection: sample?.gradientDirection ?? null,
-        surfaceGradientDirection: sample?.surfaceGradientDirection ?? null,
-        surfaceBackgroundImage: sample?.surfaceBackgroundImage ?? null,
-    })))}`, 200);
+    }, `highlight.state.writingDirection.${writingDirection ?? 'automatic'}.${contents.length}.${JSON.stringify(samples)}`, 200);
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));
