@@ -28,39 +28,8 @@ const NAV_PAGE_NUM_WHITELIST = new Set([
     'ui:section-progress',
 ]);
 const logEBookPageNumLimited = (event, detail = {}) => {
-    const verbose = !!globalThis.manabiPageNumVerbose;
-    const allow = verbose || NAV_PAGE_NUM_WHITELIST.has(event);
-    if (!allow) return;
-    if (event === 'ui:primary-label') {
-        const signature = JSON.stringify({
-            label: detail?.label ?? '',
-            compactLabel: detail?.compactLabel ?? '',
-            currentPercent: detail?.currentPercent ?? null,
-            source: detail?.source ?? null,
-            hideNavigationDueToScroll: detail?.hideNavigationDueToScroll ?? null,
-        });
-        if (globalThis.__manabiLastUIPrimaryLabelSignature === signature) {
-            return;
-        }
-        globalThis.__manabiLastUIPrimaryLabelSignature = signature;
-    }
-    if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return;
-    logEBookPageNumCounter += 1;
-    const payload = { event, count: logEBookPageNumCounter, ...detail };
-    const line = `# PAGENUM ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
-};
-
-const logPagesLeft = (event, detail = {}) => {
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            '# Pagesleft ' + JSON.stringify({ event, ...detail })
-        );
-    } catch {}
+    void event;
+    void detail;
 };
 
 // Stub logFix to avoid breaking when viewer.js isn't importing it here.
@@ -70,55 +39,33 @@ const logFix = (event, detail = {}) => {
     void detail;
 };
 const logBug = (event, detail = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    try {
-        const payload = { event, ...detail };
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKBUG1 ${JSON.stringify(payload)}`);
-    } catch (_err) {
-        try { console.log('# BOOKBUG1', event, detail); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
 const logNavHide = (event, detail = {}) => {
-    const payload = { event, ...detail };
-    const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
-const logEPUBFlash = (event, detail = {}) => {
-    globalThis.__manabiEPUBFlashNavLogCount = globalThis.__manabiEPUBFlashNavLogCount || 0;
-    if (globalThis.__manabiEPUBFlashNavLogCount >= 300) return;
-    globalThis.__manabiEPUBFlashNavLogCount += 1;
+const logMay15 = (event, detail = {}) => {
+};
+
+const may15Stack = () => {
     try {
-        window.webkit?.messageHandlers?.print?.postMessage?.('# EPUBFLASH ' + JSON.stringify({
-            event,
-            timestamp: Date.now(),
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            ...detail,
-        }));
-    } catch (_err) {}
+        return String(new Error().stack || '')
+            .split('\n')
+            .slice(2, 9)
+            .map(line => line.trim())
+            .filter(Boolean);
+    } catch (_err) {
+        return [];
+    }
 };
 
 const logEPUBNav = (event, detail = {}) => {
-    const payload = { event, ...detail };
-    if (event === 'nav.sections.received' || event === 'nav.primaryLabel') {
-        const signature = JSON.stringify(payload);
-        const key = `__manabiLast${event.replace(/[^a-z0-9]/gi, '')}Signature`;
-        if (globalThis[key] === signature) {
-            return;
-        }
-        globalThis[key] = signature;
-    }
-    const line = `# PAGENUM ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void detail;
 };
 
 const normalizeSpineHrefForPageNum = (href) => {
@@ -210,7 +157,7 @@ export class NavigationHUD {
         this.getRenderer = getRenderer;
         this.formatPercent = formatPercent ?? (value => `${Math.round(value * 100)}%`);
         this.onHideNavigationDueToScrollChange = onHideNavigationDueToScrollChange;
-
+        
         this.navBar = document.getElementById('nav-bar');
         this.navPrimaryText = document.getElementById('nav-primary-text');
         this.navPrimaryTextFull = document.getElementById('nav-primary-text-full');
@@ -219,6 +166,7 @@ export class NavigationHUD {
             text: document.getElementById('nav-hidden-primary-text'),
             percent: document.getElementById('nav-hidden-primary-percent'),
         };
+        this.navTitleLocationLabel = document.getElementById('nav-title-location-label');
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
@@ -236,7 +184,7 @@ export class NavigationHUD {
         this.progressSlider = document.getElementById('progress-slider');
         this.pageTrackingContainer = document.getElementById('page-tracking-container');
         this.pageTrackingButtons = document.getElementById('page-tracking-buttons');
-
+        
         this.hideNavigationDueToScroll = false;
         this.isRTL = false;
         this.navContext = null;
@@ -263,8 +211,6 @@ export class NavigationHUD {
         this.lastTerminalPagesLeftPageNumber = null;
         this.sectionProgressRequestToken = 0;
         this.latestPrimaryLabel = '';
-        this.bookTitle = '';
-        this.lastPagesLeftLabel = '';
         this.previousRelocateVisibility = {
             back: null,
             forward: null,
@@ -276,6 +222,8 @@ export class NavigationHUD {
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
+        this.bookTitle = '';
+        this.lastPagesLeftLabel = '';
         this.auxiliaryInsetsFrame = 0;
         this.lastAuxiliaryInsetsState = null;
         this.lastResolvedSectionIndexLog = null;
@@ -393,7 +341,7 @@ export class NavigationHUD {
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
     }
-
+    
     setNavContext(context) {
         this.navContext = context ?? null;
         this.linearSectionIndexes = new Set();
@@ -433,11 +381,21 @@ export class NavigationHUD {
         this._updateSectionProgress({ source: 'nav-context' });
         this._updateRelocateButtons();
     }
-
+    
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
+        const sequence = (globalThis.__manabiNavVisibilitySequence = Number(globalThis.__manabiNavVisibilitySequence || 0) + 1);
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        logMay15('ebook.navHUD.setHide.entered', {
+            sequence,
+            source,
+            previous,
+            requested: next,
+            previousClass,
+            context,
+            stack: may15Stack(),
+        });
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
                 source,
@@ -446,6 +404,21 @@ export class NavigationHUD {
                     ...(context || {}),
                     resyncReason: 'preservedHiddenNavigation',
                 },
+            });
+            logMay15('ebook.navHUD.setHide.return', {
+                sequence,
+                source,
+                verdict: 'preservedHiddenNavigation',
+                previous,
+                requested: next,
+            });
+            logEPUBNav('nav.visibility.scroll-toggle-preserved', {
+                sequence,
+                source,
+                previous,
+                shouldHide: next,
+                context,
+                state: this._captureHideNavState(),
             });
             return this.hideNavigationDueToScroll;
         }
@@ -458,8 +431,18 @@ export class NavigationHUD {
                     resyncReason: 'noop',
                 },
             });
-            logEPUBNav('nav.visibility.scroll-toggle-noop', {
+            logMay15('ebook.navHUD.setHide.return', {
+                sequence,
                 source,
+                verdict: 'noop',
+                previous,
+                requested: next,
+                previousClass,
+            });
+            logEPUBNav('nav.visibility.scroll-toggle-noop', {
+                sequence,
+                source,
+                previous,
                 shouldHide: next,
                 navHidden: this.navHidden,
                 labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
@@ -477,13 +460,6 @@ export class NavigationHUD {
             });
             return this.hideNavigationDueToScroll;
         }
-        const beforeFlashState = this._captureHideNavState?.() ?? {
-            navHidden: this.navHidden,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: previousClass,
-            hudHideNavigationDueToScroll: previous,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-        };
         this.hideNavigationDueToScroll = next;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
@@ -492,24 +468,8 @@ export class NavigationHUD {
             context,
         });
         this._applyLabelVariant();
-        logEPUBFlash(previous === this.hideNavigationDueToScroll && previousClass === this.hideNavigationDueToScroll
-            ? 'js.nav.visibility.noop'
-            : 'js.nav.visibility.changed', {
-            source,
-            requestedHide: !!shouldHide,
-            previous,
-            previousClass,
-            context,
-            before: beforeFlashState,
-            after: this._captureHideNavState?.() ?? {
-                navHidden: this.navHidden,
-                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-                hudHideNavigationDueToScroll: this.hideNavigationDueToScroll,
-                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            },
-        });
         logEPUBNav('nav.visibility.scroll-toggle', {
+            sequence,
             source,
             previous,
             shouldHide: this.hideNavigationDueToScroll,
@@ -530,8 +490,6 @@ export class NavigationHUD {
             compactLabel: this.navPrimaryTextCompact?.textContent || '',
             hiddenOverlayLabel: this.navHiddenOverlay?.text?.textContent || '',
             hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
-            hiddenOverlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
-            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
@@ -553,19 +511,30 @@ export class NavigationHUD {
             }
         }
         if (this.lastRelocateDetail) {
+            logMay15('ebook.navHUD.setHide.beforePrimaryLine', {
+                sequence,
+                source,
+                hasLastRelocateDetail: true,
+            });
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
         // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
-        this._updateRelocateButtons();
+        logMay15('ebook.navHUD.setHide.beforeRelocateButtons', {
+            sequence,
+            source,
+            shouldHide: this.hideNavigationDueToScroll,
+        });
+        this._updateRelocateButtons(`setHide:${source}`);
         this.syncPageTrackingButtonsNavigationDisabled();
         this.refreshTitleLocationVisibility(`setHide:${source}`);
         void this._updateSectionProgress({ refreshSnapshot: false, source: `setHide:${source}` });
         this._postNativeOverlayState(`setHide:${source}`);
-        this._requestAuxiliaryInsetsUpdate();
-        globalThis.reader?.queueLayoutDiagnostics?.('nav-hide-due-to-scroll', {
+        logMay15('ebook.navHUD.setHide.beforeAuxiliaryInsets', {
+            sequence,
             source,
             shouldHide: this.hideNavigationDueToScroll,
         });
+        this._requestAuxiliaryInsetsUpdate();
     }
 
     _captureHideNavState() {
@@ -592,7 +561,6 @@ export class NavigationHUD {
         if (descriptor) {
             this._updatePrimaryLine(descriptor);
         }
-        this.syncPageTrackingButtonsNavigationDisabled();
         this.refreshTitleLocationVisibility('nav-hidden-state');
         this._postNativeOverlayState('nav-hidden-state');
         logEPUBNav('nav.visibility.hidden-toggle', {
@@ -604,9 +572,6 @@ export class NavigationHUD {
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
             compactLabel: this.navPrimaryTextCompact?.textContent || '',
-        });
-        globalThis.reader?.queueLayoutDiagnostics?.('nav-hidden-state', {
-            shouldHide: this.navHidden,
         });
     }
 
@@ -909,7 +874,7 @@ export class NavigationHUD {
             } : null,
         });
     }
-
+    
     async handleRelocate(detail) {
         if (!detail) return;
         const previousSectionIndex = typeof this.lastRelocateDetail?.sectionIndex === 'number'
@@ -1054,6 +1019,7 @@ export class NavigationHUD {
                 pageNumber: this.rendererPageSnapshot?.current ?? null,
                 pageCount: this.rendererPageSnapshot?.total ?? null,
             });
+        } else {
         }
         try {
             window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
@@ -1092,7 +1058,7 @@ export class NavigationHUD {
             });
         }
     }
-
+    
     _updatePrimaryLine(detail) {
         const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
         const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
@@ -1181,17 +1147,6 @@ export class NavigationHUD {
         }
     }
 
-    _relocateButtonEnabled(direction) {
-        const button = direction === 'back'
-            ? this.navRelocateButtons?.back
-            : this.navRelocateButtons?.forward;
-        if (!button) return false;
-        if (button.hidden) return false;
-        if (button.disabled) return false;
-        if (button.getAttribute?.('aria-disabled') === 'true') return false;
-        return button.dataset?.visible !== 'false';
-    }
-
     _postNativeOverlayState(source = 'refresh') {
         const percentLabel = this.navHiddenOverlay?.percent?.textContent
             || this.navPrimaryTextCompact?.textContent
@@ -1218,6 +1173,15 @@ export class NavigationHUD {
                 source,
             });
         } catch (_error) {}
+    }
+
+    _relocateButtonEnabled(direction) {
+        const button = this.navRelocateButtons?.[direction] ?? null;
+        return !!button
+            && button.hidden !== true
+            && button.disabled !== true
+            && button.getAttribute('aria-hidden') !== 'true'
+            && button.getAttribute('aria-disabled') !== 'true';
     }
 
     _updateCompactPercent(detail) {
@@ -1304,7 +1268,16 @@ export class NavigationHUD {
     }
 
     _requestAuxiliaryInsetsUpdate() {
-        if (this.auxiliaryInsetsFrame) return;
+        if (this.auxiliaryInsetsFrame) {
+            logMay15('ebook.navHUD.auxiliaryInsets.skipSchedule', {
+                reason: 'alreadyScheduled',
+                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            });
+            return;
+        }
+        logMay15('ebook.navHUD.auxiliaryInsets.schedule', {
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+        });
         this.auxiliaryInsetsFrame = requestAnimationFrame(() => {
             this.auxiliaryInsetsFrame = 0;
             this._updateAuxiliaryInsets();
@@ -1312,10 +1285,18 @@ export class NavigationHUD {
     }
 
     _updateAuxiliaryInsets() {
+        const startedAt = performance.now();
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
-        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
+        logMay15('ebook.navHUD.auxiliaryInsets.entered', {
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            hasNavBar: !!this.navBar,
+            hasBackButton: !!this.navRelocateButtons?.back,
+            hasForwardButton: !!this.navRelocateButtons?.forward,
+            stack: may15Stack(),
+        });
         const lookupPopoverPresented = document.body?.dataset?.mnbLookupPopoverPresented === 'true';
+        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
         const pageReadButton = lookupPopoverPresented
             ? null
             : (this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
@@ -1379,6 +1360,14 @@ export class NavigationHUD {
         this.lastAuxiliaryInsetsState = nextState;
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
+        logMay15('ebook.navHUD.auxiliaryInsets.finished', {
+            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            changed,
+            leftInset,
+            rightInset,
+            backButtonEdge: nextState.backButtonEdge,
+            forwardButtonEdge: nextState.forwardButtonEdge,
+        });
     }
 
     _setButtonEdge(button, edge) {
@@ -1625,7 +1614,7 @@ export class NavigationHUD {
         }
         return true;
     }
-
+    
     _toggleCompletionStack(forceShow) {
         const shouldShow = typeof forceShow === 'boolean'
             ? forceShow
@@ -1652,16 +1641,20 @@ export class NavigationHUD {
     }
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
+        const startedAt = performance.now();
         const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
         const center = this.navSectionProgress?.center;
-        const labelBefore = {
-            text: center?.textContent ?? null,
-            hidden: center?.hidden ?? null,
-            display: center ? getComputedStyle(center).display : null,
-            opacity: center ? getComputedStyle(center).opacity : null,
-        };
+        logMay15('ebook.navHUD.sectionProgress.entered', {
+            source,
+            refreshSnapshot,
+            requestToken,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            hasCenter: !!center,
+            centerHidden: center?.hidden ?? null,
+            stack: may15Stack(),
+        });
         const setCenterPagesLeftVisible = (visible, label = '') => {
             if (!center) return;
             if (center.__pagesLeftFadeTimer) {
@@ -1673,6 +1666,11 @@ export class NavigationHUD {
                 center.textContent = label;
                 if (center.dataset.pagesLeftVisible !== 'true') {
                     center.dataset.pagesLeftVisible = 'false';
+                    logMay15('ebook.navHUD.sectionProgress.forceLayoutForFade', {
+                        source,
+                        requestToken,
+                        label,
+                    });
                     void center.offsetWidth;
                     requestAnimationFrame(() => {
                         requestAnimationFrame(() => {
@@ -1695,31 +1693,11 @@ export class NavigationHUD {
         };
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
-        logPagesLeft('label.begin', {
-            source,
-            requestToken,
-            refreshSnapshot,
-            before: labelBefore,
-            afterClearText: center?.textContent ?? null,
-            afterClearHidden: center?.hidden ?? null,
-            afterClearDisplay: center ? getComputedStyle(center).display : null,
-        });
         try {
             const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
             const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
             const pagesLeft = result?.pagesLeft ?? null;
             if (requestToken !== this.sectionProgressRequestToken) {
-                logPagesLeft('label.skip.stale-update', {
-                    source,
-                    requestToken,
-                    latestRequestToken: this.sectionProgressRequestToken,
-                    sectionIndex: sectionResolution.index,
-                    pagesLeft,
-                    calculateSource: result?.source ?? null,
-                    existingText: center?.textContent ?? null,
-                    existingHidden: center?.hidden ?? null,
-                    existingDisplay: center ? getComputedStyle(center).display : null,
-                });
                 return;
             }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
@@ -1730,15 +1708,11 @@ export class NavigationHUD {
                     pagesLeftLabel: '',
                     source,
                 });
-                logPagesLeft('label.skip.hidden-or-completion', {
+                logMay15('ebook.navHUD.sectionProgress.return', {
                     source,
                     requestToken,
-                    hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-                    showingCompletion,
-                    pagesLeft,
-                    centerText: center?.textContent ?? null,
-                    centerHidden: center?.hidden ?? null,
-                    centerDisplay: center ? getComputedStyle(center).display : null,
+                    verdict: this.hideNavigationDueToScroll ? 'hiddenNavigation' : 'showingCompletion',
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
                 });
                 return;
             }
@@ -1749,10 +1723,11 @@ export class NavigationHUD {
                     pagesLeftLabel: '',
                     source,
                 });
-                logPagesLeft('label.skip.no-section', {
+                logMay15('ebook.navHUD.sectionProgress.return', {
                     source,
                     requestToken,
-                    pagesLeft,
+                    verdict: 'noSectionIndex',
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
                 });
                 return;
             }
@@ -1765,16 +1740,13 @@ export class NavigationHUD {
                     pagesLeftLabel: '',
                     source,
                 });
-                logPagesLeft('label.hide.terminal', {
+                logMay15('ebook.navHUD.sectionProgress.return', {
                     source,
                     requestToken,
+                    verdict: 'noPagesLeft',
                     sectionIndex: sectionResolution.index,
-                    pagesLeft,
-                    calculateSource: result?.source ?? null,
-                    centerText: center?.textContent ?? null,
-                    centerHidden: center?.hidden ?? null,
-                    centerDisplay: center ? getComputedStyle(center).display : null,
-                    centerOpacity: center ? getComputedStyle(center).opacity : null,
+                    currentPageNumber: result?.currentPageNumber ?? null,
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
                 });
                 return;
             }
@@ -1798,18 +1770,12 @@ export class NavigationHUD {
                     pagesLeftLabel: '',
                     source,
                 });
-                logPagesLeft('label.suppress-terminal-regression', {
+                logMay15('ebook.navHUD.sectionProgress.return', {
                     source,
                     requestToken,
+                    verdict: 'terminalSectionCached',
                     sectionIndex: sectionResolution.index,
-                    pagesLeft,
-                    calculateSource: result?.source ?? null,
-                    currentPageNumber: result?.currentPageNumber ?? null,
-                    terminalPageNumber: this.lastTerminalPagesLeftPageNumber,
-                    pageTurnDirection: this.lastRelocateDetail?.pageTurnDirection ?? null,
-                    centerText: center?.textContent ?? null,
-                    centerHidden: center?.hidden ?? null,
-                    centerDisplay: center ? getComputedStyle(center).display : null,
+                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
                 });
                 return;
             }
@@ -1818,19 +1784,9 @@ export class NavigationHUD {
                 || movedBeforeTerminalPage
                 || this.lastTerminalPagesLeftSection !== sectionResolution.index
             ) {
-                logPagesLeft('label.clear-terminal-state', {
-                    source,
-                    requestToken,
-                    sectionIndex: sectionResolution.index,
-                    pagesLeft,
-                    currentPageNumber: result?.currentPageNumber ?? null,
-                    terminalPageNumber: this.lastTerminalPagesLeftPageNumber,
-                    reason: movedBeforeTerminalPage ? 'moved-before-terminal-page' : (isExplicitBackwardRelocate ? 'explicit-backward' : 'section-changed'),
-                });
                 this.lastTerminalPagesLeftSection = null;
                 this.lastTerminalPagesLeftPageNumber = null;
             }
-            if (!center) return;
             const progressScope = this._isLastLinearSection(sectionResolution.index) ? 'book' : 'chapter';
             const label = pagesLeft === 1
                 ? `1 page left in ${progressScope}`
@@ -1841,38 +1797,31 @@ export class NavigationHUD {
                 pagesLeftLabel: label,
                 source,
             });
-            logPagesLeft('label.set', {
+            logMay15('ebook.navHUD.sectionProgress.return', {
                 source,
                 requestToken,
+                verdict: 'visible',
                 sectionIndex: sectionResolution.index,
                 pagesLeft,
-                calculateSource: result?.source ?? null,
-                label,
-                centerText: center.textContent,
-                centerHidden: center.hidden,
-                centerDisplay: getComputedStyle(center).display,
-                centerOpacity: getComputedStyle(center).opacity,
+                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
             });
         } catch (error) {
+            logMay15('ebook.navHUD.sectionProgress.return', {
+                source,
+                requestToken,
+                verdict: 'error',
+                message: String(error?.message ?? error),
+                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            });
             console.error('Failed to update section progress', error);
         }
     }
 
-
+    
     async _calculatePagesLeftInSection({ refreshSnapshot = true, requestToken = null, source = 'unknown' } = {}) {
         const detail = this.lastRelocateDetail;
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
         if (sectionResolution.index == null) {
-            logPagesLeft('calculate.skip.no-section', {
-                source,
-                requestToken,
-                refreshSnapshot,
-                detailPageNumber: detail?.pageNumber ?? null,
-                detailPageCount: detail?.pageCount ?? null,
-                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-            });
             return null;
         }
         if (refreshSnapshot) {
@@ -1880,17 +1829,6 @@ export class NavigationHUD {
         }
         const localCurrentIndex = this._rendererSnapshotIndex();
         if (!(typeof localCurrentIndex === 'number' && localCurrentIndex >= 0)) {
-            logPagesLeft('calculate.skip.no-snapshot-index', {
-                source,
-                requestToken,
-                refreshSnapshot,
-                sectionIndex: sectionResolution.index,
-                detailPageNumber: detail?.pageNumber ?? null,
-                detailPageCount: detail?.pageCount ?? null,
-                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-            });
             return null;
         }
         const currentPageNumber = localCurrentIndex + 1;
@@ -1899,20 +1837,6 @@ export class NavigationHUD {
             : null;
         if (typeof liveSectionTotal === 'number' && liveSectionTotal > 0) {
             const pagesLeft = Math.max(0, liveSectionTotal - currentPageNumber);
-            logPagesLeft('calculate.result.snapshot', {
-                source,
-                requestToken,
-                sectionIndex: sectionResolution.index,
-                currentPageNumber,
-                totalPages: liveSectionTotal,
-                pagesLeft,
-                refreshSnapshot,
-                detailPageNumber: detail?.pageNumber ?? null,
-                detailPageCount: detail?.pageCount ?? null,
-                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-            });
             return {
                 pagesLeft,
                 source: 'snapshot',
@@ -1927,20 +1851,6 @@ export class NavigationHUD {
             const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
             if (current != null && current > 0 && total != null && total > 0) {
                 const pagesLeft = Math.max(0, total - current);
-                logPagesLeft('calculate.result.detail', {
-                    source,
-                    requestToken,
-                    sectionIndex: sectionResolution.index,
-                    currentPageNumber: current,
-                    totalPages: total,
-                    pagesLeft,
-                    refreshSnapshot,
-                    detailPageNumber: detail?.pageNumber ?? null,
-                    detailPageCount: detail?.pageCount ?? null,
-                    snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                    snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                    snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-                });
                 return {
                     pagesLeft,
                     source: 'detail',
@@ -1952,33 +1862,9 @@ export class NavigationHUD {
         }
         const cachedSectionTotal = this.sectionPageCounts.get(sectionResolution.index);
         if (!(typeof cachedSectionTotal === 'number' && cachedSectionTotal > 0)) {
-            logPagesLeft('calculate.skip.no-cache-total', {
-                source,
-                requestToken,
-                sectionIndex: sectionResolution.index,
-                currentPageNumber,
-                detailPageNumber: detail?.pageNumber ?? null,
-                detailPageCount: detail?.pageCount ?? null,
-                snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-                snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-                snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-            });
             return null;
         }
         const pagesLeft = Math.max(0, cachedSectionTotal - currentPageNumber);
-        logPagesLeft('calculate.result.cache', {
-            source,
-            requestToken,
-            sectionIndex: sectionResolution.index,
-            currentPageNumber,
-            totalPages: cachedSectionTotal,
-            pagesLeft,
-            detailPageNumber: detail?.pageNumber ?? null,
-            detailPageCount: detail?.pageCount ?? null,
-            snapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-            snapshotTotal: this.rendererPageSnapshot?.total ?? null,
-            snapshotScrolled: this.rendererPageSnapshot?.scrolled ?? null,
-        });
         return {
             pagesLeft,
             source: 'cache',
@@ -1987,7 +1873,7 @@ export class NavigationHUD {
             sectionIndex: sectionResolution.index,
         };
     }
-
+    
     _handleRelocateHistory(detail) {
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
@@ -2193,7 +2079,7 @@ export class NavigationHUD {
         this._logStackSnapshot('push');
         return { entry, index };
     }
-
+    
     _makeLocationDescriptor(detail) {
         if (!detail) return null;
         const rawLocCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
@@ -2316,12 +2202,12 @@ export class NavigationHUD {
             locationTotalHint: typeof descriptor.locationTotalHint === 'number' ? descriptor.locationTotalHint : null,
         };
     }
-
+    
     _requestRendererPrimaryLine() {
         // No-op: we no longer backfill the primary label with renderer page numbers.
         return;
     }
-
+    
     _normalizeRendererPageInfo(rawPage, rawTotal, renderer) {
         if (rawPage == null && rawTotal == null) return null;
         const numericPage = Number(rawPage);
@@ -2378,7 +2264,7 @@ export class NavigationHUD {
             scrolled,
         };
     }
-
+    
     _formatRendererPageLabel(info) {
         if (!info) return '';
         if (info.total && info.total > 0) {
@@ -2486,18 +2372,7 @@ export class NavigationHUD {
             }
             this.lastRendererSnapshotLog = signature;
         }
-        const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
-        const line = `# PAGENUM ${JSON.stringify(cleaned)}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional native logger
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console logger
-        }
+        void base;
     }
 
     _logPageScrub(_event, _payload = {}) {}
@@ -2583,7 +2458,7 @@ export class NavigationHUD {
         }
         return false;
     }
-
+    
     _resolvePageIndex(pageItem) {
         if (!pageItem || !this.pageTargetIndexByKey) return null;
         const key = ensurePageKey(pageItem);
@@ -2642,7 +2517,7 @@ export class NavigationHUD {
     _cacheWarmerHasFinishedBook() {
         return !!globalThis.__manabiCacheWarmerFinished;
     }
-
+    
     _pageIndexFromFraction(fraction, totalOverride) {
         const total = typeof totalOverride === 'number' && totalOverride > 0
             ? totalOverride
@@ -2838,14 +2713,15 @@ export class NavigationHUD {
         // No progress info; leave label empty.
         return '';
     }
-
+    
     _isRelocateButtonVisible(direction) {
         if (!direction) return false;
         const button = this.navRelocateButtons?.[direction];
         return !!(button && !button.hidden && !button.disabled);
     }
 
-    _updateRelocateButtons() {
+    _updateRelocateButtons(source = 'unknown') {
+        const startedAt = performance.now();
         const backStack = this.relocateStacks.back;
         const forwardStack = this.relocateStacks.forward;
         const backBtn = this.navRelocateButtons?.back;
@@ -2856,6 +2732,16 @@ export class NavigationHUD {
         const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
         const disableBack = busy || !showBack;
         const disableForward = busy || !showForward;
+        logMay15('ebook.navHUD.relocateButtons.entered', {
+            source,
+            backDepth: backStack.length,
+            forwardDepth: forwardStack.length,
+            showBack,
+            showForward,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHidden: this.navHidden,
+            stack: may15Stack(),
+        });
         if (backBtn) {
             backBtn.hidden = !showBack;
             backBtn.disabled = disableBack;
@@ -2903,18 +2789,17 @@ export class NavigationHUD {
             forwardHidden: forwardBtn?.hidden ?? null,
             backDisabled: backBtn?.disabled ?? null,
             forwardDisabled: forwardBtn?.disabled ?? null,
-            backWidth: backBtn?.offsetWidth ?? null,
-            forwardWidth: forwardBtn?.offsetWidth ?? null,
             backEdge: backBtn?.dataset?.navEdge ?? null,
             forwardEdge: forwardBtn?.dataset?.navEdge ?? null,
-            backOpacity: backBtn ? window.getComputedStyle(backBtn).opacity : null,
-            forwardOpacity: forwardBtn ? window.getComputedStyle(forwardBtn).opacity : null,
-            backDisplay: backBtn ? window.getComputedStyle(backBtn).display : null,
-            forwardDisplay: forwardBtn ? window.getComputedStyle(forwardBtn).display : null,
-            backVisibility: backBtn ? window.getComputedStyle(backBtn).visibility : null,
-            forwardVisibility: forwardBtn ? window.getComputedStyle(forwardBtn).visibility : null,
         });
+        this._postNativeOverlayState(`relocate-buttons:${source}`);
         this._updateSectionProgress({ source: 'relocate-buttons' });
+        logMay15('ebook.navHUD.relocateButtons.afterSectionProgressDispatch', {
+            source,
+            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            showBack,
+            showForward,
+        });
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;
             this._logJumpDiagnostic('relocate-visibility', {
@@ -2935,7 +2820,7 @@ export class NavigationHUD {
         }
         this._requestAuxiliaryInsetsUpdate();
     }
-
+    
     _serializeStack(stack) {
         if (!Array.isArray(stack) || !stack.length) {
             return [];
@@ -3040,7 +2925,7 @@ export class NavigationHUD {
         }
         return !!result?.entry;
     }
-
+    
     _finalizePendingRelocateJump(descriptor) {
         const pending = this.pendingRelocateJump;
         if (!pending) {
@@ -3095,7 +2980,7 @@ export class NavigationHUD {
         });
         this._updateRelocateButtons();
     }
-
+    
     async _handleRelocateJump(direction) {
         this._logJumpButton('tap', {
             direction,
