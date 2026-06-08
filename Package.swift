@@ -51,7 +51,7 @@ let package = Package(
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
         .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
-        .package(url: "https://github.com/lake-of-fire/PersistedLRUCache.git", revision: "b86f15682d134978962eb0f7d88f9b9d23edff0a"),
+        .package(url: "https://github.com/lake-of-fire/PersistedLRUCache.git", branch: "main"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
     ],
     targets: [
