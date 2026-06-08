@@ -9431,6 +9431,7 @@ class CacheWarmer {
         await this.view.renderer.goTo({ index: firstUnsettledIndex })
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
+        const startedAt = performanceNowMs();
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         if (!Number.isInteger(targetIndex)) {
@@ -9445,6 +9446,15 @@ class CacheWarmer {
                 minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
                 ...captureEPUBOverlapState(),
             })
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.advance.skip',
+                verdict: 'finished',
+                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
+                lastLoadedSectionIndex: this.lastLoadedSectionIndex,
+                lastLoadedSectionHref: this.lastLoadedSectionHref,
+                settledSectionCount: settledSectionHrefs.length,
+                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+            }, `section.nav.advance.finished.${this.lastLoadedSectionIndex}.${minimumIndex}`, 500);
             return
         }
         if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
@@ -9461,7 +9471,24 @@ class CacheWarmer {
                 settledSectionCount: settledSectionHrefs.length,
                 ...captureEPUBOverlapState(),
             })
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.advance.start',
+                mode: 'nextSection',
+                currentSectionIndex: this.lastLoadedSectionIndex,
+                currentSectionHref: this.lastLoadedSectionHref,
+                targetSectionIndex: targetIndex,
+                targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+                activeForegroundHref: activeForegroundSectionHref(),
+                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
+                settledSectionCount: settledSectionHrefs.length,
+            }, `section.nav.advance.start.next.${this.lastLoadedSectionIndex}.${targetIndex}`, 250);
             await this.view.renderer.nextSection()
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.advance.end',
+                mode: 'nextSection',
+                targetSectionIndex: targetIndex,
+                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+            }, `section.nav.advance.end.next.${targetIndex}`, 250);
             return
         }
         const targetSection = this.view?.book?.sections?.[targetIndex] ?? null
@@ -9494,7 +9521,25 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
+        logBookDebug('section.nav', {
+            stage: 'cacheWarmer.advance.start',
+            mode: 'goTo',
+            currentSectionIndex: this.lastLoadedSectionIndex,
+            currentSectionHref: this.lastLoadedSectionHref,
+            targetSectionIndex: targetIndex,
+            targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
+            activeForegroundHref: activeForegroundSectionHref(),
+            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
+            skippedSettledSectionCount: skippedSettledSectionHrefs.length,
+            settledSectionCount: settledSectionHrefs.length,
+        }, `section.nav.advance.start.goTo.${this.lastLoadedSectionIndex}.${targetIndex}`, 250);
         await this.view.renderer.goTo({ index: targetIndex })
+        logBookDebug('section.nav', {
+            stage: 'cacheWarmer.advance.end',
+            mode: 'goTo',
+            targetSectionIndex: targetIndex,
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        }, `section.nav.advance.end.goTo.${targetIndex}`, 250);
     }
     destroy() {
         if (this.view) {
@@ -10578,11 +10623,35 @@ window.manabiOpenReaderGoToSheet = (source = 'window.manabiOpenReaderGoToSheet')
 }
 
 window.nextSection = async () => {
+    const startedAt = performanceNowMs();
     const btn = globalThis.reader?.buttons?.next;
     if (btn && btn.offsetParent !== null && getComputedStyle(btn).visibility !== 'hidden') {
+        logBookDebug('section.nav', {
+            stage: 'foreground.nextSection.start',
+            mode: 'button-click',
+            activeForegroundIndex: activeForegroundSectionIndex(),
+            activeForegroundHref: activeForegroundSectionHref(),
+        }, 'section.nav.foreground.nextSection.start.button', 250);
         btn.click();
+        logBookDebug('section.nav', {
+            stage: 'foreground.nextSection.end',
+            mode: 'button-click',
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        }, 'section.nav.foreground.nextSection.end.button', 250);
     } else {
+        logBookDebug('section.nav', {
+            stage: 'foreground.nextSection.start',
+            mode: 'renderer-nextSection',
+            activeForegroundIndex: activeForegroundSectionIndex(),
+            activeForegroundHref: activeForegroundSectionHref(),
+            hasRenderer: !!globalThis.reader?.view?.renderer,
+        }, 'section.nav.foreground.nextSection.start.renderer', 250);
         await globalThis.reader?.view?.renderer?.nextSection?.();
+        logBookDebug('section.nav', {
+            stage: 'foreground.nextSection.end',
+            mode: 'renderer-nextSection',
+            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+        }, 'section.nav.foreground.nextSection.end.renderer', 250);
     }
 }
 
