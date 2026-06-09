@@ -486,14 +486,6 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         }
 
         if item.url.isSnippetURL {
-            debugPrint(
-                "# SNIPPETS",
-                "ReaderContentCell.fallbackTitle",
-                "reason=snippetUntitledFallback",
-                "url=\(item.url.absoluteString)",
-                "itemTitle=\(item.title.trimmingCharacters(in: .whitespacesAndNewlines).truncate(80))",
-                "viewModelTitle=\(viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines).truncate(80))"
-            )
             return "Untitled"
         }
 

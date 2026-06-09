@@ -12,26 +12,6 @@ import RealmSwiftGaps
 import UniformTypeIdentifiers
 
 
-private func logSnippetEvent(_ stage: String, _ parts: String...) {
-#if DEBUG
-    debugPrint("# SNIPPETS", stage, parts.joined(separator: " "))
-#endif
-}
-
-private let readerContentLoaderVerboseLoggingEnabled =
-    ProcessInfo.processInfo.environment["MANABI_READERLOAD_VERBOSE_CONTENT_LOADER"] == "1"
-private let readerContentLoaderSlowStepThreshold: TimeInterval = 0.010
-private let readerContentLoaderSlowSummaryThreshold: TimeInterval = 0.050
-
-@inline(__always)
-private func shouldLogLoadAllStep(found: Bool, elapsed: TimeInterval) -> Bool {
-    readerContentLoaderVerboseLoggingEnabled || found || elapsed >= readerContentLoaderSlowStepThreshold
-}
-
-@inline(__always)
-private func shouldLogLoadAllSummary(candidateCount: Int, elapsed: TimeInterval) -> Bool {
-    readerContentLoaderVerboseLoggingEnabled || candidateCount > 0 || elapsed >= readerContentLoaderSlowSummaryThreshold
-}
 
 fileprivate extension URL {
     func settingScheme(_ value: String) -> URL {
@@ -162,39 +142,21 @@ public struct ReaderContentLoader {
             return try await resolveContentReferences(cached.references)
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {
-            if readerContentLoaderVerboseLoggingEnabled {
-            }
             return try await resolveContentReferences(existingTask.value)
         }
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
-            let startedAt = Date()
-            if readerContentLoaderVerboseLoggingEnabled {
-            }
             try Task.checkCancellation()
 
             var contentFile: ContentFile?
             if !skipContentFiles {
-                let contentFileStartedAt = Date()
                 contentFile = try await ContentFile.get(forURL: url)
-                let elapsed = Date().timeIntervalSince(contentFileStartedAt)
-                if shouldLogLoadAllStep(found: contentFile != nil, elapsed: elapsed) {
-                }
             }
-            let historyStartedAt = Date()
             let history = try await HistoryRecord.get(forURL: url)
-            let historyElapsed = Date().timeIntervalSince(historyStartedAt)
-            if shouldLogLoadAllStep(found: history != nil, elapsed: historyElapsed) {
-            }
-            let bookmarkStartedAt = Date()
             let bookmark = try await Bookmark.get(forURL: url)
-            let bookmarkElapsed = Date().timeIntervalSince(bookmarkStartedAt)
-            if shouldLogLoadAllStep(found: bookmark != nil, elapsed: bookmarkElapsed) {
-            }
 
             var feed: FeedEntry?
             if !skipFeedEntries {
-                let feedStartedAt = Date()
                 let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
                 let feeds = feedRealm.objects(FeedEntry.self)
                     .where { !$0.isDeleted }
@@ -205,15 +167,9 @@ public struct ReaderContentLoader {
                 } else if !url.isReaderFileURL {
                     feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
                 }
-                let feedElapsed = Date().timeIntervalSince(feedStartedAt)
-                if shouldLogLoadAllStep(found: feed != nil, elapsed: feedElapsed) {
-                }
             }
 
             let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
-            let totalElapsed = Date().timeIntervalSince(startedAt)
-            if shouldLogLoadAllSummary(candidateCount: candidates.count, elapsed: totalElapsed) {
-            }
             return candidates.compactMap(ContentReference.init(content:))
         }
 
@@ -398,11 +354,7 @@ public struct ReaderContentLoader {
             return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
-        let content = try await contentRef?.resolveOnMainActor()
-        if let content {
-        } else {
-        }
-        return content
+        return try await contentRef?.resolveOnMainActor()
     }
     
     @MainActor
@@ -428,12 +380,6 @@ public struct ReaderContentLoader {
             let normalizedHTML = normalizeSnippetSourceHTML(html)
             let data = normalizedHTML.readerContentData
             let generatedTitle = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
-            logSnippetEvent(
-                "loadHTML.begin",
-                "normalizedBytes=\(normalizedHTML.utf8.count)",
-                "generatedTitle=\(generatedTitle.truncate(80))",
-                "allowContentMatch=\(allowContentMatch)"
-            )
 
             if allowContentMatch {
                 let bookmark = bookmarkRealm.objects(Bookmark.self)
@@ -451,16 +397,8 @@ public struct ReaderContentLoader {
                 let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
 
                 if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
-                    logSnippetEvent(
-                        "loadHTML.match",
-                        "url=\(match.url.absoluteString)",
-                        "title=\(match.title.truncate(80))",
-                        "createdAt=\(match.createdAt.timeIntervalSince1970)"
-                    )
                     return ReaderContentLoader.ContentReference(content: match)
                 }
-            } else {
-                logSnippetEvent("loadHTML.matchSkipped", "reason=createNewSnippet")
             }
             
             let historyRecord = HistoryRecord()
@@ -486,29 +424,11 @@ public struct ReaderContentLoader {
                 historyRealm.add(historyRecord, update: .modified)
             }
 
-            logSnippetEvent(
-                "loadHTML.createdSnippet",
-                "url=\(historyRecord.url.absoluteString)",
-                "title=\(historyRecord.title.truncate(80))",
-                "isTitlePrefixOfContent=\(historyRecord.isTitlePrefixOfContent)",
-                "contentBytes=\(historyRecord.content?.count ?? 0)"
-            )
             
             return ReaderContentLoader.ContentReference(content: historyRecord)
         }()
         
-        let resolved = try await contentRef?.resolveOnMainActor()
-        if let resolved {
-            logSnippetEvent(
-                "loadHTML.resolved",
-                "url=\(resolved.url.absoluteString)",
-                "title=\(resolved.title.truncate(80))",
-                "isSnippetURL=\(resolved.url.isSnippetURL)"
-            )
-        } else {
-            logSnippetEvent("loadHTML.resolved", "content=<nil>")
-        }
-        return resolved
+        return try await contentRef?.resolveOnMainActor()
     }
     
     /// Returns a URL to load for the given content into a Reader instance. The URL is either a resource (like a web location),
@@ -518,21 +438,8 @@ public struct ReaderContentLoader {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
-        let startedAt = Date()
         let contentURL = content.url
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: contentURL)
-        debugPrint(
-            "# READERMODE",
-            "stage=contentLoader.loadContent.begin",
-            "contentURL=\(contentURL.absoluteString)",
-            "contentType=\(String(describing: type(of: content)))",
-            "readerDefault=\(content.isReaderModeByDefault)",
-            "readerAvailable=\(content.isReaderModeAvailable)",
-            "offerHidden=\(content.isReaderModeOfferHidden)",
-            "rssContainsFullContent=\(content.rssContainsFullContent)",
-            "hasHTML=\(content.hasHTML)"
-        )
-        let htmlProbeStartedAt = Date()
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
             readerFileManager: readerFileManager
@@ -549,15 +456,6 @@ public struct ReaderContentLoader {
             if content.isReaderModeByDefault,
                contentHasLocallyRetrievableHTML,
                let loaderURL = readerLoaderURL(for: contentURL) {
-                debugPrint(
-                    "# READERMODE",
-                    "stage=contentLoader.loadContent.finish",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "targetURL=\(loaderURL.absoluteString)",
-                    "reason=contentReaderDefault",
-                    "readerDefault=\(content.isReaderModeByDefault)",
-                    "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
-                )
                 return loaderURL
             }
 
@@ -568,28 +466,8 @@ public struct ReaderContentLoader {
                     readerFileManager: readerFileManager
                )) == true,
                let matchingURL = readerLoaderURL(for: matchingContent.url) {
-                debugPrint(
-                    "# READERMODE",
-                    "stage=contentLoader.loadContent.finish",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "targetURL=\(matchingURL.absoluteString)",
-                    "reason=matchingContentReaderDefault",
-                    "matchingContentURL=\(matchingContent.url.absoluteString)",
-                    "readerDefault=\(matchingContent.isReaderModeByDefault)"
-                )
                 return matchingURL
             }
-            debugPrint(
-                "# READERMODE",
-                "stage=contentLoader.loadContent.finish",
-                "contentURL=\(contentURL.absoluteString)",
-                "targetURL=\(content.url.absoluteString)",
-                "reason=httpDirect",
-                "readerDefault=\(content.isReaderModeByDefault)",
-                "readerAvailable=\(content.isReaderModeAvailable)",
-                "rssContainsFullContent=\(content.rssContainsFullContent)",
-                "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
-            )
             return content.url
         }
 
@@ -704,34 +582,12 @@ public struct ReaderContentLoader {
 #endif
         
         if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {
-            logSnippetEvent(
-                "loadPasteboard.url",
-                "url=\(url.absoluteString)"
-            )
             match = try await load(url: url, countsAsHistoryVisit: true)
         } else if let payload = preferredPasteboardPayload(html: html, text: text) {
             let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
-            logSnippetEvent(
-                "loadPasteboard.payload",
-                "explicitHTML=\(payload.explicitHTML)",
-                "format=\(normalized.format)",
-                "textPreview=\(payload.text.truncate(80))",
-                "allowContentMatch=\(allowContentMatch)"
-            )
             match = try await load(html: normalized.html, allowContentMatch: allowContentMatch)
         }
 
-        if let match {
-            logSnippetEvent(
-                "loadPasteboard.result",
-                "url=\(match.url.absoluteString)",
-                "isSnippetURL=\(match.url.isSnippetURL)",
-                "title=\(match.title.truncate(80))"
-            )
-        } else {
-            logSnippetEvent("loadPasteboard.result", "match=<nil>")
-        }
-        
         if let match, let realmConfiguration = match.realm?.configuration {
             if match.url.isSnippetURL {
                 let type = type(of: match)
@@ -857,7 +713,6 @@ public struct ReaderContentLoader {
         _ title: String,
         sourceHTML: String?
     ) -> Bool {
-        let normalizedTitle = normalizedSnippetAutoTitle(title)
         let generatedTitle = sourceHTML.flatMap { generatedSnippetTitle(fromSourceHTML: $0) }
         let canonicalTitle = canonicalSnippetAutoTitleComparisonValue(title)
         let canonicalGeneratedTitle = canonicalSnippetAutoTitleComparisonValue(generatedTitle)
@@ -878,18 +733,6 @@ public struct ReaderContentLoader {
             }()
             return canonicalMatch || compactMatch
         }()
-        debugPrint(
-            "# SNIPPETTITLE matchCheck",
-            "title=\(title)",
-            "normalizedTitle=\(normalizedTitle ?? "<nil>")",
-            "generatedTitle=\(generatedTitle ?? "<nil>")",
-            "canonicalTitle=\(canonicalTitle ?? "<nil>")",
-            "canonicalGeneratedTitle=\(canonicalGeneratedTitle ?? "<nil>")",
-            "compactTitle=\(compactTitle ?? "<nil>")",
-            "compactGeneratedTitle=\(compactGeneratedTitle ?? "<nil>")",
-            "hasSourceHTML=\(sourceHTML != nil)",
-            "matches=\(matches)"
-        )
         return matches
     }
 
@@ -909,12 +752,6 @@ public struct ReaderContentLoader {
         if shouldAutoRetitle,
            let generatedTitle = generatedSnippetTitle(fromSourceHTML: updatedHTML) {
             resolvedTitle = generatedTitle
-            debugPrint(
-                "# SNIPPETTITLE autoRetitle",
-                "currentTitle=\(currentTitle)",
-                "requestedTitle=\(requestedTitle ?? "<nil>")",
-                "resolvedTitle=\(generatedTitle)"
-            )
         } else {
             resolvedTitle = desiredTitle
         }
@@ -955,17 +792,10 @@ public struct ReaderContentLoader {
 #endif
 
         guard let payload = preferredPasteboardPayload(html: html, text: text) else {
-            logSnippetEvent("loadPasteboardSnippetHTML", "payload=<nil>")
             return nil
         }
         let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
-        logSnippetEvent(
-            "loadPasteboardSnippetHTML",
-            "explicitHTML=\(payload.explicitHTML)",
-            "format=\(normalized.format)",
-            "textPreview=\(payload.text.truncate(80))"
-        )
-        return normalizeSnippetSourceHTML(normalized.html)
+   return normalizeSnippetSourceHTML(normalized.html)
     }
 
 #if DEBUG
@@ -991,13 +821,7 @@ This snippet loads when the pasteboard is empty in a debug build.
 
         let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
         let contentURL = content.url
-        logSnippetEvent(
-            "appendSnippetHTML.begin",
-            "contentURL=\(contentURL.absoluteString)",
-            "incomingBytes=\(normalizedAppendedHTML.utf8.count)"
-        )
-
-        try await { @RealmBackgroundActor in
+    try await { @RealmBackgroundActor in
             try await updateContent(url: contentURL) { object in
                 let currentHTML = object.html
                 guard let mergedHTML = try? appendSnippetHTML(
@@ -1038,26 +862,11 @@ This snippet loads when the pasteboard is empty in a debug build.
                     objectDidChange = true
                 }
 
-                logSnippetEvent(
-                    "appendSnippetHTML.merge",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "currentBytes=\((currentHTML ?? "").utf8.count)",
-                    "mergedBytes=\(mergedHTML.utf8.count)",
-                    "didChange=\(objectDidChange)",
-                    "title=\(object.title.truncate(80))"
-                )
-
-                return objectDidChange
+            return objectDidChange
             }
         }()
 
-        logSnippetEvent(
-            "appendSnippetHTML.reload",
-            "contentURL=\(contentURL.absoluteString)",
-            "persist=false",
-            "countsAsHistoryVisit=false"
-        )
-        return try await load(
+   return try await load(
             url: contentURL,
             persist: false,
             countsAsHistoryVisit: false,
@@ -1163,45 +972,20 @@ This snippet loads when the pasteboard is empty in a debug build.
         let normalizedPlainText = normalizedClipboardText(text)
 
         if let normalizedHTMLText, let normalizedPlainText, normalizedHTMLText == normalizedPlainText {
-            logSnippetEvent(
-                "preferredPasteboardPayload",
-                "selected=plainText",
-                "reason=htmlMatchesPlainText",
-                "plainPreview=\(normalizedPlainText.truncate(80))"
-            )
-            return (normalizedPlainText, false)
+       return (normalizedPlainText, false)
         }
 
         if let html {
             if normalizeIngestedText(html, explicitHTML: false, source: .paste).format == .html {
-                logSnippetEvent(
-                    "preferredPasteboardPayload",
-                    "selected=html",
-                    "reason=looksLikeHTML",
-                    "htmlPreview=\(html.truncate(80))"
-                )
-                return (html, true)
+           return (html, true)
             }
         }
         if let text {
-            logSnippetEvent(
-                "preferredPasteboardPayload",
-                "selected=plainText",
-                "reason=textFallback",
-                "plainPreview=\(text.truncate(80))"
-            )
-            return (text, false)
+       return (text, false)
         }
         if let html {
-            logSnippetEvent(
-                "preferredPasteboardPayload",
-                "selected=htmlAsText",
-                "reason=htmlOnlyNonExplicit",
-                "htmlPreview=\(html.truncate(80))"
-            )
-            return (html, false)
+       return (html, false)
         }
-        logSnippetEvent("preferredPasteboardPayload", "selected=<nil>")
         return nil
     }
     

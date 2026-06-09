@@ -268,14 +268,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let sanitizedIncomingTitle = title?
             .replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: "")
         if ReaderHTTPErrorRecoveryPolicy.isHTTPErrorStatus(state.mainFrameHTTPStatusCode) {
-            let statusCode = state.mainFrameHTTPStatusCode
-            debugPrint(
-                "# 404 reader.metadata.skip",
-                "url=\(state.pageURL.absoluteString)",
-                "status=\(statusCode.map(String.init) ?? "nil")",
-                "incomingTitle=\(title.debugTitleFragment)",
-                "preservedStoredMetadata=true"
-            )
             return
         }
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }

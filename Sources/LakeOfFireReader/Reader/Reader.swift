@@ -1200,30 +1200,10 @@ public struct Reader: View {
                 let hideRedundantSnippetTitle =
                     readerContent.content?.url.isSnippetURL == true &&
                     readerContent.snippetTitleIsGeneratedFromPrefix
-                debugPrint(
-                    "# SNIPPETTITLE liveSync",
-                    "url=\(readerContent.content?.url.absoluteString ?? readerContent.pageURL.absoluteString)",
-                    "rawTitle=\(rawTitle)",
-                    "displayTitle=\(displayTitle)",
-                    "hideReaderTitle=\(hideRedundantSnippetTitle)"
-                )
                 do {
                     try await scriptCaller.evaluateJavaScript(
                         """
                         (function() {
-                          const postSnippetTitleLog = (payload) => {
-                            try {
-                              const message = '# SNIPPETTITLE ' + JSON.stringify(payload);
-                              const webkitPrint = window.webkit?.messageHandlers?.print;
-                              if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
-                                webkitPrint.postMessage(message);
-                                return;
-                              }
-                              if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
-                                print.postMessage(message);
-                              }
-                            } catch (_) {}
-                          };
                           const el = document.getElementById('reader-title');
                           const body = document.body;
                           if (el && el.textContent !== title) {
@@ -1232,15 +1212,6 @@ public struct Reader: View {
                           if (body) {
                             body.classList.toggle(bodyClassName, !!hideReaderTitle);
                           }
-                          postSnippetTitleLog({
-                            source: 'liveSync.js',
-                            hideReaderTitle: !!hideReaderTitle,
-                            bodyClassName,
-                            bodyClasses: body ? body.className : null,
-                            hasTitleElement: !!el,
-                            titleText: el ? el.textContent : null,
-                            computedDisplay: el ? window.getComputedStyle(el).display : null,
-                          });
                         })();
                         """,
                         arguments: [

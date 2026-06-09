@@ -305,19 +305,6 @@ internal func buildCanonicalReadabilityHTML(
                     let firstNonZeroReaderContentElapsedMs = null;
                     let firstNonZeroBodyReason = null;
                     let firstNonZeroBodyElapsedMs = null;
-                    const postSnippetTitleLog = (payload) => {
-                        try {
-                            const message = '# SNIPPETTITLE ' + JSON.stringify(payload);
-                            const webkitPrint = window.webkit?.messageHandlers?.print;
-                            if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
-                                webkitPrint.postMessage(message);
-                                return;
-                            }
-                            if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
-                                print.postMessage(message);
-                            }
-                        } catch (_) {}
-                    };
                     const postInvisibleLog = (payload) => {
                         try {
                             const message = '# INVISIBLE ' + JSON.stringify(payload);
@@ -549,15 +536,6 @@ internal func buildCanonicalReadabilityHTML(
                         });
                     };
                     const emit = () => {
-                        const el = document.getElementById('reader-title');
-                        const body = document.body;
-                        postSnippetTitleLog({
-                            source: 'canonicalHTML',
-                            bodyClasses: body ? body.className : null,
-                            hasTitleElement: !!el,
-                            titleText: el ? el.textContent : null,
-                            computedDisplay: el ? window.getComputedStyle(el).display : null,
-                        });
                         emitInvisible('emit');
                     };
                     if (document.readyState === 'loading') {
@@ -2310,13 +2288,6 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     try? body.attr("class", classNames.joined(separator: " "))
                 }
-                debugPrint(
-                    "# SNIPPETTITLE processedDocNormalize",
-                    "url=\(url.absoluteString)",
-                    "title=\(cleanedSnippetTitle)",
-                    "hideReaderTitle=\(hideRedundantSnippetTitle)",
-                    "bodyClasses=\((try? doc.body()?.className()) ?? "")"
-                )
             }
 
             let processedSegmentCount = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
@@ -2427,12 +2398,6 @@ public class ReaderModeViewModel: ObservableObject {
                     let transformedStyleText = shouldInjectProcessedStyles
                         ? (transformedStyleTextForFrameInjection ?? "")
                         : ""
-                    debugPrint(
-                        "# SNIPPETTITLE frameInjection",
-                        "url=\(url.absoluteString)",
-                        "bodyClasses=\(transformedBodyClasses)",
-                        "styleBytes=\(transformedStyleText.utf8.count)"
-                    )
                     try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
@@ -2579,13 +2544,6 @@ public class ReaderModeViewModel: ObservableObject {
                 fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
                 publishedTime: snippetPublishedTime
             ) {
-                debugPrint(
-                    "# SNIPPETS",
-                    "processReadabilityHTMLInSwift",
-                    "snippetBypassReadability=true",
-                    "url=\(url.absoluteString)",
-                    "contentBytes=\(normalizedHTML.utf8.count)"
-                )
                 return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
             }
         }

@@ -722,14 +722,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     isMainFrame: message.frameInfo.isMainFrame,
                     statusCode: readerViewModel.state.mainFrameHTTPStatusCode
                 ) {
-                    let statusCode = readerViewModel.state.mainFrameHTTPStatusCode
-                    debugPrint(
-                        "# 404 reader.readabilityUnavailable.skip",
-                        "url=\(url.absoluteString)",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "hasReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)",
-                        "preservedAvailability=true"
-                    )
                     return
                 }
                 if readerModeViewModel.isReaderModeLoading || readerModeViewModel.isReaderModeHandlingURL(url) {
@@ -738,18 +730,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
-                debugPrint(
-                    "# READERMODE",
-                    "stage=readerMessageHandlers.readabilityUnavailable.content",
-                    "windowURL=\(url.absoluteString)",
-                    "contentURL=\(content.url.absoluteString)",
-                    "contentType=\(String(describing: type(of: content)))",
-                    "readerDefault=\(content.isReaderModeByDefault)",
-                    "readerAvailable=\(content.isReaderModeAvailable)",
-                    "offerHidden=\(content.isReaderModeOfferHidden)",
-                    "rssContainsFullContent=\(content.rssContainsFullContent)",
-                    "isMainFrame=\(message.frameInfo.isMainFrame)"
-                )
                 if content.rssContainsFullContent && !content.isReaderModeByDefault {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -815,33 +795,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let content = try? await contentForWindowURL(url, source: "readabilityParsed") else {
                     return
                 }
-                debugPrint(
-                    "# READERMODE",
-                    "stage=readerMessageHandlers.readabilityParsed.content",
-                    "windowURL=\(url.absoluteString)",
-                    "contentURL=\(content.url.absoluteString)",
-                    "contentType=\(String(describing: type(of: content)))",
-                    "readerDefault=\(content.isReaderModeByDefault)",
-                    "readerAvailable=\(content.isReaderModeAvailable)",
-                    "offerHidden=\(content.isReaderModeOfferHidden)",
-                    "rssContainsFullContent=\(content.rssContainsFullContent)",
-                    "forceReaderModeWhenAvailable=\(forceReaderModeWhenAvailable)",
-                    "outputHTMLBytes=\(result.outputHTML.utf8.count)",
-                    "isMainFrame=\(message.frameInfo.isMainFrame)"
-                )
                 if ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
                     isMainFrame: message.frameInfo.isMainFrame,
                     statusCode: readerViewModel.state.mainFrameHTTPStatusCode
                 ) {
-                    let statusCode = readerViewModel.state.mainFrameHTTPStatusCode
-                    debugPrint(
-                        "# 404 reader.readabilityParsed.skip",
-                        "url=\(url.absoluteString)",
-                        "status=\(statusCode.map(String.init) ?? "nil")",
-                        "newHTMLBytes=\(result.outputHTML.utf8.count)",
-                        "hasReadabilityContent=\(readerModeViewModel.readabilityContent?.isEmpty == false)",
-                        "preservedReadabilityContent=true"
-                    )
                     return
                 }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
@@ -895,17 +852,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
-                debugPrint(
-                    "# READERMODE",
-                    "stage=readerMessageHandlers.readabilityParsed.decision",
-                    "windowURL=\(url.absoluteString)",
-                    "contentURL=\(content.url.absoluteString)",
-                    "shouldPreserveFullContentOriginal=\(shouldPreserveFullContentOriginal)",
-                    "willShowReaderView=\(!shouldPreserveFullContentOriginal && (content.isReaderModeByDefault || forceReaderModeWhenAvailable))",
-                    "readerDefault=\(content.isReaderModeByDefault)",
-                    "rssContainsFullContent=\(content.rssContainsFullContent)",
-                    "forceReaderModeWhenAvailable=\(forceReaderModeWhenAvailable)"
-                )
                 if shouldPreserveFullContentOriginal {
                     readerModeViewModel.readabilityContent = nil
                     readerModeViewModel.readabilityContainerSelector = nil
@@ -1134,13 +1080,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             readerModeViewModel.readabilityContainerFrameInfo = nil
         }
         await showOriginalWillBeginHandler?(contentURL, readerContent.pageURL)
-        debugPrint(
-            "# 404 reader.showOriginal.begin",
-            "contentURL=\(contentURL.absoluteString)",
-            "pageURL=\(readerContent.pageURL.absoluteString)",
-            "hasCapturedReadabilityContent=\(hasCapturedReadabilityContent)",
-            "shouldRestoreStoredFullContent=\(shouldRestoreStoredFullContent)"
-        )
         try await ReaderContentLoader.updateContent(url: contentURL) { object in
             let update = ReaderHTTPErrorRecoveryPolicy.showOriginalFlagUpdate(
                 currentFlags: ReaderHTTPErrorRecoveryPolicy.ReaderModeFlags(
@@ -1154,18 +1093,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             object.isReaderModeByDefault = update.flags.isReaderModeByDefault
             object.isReaderModeAvailable = update.flags.isReaderModeAvailable
             object.isReaderModeOfferHidden = update.flags.isReaderModeOfferHidden
-            let shouldKeepReaderModeAvailable = hasCapturedReadabilityContent || object.rssContainsFullContent
-            debugPrint(
-                "# 404 reader.showOriginal.persist",
-                "contentURL=\(object.url.absoluteString)",
-                "hasCapturedReadabilityContent=\(hasCapturedReadabilityContent)",
-                "rssContainsFullContent=\(object.rssContainsFullContent)",
-                "shouldKeepReaderModeAvailable=\(shouldKeepReaderModeAvailable)",
-                "isReaderModeByDefault=\(object.isReaderModeByDefault)",
-                "isReaderModeAvailable=\(object.isReaderModeAvailable)",
-                "isReaderModeOfferHidden=\(object.isReaderModeOfferHidden)",
-                "didChange=\(update.didChange)"
-            )
             return update.didChange
         }
         await readerContent.content?.realm?.asyncRefresh()

@@ -862,7 +862,20 @@ const collectEBookLayoutSnapshot = (view = globalThis.reader?.view ?? null, extr
     const top = shadowRoot?.getElementById?.('top') ?? shadowRoot?.querySelector?.('#top') ?? null;
     const header = shadowRoot?.getElementById?.('header') ?? shadowRoot?.querySelector?.('#header') ?? null;
     const footer = shadowRoot?.getElementById?.('footer') ?? shadowRoot?.querySelector?.('#footer') ?? null;
-    const readerDoc = renderer?.view?.document ?? renderer?.view?.doc ?? null;
+    const contents = renderer?.getContents?.() || [];
+    const primaryContent = contents.find?.(content =>
+        content?.doc?.body
+        || content?.document?.body
+        || content?.frame?.contentDocument?.body
+        || content?.iframe?.contentDocument?.body
+    ) ?? null;
+    const readerDoc = renderer?.view?.document
+        ?? renderer?.view?.doc
+        ?? primaryContent?.doc
+        ?? primaryContent?.document
+        ?? primaryContent?.frame?.contentDocument
+        ?? primaryContent?.iframe?.contentDocument
+        ?? null;
     const readerRoot = readerDoc?.documentElement ?? null;
     const readerBody = readerDoc?.body ?? null;
     const readerBodyStyle = readerDoc?.defaultView && readerBody
@@ -887,6 +900,7 @@ const collectEBookLayoutSnapshot = (view = globalThis.reader?.view ?? null, extr
         rendererFlow: renderer?.getAttribute?.('flow') || null,
         rendererDir: renderer?.getAttribute?.('dir') || null,
         rendererClass: renderer?.className || null,
+        rendererContentCount: contents.length,
         rendererSnapshot: layoutElementSnapshot(renderer),
         viewSnapshot: layoutElementSnapshot(view),
         topSnapshot: layoutElementSnapshot(top),
@@ -983,13 +997,6 @@ const postLayoutLog = (event, details = {}) => {
     const signature = JSON.stringify(compactDetails);
     if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
     lastLayoutLogSignatureByEvent.set(event, signature);
-    const line = `# BOOK layout ${JSON.stringify({ event, ...compactDetails })}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {}
-    try {
-        console.log(line);
-    } catch (_error) {}
 };
 
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
@@ -1311,9 +1318,6 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     if (now - last < minIntervalMs) return;
     bookDebugLastLog.set(throttleKey, now);
     const finalPayload = { event, ...payload };
-    try {
-        console.log('# BOOK', event, finalPayload);
-    } catch {}
     try {
         if (typeof postReaderLog === 'function') {
             postReaderLog(`book.${event}`, finalPayload);
@@ -2438,7 +2442,6 @@ const postLandscapeInsetRestoreProbe = (stage, restoreState = null, extra = {}) 
         const key = JSON.stringify(payload);
         if (globalThis.__manabiLastLandscapeInsetRestoreProbeKey !== key) {
             globalThis.__manabiLastLandscapeInsetRestoreProbeKey = key;
-            window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify(payload));
         }
     } catch {}
 };
@@ -2609,20 +2612,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         );
     if (shouldLogAppliedInsetChange && globalThis.__manabiLastLandscapeInsetLogKey !== landscapeInsetKey) {
         globalThis.__manabiLastLandscapeInsetLogKey = landscapeInsetKey;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.('# LANDSCAPEINSET ' + JSON.stringify({
-                stage: 'ebookChromeInsets.appliedChanged',
-                reason,
-                incomingObscuredTopInset: incomingState?.obscuredTopInset ?? null,
-                appliedObscuredTopInset: nextState.obscuredTopInset,
-                appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
-                appliedObscuredBottomInset: nextState.obscuredBottomInset,
-                source: nextState.source,
-                revision: nextState.revision,
-                inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
-                layout: captureLandscapeInsetLayoutProbe(),
-            }));
-        } catch {}
     }
     const chromeInsetsLog = {
         reason,

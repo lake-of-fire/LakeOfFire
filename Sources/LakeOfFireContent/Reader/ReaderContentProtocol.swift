@@ -557,16 +557,6 @@ public extension ReaderContentProtocol {
     func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
         let resolvedPageURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        debugPrint(
-            "# READERMODE",
-            "stage=history.add.begin",
-            "sourceType=\(String(describing: type(of: self)))",
-            "contentURL=\(url.absoluteString)",
-            "pageURL=\(pageURL.absoluteString)",
-            "sourceReaderDefault=\(isReaderModeByDefault)",
-            "sourceReaderAvailable=\(isReaderModeAvailable)",
-            "rssContainsFullContent=\(rssContainsFullContent)"
-        )
         var imageURL: URL?
         let readerContentKind = readerContentKind
         let feedEntryCollectionKey = feedEntryCollectionKey
@@ -584,9 +574,6 @@ public extension ReaderContentProtocol {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
 //            await realm.asyncRefresh()
-            let oldReaderDefault = record.isReaderModeByDefault
-            let oldReaderAvailable = record.isReaderModeAvailable
-            let oldReaderOfferHidden = record.isReaderModeOfferHidden
             try await realm.asyncWrite {
                 record.title = title
                 record.isTitlePrefixOfContent = isTitlePrefixOfContent
@@ -623,20 +610,6 @@ public extension ReaderContentProtocol {
                 }
                 record.refreshChangeMetadata(explicitlyModified: true)
             }
-            debugPrint(
-                "# READERMODE",
-                "stage=history.add.reuse.persist",
-                "sourceType=\(String(describing: type(of: self)))",
-                "recordURL=\(record.url.absoluteString)",
-                "pageURL=\(pageURL.absoluteString)",
-                "oldReaderDefault=\(oldReaderDefault)",
-                "newReaderDefault=\(record.isReaderModeByDefault)",
-                "oldReaderAvailable=\(oldReaderAvailable)",
-                "newReaderAvailable=\(record.isReaderModeAvailable)",
-                "oldOfferHidden=\(oldReaderOfferHidden)",
-                "newOfferHidden=\(record.isReaderModeOfferHidden)",
-                "rssContainsFullContent=\(record.rssContainsFullContent)"
-            )
             return record
         } else {
             let record = HistoryRecord()
@@ -676,17 +649,6 @@ public extension ReaderContentProtocol {
             try await realm.asyncWrite {
                 realm.add(record, update: .modified)
             }
-            debugPrint(
-                "# READERMODE",
-                "stage=history.add.create.persist",
-                "sourceType=\(String(describing: type(of: self)))",
-                "recordURL=\(record.url.absoluteString)",
-                "pageURL=\(pageURL.absoluteString)",
-                "readerDefault=\(record.isReaderModeByDefault)",
-                "readerAvailable=\(record.isReaderModeAvailable)",
-                "offerHidden=\(record.isReaderModeOfferHidden)",
-                "rssContainsFullContent=\(record.rssContainsFullContent)"
-            )
             
             try await record.refreshDemotedStatus()
 

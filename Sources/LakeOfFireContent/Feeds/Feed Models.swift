@@ -1459,18 +1459,6 @@ public extension Feed {
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
             let payloads = entriesToPersist.map(FeedEntryPayload.init)
-            debugPrint(
-                "# FEEDNEW stage=feed.fetch.persist.rss",
-                "feedID=\(feedID.uuidString)",
-                "title=\(feedTitle)",
-                "existingCount=\(existingEntries.count)",
-                "incomingCount=\(feedEntries.count)",
-                "newOrChangedCount=\(entriesToPersist.count)",
-                "orphansCandidateCount=\(max(existingEntryIDs.count - incomingIDs.count, 0))",
-                "existingLatestCreatedAt=\(existingEntries.map { $0.createdAt }.max()?.description ?? "nil")",
-                "existingLatestPublicationDate=\(existingEntries.compactMap { $0.publicationDate }.max()?.description ?? "nil")",
-                "incomingLatestPublicationDate=\(feedEntries.compactMap { $0.publicationDate }.max()?.description ?? "nil")"
-            )
             if !entriesToPersist.isEmpty {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -1648,18 +1636,6 @@ public extension Feed {
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
             let payloads = entriesToPersist.map(FeedEntryPayload.init)
-            debugPrint(
-                "# FEEDNEW stage=feed.fetch.persist.atom",
-                "feedID=\(feedID.uuidString)",
-                "title=\(feedTitle)",
-                "existingCount=\(existingEntries.count)",
-                "incomingCount=\(feedEntries.count)",
-                "newOrChangedCount=\(entriesToPersist.count)",
-                "orphansCandidateCount=\(max(existingEntryIDs.count - incomingIDs.count, 0))",
-                "existingLatestCreatedAt=\(existingEntries.map { $0.createdAt }.max()?.description ?? "nil")",
-                "existingLatestPublicationDate=\(existingEntries.compactMap { $0.publicationDate }.max()?.description ?? "nil")",
-                "incomingLatestPublicationDate=\(feedEntries.compactMap { $0.publicationDate }.max()?.description ?? "nil")"
-            )
             if !entriesToPersist.isEmpty || !collectionObjects.isEmpty || deleteOrphans {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -1706,15 +1682,6 @@ public extension Feed {
                 "stage=feed.fetch.begin feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
             )
         }
-        debugPrint(
-            "# FEEDNEW stage=feed.fetch.begin",
-            "feedID=\(id.uuidString)",
-            "title=\(title)",
-            "lastViewedAt=\(lastViewedAt?.description ?? "nil")",
-            "lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil")",
-            "lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil")",
-            "lastFetchedETag=\(lastFetchedETag ?? "nil")"
-        )
         let fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
@@ -1737,13 +1704,6 @@ public extension Feed {
                     "stage=feed.fetch.notModified feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
                 )
             }
-            debugPrint(
-                "# FEEDNEW stage=feed.fetch.notModified",
-                "feedID=\(id.uuidString)",
-                "title=\(title)",
-                "etag=\(metadata.etag ?? "nil")",
-                "lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
-            )
             try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
             return
         case .fetched(var rssData, let metadata):
@@ -1752,14 +1712,6 @@ public extension Feed {
                     "stage=feed.fetch.fetched feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) bytes=\(rssData.count) etag=\(metadata.etag ?? "nil") lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
                 )
             }
-            debugPrint(
-                "# FEEDNEW stage=feed.fetch.fetched",
-                "feedID=\(id.uuidString)",
-                "title=\(title)",
-                "bytes=\(rssData.count)",
-                "etag=\(metadata.etag ?? "nil")",
-                "lastModifiedAt=\(metadata.lastModifiedAt?.description ?? "nil")"
-            )
             rssData = cleanRssData(rssData)
             let atomCollections = parseManabiAtomCollections(from: rssData)
             if shouldLogNiponica {

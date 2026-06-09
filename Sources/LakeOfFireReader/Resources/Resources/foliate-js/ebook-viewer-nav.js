@@ -387,20 +387,6 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
-        if (previous !== next || previousClass !== next) {
-            try {
-                console.log('# BOOK', 'navHUD.setHideNavigationDueToScroll', {
-                    sequence,
-                    source,
-                    previous,
-                    requested: next,
-                    previousClass,
-                    semanticContext: context,
-                    navBarRect: this.navBar?.getBoundingClientRect?.()?.toJSON?.() ?? null,
-                    pageTrackingRect: this.pageTrackingContainer?.getBoundingClientRect?.()?.toJSON?.() ?? null,
-                });
-            } catch {}
-        }
         logMay15('ebook.navHUD.setHide.entered', {
             sequence,
             source,

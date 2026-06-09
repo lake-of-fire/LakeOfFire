@@ -99,34 +99,10 @@ extension ReaderContentLoader {
 
         switch detectedFormat {
         case .html:
-            debugPrint(
-                "# SNIPPETS",
-                "normalizeIngestedText",
-                "source=\(source)",
-                "explicitHTML=\(explicitHTML)",
-                "format=html",
-                "textPreview=\(text.truncate(80))"
-            )
             return IngestionResult(format: .html, html: text)
         case .markdown:
-            debugPrint(
-                "# SNIPPETS",
-                "normalizeIngestedText",
-                "source=\(source)",
-                "explicitHTML=\(explicitHTML)",
-                "format=markdown",
-                "textPreview=\(text.truncate(80))"
-            )
             return IngestionResult(format: .markdown, html: markdownToHTML(text))
         case .plainText:
-            debugPrint(
-                "# SNIPPETS",
-                "normalizeIngestedText",
-                "source=\(source)",
-                "explicitHTML=\(explicitHTML)",
-                "format=plainText",
-                "textPreview=\(text.truncate(80))"
-            )
             return IngestionResult(format: .plainText, html: textToHTML(text, forceRaw: true))
         }
     }

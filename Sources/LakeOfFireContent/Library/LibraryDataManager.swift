@@ -1442,28 +1442,11 @@ public class LibraryDataManager: NSObject {
         }
         let newIsReaderModeByDefault = opmlEntry.attributeBoolValue("isReaderModeByDefault") ?? true
         if feed.isReaderModeByDefault != newIsReaderModeByDefault {
-            debugPrint(
-                "# READERMODE",
-                "stage=library.opml.feed.readerDefaultChanged",
-                "feedTitle=\(feed.title)",
-                "rssURL=\(feed.rssUrl.absoluteString)",
-                "oldReaderDefault=\(feed.isReaderModeByDefault)",
-                "newReaderDefault=\(newIsReaderModeByDefault)"
-            )
             feed.isReaderModeByDefault = newIsReaderModeByDefault
             didChange = true
         }
         let newRssContainsFullContent = opmlEntry.attributeBoolValue("rssContainsFullContent") ?? false
         if feed.rssContainsFullContent != newRssContainsFullContent {
-            debugPrint(
-                "# READERMODE",
-                "stage=library.opml.feed.fullContentChanged",
-                "feedTitle=\(feed.title)",
-                "rssURL=\(feed.rssUrl.absoluteString)",
-                "oldRSSFullContent=\(feed.rssContainsFullContent)",
-                "newRSSFullContent=\(newRssContainsFullContent)",
-                "readerDefault=\(feed.isReaderModeByDefault)"
-            )
             feed.rssContainsFullContent = newRssContainsFullContent
             didChange = true
         }
@@ -1509,15 +1492,6 @@ public class LibraryDataManager: NSObject {
         
         if didChange {
             feed.refreshChangeMetadata(explicitlyModified: true)
-            debugPrint(
-                "# READERMODE",
-                "stage=library.opml.feed.persist",
-                "feedTitle=\(feed.title)",
-                "rssURL=\(feed.rssUrl.absoluteString)",
-                "readerDefault=\(feed.isReaderModeByDefault)",
-                "rssContainsFullContent=\(feed.rssContainsFullContent)",
-                "meaningfulContentMinLength=\(feed.meaningfulContentMinLength)"
-            )
         }
     }
     
