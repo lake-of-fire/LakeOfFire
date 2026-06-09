@@ -1206,7 +1206,6 @@ export class NavigationHUD {
             nativeOverlayActive: document.body?.dataset?.mnbNativeEBookOverlayActive ?? null,
             relocateBackEnabled,
             relocateForwardEnabled,
-            source,
         }, 'chrome.state.nativeOverlay');
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({

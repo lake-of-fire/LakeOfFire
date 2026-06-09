@@ -1327,11 +1327,6 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch {}
-    try {
-        if (typeof postReaderLog === 'function') {
-            postReaderLog(`book.${event}`, finalPayload);
-        }
-    } catch {}
 };
 
 const sampleBookHighlightState = (doc, reason = 'unknown') => {
