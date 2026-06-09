@@ -1,5 +1,6 @@
 import XCTest
 import WebKit
+import SwiftSoup
 import SwiftReadability
 @testable import LakeOfFireContent
 
@@ -217,5 +218,41 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
                 "Readability user script dropped Wikimedia collapsed section body text '\(marker)'"
             )
         }
+    }
+
+    @MainActor
+    func testReadabilityUserScriptKeepsRubyInsideInlineFormatting() async throws {
+        let expectedText = "東京を　旅行するときに　よく　使う「JR渋谷駅」から、よく　使われる　改札までの　行き方を　紹介します。"
+        let html = #"""
+        <html>
+        <body>
+        <article>
+        <p><ruby><rb>東京</rb><rp>(</rp><rt>とうきょう</rt><rp>)</rp></ruby>を　<ruby><rb>旅行</rb><rp>(</rp><rt>りょこう</rt><rp>)</rp></ruby>するときに　よく　<ruby><rb>使</rb><rp>(</rp><rt>つか</rt><rp>)</rp></ruby>う「<b>JR<ruby><rb>渋谷</rb><rp>(</rp><rt>しぶや</rt><rp>)</rp></ruby><ruby><rb>駅</rb><rp>(</rp><rt>えき</rt><rp>)</rp></ruby></b>」から、よく　<ruby><rb>使</rb><rp>(</rp><rt>つか</rt><rp>)</rp></ruby>われる　<ruby><rb>改札</rb><rp>(</rp><rt>かいさつ</rt><rp>)</rp></ruby>までの　<ruby><rb>行</rb><rp>(</rp><rt>い</rt><rp>)</rp></ruby>き<ruby><rb>方</rb><rp>(</rp><rt>かた</rt><rp>)</rp></ruby>を　<ruby><rb>紹介</rb><rp>(</rp><rt>しょうかい</rt><rp>)</rp></ruby>します。</p>
+        </article>
+        </body>
+        </html>
+        """#
+
+        let result = try await parseFixtureWithReadabilityUserScript(html)
+        let outputHTML = try XCTUnwrap(result["outputHTML"] as? String)
+        let textDocument = try SwiftSoup.parse(outputHTML)
+        let readerContent = try XCTUnwrap(textDocument.getElementById("reader-content") ?? textDocument.body())
+        try readerContent.select("rt, rp").remove()
+        let actualText = try readerContent
+            .text(trimAndNormaliseWhitespace: false)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertEqual(actualText, expectedText, "Output: \(outputHTML)")
+
+        let rubyDocument = try SwiftSoup.parse(outputHTML)
+        let ruby = try rubyDocument.select("ruby").array()
+        XCTAssertTrue(
+            try ruby.contains { try $0.text(trimAndNormaliseWhitespace: false).contains("渋谷") && $0.select("rt").text() == "しぶや" },
+            "Expected JavaScript Readability output to retain source ruby for 渋谷. Output: \(outputHTML)"
+        )
+        XCTAssertTrue(
+            try ruby.contains { try $0.text(trimAndNormaliseWhitespace: false).contains("駅") && $0.select("rt").text() == "えき" },
+            "Expected JavaScript Readability output to retain source ruby for 駅. Output: \(outputHTML)"
+        )
     }
 }

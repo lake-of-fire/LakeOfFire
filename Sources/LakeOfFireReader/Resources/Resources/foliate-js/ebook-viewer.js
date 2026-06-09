@@ -934,9 +934,62 @@ const layoutLogSignature = details => JSON.stringify({
     readerBodyScrollHeight: details.readerBodyScrollHeight ?? null,
 });
 
+const BOOK_LAYOUT_LOG_EVENTS = new Set([
+    'reader.open',
+    'setEbookViewerLayout',
+    'setEbookViewerWritingDirection',
+    'pageTurn.sideButton.begin',
+    'pageTurn.sideButton.end',
+    'pageTurn.sideButton.error',
+    'reader.relocate',
+]);
+
+const compactBookLayoutDetails = details => ({
+    reason: details.reason ?? null,
+    layoutMode: details.layoutMode ?? null,
+    writingDirection: details.writingDirection ?? null,
+    side: details.side ?? null,
+    method: details.method ?? null,
+    eventType: details.eventType ?? null,
+    rendererFlow: details.rendererFlow ?? null,
+    rendererDir: details.rendererDir ?? null,
+    rendererRect: details.rendererSnapshot?.rect ?? null,
+    viewRect: details.viewSnapshot?.rect ?? null,
+    containerRect: details.containerSnapshot?.rect ?? null,
+    containerScrollLeft: details.containerSnapshot?.scrollLeft ?? null,
+    containerScrollTop: details.containerSnapshot?.scrollTop ?? null,
+    containerScrollWidth: details.containerSnapshot?.scrollWidth ?? null,
+    containerScrollHeight: details.containerSnapshot?.scrollHeight ?? null,
+    readerRootClientWidth: details.readerRootClientWidth ?? null,
+    readerRootClientHeight: details.readerRootClientHeight ?? null,
+    readerRootScrollWidth: details.readerRootScrollWidth ?? null,
+    readerRootScrollHeight: details.readerRootScrollHeight ?? null,
+    readerBodyClientWidth: details.readerBodyClientWidth ?? null,
+    readerBodyClientHeight: details.readerBodyClientHeight ?? null,
+    readerBodyScrollWidth: details.readerBodyScrollWidth ?? null,
+    readerBodyScrollHeight: details.readerBodyScrollHeight ?? null,
+    readerWritingMode: details.readerWritingMode ?? null,
+    readerDirection: details.readerDirection ?? null,
+    readerColumnWidth: details.readerColumnWidth ?? null,
+    readerColumnGap: details.readerColumnGap ?? null,
+    readerColumnCount: details.readerColumnCount ?? null,
+    viewportWidth: details.visualViewportWidth ?? details.windowInnerWidth ?? null,
+    viewportHeight: details.visualViewportHeight ?? details.windowInnerHeight ?? null,
+});
+
 const postLayoutLog = (event, details = {}) => {
-    void event;
-    void details;
+    if (!BOOK_LAYOUT_LOG_EVENTS.has(event)) return;
+    const compactDetails = compactBookLayoutDetails(details);
+    const signature = JSON.stringify(compactDetails);
+    if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
+    lastLayoutLogSignatureByEvent.set(event, signature);
+    const line = `# BOOK layout ${JSON.stringify({ event, ...compactDetails })}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {}
+    try {
+        console.log(line);
+    } catch (_error) {}
 };
 
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {

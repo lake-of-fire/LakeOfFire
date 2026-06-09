@@ -1,5 +1,5 @@
 {
-  "originHash" : "575b5c80562e0fd7c98b9676b5d2fc90fe983e42530c7f97cf4783ea1242e33c",
+  "originHash" : "0794ba60b088364355dbc6927c954359d592405e75b9c7022202e24a8696e569",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -168,7 +168,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lake-of-fire/PersistedLRUCache.git",
       "state" : {
-        "revision" : "b86f15682d134978962eb0f7d88f9b9d23edff0a"
+        "branch" : "main",
+        "revision" : "92c910e0223cb415a7bf0a72d0e5e01eaa95e5b7"
       }
     },
     {

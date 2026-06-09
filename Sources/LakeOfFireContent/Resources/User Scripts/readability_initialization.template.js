@@ -201,6 +201,18 @@
         }
     }
 
+    function normalizeRubyForReadability(doc) {
+        if (!doc || typeof doc.querySelectorAll !== "function") {
+            return;
+        }
+        for (const rp of doc.querySelectorAll("ruby rp")) {
+            rp.remove();
+        }
+        for (const rb of doc.querySelectorAll("ruby rb")) {
+            rb.replaceWith(...Array.from(rb.childNodes));
+        }
+    }
+
     function formatReadabilityPublishedTime(rawValue) {
         if (!rawValue) {
             return '';
@@ -246,6 +258,7 @@
                 var documentClone = document.cloneNode(true);
                 let inputHTML = documentClone.documentElement.outerHTML
                 var parserInputClone = documentClone.cloneNode(true);
+                normalizeRubyForReadability(parserInputClone);
                 if (isWikimediaMinervaCollapsiblePage(uri, parserInputClone)) {
                     normalizeWikimediaMinervaCollapsibleSections(parserInputClone);
                 }
