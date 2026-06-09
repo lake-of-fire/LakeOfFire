@@ -48,27 +48,6 @@ const logNavHide = (event, detail = {}) => {
     void detail;
 };
 
-const bookNavDebugLastLog = new Map();
-const bookNavDebugLastSignature = new Map();
-const logBookNavDebug = (event, detail = {}, throttleKey = event, minIntervalMs = 250) => {
-    const now = Date.now();
-    const last = bookNavDebugLastLog.get(throttleKey) || 0;
-    if (now - last < minIntervalMs) return;
-    bookNavDebugLastLog.set(throttleKey, now);
-    const payload = { event, ...detail };
-    const line = `# BOOK ${event} ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch {}
-};
-
-const logBookNavDebugOnChange = (event, detail = {}, signatureKey = event) => {
-    const signature = JSON.stringify(detail);
-    if (bookNavDebugLastSignature.get(signatureKey) === signature) return;
-    bookNavDebugLastSignature.set(signatureKey, signature);
-    logBookNavDebug(event, detail, `${signatureKey}.${signature}`, 0);
-};
-
 const logMay15 = (event, detail = {}) => {
 };
 
@@ -409,17 +388,18 @@ export class NavigationHUD {
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
         if (previous !== next || previousClass !== next) {
-            logBookNavDebug('chrome.state', {
-                stage: 'navHUD.setHideNavigationDueToScroll',
-                sequence,
-                source,
-                previous,
-                requested: next,
-                previousClass,
-                semanticContext: context,
-                navBarRect: this.navBar?.getBoundingClientRect?.()?.toJSON?.() ?? null,
-                pageTrackingRect: this.pageTrackingContainer?.getBoundingClientRect?.()?.toJSON?.() ?? null,
-            }, `chrome.state.hide.${sequence}`, 0);
+            try {
+                console.log('# BOOK', 'navHUD.setHideNavigationDueToScroll', {
+                    sequence,
+                    source,
+                    previous,
+                    requested: next,
+                    previousClass,
+                    semanticContext: context,
+                    navBarRect: this.navBar?.getBoundingClientRect?.()?.toJSON?.() ?? null,
+                    pageTrackingRect: this.pageTrackingContainer?.getBoundingClientRect?.()?.toJSON?.() ?? null,
+                });
+            } catch {}
         }
         logMay15('ebook.navHUD.setHide.entered', {
             sequence,
@@ -1194,19 +1174,6 @@ export class NavigationHUD {
         const pagesLeftLabel = this.lastPagesLeftLabel || '';
         const relocateBackEnabled = this._relocateButtonEnabled('back');
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
-        logBookNavDebugOnChange('chrome.state', {
-            stage: 'nativeOverlay.post',
-            percentLabel,
-            hideNavigationDueToScroll,
-            titleLocationVisible,
-            pagesLeftLabel,
-            duplicatePercentPagesLeft: !!percentLabel && percentLabel === pagesLeftLabel,
-            navHidden: this.navHidden,
-            scrollHidden: this.hideNavigationDueToScroll,
-            nativeOverlayActive: document.body?.dataset?.mnbNativeEBookOverlayActive ?? null,
-            relocateBackEnabled,
-            relocateForwardEnabled,
-        }, 'chrome.state.nativeOverlay');
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
                 percentLabel,

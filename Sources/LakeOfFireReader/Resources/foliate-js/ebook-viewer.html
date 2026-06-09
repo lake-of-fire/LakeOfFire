@@ -7,7 +7,7 @@
             <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; font-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src blob: data:; object-src blob: data:; form-action 'none';" />
             <style>
                 :root {
-                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+                    --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
                 }
                 body {
                     --active-bg: rgba(0, 0, 0, .05);
@@ -218,7 +218,7 @@
                     min-width: 0;
                     gap: 4px;
                     font-size: 12px;
-                    font-weight: 600;
+                    font-weight: 600 !important;
                 }
                 /* Left stack: label left, icon right */
                 #left-stack .button-label {
@@ -243,7 +243,7 @@
                 }
                 .toolbar button .button-label {
                     font-size: x-small;
-                    font-weight: 600;
+                    font-weight: 600 !important;
                     pointer-events: none;
                     color: inherit;
                     white-space: nowrap;
@@ -309,7 +309,7 @@
                     align-self: center;
                     justify-self: center;
                     z-index: 3;
-                    display: grid;
+                    display: none !important;
                     max-width: min(20em, calc(100vw - (var(--nav-horizontal-padding) * 2)));
                     overflow: hidden;
                     text-overflow: ellipsis;
@@ -478,9 +478,14 @@
                     flex: 0 1 auto;
                     transform: translate(-50%, var(--nav-primary-offset-y, 0px));
                     transition: color 240ms ease, opacity 240ms ease, transform 240ms ease;
+                    opacity: 0 !important;
+                    visibility: hidden !important;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-primary-text {
                     color: color-mix(in srgb, var(--secondary-color) 76%, transparent);
+                    opacity: 0 !important;
+                    visibility: hidden !important;
+                    pointer-events: none !important;
                 }
                 .nav-action-link {
                     display: inline-block;
@@ -582,10 +587,15 @@
                     pointer-events: auto !important;
                 }
                 .nav-section-progress {
+                    font: 600 10px/12px -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
+                    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
                     font-size: 10px !important;
-                    font-weight: 600;
+                    font-weight: 600 !important;
+                    line-height: 12px !important;
                     color: var(--secondary-color);
                     white-space: nowrap;
+                    writing-mode: horizontal-tb !important;
+                    text-orientation: mixed !important;
                     transition: opacity 375ms ease-out;
                 }
                 .nav-section-progress[hidden] {
@@ -646,6 +656,9 @@
                 .nav-relocate-button[aria-hidden="true"] {
                     opacity: 0;
                     pointer-events: none;
+                }
+                body.ebook-viewer .toolbar .nav-relocate-button {
+                    display: none !important;
                 }
                 .nav-relocate-icon {
                     display: block;
@@ -745,9 +758,13 @@
                     position: absolute;
                     top: 0;
                     font-size: 10px !important;
-                    line-height: 12px;
+                    line-height: 12px !important;
+                    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
+                    font-weight: 600 !important;
                     white-space: nowrap;
                     pointer-events: none;
+                    writing-mode: horizontal-tb !important;
+                    text-orientation: mixed !important;
                     direction: ltr;
                     unicode-bidi: isolate;
                 }
@@ -768,9 +785,13 @@
                     display: inline-block;
                     width: max-content;
                     font-size: 10px !important;
-                    line-height: 12px;
+                    line-height: 12px !important;
+                    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif !important;
+                    font-weight: 600 !important;
                     white-space: nowrap;
                     pointer-events: none;
+                    writing-mode: horizontal-tb !important;
+                    text-orientation: mixed !important;
                     direction: ltr;
                     unicode-bidi: isolate;
                     text-align: right;
@@ -820,17 +841,14 @@
                     font-size: 14px !important;
                     line-height: 1;
                 }
+                body.ebook-viewer #page-tracking-container {
+                    display: none !important;
+                }
                 body[data-book-dir="rtl"] #page-tracking-container {
                     left: 50%;
                     right: auto;
                 }
-                body.ebook-viewer #page-tracking-container {
-                    display: none !important;
-                }
                 body[data-mnb-mark-read-buttons-visible="false"] #page-tracking-container {
-                    display: none !important;
-                }
-                body[data-mnb-native-ebook-overlay-active="true"] #page-tracking-container {
                     display: none !important;
                 }
                 body[data-mnb-mark-read-buttons-hide-with-navigation="true"] #nav-bar.nav-hidden-due-to-scroll #page-tracking-container {
@@ -891,10 +909,10 @@
                     visibility: visible !important;
                     font-family: var(--mnb-ui-font-family) !important;
                     font-size: 14px !important;
-                    box-sizing: content-box;
+                    box-sizing: border-box;
                     border-radius: 9999px;
-                    border: 1px solid var(--theme-tracking-unread-color);
-                    box-shadow: none;
+                    border: 0;
+                    box-shadow: inset 0 0 0 1px var(--theme-tracking-unread-color);
                     margin: 0;
                     padding: 0;
                     gap: 0;
@@ -910,7 +928,7 @@
                     -webkit-user-select: none;
                     user-select: none;
                     transition:
-                        border-color 240ms ease,
+                        box-shadow 240ms ease,
                         color 240ms ease,
                         opacity 240ms ease-in-out,
                         transform 240ms ease,
@@ -921,24 +939,35 @@
                     overflow: hidden;
                     white-space: nowrap;
                 }
+                #page-tracking-container .page-read-button {
+                    width: var(--page-read-button-height) !important;
+                    height: var(--page-read-button-height) !important;
+                    min-width: var(--page-read-button-height) !important;
+                    min-height: var(--page-read-button-height) !important;
+                    padding: 0 !important;
+                    gap: 0 !important;
+                    justify-content: center !important;
+                    border-radius: 9999px !important;
+                    background-color: var(--theme-background-color);
+                    box-shadow: inset 0 0 0 1px var(--theme-tracking-unread-color);
+                }
                 .page-read-button:active {
                     background-color: var(--theme-background-color);
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .page-read-button:hover:not(:disabled) {
-                        border: 1px solid CanvasText;
+                        box-shadow: inset 0 0 0 1px CanvasText;
                     }
                 }
                 .page-read-button:focus:not(:focus-visible) {
                     outline: none;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button {
-                    box-shadow: none;
                     opacity: 0.68;
-                    width: calc(var(--page-read-button-height) * 0.85);
-                    height: calc(var(--page-read-button-height) * 0.85);
-                    min-width: calc(var(--page-read-button-height) * 0.85);
-                    min-height: calc(var(--page-read-button-height) * 0.85);
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
@@ -1011,6 +1040,19 @@
                     color: currentColor;
                     transition: max-width 240ms ease, opacity 180ms ease;
                 }
+                #page-tracking-container .page-read-button:not([data-completion-action]) {
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
+                    padding-inline: 0;
+                    gap: 0;
+                    justify-content: center;
+                }
+                #page-tracking-container .page-read-button:not([data-completion-action]) .mnb-tracking-button-label {
+                    max-width: 0;
+                    opacity: 0;
+                }
                 body #page-tracking-container .page-read-button,
                 body #page-tracking-container .page-read-button *,
                 body #nav-hidden-buttons button,
@@ -1027,24 +1069,11 @@
                     text-orientation: mixed !important;
                     direction: ltr !important;
                 }
-                #page-tracking-container .page-read-button:not([data-completion-action]) {
-                    width: calc(var(--page-read-button-height) * 0.85);
-                    height: calc(var(--page-read-button-height) * 0.85);
-                    min-width: calc(var(--page-read-button-height) * 0.85);
-                    min-height: calc(var(--page-read-button-height) * 0.85);
-                    padding-inline: 0;
-                    gap: 0;
-                    justify-content: center;
-                }
-                #page-tracking-container .page-read-button:not([data-completion-action]) .mnb-tracking-button-label {
-                    max-width: 0;
-                    opacity: 0;
-                }
                 #nav-bar:not(.nav-hidden-due-to-scroll) #page-tracking-container .page-read-button[data-mnb-has-any-marked-read="true"]:not([data-completion-action]) {
-                    width: calc(var(--page-read-button-height) * 0.85);
-                    height: calc(var(--page-read-button-height) * 0.85);
-                    min-width: calc(var(--page-read-button-height) * 0.85);
-                    min-height: calc(var(--page-read-button-height) * 0.85);
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
@@ -1101,14 +1130,14 @@
                     background-color: var(--theme-tracking-read-color);
                     color: white;
                     box-shadow: none;
-                    width: calc(var(--page-read-button-height) * 0.85);
-                    height: calc(var(--page-read-button-height) * 0.85);
-                    min-width: calc(var(--page-read-button-height) * 0.85);
-                    min-height: calc(var(--page-read-button-height) * 0.85);
+                    width: var(--page-read-button-height);
+                    height: var(--page-read-button-height);
+                    min-width: var(--page-read-button-height);
+                    min-height: var(--page-read-button-height);
                     padding-inline: 0;
                     gap: 0;
                     justify-content: center;
-                    transform: scale(0.68);
+                    transform: scale(1);
                     transform-origin: center;
                 }
                 .page-read-button[data-mnb-animate-read="true"]:not([data-completion-action]) .mnb-tracking-button-status {
@@ -1135,11 +1164,10 @@
                     opacity: 0;
                 }
                 .page-read-button[data-read-state="pending"] {
-                    border-color: var(--mnb-red);
-                    box-shadow: none;
+                    box-shadow: inset 0 0 0 1px var(--mnb-red);
                 }
                 #nav-bar.nav-hidden-due-to-scroll #page-tracking-container .page-read-button[data-read-state="pending"] {
-                    box-shadow: none;
+                    box-shadow: inset 0 0 0 1px var(--mnb-red);
                 }
                 .page-read-button[data-read-state="pending"] .mnb-tracking-button-status {
                     background-color: var(--mnb-red);
@@ -1554,13 +1582,14 @@
                     margin-right: calc(var(--side-nav-width, 32px) / 5);
                 }
                 #nav-relocate-back {
-                    left: var(--nav-horizontal-padding);
+                    left: calc(50% - (var(--page-read-button-height) / 2) - 12px);
                     right: auto;
                     text-align: left;
+                    transform: translateX(-100%);
                 }
                 #nav-relocate-forward {
-                    left: auto;
-                    right: var(--nav-horizontal-padding);
+                    left: calc(50% + (var(--page-read-button-height) / 2) + 12px);
+                    right: auto;
                     text-align: right;
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-relocate-back,
@@ -1754,9 +1783,6 @@
                     <span class="button-label short">Next</span>
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
-            </div>
-            <div id="page-tracking-container" hidden aria-live="polite">
-                <div id="page-tracking-buttons" hidden></div>
             </div>
         </div>
         <div id="nav-hidden-overlay" aria-hidden="true">

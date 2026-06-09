@@ -934,9 +934,62 @@ const layoutLogSignature = details => JSON.stringify({
     readerBodyScrollHeight: details.readerBodyScrollHeight ?? null,
 });
 
+const BOOK_LAYOUT_LOG_EVENTS = new Set([
+    'reader.open',
+    'setEbookViewerLayout',
+    'setEbookViewerWritingDirection',
+    'pageTurn.sideButton.begin',
+    'pageTurn.sideButton.end',
+    'pageTurn.sideButton.error',
+    'reader.relocate',
+]);
+
+const compactBookLayoutDetails = details => ({
+    reason: details.reason ?? null,
+    layoutMode: details.layoutMode ?? null,
+    writingDirection: details.writingDirection ?? null,
+    side: details.side ?? null,
+    method: details.method ?? null,
+    eventType: details.eventType ?? null,
+    rendererFlow: details.rendererFlow ?? null,
+    rendererDir: details.rendererDir ?? null,
+    rendererRect: details.rendererSnapshot?.rect ?? null,
+    viewRect: details.viewSnapshot?.rect ?? null,
+    containerRect: details.containerSnapshot?.rect ?? null,
+    containerScrollLeft: details.containerSnapshot?.scrollLeft ?? null,
+    containerScrollTop: details.containerSnapshot?.scrollTop ?? null,
+    containerScrollWidth: details.containerSnapshot?.scrollWidth ?? null,
+    containerScrollHeight: details.containerSnapshot?.scrollHeight ?? null,
+    readerRootClientWidth: details.readerRootClientWidth ?? null,
+    readerRootClientHeight: details.readerRootClientHeight ?? null,
+    readerRootScrollWidth: details.readerRootScrollWidth ?? null,
+    readerRootScrollHeight: details.readerRootScrollHeight ?? null,
+    readerBodyClientWidth: details.readerBodyClientWidth ?? null,
+    readerBodyClientHeight: details.readerBodyClientHeight ?? null,
+    readerBodyScrollWidth: details.readerBodyScrollWidth ?? null,
+    readerBodyScrollHeight: details.readerBodyScrollHeight ?? null,
+    readerWritingMode: details.readerWritingMode ?? null,
+    readerDirection: details.readerDirection ?? null,
+    readerColumnWidth: details.readerColumnWidth ?? null,
+    readerColumnGap: details.readerColumnGap ?? null,
+    readerColumnCount: details.readerColumnCount ?? null,
+    viewportWidth: details.visualViewportWidth ?? details.windowInnerWidth ?? null,
+    viewportHeight: details.visualViewportHeight ?? details.windowInnerHeight ?? null,
+});
+
 const postLayoutLog = (event, details = {}) => {
-    void event;
-    void details;
+    if (!BOOK_LAYOUT_LOG_EVENTS.has(event)) return;
+    const compactDetails = compactBookLayoutDetails(details);
+    const signature = JSON.stringify(compactDetails);
+    if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
+    lastLayoutLogSignatureByEvent.set(event, signature);
+    const line = `# BOOK layout ${JSON.stringify({ event, ...compactDetails })}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {}
+    try {
+        console.log(line);
+    } catch (_error) {}
 };
 
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
@@ -1037,25 +1090,10 @@ const cacheWarmerForegroundBusyState = () => {
 };
 
 const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified', options = {}) => {
-    const startedAt = performanceNowMs();
     if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
-        try {
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.schedule.skip',
-                reason,
-                verdict: 'missing-cache-warmer',
-            }, `section.nav.schedule.missing.${reason}`, 500);
-        } catch {}
         return;
     }
     if (globalThis.__manabiCacheWarmerAdvanceInFlight) {
-        try {
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.schedule.skip',
-                reason,
-                verdict: 'advance-in-flight',
-            }, `section.nav.schedule.inFlight.${reason}`, 500);
-        } catch {}
         return;
     }
     const force = options?.force === true;
@@ -1082,16 +1120,6 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
             globalThis.__manabiCacheWarmerLoadNextTimer = null;
             scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.retry`, options);
         }, busyState.retryMs);
-        try {
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.schedule.defer',
-                reason,
-                verdict: busyState.reason,
-                retryMs: busyState.retryMs,
-                pauseRemainingMs: busyState.pauseRemainingMs,
-                liveReplaceTextCount: busyState.liveReplaceTextCount,
-            }, `section.nav.schedule.busy.${busyState.reason}`, 500);
-        } catch {}
         return;
     }
     const now = performanceNowMs();
@@ -1103,14 +1131,6 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
             globalThis.__manabiCacheWarmerLoadNextTimer = null;
             scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.spacing`, options);
         }, spacingRemainingMs);
-        try {
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.schedule.defer',
-                reason,
-                verdict: 'spacing',
-                retryMs: safeRound(spacingRemainingMs, 1),
-            }, `section.nav.schedule.spacing.${reason}`, 500);
-        } catch {}
         return;
     }
     const activeIndex = activeForegroundSectionIndex();
@@ -1119,45 +1139,13 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
     const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, minimumIndex);
     const windowLimitState = cacheWarmerWindowLimitState(targetIndex);
     if (!Number.isInteger(precedingTargetIndex) && !windowLimitState.isWithinWindow) {
-        try {
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.schedule.skip',
-                reason,
-                verdict: 'outside-window',
-                ...windowLimitState,
-            }, `section.nav.schedule.window.${reason}.${windowLimitState.activeIndex}.${windowLimitState.targetIndex}`, 500);
-        } catch {}
         return;
-    }
-    if (Number.isInteger(targetIndex)) {
-        try {
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.schedule.start',
-                reason,
-                force,
-                activeIndex,
-                precedingTargetIndex: Number.isInteger(precedingTargetIndex) ? precedingTargetIndex : null,
-                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
-                targetIndex,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            }, `section.nav.schedule.start.${reason}.${activeIndex}.${targetIndex}`, 250);
-        } catch {}
     }
     globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
     globalThis.__manabiCacheWarmerAdvanceInFlight = true;
     window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, minimumIndex)
         ?.finally?.(() => {
             globalThis.__manabiCacheWarmerAdvanceInFlight = false;
-            if (Number.isInteger(targetIndex)) {
-                try {
-                    logBookDebug('section.nav', {
-                        stage: 'cacheWarmer.schedule.end',
-                        reason,
-                        targetIndex,
-                        elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                    }, `section.nav.schedule.end.${reason}.${targetIndex}`, 250);
-                } catch {}
-            }
         })
         ?.catch?.((error) => console.error(error));
 };
@@ -1323,10 +1311,44 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     if (now - last < minIntervalMs) return;
     bookDebugLastLog.set(throttleKey, now);
     const finalPayload = { event, ...payload };
-    const line = `# BOOK ${event} ${JSON.stringify(finalPayload)}`;
     try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        console.log('# BOOK', event, finalPayload);
     } catch {}
+    try {
+        if (typeof postReaderLog === 'function') {
+            postReaderLog(`book.${event}`, finalPayload);
+        }
+    } catch {}
+};
+
+const updateBookHighlightWritingFlow = (doc, reason = 'unknown') => {
+    const body = doc?.body;
+    if (!body || doc === document) return { updated: 0, vertical: 0, horizontal: 0, reason: body ? 'outer-document' : 'missing-body' };
+    const segments = Array.from(doc.querySelectorAll?.('mnb-seg') || []);
+    let updated = 0;
+    let vertical = 0;
+    let horizontal = 0;
+    for (const segment of segments) {
+        const style = doc.defaultView?.getComputedStyle?.(segment);
+        const writingMode = style?.writingMode || '';
+        const isVertical = writingMode.startsWith('vertical');
+        const isHorizontalIsland = !isVertical && body.classList?.contains?.('reader-vertical-writing');
+        if (isVertical) vertical += 1;
+        if (isHorizontalIsland) horizontal += 1;
+        const nextVertical = isVertical ? 'true' : null;
+        const nextHorizontal = isHorizontalIsland ? 'true' : null;
+        if ((segment.dataset.mnbVerticalWritingFlow || null) !== nextVertical) {
+            if (nextVertical) segment.dataset.mnbVerticalWritingFlow = nextVertical;
+            else delete segment.dataset.mnbVerticalWritingFlow;
+            updated += 1;
+        }
+        if ((segment.dataset.mnbHorizontalWritingIsland || null) !== nextHorizontal) {
+            if (nextHorizontal) segment.dataset.mnbHorizontalWritingIsland = nextHorizontal;
+            else delete segment.dataset.mnbHorizontalWritingIsland;
+            updated += 1;
+        }
+    }
+    return { updated, vertical, horizontal, reason };
 };
 
 const sampleBookHighlightState = (doc, reason = 'unknown') => {
@@ -1337,115 +1359,38 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
             reason: body ? 'outer-document' : 'missing-body',
         };
     }
-    const view = doc.defaultView;
-    const highlightSelector = 'mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]';
-    const highlightedSegments = Array.from(doc.querySelectorAll?.(highlightSelector) ?? []);
-    const allSegments = Array.from(doc.querySelectorAll?.('mnb-seg') ?? []);
-    const hasPaint = (style) => {
-        if (!style) return false;
-        const backgroundImage = style.backgroundImage ?? '';
-        const backgroundColor = style.backgroundColor ?? '';
-        return (backgroundImage && backgroundImage !== 'none')
-            || (backgroundColor && backgroundColor !== 'rgba(0, 0, 0, 0)' && backgroundColor !== 'transparent');
-    };
-    const segment = highlightedSegments.find((candidate) => {
-        const surface = candidate.querySelector?.('mnb-sur') ?? null;
-        return hasPaint(view?.getComputedStyle?.(surface)) || hasPaint(view?.getComputedStyle?.(candidate));
-    }) ?? highlightedSegments[0] ?? allSegments[0] ?? null;
-    const surface = segment?.querySelector?.('mnb-sur') ?? null;
-    const segmentStyle = segment ? view?.getComputedStyle?.(segment) : null;
-    const surfaceStyle = surface ? view?.getComputedStyle?.(surface) : null;
+    const markerSummary = updateBookHighlightWritingFlow(doc, `sample.${reason}`);
+    const segment = doc.querySelector?.('mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]');
+    const segmentStyle = segment ? doc.defaultView?.getComputedStyle?.(segment) : null;
     const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
-    const htmlStyle = doc.documentElement ? doc.defaultView?.getComputedStyle?.(doc.documentElement) : null;
-    const readerContent = doc.getElementById?.('reader-content') ?? null;
-    const readerContentStyle = readerContent ? view?.getComputedStyle?.(readerContent) : null;
-    const bodyDataset = body.dataset
-        ? Object.fromEntries(Object.entries(body.dataset).filter(([key]) => key.startsWith('mnb') || key === 'isEbook'))
-        : {};
-    const bodyClasses = Array.from(body.classList ?? [])
-        .filter((className) => className.includes('reader') || className.includes('vertical') || className.includes('nav'));
-    const sampleRect = (element) => {
-        const rect = element?.getBoundingClientRect?.();
-        if (!rect) return null;
-        return {
-            left: Number(rect.left.toFixed(2)),
-            top: Number(rect.top.toFixed(2)),
-            width: Number(rect.width.toFixed(2)),
-            height: Number(rect.height.toFixed(2)),
-        };
-    };
     return {
         sampled: !!segment,
         reason,
-        url: doc.location?.href ?? null,
-        bodyClasses,
-        bodyDataset,
-        bodyDirAttribute: body.getAttribute?.('dir') ?? null,
-        htmlDirAttribute: doc.documentElement?.getAttribute?.('dir') ?? null,
-        bodyStyleAttribute: body.getAttribute?.('style') ?? null,
-        htmlStyleAttribute: doc.documentElement?.getAttribute?.('style') ?? null,
+        markerSummary,
+        bodyClass: body.className || '',
         navHidden: body.classList?.contains?.('nav-hidden') ?? null,
         navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
         dataHideNavigation: body.dataset?.mnbNavigationHiddenDueToScroll ?? body.dataset?.mnbHideNavigationDueToScroll ?? null,
         writingMode: bodyStyle?.writingMode ?? null,
         direction: bodyStyle?.direction ?? null,
-        htmlWritingMode: htmlStyle?.writingMode ?? null,
-        htmlDirection: htmlStyle?.direction ?? null,
-        readerContentWritingMode: readerContentStyle?.writingMode ?? null,
-        readerContentDirection: readerContentStyle?.direction ?? null,
         gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         highlightFillOpacity: bodyStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
         trackingHighlightAlpha: bodyStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
-        highlightedSegmentCount: highlightedSegments.length,
-        totalSegmentCount: allSegments.length,
         segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
-        segmentId: segment?.getAttribute?.('id') ?? null,
         segmentClass: segment?.className ?? null,
         segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
-        segmentRect: sampleRect(segment),
-        segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
-        segmentBackgroundColor: segmentStyle?.backgroundColor ?? null,
+        segmentVerticalFlow: segment?.dataset?.mnbVerticalWritingFlow ?? null,
+        segmentHorizontalIsland: segment?.dataset?.mnbHorizontalWritingIsland ?? null,
         segmentWritingMode: segmentStyle?.writingMode ?? null,
         segmentDirection: segmentStyle?.direction ?? null,
+        segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
         segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
         segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
         segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         segmentHighlightFillOpacity: segmentStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
         segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
-        surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
-        surfaceClass: surface?.className ?? null,
-        surfaceRect: sampleRect(surface),
-        surfaceBackgroundImage: surfaceStyle?.backgroundImage ?? null,
-        surfaceBackgroundColor: surfaceStyle?.backgroundColor ?? null,
-        surfaceWritingMode: surfaceStyle?.writingMode ?? null,
-        surfaceDirection: surfaceStyle?.direction ?? null,
-        surfaceTransitionProperty: surfaceStyle?.transitionProperty ?? null,
-        surfaceTransitionDuration: surfaceStyle?.transitionDuration ?? null,
-        surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
-        surfaceHighlightFillOpacity: surfaceStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
-        surfaceTrackingHighlightAlpha: surfaceStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
-        horizontalWritingIsland: !!segment?.closest?.('[data-mnb-horizontal-writing-island="true"]')
-            || surface?.dataset?.mnbHorizontalWritingIsland === 'true'
-            || segment?.dataset?.mnbHorizontalWritingIsland === 'true',
     };
 };
-
-const compactBookHighlightState = (sample) => ({
-    sampled: sample?.sampled ?? false,
-    reason: sample?.reason ?? null,
-    navHidden: sample?.navHidden ?? null,
-    navHiddenDueToScroll: sample?.navHiddenDueToScroll ?? null,
-    writingMode: sample?.writingMode ?? null,
-    readerContentWritingMode: sample?.readerContentWritingMode ?? null,
-    gradientDirection: sample?.gradientDirection ?? null,
-    highlightFillOpacity: sample?.highlightFillOpacity ?? null,
-    trackingHighlightAlpha: sample?.trackingHighlightAlpha ?? null,
-    segmentWritingMode: sample?.segmentWritingMode ?? null,
-    segmentGradientDirection: sample?.segmentGradientDirection ?? null,
-    segmentTransitionProperty: sample?.segmentTransitionProperty ?? null,
-    segmentTransitionDuration: sample?.segmentTransitionDuration ?? null,
-    horizontalWritingIsland: sample?.horizontalWritingIsland ?? null,
-});
 
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     const body = doc?.body;
@@ -1462,6 +1407,7 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     try {
         doc.defaultView?.manabiApplyVerticalWritingCheck?.();
     } catch (_error) {}
+    updateBookHighlightWritingFlow(doc, reason);
     return {
         applied: true,
         hidden,
@@ -2292,25 +2238,14 @@ window.manabiSetCompactNavigationSheetDetentState = (state = {}) => {
     const semanticDetentKind = typeof state?.semanticDetentKind === 'string'
         ? state.semanticDetentKind
         : 'unknown';
-    const nativeEBookOverlayActive = state?.nativeEBookOverlayActive === true || state?.nativeEBookOverlayActive === 'true';
     document.body.dataset.mnbCompactNavigationSheetPresentedAsSheet = presentedAsSheet ? 'true' : 'false';
     document.body.dataset.mnbCompactNavigationSheetDetentKind = semanticDetentKind;
-    document.body.dataset.mnbNativeEBookOverlayActive = nativeEBookOverlayActive ? 'true' : 'false';
     const sidePaginationDisabled = isCompactNavigationSheetSidePaginationDisabled();
     document.body.dataset.mnbCompactNavigationSheetSidePaginationDisabled = sidePaginationDisabled ? 'true' : 'false';
-    logBookDebug('chrome.state', {
-        stage: 'compactNavigationSheetDetentState',
-        presentedAsSheet,
-        semanticDetentKind,
-        nativeEBookOverlayActive,
-        sidePaginationDisabled,
-        source: state?.source ?? null,
-    }, `chrome.state.detent.${semanticDetentKind}.${nativeEBookOverlayActive}.${presentedAsSheet}`, 250);
     void globalThis.reader?.updateNavButtons?.();
     return {
         presentedAsSheet,
         semanticDetentKind,
-        nativeEBookOverlayActive,
         sidePaginationDisabled,
     };
 };
@@ -4974,10 +4909,21 @@ class Reader {
             try {
                 content?.doc?.defaultView?.manabiApplyVerticalWritingCheck?.();
             } catch (_error) {}
+            updateBookHighlightWritingFlow(content?.doc, hidden ? 'hide' : 'show');
             if (samples.length < 2) {
-                samples.push(compactBookHighlightState(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show')));
+                samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
             }
         }
+        logBookDebug('gradient.resolve', {
+            hidden,
+            contentCount: contents.length,
+            samples,
+        }, `gradient.resolve.${hidden}.${contents.length}.${JSON.stringify(samples.map(sample => [
+            sample?.segmentWritingMode,
+            sample?.segmentGradientDirection,
+            sample?.segmentVerticalFlow,
+            sample?.segmentHorizontalIsland,
+        ]))}`, 0);
         logBookDebug('hideNav.applyToBookContent', {
             hidden,
             contentCount: contents.length,
@@ -8662,29 +8608,14 @@ class Reader {
         this.setLoadingIndicator(true);
     }
     async #onDidDisplay({}) {
-        const startedAt = performanceNowMs();
         const navVisibilityBefore = captureNavVisibilityState();
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
             && !document.body?.classList?.contains?.('loading');
         if (shouldSkipSameIndexDidDisplay) {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
-            logBookDebug('section.nav', {
-                stage: 'didDisplay.skip',
-                verdict: 'same-index',
-                activeForegroundIndex: activeForegroundSectionIndex(),
-                activeForegroundHref: activeForegroundSectionHref(),
-            }, 'section.nav.didDisplay.skip.sameIndex', 250);
             return;
         }
-        logBookDebug('section.nav', {
-            stage: 'didDisplay.begin',
-            activeForegroundIndex: activeForegroundSectionIndex(),
-            activeForegroundHref: activeForegroundSectionHref(),
-            rendererIndex: this.view?.renderer?.index ?? null,
-            loading: document.body?.classList?.contains?.('loading') ?? null,
-            navHidden: this.navHUD?.hideNavigationDueToScroll ?? null,
-        }, 'section.nav.didDisplay.begin', 250);
         this.#postBookInsetSnapshot('didDisplay.begin', {
             beforeNavigationVisibility: navVisibilityBefore,
         });
@@ -8747,15 +8678,6 @@ class Reader {
             this.#schedulePageReadMarkerUpdate('did-display.raf', 64);
         });
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
-        logBookDebug('section.nav', {
-            stage: 'didDisplay.end',
-            activeForegroundIndex: activeForegroundSectionIndex(),
-            activeForegroundHref: activeForegroundSectionHref(),
-            rendererIndex: this.view?.renderer?.index ?? null,
-            initialSettleResult,
-            postFrameSettleResult,
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-        }, 'section.nav.didDisplay.end', 250);
     }
     #onLoad({
         detail: {
@@ -9450,7 +9372,6 @@ class CacheWarmer {
         await this.view.renderer.goTo({ index: firstUnsettledIndex })
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
-        const startedAt = performanceNowMs();
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         if (!Number.isInteger(targetIndex)) {
@@ -9465,15 +9386,6 @@ class CacheWarmer {
                 minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
                 ...captureEPUBOverlapState(),
             })
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.advance.skip',
-                verdict: 'finished',
-                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
-                lastLoadedSectionIndex: this.lastLoadedSectionIndex,
-                lastLoadedSectionHref: this.lastLoadedSectionHref,
-                settledSectionCount: settledSectionHrefs.length,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            }, `section.nav.advance.finished.${this.lastLoadedSectionIndex}.${minimumIndex}`, 500);
             return
         }
         if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
@@ -9490,24 +9402,7 @@ class CacheWarmer {
                 settledSectionCount: settledSectionHrefs.length,
                 ...captureEPUBOverlapState(),
             })
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.advance.start',
-                mode: 'nextSection',
-                currentSectionIndex: this.lastLoadedSectionIndex,
-                currentSectionHref: this.lastLoadedSectionHref,
-                targetSectionIndex: targetIndex,
-                targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
-                activeForegroundHref: activeForegroundSectionHref(),
-                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
-                settledSectionCount: settledSectionHrefs.length,
-            }, `section.nav.advance.start.next.${this.lastLoadedSectionIndex}.${targetIndex}`, 250);
             await this.view.renderer.nextSection()
-            logBookDebug('section.nav', {
-                stage: 'cacheWarmer.advance.end',
-                mode: 'nextSection',
-                targetSectionIndex: targetIndex,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            }, `section.nav.advance.end.next.${targetIndex}`, 250);
             return
         }
         const targetSection = this.view?.book?.sections?.[targetIndex] ?? null
@@ -9540,25 +9435,7 @@ class CacheWarmer {
             settledSectionCount: settledSectionHrefs.length,
             ...captureEPUBOverlapState(),
         })
-        logBookDebug('section.nav', {
-            stage: 'cacheWarmer.advance.start',
-            mode: 'goTo',
-            currentSectionIndex: this.lastLoadedSectionIndex,
-            currentSectionHref: this.lastLoadedSectionHref,
-            targetSectionIndex: targetIndex,
-            targetSectionHref: targetSection?.href ?? targetSection?.id ?? null,
-            activeForegroundHref: activeForegroundSectionHref(),
-            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
-            skippedSettledSectionCount: skippedSettledSectionHrefs.length,
-            settledSectionCount: settledSectionHrefs.length,
-        }, `section.nav.advance.start.goTo.${this.lastLoadedSectionIndex}.${targetIndex}`, 250);
         await this.view.renderer.goTo({ index: targetIndex })
-        logBookDebug('section.nav', {
-            stage: 'cacheWarmer.advance.end',
-            mode: 'goTo',
-            targetSectionIndex: targetIndex,
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-        }, `section.nav.advance.end.goTo.${targetIndex}`, 250);
     }
     destroy() {
         if (this.view) {
@@ -9802,7 +9679,6 @@ window.setEbookViewerLayout = (layoutMode) => {
 window.setEbookViewerWritingDirection = (writingDirection) => {
     const renderer = globalThis.reader?.view?.renderer ?? null;
     const contents = renderer?.getContents?.() || [];
-    const samples = [];
     const applyWritingDirectionToDocument = (doc) => {
         const body = doc?.body;
         if (!body) return false;
@@ -9816,20 +9692,11 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
         try {
             doc.defaultView?.manabiApplyVerticalWritingCheck?.();
         } catch (_error) {}
-        if (samples.length < 2) {
-            samples.push(compactBookHighlightState(sampleBookHighlightState(doc, `writingDirection.${writingDirection ?? 'automatic'}`)));
-        }
         return true;
     };
     for (const content of contents) {
         applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
     }
-    logBookDebug('highlight.state', {
-        reason: 'setEbookViewerWritingDirection',
-        writingDirection: writingDirection ?? null,
-        contentCount: contents.length,
-        samples,
-    }, `highlight.state.writingDirection.${writingDirection ?? 'automatic'}.${contents.length}.${JSON.stringify(samples)}`, 200);
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));
@@ -10642,35 +10509,11 @@ window.manabiOpenReaderGoToSheet = (source = 'window.manabiOpenReaderGoToSheet')
 }
 
 window.nextSection = async () => {
-    const startedAt = performanceNowMs();
     const btn = globalThis.reader?.buttons?.next;
     if (btn && btn.offsetParent !== null && getComputedStyle(btn).visibility !== 'hidden') {
-        logBookDebug('section.nav', {
-            stage: 'foreground.nextSection.start',
-            mode: 'button-click',
-            activeForegroundIndex: activeForegroundSectionIndex(),
-            activeForegroundHref: activeForegroundSectionHref(),
-        }, 'section.nav.foreground.nextSection.start.button', 250);
         btn.click();
-        logBookDebug('section.nav', {
-            stage: 'foreground.nextSection.end',
-            mode: 'button-click',
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-        }, 'section.nav.foreground.nextSection.end.button', 250);
     } else {
-        logBookDebug('section.nav', {
-            stage: 'foreground.nextSection.start',
-            mode: 'renderer-nextSection',
-            activeForegroundIndex: activeForegroundSectionIndex(),
-            activeForegroundHref: activeForegroundSectionHref(),
-            hasRenderer: !!globalThis.reader?.view?.renderer,
-        }, 'section.nav.foreground.nextSection.start.renderer', 250);
         await globalThis.reader?.view?.renderer?.nextSection?.();
-        logBookDebug('section.nav', {
-            stage: 'foreground.nextSection.end',
-            mode: 'renderer-nextSection',
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-        }, 'section.nav.foreground.nextSection.end.renderer', 250);
     }
 }
 

@@ -346,6 +346,18 @@
             headingWrapper.remove()
         }
     }
+
+    function normalizeRubyForReadability(doc) {
+        if (!doc || typeof doc.querySelectorAll !== "function") {
+            return
+        }
+        for (const rp of doc.querySelectorAll("ruby rp")) {
+            rp.remove()
+        }
+        for (const rb of doc.querySelectorAll("ruby rb")) {
+            rb.replaceWith(...Array.from(rb.childNodes))
+        }
+    }
     
     let manabi_readability = function () {
         const body = document.body
@@ -418,6 +430,7 @@
                     inputPreview: previewText(inputHTML, 1024),
                 })
                 var parserInputClone = documentClone.cloneNode(true);
+                normalizeRubyForReadability(parserInputClone);
                 if (isWikimediaMinervaCollapsiblePage(uri, parserInputClone)) {
                     normalizeWikimediaMinervaCollapsibleSections(parserInputClone);
                 }
@@ -480,7 +493,44 @@
                         hasMarkup: !!(content && typeof content === "string" && content.indexOf("<body") !== -1),
                         preview: previewText(content, 512),
                     })
-                    
+
+                    const publishedTimeHTML = publishedTime ? `<span id="reader-publication-date">${publishedTime}</span>` : ""
+                    const metaLine = publishedTimeHTML
+                        ? `<div id="reader-meta-line" class="byline-meta-line">${publishedTimeHTML}</div>`
+                        : ""
+
+                    // IMPORTANT: Keep `<body class="readability-mode">`; Swift uses it to identify reader-mode HTML.
+                    const html = `
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta content="text/html; charset=UTF-8" http-equiv="content-type">
+        <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
+        <meta name="referrer" content="never">
+        <style id='swiftuiwebview-readability-styles'>
+            ##CSS##
+        </style>
+        <title>${title}</title>
+    </head>
+
+    <body class="readability-mode">
+        <div id="reader-header" class="header">
+            <h1 id="reader-title">${title}</h1>
+            <div id="reader-byline-container">
+                <span id="reader-byline" class="byline">${byline}</span>
+                ${metaLine}
+            </div>
+            <div id="reader-header-actions"></div>
+        </div>
+        <div id="reader-content">
+            ${content}
+        </div>
+        <script>
+            ##SCRIPT##
+        </script>
+    </body>
+</html>
+`
 
                     // 0 is innermost.
                     // Currently only supports optional [shadowRoot][shadowRoot][iframe] nesting
@@ -515,6 +565,7 @@
                                 publishedTime: publishedTime,
                                 content: content,
                                 inputHTML: inputHTML,
+                                outputHTML: html,
                             })
                             readerModeLog("readability.posted", {
                                 result: "readabilityParsed",
