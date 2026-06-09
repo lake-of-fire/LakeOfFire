@@ -176,6 +176,7 @@ public struct ReaderWebView: View {
     var ignoresSampledTopObscuredInset = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
+    var additionalLeadingSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
     var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
@@ -217,6 +218,7 @@ public struct ReaderWebView: View {
         ignoresSampledTopObscuredInset: Bool = false,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
+        additionalLeadingSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         hidesTopScrollEdgeEffect: Bool = false,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
@@ -234,6 +236,7 @@ public struct ReaderWebView: View {
         self.ignoresSampledTopObscuredInset = ignoresSampledTopObscuredInset
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
+        self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.hidesTopScrollEdgeEffect = hidesTopScrollEdgeEffect
         self.schemeHandlers = schemeHandlers
@@ -267,6 +270,7 @@ public struct ReaderWebView: View {
             ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
+            additionalLeadingSafeAreaInset: additionalLeadingSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
@@ -308,6 +312,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var ignoresSampledTopObscuredInset = false
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat?
+    var additionalLeadingSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
     var hidesTopScrollEdgeEffect = false
     let schemeHandlers: [(WKURLSchemeHandler, String)]
@@ -402,7 +407,7 @@ fileprivate struct ReaderWebViewInternal: View {
         let resolvedObscuredInsets = totalObscuredInsets(
             additionalInsets: EdgeInsets(
                 top: max(0, additionalTopSafeAreaInset ?? 0),
-                leading: 0,
+                leading: max(0, additionalLeadingSafeAreaInset ?? 0),
                 bottom: max(0, additionalBottomSafeAreaInset ?? 0),
                 trailing: 0
             )

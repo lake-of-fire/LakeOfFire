@@ -824,6 +824,7 @@ public struct Reader: View {
 //    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
     var additionalTopSafeAreaInset: CGFloat? = nil
+    var additionalLeadingSafeAreaInset: CGFloat? = nil
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var ebookChromeBottomSafeAreaInset: CGFloat? = nil
     var onAdditionalSafeAreaBarTap: (() -> Void)?
@@ -853,6 +854,7 @@ public struct Reader: View {
 //        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
         additionalTopSafeAreaInset: CGFloat? = nil,
+        additionalLeadingSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         ebookChromeBottomSafeAreaInset: CGFloat? = nil,
         onAdditionalSafeAreaBarTap: (() -> Void)? = nil,
@@ -872,6 +874,7 @@ public struct Reader: View {
 //        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
         self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
+        self.additionalLeadingSafeAreaInset = additionalLeadingSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.ebookChromeBottomSafeAreaInset = ebookChromeBottomSafeAreaInset
         self.onAdditionalSafeAreaBarTap = onAdditionalSafeAreaBarTap
@@ -898,6 +901,7 @@ public struct Reader: View {
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
         let effectiveTopInset = explicitTopInset
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
+        let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
         let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
         let ebookChromeBottomInset = max(
             sampledBottomInset,
@@ -918,6 +922,7 @@ public struct Reader: View {
         let chromeInsetsTaskID = [
             pageURL.absoluteString,
             "\(effectiveTopInset)",
+            "\(additionalLeadingInset)",
             "\(effectiveBottomInset)",
             "\(effectiveToolbarBottomOffset)",
             "\(readerViewModel.ebookChromeInsetsResyncID)",
@@ -931,6 +936,7 @@ public struct Reader: View {
             ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
             bounces: bounces,
             additionalTopSafeAreaInset: additionalTopSafeAreaInset,
+            additionalLeadingSafeAreaInset: additionalLeadingInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
