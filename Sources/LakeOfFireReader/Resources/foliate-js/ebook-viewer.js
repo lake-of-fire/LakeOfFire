@@ -862,7 +862,20 @@ const collectEBookLayoutSnapshot = (view = globalThis.reader?.view ?? null, extr
     const top = shadowRoot?.getElementById?.('top') ?? shadowRoot?.querySelector?.('#top') ?? null;
     const header = shadowRoot?.getElementById?.('header') ?? shadowRoot?.querySelector?.('#header') ?? null;
     const footer = shadowRoot?.getElementById?.('footer') ?? shadowRoot?.querySelector?.('#footer') ?? null;
-    const readerDoc = renderer?.view?.document ?? renderer?.view?.doc ?? null;
+    const contents = renderer?.getContents?.() || [];
+    const primaryContent = contents.find?.(content =>
+        content?.doc?.body
+        || content?.document?.body
+        || content?.frame?.contentDocument?.body
+        || content?.iframe?.contentDocument?.body
+    ) ?? null;
+    const readerDoc = renderer?.view?.document
+        ?? renderer?.view?.doc
+        ?? primaryContent?.doc
+        ?? primaryContent?.document
+        ?? primaryContent?.frame?.contentDocument
+        ?? primaryContent?.iframe?.contentDocument
+        ?? null;
     const readerRoot = readerDoc?.documentElement ?? null;
     const readerBody = readerDoc?.body ?? null;
     const readerBodyStyle = readerDoc?.defaultView && readerBody
@@ -887,6 +900,7 @@ const collectEBookLayoutSnapshot = (view = globalThis.reader?.view ?? null, extr
         rendererFlow: renderer?.getAttribute?.('flow') || null,
         rendererDir: renderer?.getAttribute?.('dir') || null,
         rendererClass: renderer?.className || null,
+        rendererContentCount: contents.length,
         rendererSnapshot: layoutElementSnapshot(renderer),
         viewSnapshot: layoutElementSnapshot(view),
         topSnapshot: layoutElementSnapshot(top),
@@ -1321,36 +1335,6 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     } catch {}
 };
 
-const updateBookHighlightWritingFlow = (doc, reason = 'unknown') => {
-    const body = doc?.body;
-    if (!body || doc === document) return { updated: 0, vertical: 0, horizontal: 0, reason: body ? 'outer-document' : 'missing-body' };
-    const segments = Array.from(doc.querySelectorAll?.('mnb-seg') || []);
-    let updated = 0;
-    let vertical = 0;
-    let horizontal = 0;
-    for (const segment of segments) {
-        const style = doc.defaultView?.getComputedStyle?.(segment);
-        const writingMode = style?.writingMode || '';
-        const isVertical = writingMode.startsWith('vertical');
-        const isHorizontalIsland = !isVertical && body.classList?.contains?.('reader-vertical-writing');
-        if (isVertical) vertical += 1;
-        if (isHorizontalIsland) horizontal += 1;
-        const nextVertical = isVertical ? 'true' : null;
-        const nextHorizontal = isHorizontalIsland ? 'true' : null;
-        if ((segment.dataset.mnbVerticalWritingFlow || null) !== nextVertical) {
-            if (nextVertical) segment.dataset.mnbVerticalWritingFlow = nextVertical;
-            else delete segment.dataset.mnbVerticalWritingFlow;
-            updated += 1;
-        }
-        if ((segment.dataset.mnbHorizontalWritingIsland || null) !== nextHorizontal) {
-            if (nextHorizontal) segment.dataset.mnbHorizontalWritingIsland = nextHorizontal;
-            else delete segment.dataset.mnbHorizontalWritingIsland;
-            updated += 1;
-        }
-    }
-    return { updated, vertical, horizontal, reason };
-};
-
 const sampleBookHighlightState = (doc, reason = 'unknown') => {
     const body = doc?.body;
     if (!body || doc === document) {
@@ -1359,14 +1343,12 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
             reason: body ? 'outer-document' : 'missing-body',
         };
     }
-    const markerSummary = updateBookHighlightWritingFlow(doc, `sample.${reason}`);
     const segment = doc.querySelector?.('mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]');
     const segmentStyle = segment ? doc.defaultView?.getComputedStyle?.(segment) : null;
     const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
     return {
         sampled: !!segment,
         reason,
-        markerSummary,
         bodyClass: body.className || '',
         navHidden: body.classList?.contains?.('nav-hidden') ?? null,
         navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
@@ -1379,10 +1361,6 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
         segmentClass: segment?.className ?? null,
         segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
-        segmentVerticalFlow: segment?.dataset?.mnbVerticalWritingFlow ?? null,
-        segmentHorizontalIsland: segment?.dataset?.mnbHorizontalWritingIsland ?? null,
-        segmentWritingMode: segmentStyle?.writingMode ?? null,
-        segmentDirection: segmentStyle?.direction ?? null,
         segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
         segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
         segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
@@ -1404,10 +1382,6 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     body.classList.toggle('nav-hidden', hidden);
     body.classList.toggle('nav-hidden-due-to-scroll', hidden);
     body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
-    try {
-        doc.defaultView?.manabiApplyVerticalWritingCheck?.();
-    } catch (_error) {}
-    updateBookHighlightWritingFlow(doc, reason);
     return {
         applied: true,
         hidden,
@@ -4906,24 +4880,10 @@ class Reader {
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
-            try {
-                content?.doc?.defaultView?.manabiApplyVerticalWritingCheck?.();
-            } catch (_error) {}
-            updateBookHighlightWritingFlow(content?.doc, hidden ? 'hide' : 'show');
             if (samples.length < 2) {
                 samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
             }
         }
-        logBookDebug('gradient.resolve', {
-            hidden,
-            contentCount: contents.length,
-            samples,
-        }, `gradient.resolve.${hidden}.${contents.length}.${JSON.stringify(samples.map(sample => [
-            sample?.segmentWritingMode,
-            sample?.segmentGradientDirection,
-            sample?.segmentVerticalFlow,
-            sample?.segmentHorizontalIsland,
-        ]))}`, 0);
         logBookDebug('hideNav.applyToBookContent', {
             hidden,
             contentCount: contents.length,
