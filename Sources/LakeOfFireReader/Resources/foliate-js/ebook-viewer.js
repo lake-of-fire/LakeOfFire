@@ -549,6 +549,23 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         const bodyReadStartedAt = performanceNowMs();
         let html = await response.text()
         const bodyReadElapsedMs = safeRound(performanceNowMs() - bodyReadStartedAt, 1);
+        if (isCacheWarmer && html.length === 0) {
+            const escapedHref = String(href || '').replace(/[&<>"']/g, (character) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;',
+            })[character]);
+            postReplaceTextPerfLog('cache-warmer-empty-response', {
+                href,
+                mediaType,
+                isCacheWarmer: true,
+                cacheKey,
+                ...captureEPUBOverlapState(),
+            });
+            return `<html><body data-is-cache-warmer="true" data-mnb-source-href="${escapedHref}"></body></html>`;
+        }
         const responseTextLength = html.length;
         const transformStartedAt = performanceNowMs();
         postReaderLog('ebook.replaceText.responseSummary', {
@@ -1345,6 +1362,8 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
     }
     const segment = doc.querySelector?.('mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]');
     const segmentStyle = segment ? doc.defaultView?.getComputedStyle?.(segment) : null;
+    const surface = segment?.querySelector?.('mnb-sur') ?? null;
+    const surfaceStyle = surface ? doc.defaultView?.getComputedStyle?.(surface) : null;
     const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
     return {
         sampled: !!segment,
@@ -1362,11 +1381,16 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         segmentClass: segment?.className ?? null,
         segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
         segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
+        segmentHorizontalIsland: segment?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
         segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
         segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
         segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         segmentHighlightFillOpacity: segmentStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
         segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
+        surfaceHorizontalIsland: surface?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
+        surfaceBackgroundImage: surfaceStyle?.backgroundImage ?? null,
+        surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
     };
 };
 
@@ -4178,7 +4202,7 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
     body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
+    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"]:not(mnb-seg > mnb-sur) {
         --mnb-highlight-gradient-direction: to bottom;
     }
     body.reader-vertical-writing [data-mnb-display-token="1"] {
@@ -9997,42 +10021,21 @@ window.loadLastPosition = async ({
         });
     };
     try {
-        if (syntheticRestoreLocator && hasFractionalCompletion) {
-            postReaderLog('ebook.viewer.loadLastPosition.path', {
-                mode: 'fraction-for-synthetic-locator',
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                rendererTotal: syntheticRestoreLocator.rendererTotal,
-                fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-            });
-            await runWithNavigationIntent({
-                source: 'restore.synthetic-fraction',
-                target: 'view.goToFraction',
-                fraction: fractionalCompletion,
-                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-            }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
-            await waitForFrames(2);
-            const fractionState = captureRestoreState('after-synthetic-fraction', {
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                rendererTotal: syntheticRestoreLocator.rendererTotal,
-            });
-            postRestoreMarkReadLog('after-synthetic-fraction', fractionState);
-        } else if (syntheticRestoreLocator) {
+        if (syntheticRestoreLocator) {
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'synthetic-locator',
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
                 localSectionIndex: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
+                fraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
             });
             postPageNumLog('restore.synthetic-locator', {
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
                 localSectionIndex: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
+                fraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
             });
             await runWithNavigationIntent({
                 source: 'restore.synthetic-locator',
