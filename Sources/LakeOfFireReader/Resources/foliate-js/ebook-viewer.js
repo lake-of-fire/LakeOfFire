@@ -1129,31 +1129,35 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
         } catch {}
         return;
     }
-    try {
-        logBookDebug('section.nav', {
-            stage: 'cacheWarmer.schedule.start',
-            reason,
-            force,
-            activeIndex,
-            precedingTargetIndex: Number.isInteger(precedingTargetIndex) ? precedingTargetIndex : null,
-            minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
-            targetIndex: Number.isInteger(targetIndex) ? targetIndex : null,
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-        }, `section.nav.schedule.start.${reason}.${activeIndex}.${targetIndex}`, 250);
-    } catch {}
+    if (Number.isInteger(targetIndex)) {
+        try {
+            logBookDebug('section.nav', {
+                stage: 'cacheWarmer.schedule.start',
+                reason,
+                force,
+                activeIndex,
+                precedingTargetIndex: Number.isInteger(precedingTargetIndex) ? precedingTargetIndex : null,
+                minimumIndex: Number.isInteger(minimumIndex) ? minimumIndex : null,
+                targetIndex,
+                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+            }, `section.nav.schedule.start.${reason}.${activeIndex}.${targetIndex}`, 250);
+        } catch {}
+    }
     globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
     globalThis.__manabiCacheWarmerAdvanceInFlight = true;
     window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, minimumIndex)
         ?.finally?.(() => {
             globalThis.__manabiCacheWarmerAdvanceInFlight = false;
-            try {
-                logBookDebug('section.nav', {
-                    stage: 'cacheWarmer.schedule.end',
-                    reason,
-                    targetIndex: Number.isInteger(targetIndex) ? targetIndex : null,
-                    elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                }, `section.nav.schedule.end.${reason}.${targetIndex}`, 250);
-            } catch {}
+            if (Number.isInteger(targetIndex)) {
+                try {
+                    logBookDebug('section.nav', {
+                        stage: 'cacheWarmer.schedule.end',
+                        reason,
+                        targetIndex,
+                        elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
+                    }, `section.nav.schedule.end.${reason}.${targetIndex}`, 250);
+                } catch {}
+            }
         })
         ?.catch?.((error) => console.error(error));
 };
@@ -1324,9 +1328,6 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch {}
     try {
-        console.log(line);
-    } catch {}
-    try {
         if (typeof postReaderLog === 'function') {
             postReaderLog(`book.${event}`, finalPayload);
         }
@@ -1437,29 +1438,17 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
 const compactBookHighlightState = (sample) => ({
     sampled: sample?.sampled ?? false,
     reason: sample?.reason ?? null,
-    url: sample?.url ?? null,
-    bodyClasses: sample?.bodyClasses ?? sample?.bodyClass ?? null,
     navHidden: sample?.navHidden ?? null,
     navHiddenDueToScroll: sample?.navHiddenDueToScroll ?? null,
     writingMode: sample?.writingMode ?? null,
-    direction: sample?.direction ?? null,
     readerContentWritingMode: sample?.readerContentWritingMode ?? null,
-    readerContentDirection: sample?.readerContentDirection ?? null,
     gradientDirection: sample?.gradientDirection ?? null,
     highlightFillOpacity: sample?.highlightFillOpacity ?? null,
     trackingHighlightAlpha: sample?.trackingHighlightAlpha ?? null,
     segmentWritingMode: sample?.segmentWritingMode ?? null,
-    segmentDirection: sample?.segmentDirection ?? null,
     segmentGradientDirection: sample?.segmentGradientDirection ?? null,
     segmentTransitionProperty: sample?.segmentTransitionProperty ?? null,
     segmentTransitionDuration: sample?.segmentTransitionDuration ?? null,
-    segmentBackgroundImage: typeof sample?.segmentBackgroundImage === 'string'
-        ? sample.segmentBackgroundImage.slice(0, 180)
-        : sample?.segmentBackgroundImage ?? null,
-    surfaceWritingMode: sample?.surfaceWritingMode ?? null,
-    surfaceGradientDirection: sample?.surfaceGradientDirection ?? null,
-    surfaceTransitionProperty: sample?.surfaceTransitionProperty ?? null,
-    surfaceTransitionDuration: sample?.surfaceTransitionDuration ?? null,
     horizontalWritingIsland: sample?.horizontalWritingIsland ?? null,
 });
 

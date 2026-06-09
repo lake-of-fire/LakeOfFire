@@ -49,6 +49,7 @@ const logNavHide = (event, detail = {}) => {
 };
 
 const bookNavDebugLastLog = new Map();
+const bookNavDebugLastSignature = new Map();
 const logBookNavDebug = (event, detail = {}, throttleKey = event, minIntervalMs = 250) => {
     const now = Date.now();
     const last = bookNavDebugLastLog.get(throttleKey) || 0;
@@ -59,9 +60,13 @@ const logBookNavDebug = (event, detail = {}, throttleKey = event, minIntervalMs 
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch {}
-    try {
-        console.log(line);
-    } catch {}
+};
+
+const logBookNavDebugOnChange = (event, detail = {}, signatureKey = event) => {
+    const signature = JSON.stringify(detail);
+    if (bookNavDebugLastSignature.get(signatureKey) === signature) return;
+    bookNavDebugLastSignature.set(signatureKey, signature);
+    logBookNavDebug(event, detail, `${signatureKey}.${signature}`, 0);
 };
 
 const logMay15 = (event, detail = {}) => {
@@ -1189,26 +1194,20 @@ export class NavigationHUD {
         const pagesLeftLabel = this.lastPagesLeftLabel || '';
         const relocateBackEnabled = this._relocateButtonEnabled('back');
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
-        logBookNavDebug('chrome.state', {
+        logBookNavDebugOnChange('chrome.state', {
             stage: 'nativeOverlay.post',
-            source,
             percentLabel,
             hideNavigationDueToScroll,
-            titleLocationLabel,
             titleLocationVisible,
-            bookTitleLabel,
             pagesLeftLabel,
             duplicatePercentPagesLeft: !!percentLabel && percentLabel === pagesLeftLabel,
             navHidden: this.navHidden,
             scrollHidden: this.hideNavigationDueToScroll,
-            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
-            navPrimaryTextCompact: this.navPrimaryTextCompact?.textContent || '',
-            navPrimaryTextFull: this.navPrimaryTextFull?.textContent || '',
-            latestPrimaryLabel: this.latestPrimaryLabel || '',
             nativeOverlayActive: document.body?.dataset?.mnbNativeEBookOverlayActive ?? null,
             relocateBackEnabled,
             relocateForwardEnabled,
-        }, `chrome.state.nativeOverlay.${source}.${percentLabel}.${pagesLeftLabel}.${hideNavigationDueToScroll}`, 250);
+            source,
+        }, 'chrome.state.nativeOverlay');
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
                 percentLabel,
