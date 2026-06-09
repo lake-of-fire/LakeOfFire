@@ -1352,6 +1352,11 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     } catch {}
 };
 
+const compactBookCSSValue = (value, limit = 140) => {
+    if (typeof value !== 'string') return value ?? null;
+    return value.length > limit ? `${value.slice(0, limit)}...` : value;
+};
+
 const sampleBookHighlightState = (doc, reason = 'unknown') => {
     const body = doc?.body;
     if (!body || doc === document) {
@@ -1380,7 +1385,7 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
         segmentClass: segment?.className ?? null,
         segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
-        segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
+        segmentBackgroundImage: compactBookCSSValue(segmentStyle?.backgroundImage),
         segmentHorizontalIsland: segment?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
         segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
         segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
@@ -1389,9 +1394,74 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
         surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
         surfaceHorizontalIsland: surface?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
-        surfaceBackgroundImage: surfaceStyle?.backgroundImage ?? null,
+        surfaceBackgroundImage: compactBookCSSValue(surfaceStyle?.backgroundImage),
         surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
     };
+};
+
+const getPrimaryEBookContentDocument = (view = globalThis.reader?.view ?? null) => {
+    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const contents = renderer?.getContents?.() || [];
+    const content = contents.find?.((entry) => {
+        const doc = entry?.doc ?? entry?.document ?? entry?.frame?.contentDocument ?? entry?.iframe?.contentDocument ?? null;
+        return !!doc?.body && doc !== document;
+    }) ?? null;
+    return content?.doc
+        ?? content?.document
+        ?? content?.frame?.contentDocument
+        ?? content?.iframe?.contentDocument
+        ?? null;
+};
+
+const collectBookDiagnosticSnapshot = (view = globalThis.reader?.view ?? null, reason = 'unknown', extra = {}) => {
+    const layout = compactBookLayoutDetails(collectEBookLayoutSnapshot(view, extra));
+    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const doc = getPrimaryEBookContentDocument(view);
+    const root = doc?.documentElement ?? null;
+    const body = doc?.body ?? null;
+    const readerContent = doc?.getElementById?.('reader-content') ?? null;
+    const win = doc?.defaultView ?? null;
+    const rootStyle = root && win ? win.getComputedStyle(root) : null;
+    const bodyStyle = body && win ? win.getComputedStyle(body) : null;
+    const readerContentStyle = readerContent && win ? win.getComputedStyle(readerContent) : null;
+    return {
+        reason,
+        ...layout,
+        rendererCurrentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
+        activeSourceHref: body?.dataset?.mnbSourceHref ?? null,
+        outerBodyClass: document.body?.className || null,
+        contentBodyClass: body?.className || null,
+        contentReadyState: doc?.readyState ?? null,
+        contentWritingDirectionDataset: body?.dataset?.mnbWritingDirection ?? null,
+        contentNavigationHiddenDataset: body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+        rootWritingMode: rootStyle?.writingMode ?? null,
+        rootDirection: rootStyle?.direction ?? null,
+        rootColumnWidth: rootStyle?.columnWidth ?? null,
+        rootColumnGap: rootStyle?.columnGap ?? null,
+        rootColumnCount: rootStyle?.columnCount ?? null,
+        rootWidth: rootStyle?.width ?? null,
+        rootHeight: rootStyle?.height ?? null,
+        rootPaddingInline: rootStyle ? `${rootStyle.paddingInlineStart}/${rootStyle.paddingInlineEnd}` : null,
+        rootPaddingBlock: rootStyle ? `${rootStyle.paddingBlockStart}/${rootStyle.paddingBlockEnd}` : null,
+        bodyWritingMode: bodyStyle?.writingMode ?? null,
+        bodyDirection: bodyStyle?.direction ?? null,
+        bodyWidth: bodyStyle?.width ?? null,
+        bodyHeight: bodyStyle?.height ?? null,
+        readerContentWritingMode: readerContentStyle?.writingMode ?? null,
+        readerContentDirection: readerContentStyle?.direction ?? null,
+        highlight: sampleBookHighlightState(doc, reason),
+    };
+};
+
+const logBookDiagnostic = (reason = 'unknown', view = globalThis.reader?.view ?? null, extra = {}, minIntervalMs = 750) => {
+    const doc = getPrimaryEBookContentDocument(view);
+    const href = doc?.body?.dataset?.mnbSourceHref ?? 'no-content';
+    logBookDebug(
+        'diagnostic',
+        collectBookDiagnosticSnapshot(view, reason, extra),
+        `diagnostic.${reason}.${href}`,
+        minIntervalMs
+    );
 };
 
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
@@ -4915,6 +4985,10 @@ class Reader {
             outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             samples,
         }, `hideNav.applyToBookContent.${hidden}.${contents.length}`, 200);
+        logBookDiagnostic(hidden ? 'hideNav.hidden' : 'hideNav.visible', this.view, {
+            hidden,
+            contentCount: contents.length,
+        });
         requestAnimationFrame(() => this.#logPageTrackingLayout(
             'hide-navigation-due-to-scroll',
             hidden ? 'nav-hidden' : 'nav-visible',
@@ -5949,6 +6023,11 @@ class Reader {
             const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
                 previousSize: result?.previousSize ?? null,
                 currentSize: result?.currentSize ?? null,
+                rendered: result?.rendered ?? false,
+                resultReason: result?.reason ?? null,
+            });
+            logBookDiagnostic('initial-paginator-settle', this.view, {
+                settleReason: reason,
                 rendered: result?.rendered ?? false,
                 resultReason: result?.reason ?? null,
             });
@@ -7417,6 +7496,11 @@ class Reader {
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         applyStoredChromeInsets('reader.open');
         postLayoutLog('reader.open', collectEBookLayoutSnapshot(this.view, {
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+            bookDir: this.bookDir,
+            isRTL: this.isRTL,
+        }));
+        requestAnimationFrame(() => logBookDiagnostic('reader.open', this.view, {
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
             bookDir: this.bookDir,
             isRTL: this.isRTL,
@@ -8979,6 +9063,13 @@ class Reader {
             rendererTotal,
             cfiLength: typeof cfi === 'string' ? cfi.length : 0,
         }));
+        logBookDiagnostic('reader.relocate', this.view, {
+            relocateReason: reason ?? null,
+            fraction: safeRound(fraction),
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal,
+        });
         const sectionBaseCFI = typeof sectionIndex === 'number'
             ? (this.view?.book?.sections?.[sectionIndex]?.cfi ?? null)
             : null;
@@ -9657,6 +9748,7 @@ window.setEbookViewerLayout = (layoutMode) => {
     postLayoutLog('setEbookViewerLayout', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         layoutMode,
     }));
+    logBookDiagnostic('setEbookViewerLayout', globalThis.reader?.view, { layoutMode });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
@@ -9684,6 +9776,7 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));
+    logBookDiagnostic('setEbookViewerWritingDirection', globalThis.reader?.view, { writingDirection });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 
