@@ -45,6 +45,22 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result, expectedHTML)
     }
 
+    func testCacheWarmerProcessTextResponseDoesNotReturnProcessedContent() throws {
+        let processedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
+
+        let cacheWarmerData = try XCTUnwrap(ebookProcessTextResponseData(
+            processedText: processedHTML,
+            isCacheWarmer: true
+        ))
+        let liveData = try XCTUnwrap(ebookProcessTextResponseData(
+            processedText: processedHTML,
+            isCacheWarmer: false
+        ))
+
+        XCTAssertTrue(cacheWarmerData.isEmpty)
+        XCTAssertEqual(String(data: liveData, encoding: .utf8), processedHTML)
+    }
+
     func testCacheWarmerWithoutProcessorFallsBackToOriginalText() async throws {
         let originalText = "<html><body>raw</body></html>"
         let actor = EBookProcessingActor(

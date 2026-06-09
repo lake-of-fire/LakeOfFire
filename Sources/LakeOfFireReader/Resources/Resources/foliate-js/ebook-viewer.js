@@ -549,6 +549,23 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         const bodyReadStartedAt = performanceNowMs();
         let html = await response.text()
         const bodyReadElapsedMs = safeRound(performanceNowMs() - bodyReadStartedAt, 1);
+        if (isCacheWarmer && html.length === 0) {
+            const escapedHref = String(href || '').replace(/[&<>"']/g, (character) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;',
+            })[character]);
+            postReplaceTextPerfLog('cache-warmer-empty-response', {
+                href,
+                mediaType,
+                isCacheWarmer: true,
+                cacheKey,
+                ...captureEPUBOverlapState(),
+            });
+            return `<html><body data-is-cache-warmer="true" data-mnb-source-href="${escapedHref}"></body></html>`;
+        }
         const responseTextLength = html.length;
         const transformStartedAt = performanceNowMs();
         postReaderLog('ebook.replaceText.responseSummary', {
@@ -9972,42 +9989,21 @@ window.loadLastPosition = async ({
         });
     };
     try {
-        if (syntheticRestoreLocator && hasFractionalCompletion) {
-            postReaderLog('ebook.viewer.loadLastPosition.path', {
-                mode: 'fraction-for-synthetic-locator',
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                rendererTotal: syntheticRestoreLocator.rendererTotal,
-                fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-            });
-            await runWithNavigationIntent({
-                source: 'restore.synthetic-fraction',
-                target: 'view.goToFraction',
-                fraction: fractionalCompletion,
-                syntheticSectionIndex: syntheticRestoreLocator.sectionIndex,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-            }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
-            await waitForFrames(2);
-            const fractionState = captureRestoreState('after-synthetic-fraction', {
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                rendererTotal: syntheticRestoreLocator.rendererTotal,
-            });
-            postRestoreMarkReadLog('after-synthetic-fraction', fractionState);
-        } else if (syntheticRestoreLocator) {
+        if (syntheticRestoreLocator) {
             postReaderLog('ebook.viewer.loadLastPosition.path', {
                 mode: 'synthetic-locator',
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
                 localSectionIndex: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
+                fraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
             });
             postPageNumLog('restore.synthetic-locator', {
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
                 localSectionIndex: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
                 fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
+                fraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
             });
             await runWithNavigationIntent({
                 source: 'restore.synthetic-locator',

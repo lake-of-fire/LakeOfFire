@@ -103,6 +103,13 @@ fileprivate func shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: Int? = nil, d
     return elapsedMs >= ebookReplaceTextSlowSummaryThresholdMs
 }
 
+func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
+    if isCacheWarmer {
+        return Data()
+    }
+    return processedText.data(using: .utf8)
+}
+
 fileprivate struct EBookProcessTextRequestKey: Hashable {
     let contentURLString: String
     let location: String
@@ -447,7 +454,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             return
                         }
                         let responseDataEncodeStartedAt = Date()
-                        if let respData = respText.data(using: .utf8) {
+                        if let respData = ebookProcessTextResponseData(processedText: respText, isCacheWarmer: isCacheWarmer) {
                             let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
                             let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
