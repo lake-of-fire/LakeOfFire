@@ -101,19 +101,78 @@ const shouldPostReplaceTextPerfLog = (event, details = {}) => {
 const postReplaceTextPerfLog = (event, details = {}) => {
 };
 
+const bookLogLastSignatureByEvent = new Map();
+const bookLogLastAtByKey = new Map();
+
+const postBookLog = (event, details = {}, { dedupeKey = event, minIntervalMs = 250 } = {}) => {
+    const now = Date.now();
+    const throttleKey = dedupeKey || event;
+    const lastAt = bookLogLastAtByKey.get(throttleKey) || 0;
+    if (now - lastAt < minIntervalMs) return;
+    const payload = {
+        prefix: '# BOOK',
+        event,
+        t: now,
+        ...details,
+    };
+    let signature = null;
+    try {
+        signature = JSON.stringify(payload);
+    } catch {}
+    if (signature && bookLogLastSignatureByEvent.get(throttleKey) === signature) return;
+    if (signature) bookLogLastSignatureByEvent.set(throttleKey, signature);
+    bookLogLastAtByKey.set(throttleKey, now);
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch {}
+    try {
+        console.log('# BOOK', event, payload);
+    } catch {}
+};
+
+globalThis.manabiPostBookLog = postBookLog;
+
+const popoverLogLastAtByKey = new Map();
+const popoverLogLastSignatureByKey = new Map();
+
+const postPopoverLog = (event, details = {}, { dedupeKey = event, minIntervalMs = 350 } = {}) => {
+    const now = Date.now();
+    const throttleKey = dedupeKey || event;
+    const lastAt = popoverLogLastAtByKey.get(throttleKey) || 0;
+    if (now - lastAt < minIntervalMs) return;
+    const payload = {
+        event,
+        t: now,
+        ...details,
+    };
+    let signature = null;
+    try {
+        signature = JSON.stringify(payload);
+    } catch {}
+    if (signature && popoverLogLastSignatureByKey.get(throttleKey) === signature) return;
+    if (signature) popoverLogLastSignatureByKey.set(throttleKey, signature);
+    popoverLogLastAtByKey.set(throttleKey, now);
+    const line = `# POPOVER ${signature || event}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch {}
+    try {
+        console.log(line);
+    } catch {}
+};
+
+globalThis.manabiPostPopoverLog = postPopoverLog;
+
 const postBookRotateLog = (event, details = {}) => {
-    void event;
-    void details;
+    postBookLog(event, details, { dedupeKey: `rotate.${event}`, minIntervalMs: 350 });
 };
 
 const postBookInsetLog = (event, details = {}) => {
-    void event;
-    void details;
+    postBookLog(`inset.${event}`, details, { dedupeKey: `inset.${event}`, minIntervalMs: 500 });
 };
 
 const postPageTrackingBookLayoutLog = (event, details = {}) => {
-    void event;
-    void details;
+    postBookLog(event, details, { dedupeKey: event, minIntervalMs: 750 });
 };
 
 const PAGE_NUM_DEDUP_EVENTS = new Set([
@@ -1014,6 +1073,7 @@ const postLayoutLog = (event, details = {}) => {
     const signature = JSON.stringify(compactDetails);
     if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
     lastLayoutLogSignatureByEvent.set(event, signature);
+    postBookLog(`layout.${event}`, compactDetails, { dedupeKey: `layout.${event}`, minIntervalMs: 500 });
 };
 
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
@@ -1276,6 +1336,13 @@ const recordPageTurnNavigationIntent = (direction, source, details = {}) => {
 
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
     try {
+        postPopoverLog('lookupClose.pageMotion', {
+            reason,
+            ...details,
+        }, {
+            dedupeKey: `lookupClose.pageMotion.${reason}`,
+            minIntervalMs: 400,
+        });
         window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
             touchedEntryWithElementId: null,
             wasAlreadySelected: false,
@@ -1335,11 +1402,17 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     if (now - last < minIntervalMs) return;
     bookDebugLastLog.set(throttleKey, now);
     const finalPayload = { event, ...payload };
+    postBookLog(event, finalPayload, { dedupeKey: throttleKey, minIntervalMs: 0 });
     try {
         if (typeof postReaderLog === 'function') {
             postReaderLog(`book.${event}`, finalPayload);
         }
     } catch {}
+};
+
+const compactBookCSSValue = (value, limit = 140) => {
+    if (typeof value !== 'string') return value ?? null;
+    return value.length > limit ? `${value.slice(0, limit)}...` : value;
 };
 
 const sampleBookHighlightState = (doc, reason = 'unknown') => {
@@ -1352,6 +1425,8 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
     }
     const segment = doc.querySelector?.('mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level]');
     const segmentStyle = segment ? doc.defaultView?.getComputedStyle?.(segment) : null;
+    const surface = segment?.querySelector?.('mnb-sur') ?? null;
+    const surfaceStyle = surface ? doc.defaultView?.getComputedStyle?.(surface) : null;
     const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
     return {
         sampled: !!segment,
@@ -1368,13 +1443,83 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
         segmentClass: segment?.className ?? null,
         segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
-        segmentBackgroundImage: segmentStyle?.backgroundImage ?? null,
+        segmentBackgroundImage: compactBookCSSValue(segmentStyle?.backgroundImage),
+        segmentHorizontalIsland: segment?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
         segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
         segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
         segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         segmentHighlightFillOpacity: segmentStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
         segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
+        surfaceHorizontalIsland: surface?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
+        surfaceBackgroundImage: compactBookCSSValue(surfaceStyle?.backgroundImage),
+        surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
     };
+};
+
+const getPrimaryEBookContentDocument = (view = globalThis.reader?.view ?? null) => {
+    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const contents = renderer?.getContents?.() || [];
+    const content = contents.find?.((entry) => {
+        const doc = entry?.doc ?? entry?.document ?? entry?.frame?.contentDocument ?? entry?.iframe?.contentDocument ?? null;
+        return !!doc?.body && doc !== document;
+    }) ?? null;
+    return content?.doc
+        ?? content?.document
+        ?? content?.frame?.contentDocument
+        ?? content?.iframe?.contentDocument
+        ?? null;
+};
+
+const collectBookDiagnosticSnapshot = (view = globalThis.reader?.view ?? null, reason = 'unknown', extra = {}) => {
+    const layout = compactBookLayoutDetails(collectEBookLayoutSnapshot(view, extra));
+    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const doc = getPrimaryEBookContentDocument(view);
+    const root = doc?.documentElement ?? null;
+    const body = doc?.body ?? null;
+    const readerContent = doc?.getElementById?.('reader-content') ?? null;
+    const win = doc?.defaultView ?? null;
+    const rootStyle = root && win ? win.getComputedStyle(root) : null;
+    const bodyStyle = body && win ? win.getComputedStyle(body) : null;
+    const readerContentStyle = readerContent && win ? win.getComputedStyle(readerContent) : null;
+    return {
+        reason,
+        ...layout,
+        rendererCurrentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
+        activeSourceHref: body?.dataset?.mnbSourceHref ?? null,
+        outerBodyClass: document.body?.className || null,
+        contentBodyClass: body?.className || null,
+        contentReadyState: doc?.readyState ?? null,
+        contentWritingDirectionDataset: body?.dataset?.mnbWritingDirection ?? null,
+        contentNavigationHiddenDataset: body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+        rootWritingMode: rootStyle?.writingMode ?? null,
+        rootDirection: rootStyle?.direction ?? null,
+        rootColumnWidth: rootStyle?.columnWidth ?? null,
+        rootColumnGap: rootStyle?.columnGap ?? null,
+        rootColumnCount: rootStyle?.columnCount ?? null,
+        rootWidth: rootStyle?.width ?? null,
+        rootHeight: rootStyle?.height ?? null,
+        rootPaddingInline: rootStyle ? `${rootStyle.paddingInlineStart}/${rootStyle.paddingInlineEnd}` : null,
+        rootPaddingBlock: rootStyle ? `${rootStyle.paddingBlockStart}/${rootStyle.paddingBlockEnd}` : null,
+        bodyWritingMode: bodyStyle?.writingMode ?? null,
+        bodyDirection: bodyStyle?.direction ?? null,
+        bodyWidth: bodyStyle?.width ?? null,
+        bodyHeight: bodyStyle?.height ?? null,
+        readerContentWritingMode: readerContentStyle?.writingMode ?? null,
+        readerContentDirection: readerContentStyle?.direction ?? null,
+        highlight: sampleBookHighlightState(doc, reason),
+    };
+};
+
+const logBookDiagnostic = (reason = 'unknown', view = globalThis.reader?.view ?? null, extra = {}, minIntervalMs = 750) => {
+    const doc = getPrimaryEBookContentDocument(view);
+    const href = doc?.body?.dataset?.mnbSourceHref ?? 'no-content';
+    logBookDebug(
+        'diagnostic',
+        collectBookDiagnosticSnapshot(view, reason, extra),
+        `diagnostic.${reason}.${href}`,
+        minIntervalMs
+    );
 };
 
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
@@ -2673,7 +2818,26 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
 };
 
 window.manabiApplyChromeInsets = (rawState, reason = 'window.manabiApplyChromeInsets') => {
-    return applyStoredChromeInsets(reason, rawState);
+    const nextState = applyStoredChromeInsets(reason, rawState);
+    globalThis.manabiPostBookLog?.('chromeInsets.apply', {
+        reason,
+        obscuredTopInset: nextState?.obscuredTopInset ?? null,
+        toolbarBottomOffset: nextState?.toolbarBottomOffset ?? null,
+        obscuredBottomInset: nextState?.obscuredBottomInset ?? null,
+        source: nextState?.source ?? null,
+        revision: nextState?.revision ?? null,
+        orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+        orientationType: screen.orientation?.type ?? null,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        visualViewportWidth: window.visualViewport?.width ?? null,
+        visualViewportHeight: window.visualViewport?.height ?? null,
+        lookupPopoverActive: window.__manabiLookupPopoverActive === true,
+    }, {
+        dedupeKey: 'chromeInsets.apply',
+        minIntervalMs: 500,
+    });
+    return nextState;
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -3537,6 +3701,21 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         });
     }
     if (typeof builder !== 'function') {
+        postPopoverLog('nativeTargets.reset.missingBuilder', {
+            reason,
+            nativeLookupFrameKey,
+            docURL: doc?.location?.href ?? null,
+            viewportWidth,
+            viewportHeight,
+            viewportLeft,
+            viewportTop,
+            visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+            visualViewportOffsetLeft: Number.isFinite(window.visualViewport?.offsetLeft) ? window.visualViewport.offsetLeft : null,
+            visualViewportOffsetTop: Number.isFinite(window.visualViewport?.offsetTop) ? window.visualViewport.offsetTop : null,
+        }, {
+            dedupeKey: `nativeTargets.reset.${nativeLookupFrameKey || 'no-frame'}`,
+            minIntervalMs: 750,
+        });
         messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             reason,
@@ -3569,6 +3748,26 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets.push(target);
         }
     }
+    postPopoverLog('nativeTargets.post', {
+        reason,
+        nativeLookupFrameKey,
+        targetCount: targets.length,
+        frameLeft,
+        frameTop,
+        viewportWidth,
+        viewportHeight,
+        viewportLeft,
+        viewportTop,
+        visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+        visualViewportOffsetLeft: Number.isFinite(window.visualViewport?.offsetLeft) ? window.visualViewport.offsetLeft : null,
+        visualViewportOffsetTop: Number.isFinite(window.visualViewport?.offsetTop) ? window.visualViewport.offsetTop : null,
+        firstTargetElementId: targets[0]?.elementId ?? null,
+        firstTargetRectCount: targets[0]?.rects?.length ?? null,
+        firstTargetRects: targets[0]?.rects?.slice?.(0, 3)?.map?.(lookupPositionRectSnapshot) ?? null,
+    }, {
+        dedupeKey: `nativeTargets.post.${nativeLookupFrameKey || 'no-frame'}`,
+        minIntervalMs: 750,
+    });
     if (globalThis.manabiVerboseLookupPositionTargets === true) {
         postLookupPositionLog('ebook.nativeTargets.collect.end', {
             reason,
@@ -4883,6 +5082,10 @@ class Reader {
             outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             samples,
         }, `hideNav.applyToBookContent.${hidden}.${contents.length}`, 200);
+        logBookDiagnostic(hidden ? 'hideNav.hidden' : 'hideNav.visible', this.view, {
+            hidden,
+            contentCount: contents.length,
+        });
         requestAnimationFrame(() => this.#logPageTrackingLayout(
             'hide-navigation-due-to-scroll',
             hidden ? 'nav-hidden' : 'nav-visible',
@@ -5626,6 +5829,17 @@ class Reader {
     #invalidateVisiblePageSegmentSnapshot(sourceReason = 'unspecified') {
         this.visiblePageCollectionGeneration += 1;
         this.visiblePageSegmentSnapshot = null;
+        postPopoverLog('nativeTargets.invalidate', {
+            reason: 'visible-page-segment-snapshot.invalidated',
+            sourceReason,
+            targetCount: 0,
+            visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+            viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
+            viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
+        }, {
+            dedupeKey: `nativeTargets.invalidate.${sourceReason}`,
+            minIntervalMs: 500,
+        });
         window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             reason: 'visible-page-segment-snapshot.invalidated',
@@ -5917,6 +6131,11 @@ class Reader {
             const snapshot = this.#buildLayoutSnapshot(`initial-paginator-settle.${reason}`, {
                 previousSize: result?.previousSize ?? null,
                 currentSize: result?.currentSize ?? null,
+                rendered: result?.rendered ?? false,
+                resultReason: result?.reason ?? null,
+            });
+            logBookDiagnostic('initial-paginator-settle', this.view, {
+                settleReason: reason,
                 rendered: result?.rendered ?? false,
                 resultReason: result?.reason ?? null,
             });
@@ -7389,6 +7608,11 @@ class Reader {
             bookDir: this.bookDir,
             isRTL: this.isRTL,
         }));
+        requestAnimationFrame(() => logBookDiagnostic('reader.open', this.view, {
+            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
+            bookDir: this.bookDir,
+            isRTL: this.isRTL,
+        }));
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
@@ -7735,6 +7959,20 @@ class Reader {
                     }
                     : null;
             }
+            postPopoverLog('blankTap.mainDocument.post', {
+                source,
+                eventType: event.type,
+                touchstartAtMs,
+                ebookNavigationHidden,
+                clientX: event.clientX ?? null,
+                clientY: event.clientY ?? null,
+                screenX: event.screenX ?? null,
+                screenY: event.screenY ?? null,
+                lookupPopoverActive: window.__manabiLookupPopoverActive === true,
+            }, {
+                dedupeKey: `blankTap.mainDocument.${source}`,
+                minIntervalMs: 350,
+            });
             window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
@@ -8767,6 +9005,20 @@ class Reader {
                             }
                             : null;
                     }
+                    postPopoverLog('blankTap.contentDocument.post', {
+                        source,
+                        eventType: event.type,
+                        touchstartAtMs,
+                        ebookNavigationHidden,
+                        clientX: event.clientX ?? null,
+                        clientY: event.clientY ?? null,
+                        screenX: event.screenX ?? null,
+                        screenY: event.screenY ?? null,
+                        docURL: doc?.location?.href ?? null,
+                    }, {
+                        dedupeKey: `blankTap.contentDocument.${source}`,
+                        minIntervalMs: 350,
+                    });
                     window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
@@ -8947,6 +9199,13 @@ class Reader {
             rendererTotal,
             cfiLength: typeof cfi === 'string' ? cfi.length : 0,
         }));
+        logBookDiagnostic('reader.relocate', this.view, {
+            relocateReason: reason ?? null,
+            fraction: safeRound(fraction),
+            sectionIndex,
+            localSectionIndex,
+            rendererTotal,
+        });
         const sectionBaseCFI = typeof sectionIndex === 'number'
             ? (this.view?.book?.sections?.[sectionIndex]?.cfi ?? null)
             : null;
@@ -9080,6 +9339,38 @@ class Reader {
                 normalizedRelocateReason !== 'anchor'
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
+            globalThis.manabiPostBookLog?.('position.relocate', {
+                reason: reason ?? null,
+                normalizedRelocateReason,
+                shouldPersistRelocatePosition,
+                shouldSuppressRestoreSettleSave,
+                requiresUserInputBeforePositionSave,
+                hasLoadedLastPosition: this.hasLoadedLastPosition,
+                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
+                displayPercent: progressBridgePayload.displayPercent,
+                sectionIndex,
+                localSectionIndex,
+                rendererTotal,
+                currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                    ? this.navHUD.rendererPageSnapshot.current
+                    : null,
+                cfiLooksSectionBase,
+                cfiIsUnstableAcrossPages,
+                persistedLocatorKind: progressBridgePayload.persistedLocatorKind,
+                persistedLocatorLength: progressBridgePayload.persistedLocatorLength,
+                syntheticRestoreLocator,
+                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+                orientationType: screen.orientation?.type ?? null,
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+                visualViewportWidth: window.visualViewport?.width ?? null,
+                visualViewportHeight: window.visualViewport?.height ?? null,
+            }, {
+                dedupeKey: `position.relocate.${normalizedRelocateReason || 'unknown'}`,
+                minIntervalMs: 500,
+            });
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
@@ -9625,6 +9916,7 @@ window.setEbookViewerLayout = (layoutMode) => {
     postLayoutLog('setEbookViewerLayout', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         layoutMode,
     }));
+    logBookDiagnostic('setEbookViewerLayout', globalThis.reader?.view, { layoutMode });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
@@ -9652,6 +9944,7 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));
+    logBookDiagnostic('setEbookViewerWritingDirection', globalThis.reader?.view, { writingDirection });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 
@@ -9940,6 +10233,27 @@ window.loadLastPosition = async ({
     const restoreLocatorKind = syntheticRestoreLocator
         ? 'synthetic'
         : (typeof cfi === 'string' && cfi.length > 0 ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none'));
+    globalThis.manabiPostBookLog?.('restore.start', {
+        restoreLocatorKind,
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
+        fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
+        syntheticSectionIndex: syntheticRestoreLocator?.sectionIndex ?? null,
+        syntheticLocalSectionIndex: syntheticRestoreLocator?.localSectionIndex ?? null,
+        syntheticRendererTotal: syntheticRestoreLocator?.rendererTotal ?? null,
+        syntheticFractionInSection: Number.isFinite(syntheticRestoreLocator?.fractionInSection)
+            ? safeRound(syntheticRestoreLocator.fractionInSection, 6)
+            : null,
+        orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+        orientationType: screen.orientation?.type ?? null,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        visualViewportWidth: window.visualViewport?.width ?? null,
+        visualViewportHeight: window.visualViewport?.height ?? null,
+    }, {
+        dedupeKey: 'restore.start',
+        minIntervalMs: 0,
+    });
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
         if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
             return;
@@ -10127,6 +10441,29 @@ window.loadLastPosition = async ({
         }
         globalThis.reader.hasLoadedLastPosition = true
         const doneState = captureRestoreState('done');
+        globalThis.manabiPostBookLog?.('restore.done', {
+            restoreLocatorKind,
+            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
+            landedFraction: typeof doneState?.currentFraction === 'number' ? safeRound(doneState.currentFraction, 6) : null,
+            landedSectionIndex: doneState?.sectionIndex ?? null,
+            landedLocationCurrent: doneState?.locationCurrent ?? null,
+            landedLocationTotal: doneState?.locationTotal ?? null,
+            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+            rendererCurrentIndex: typeof globalThis.reader?.view?.renderer?.currentIndex === 'number'
+                ? globalThis.reader.view.renderer.currentIndex
+                : null,
+            rendererPageCurrent: globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null,
+            rendererPageTotal: globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null,
+            orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
+            orientationType: screen.orientation?.type ?? null,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            visualViewportWidth: window.visualViewport?.width ?? null,
+            visualViewportHeight: window.visualViewport?.height ?? null,
+        }, {
+            dedupeKey: 'restore.done',
+            minIntervalMs: 0,
+        });
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
         postLandscapeInsetRestoreProbe('done', doneState, {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,

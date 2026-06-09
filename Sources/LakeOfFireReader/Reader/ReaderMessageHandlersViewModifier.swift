@@ -1257,6 +1257,7 @@ extension ReaderMessageHandlersViewModifier {
             && lastNativeLookupTapAtMs > 0
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
+            print("# BOOK native.hideNavigation.skip reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
@@ -1264,6 +1265,7 @@ extension ReaderMessageHandlersViewModifier {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
+            print("# BOOK native.hideNavigation.push reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
         } catch {
             // Ignore boot timing races.
         }

@@ -422,6 +422,7 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
+    print("# BOOK native.chromeInsets.sync pageURL=\(pageURL.absoluteString) revision=\(revision) top=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) bottom=\(obscuredBottomInset)")
     do {
         try await evaluateJavaScript(
             """
@@ -1101,6 +1102,7 @@ public struct Reader: View {
                             sampledInsets.top = explicitTopInset
                         }
                         if pageURL.isEBookURL {
+                            print("# BOOK native.safeArea.appear size=\(geometrySize.width)x\(geometrySize.height) rawTop=\(geometrySafeAreaInsets.top) rawLeading=\(geometrySafeAreaInsets.leading) rawBottom=\(geometrySafeAreaInsets.bottom) rawTrailing=\(geometrySafeAreaInsets.trailing) sampledTop=\(sampledInsets.top) sampledLeading=\(sampledInsets.leading) sampledBottom=\(sampledInsets.bottom) sampledTrailing=\(sampledInsets.trailing)")
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1132,6 +1134,7 @@ public struct Reader: View {
                             }
                         }
                         if pageURL.isEBookURL {
+                            print("# BOOK native.safeArea.change size=\(geometrySize.width)x\(geometrySize.height) rawTop=\(safeAreaInsets.top) rawLeading=\(safeAreaInsets.leading) rawBottom=\(safeAreaInsets.bottom) rawTrailing=\(safeAreaInsets.trailing) sampledTop=\(sampledInsets.top) sampledLeading=\(sampledInsets.leading) sampledBottom=\(sampledInsets.bottom) sampledTrailing=\(sampledInsets.trailing) previousTop=\(previousInsets?.top ?? -1) previousBottom=\(previousInsets?.bottom ?? -1)")
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1174,6 +1177,7 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
+                print("# BOOK native.chromeInsets.attempt attempt=\(attempt) pageURL=\(pageURL.absoluteString) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
                     obscuredTopInset: effectiveTopInset,
