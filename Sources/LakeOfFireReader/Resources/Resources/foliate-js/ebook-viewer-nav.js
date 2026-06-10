@@ -12,44 +12,7 @@ const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
     'scrub-release',
 ]);
 
-// Focused pagination/bake diagnostics (capped to avoid spam)
-let logEBookPageNumCounter = 0;
-const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
-const NAV_PAGE_NUM_WHITELIST = new Set([
-    'nav:set-page-targets',
-    'nav:total-pages-source',
-    'nav:section-counts-state',
-    'nav:relocate:input',
-    'relocate',
-    'relocate:label',
-    'ui:primary-label',
-    'ui:section-progress',
-]);
-const logEBookPageNumLimited = (event, detail = {}) => {
-    void event;
-    void detail;
-};
-
-// Stub logFix to avoid breaking when viewer.js isn't importing it here.
-// We only need a no-op logger for nav diagnostics.
-const logFix = (event, detail = {}) => {
-    void event;
-    void detail;
-};
-const logBug = (event, detail = {}) => {
-    void event;
-    void detail;
-};
-
-const logNavHide = (event, detail = {}) => {
-    void event;
-    void detail;
-};
-
-const logMay15 = (event, detail = {}) => {
-};
-
 const bookNavRect = (element) => {
     const rect = element?.getBoundingClientRect?.() ?? null;
     if (!rect) return null;
@@ -61,23 +24,6 @@ const bookNavRect = (element) => {
         top: safeRound(rect.top, 1),
         bottom: safeRound(rect.bottom, 1),
     };
-};
-
-const may15Stack = () => {
-    try {
-        return String(new Error().stack || '')
-            .split('\n')
-            .slice(2, 9)
-            .map(line => line.trim())
-            .filter(Boolean);
-    } catch (_err) {
-        return [];
-    }
-};
-
-const logEPUBNav = (event, detail = {}) => {
-    void event;
-    void detail;
 };
 
 const normalizeSpineHrefForPageNum = (href) => {
@@ -230,28 +176,13 @@ export class NavigationHUD {
         this.lastPagesLeftLabel = '';
         this.auxiliaryInsetsFrame = 0;
         this.lastAuxiliaryInsetsState = null;
-        this.lastResolvedSectionIndexLog = null;
-        this.lastRelocateButtonsStateLog = null;
         this._applyLabelVariant();
         if (this.pendingScrubCommit) {
-            this._logPageScrub('pending-commit-reset', {
-                reason: 'new-scrub',
-            });
             this.pendingScrubCommit = null;
         }
 
         this._updateRelocateButtons();
         this._applyRelocateButtonEdges();
-    }
-
-    _logJumpBack(event, payload = {}) {
-        void event;
-        void payload;
-    }
-
-    _logJumpButton(event, payload = {}) {
-        void event;
-        void payload;
     }
 
     requestExplicitRelocateHistoryMutation(source = 'unknown') {
@@ -262,9 +193,6 @@ export class NavigationHUD {
         const source = this._explicitRelocateHistoryMutationSource ?? null;
         this._explicitRelocateHistoryMutationSource = null;
         if (source) {
-            this._logJumpDiagnostic('relocate-history-explicit', {
-                source,
-            });
         }
         return source;
     }
@@ -309,14 +237,6 @@ export class NavigationHUD {
             key: ensurePageKey(item, index),
             label: item?.label ?? null,
         }));
-        this._logPageNumberDiagnostic('set-page-targets', {
-            pageTargetCount: this.totalPageCount,
-        });
-        logEBookPageNumLimited('nav:set-page-targets', {
-            pageTargetCount: this.totalPageCount,
-            preview: pageKeyPreview,
-            totalSource: this.lastTotalSource ?? null,
-        });
         if (this.lastRelocateDetail) {
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
@@ -335,19 +255,6 @@ export class NavigationHUD {
                 }
             });
         }
-        logEPUBNav('nav.sections.received', {
-            sectionCount: Array.isArray(this.navContext?.sections) ? this.navContext.sections.length : 0,
-            linearSectionCount: this.linearSectionIndexes.size,
-            sectionMapSize: this.sectionIndexByHref.size,
-            preview: Array.isArray(this.navContext?.sections)
-                ? this.navContext.sections.slice(0, 8).map((section, idx) => ({
-                    index: idx,
-                    href: section?.href ?? null,
-                    normalizedHref: normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null),
-                    linear: section?.linear ?? null,
-                }))
-                : [],
-        });
         this.linearSectionCount = this.linearSectionIndexes.size || null;
         this._rebuildPageTargetSectionMetrics();
         if (this.lastRelocateDetail) {
@@ -367,15 +274,6 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
-        logMay15('ebook.navHUD.setHide.entered', {
-            sequence,
-            source,
-            previous,
-            requested: next,
-            previousClass,
-            context,
-            stack: may15Stack(),
-        });
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
                 source,
@@ -384,21 +282,6 @@ export class NavigationHUD {
                     ...(context || {}),
                     resyncReason: 'preservedHiddenNavigation',
                 },
-            });
-            logMay15('ebook.navHUD.setHide.return', {
-                sequence,
-                source,
-                verdict: 'preservedHiddenNavigation',
-                previous,
-                requested: next,
-            });
-            logEPUBNav('nav.visibility.scroll-toggle-preserved', {
-                sequence,
-                source,
-                previous,
-                shouldHide: next,
-                context,
-                state: this._captureHideNavState(),
             });
             return this.hideNavigationDueToScroll;
         }
@@ -411,33 +294,6 @@ export class NavigationHUD {
                     resyncReason: 'noop',
                 },
             });
-            logMay15('ebook.navHUD.setHide.return', {
-                sequence,
-                source,
-                verdict: 'noop',
-                previous,
-                requested: next,
-                previousClass,
-            });
-            logEPUBNav('nav.visibility.scroll-toggle-noop', {
-                sequence,
-                source,
-                previous,
-                shouldHide: next,
-                navHidden: this.navHidden,
-                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                navHiddenScrollClass: previousClass,
-                context,
-            });
-            logNavHide('hud:set-hide-noop', {
-                shouldHide: next,
-                source,
-                labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-                navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                navHiddenScrollClass: previousClass,
-                context,
-            });
             return this.hideNavigationDueToScroll;
         }
         this.hideNavigationDueToScroll = next;
@@ -448,38 +304,6 @@ export class NavigationHUD {
             context,
         });
         this._applyLabelVariant();
-        logEPUBNav('nav.visibility.scroll-toggle', {
-            sequence,
-            source,
-            previous,
-            shouldHide: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
-            compactLabel: this.navPrimaryTextCompact?.textContent || '',
-            context,
-        });
-        logNavHide('hud:set-hide', {
-            shouldHide: this.hideNavigationDueToScroll,
-            previous,
-            source,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
-            compactLabel: this.navPrimaryTextCompact?.textContent || '',
-            hiddenOverlayLabel: this.navHiddenOverlay?.text?.textContent || '',
-            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
-            context,
-        });
-        logBug?.('navhud-hide', {
-            shouldHide: this.hideNavigationDueToScroll,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-        });
         if (this.progressWrapper) {
             this.progressWrapper.setAttribute('aria-hidden', this.hideNavigationDueToScroll ? 'true' : 'false');
         }
@@ -491,29 +315,14 @@ export class NavigationHUD {
             }
         }
         if (this.lastRelocateDetail) {
-            logMay15('ebook.navHUD.setHide.beforePrimaryLine', {
-                sequence,
-                source,
-                hasLastRelocateDetail: true,
-            });
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
         // Keep completion stack state untouched while animating scroll-hide to avoid dropping finish/restart.
-        logMay15('ebook.navHUD.setHide.beforeRelocateButtons', {
-            sequence,
-            source,
-            shouldHide: this.hideNavigationDueToScroll,
-        });
         this._updateRelocateButtons(`setHide:${source}`);
         this.syncPageTrackingButtonsNavigationDisabled();
         this.refreshTitleLocationVisibility(`setHide:${source}`);
         void this._updateSectionProgress({ refreshSnapshot: false, source: `setHide:${source}` });
         this._postNativeOverlayState(`setHide:${source}`);
-        logMay15('ebook.navHUD.setHide.beforeAuxiliaryInsets', {
-            sequence,
-            source,
-            shouldHide: this.hideNavigationDueToScroll,
-        });
         this._requestAuxiliaryInsetsUpdate();
     }
 
@@ -543,16 +352,6 @@ export class NavigationHUD {
         }
         this.refreshTitleLocationVisibility('nav-hidden-state');
         this._postNativeOverlayState('nav-hidden-state');
-        logEPUBNav('nav.visibility.hidden-toggle', {
-            previous,
-            shouldHide: this.navHidden,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
-            compactLabel: this.navPrimaryTextCompact?.textContent || '',
-        });
     }
 
     setBookTitle(title) {
@@ -709,17 +508,8 @@ export class NavigationHUD {
                     liveScrollPhase: 'settled',
                 }, fallbackDescriptor);
                 if (!flushed && this.pendingScrubCommit) {
-                    this._logPageScrub('pending-commit-awaiting-detail', {
-                        reason: 'scrub-begin',
-                        pendingOriginFraction: typeof this.pendingScrubCommit?.origin?.fraction === 'number'
-                            ? Number(this.pendingScrubCommit.origin.fraction.toFixed(6))
-                            : null,
-                    });
                 }
             } else if (this.pendingScrubCommit) {
-                this._logPageScrub('pending-commit-awaiting-detail', {
-                    reason: 'scrub-begin-no-descriptor',
-                });
             }
         }
         const baselineDescriptor = this._cloneDescriptor(originDescriptor)
@@ -745,25 +535,6 @@ export class NavigationHUD {
             fullLabelTarget.textContent = frozenLabel;
             compactLabelTarget.textContent = frozenLabel;
         }
-        this._logPageScrub('begin', {
-            originFraction,
-            hasDescriptor: !!baselineDescriptor,
-        });
-        this._logJumpDiagnostic('scrub-begin', {
-            hasOrigin: !!originDescriptor,
-            backDepth: this.relocateStacks.back.length,
-            forwardDepth: this.relocateStacks.forward.length,
-            originDescriptor: this._serializeDescriptorForJumpLog(originDescriptor),
-            baselineDescriptor: this._serializeDescriptorForJumpLog(baselineDescriptor),
-            currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
-            pendingScrubCommit: this.pendingScrubCommit ? {
-                reason: this.pendingScrubCommit.reason ?? null,
-                origin: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.origin),
-                releaseFraction: typeof this.pendingScrubCommit.releaseFraction === 'number'
-                    ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6))
-                    : null,
-            } : null,
-        });
         this._updateRelocateButtons();
     }
 
@@ -787,11 +558,6 @@ export class NavigationHUD {
                 releaseDescriptor: comparisonDescriptor,
             };
             deferredCommit = true;
-            this._logPageScrub('pending-commit', {
-                originFraction: session.originFraction ?? null,
-                releaseFraction: releaseValue,
-                hasMoved: session.hasMoved,
-            });
         } else {
             this.pendingScrubCommit = null;
             if (!cancel) {
@@ -817,42 +583,11 @@ export class NavigationHUD {
         this.pendingReleasedScrubDescriptor = releaseDescriptor
             ? this._cloneDescriptor(releaseDescriptor)
             : null;
-        this._logPageScrub('end', {
-            cancel,
-            committed,
-            returnedToOrigin,
-            deferredCommit,
-        });
         this.scrubSession = null;
         this._updateRelocateButtons();
         if (comparisonDescriptor || this.currentLocationDescriptor) {
             this._updatePrimaryLine(comparisonDescriptor || this.currentLocationDescriptor);
         }
-        this._logJumpDiagnostic('scrub-end', {
-            cancel,
-            committed,
-            returnedToOrigin,
-            hadMovement: session.hasMoved,
-            originFraction: session.originFraction ?? null,
-            finalFraction: comparisonDescriptor?.fraction ?? null,
-            backDepth: this.relocateStacks.back.length,
-            forwardDepth: this.relocateStacks.forward.length,
-            deferredCommit,
-            releaseFraction: typeof releaseValue === 'number' ? Number(releaseValue.toFixed(6)) : null,
-            originDescriptor: this._serializeDescriptorForJumpLog(session.originDescriptor),
-            comparisonDescriptor: this._serializeDescriptorForJumpLog(comparisonDescriptor),
-            releaseDescriptor: this._serializeDescriptorForJumpLog(releaseDescriptor),
-            currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
-            pendingReleasedScrubDescriptor: this._serializeDescriptorForJumpLog(this.pendingReleasedScrubDescriptor),
-            pendingScrubCommit: this.pendingScrubCommit ? {
-                reason: this.pendingScrubCommit.reason ?? null,
-                origin: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.origin),
-                releaseFraction: typeof this.pendingScrubCommit.releaseFraction === 'number'
-                    ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6))
-                    : null,
-                releaseDescriptor: this._serializeDescriptorForJumpLog(this.pendingScrubCommit.releaseDescriptor),
-            } : null,
-        });
     }
     
     async handleRelocate(detail) {
@@ -888,41 +623,12 @@ export class NavigationHUD {
         if (typeof detail.sectionIndex === 'number' && typeof detail.pageCount === 'number' && detail.pageCount > 0) {
             this.sectionPageCounts.set(detail.sectionIndex, detail.pageCount);
         }
-        logEPUBNav('nav.visibility.relocate', {
-            reason: detail?.reason ?? null,
-            previousSectionIndex,
-            nextSectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
-            sectionChanged: typeof previousSectionIndex === 'number' && typeof detail.sectionIndex === 'number'
-                ? previousSectionIndex !== detail.sectionIndex
-                : null,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-        });
-        logEBookPageNumLimited('nav:relocate:input', {
-            sectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
-            index: typeof detail.index === 'number' ? detail.index : null,
-            pageNumber: typeof detail.pageNumber === 'number' ? detail.pageNumber : null,
-            pageCount: typeof detail.pageCount === 'number' ? detail.pageCount : null,
-            scrolled: detail.scrolled ?? null,
-            sectionPageCountsSize: this.sectionPageCounts.size,
-            rendererIndex,
-        });
         // Prefer the renderer's live snapshot, but prime it from detail when available
         this._updateRendererSnapshotFromDetail(detail);
         await this._refreshRendererSnapshot();
         this._applyPageTurnNavigationVisibility(detail);
         this.lastRelocateDetail = detail;
         this._handleRelocateHistory(detail);
-        this._logJumpBack('relocate-detail', {
-            reason: detail?.reason ?? null,
-            phase: detail?.liveScrollPhase ?? null,
-            fraction: typeof detail?.fraction === 'number' ? Number(detail.fraction.toFixed(6)) : null,
-            processingPending: this.isProcessingRelocateJump,
-        });
-        this._logRelocateDetail(detail);
         this._updatePrimaryLine(detail);
         this._toggleCompletionStack();
         await this._updateSectionProgress({ refreshSnapshot: false, source: 'relocate' });
@@ -971,16 +677,6 @@ export class NavigationHUD {
             const lastExplicitRevealAtMs = Number(globalThis.__manabiLastExplicitNavigationRevealAtMs || 0);
             const explicitRevealAgeMs = lastExplicitRevealAtMs > 0 ? now - lastExplicitRevealAtMs : Number.POSITIVE_INFINITY;
             if (explicitRevealAgeMs >= 0 && explicitRevealAgeMs < 900) {
-                logMay15('ebook.navVisibility.pageTurn.suppressedAfterExplicitReveal', {
-                    direction,
-                    reportedDirection,
-                    reason: detail?.reason ?? null,
-                    explicitRevealAgeMs,
-                    lastExplicitRevealAtMs,
-                    sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
-                    pageNumber: this.rendererPageSnapshot?.current ?? null,
-                    pageCount: this.rendererPageSnapshot?.total ?? null,
-                });
                 return;
             }
         }
@@ -1027,15 +723,6 @@ export class NavigationHUD {
             };
             this.rendererPageSnapshot = normalized;
             this._updateFallbackTotalPages(normalized.total);
-            logEBookPageNumLimited('nav:renderer-snapshot:detail', {
-                detailPage: pageNumber,
-                detailTotal: pageCount,
-                normalizedCurrent: normalized.current,
-                normalizedTotal: normalized.total,
-                scrolled,
-                totalPageCount: this.totalPageCount,
-                totalSource: this.lastTotalSource ?? null,
-            });
         }
     }
     
@@ -1070,32 +757,6 @@ export class NavigationHUD {
         this._updateCompactPercent(detail);
 
         // UI surface logging: what the user actually sees on the nav bar.
-        logEBookPageNumLimited('ui:primary-label', {
-            label: fullLabelTarget.textContent || '',
-            compactLabel: compactLabelTarget.textContent || '',
-            hiddenOverlayLabel: overlayLabelTarget?.textContent || '',
-            hiddenOverlayPercent: this.navHiddenOverlay?.percent?.textContent || '',
-            hiddenOverlayLabelWidth: overlayLabelTarget?.offsetWidth ?? null,
-            hiddenOverlayPercentWidth: this.navHiddenOverlay?.percent?.offsetWidth ?? null,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            source: this.lastPrimaryLabelDiagnostics?.source ?? null,
-            currentPercent: this.lastPrimaryLabelDiagnostics?.currentPercent ?? null,
-            rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
-            rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-        });
-        logEPUBNav('nav.primaryLabel', {
-            label: fullLabelTarget.textContent || '',
-            compactLabel: compactLabelTarget.textContent || '',
-            hiddenOverlayLabel: overlayLabelTarget?.textContent || '',
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            source: this.lastPrimaryLabelDiagnostics?.source ?? null,
-            currentPercent: this.lastPrimaryLabelDiagnostics?.currentPercent ?? null,
-            fraction: this.lastPrimaryLabelDiagnostics?.fraction ?? null,
-            pageTargetCount: this.totalPageCount || null,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-        });
     }
 
     _applyLabelVariant() {
@@ -1112,17 +773,6 @@ export class NavigationHUD {
             const previousVariant = this.navPrimaryText.dataset.labelVariant ?? null;
             if (previousVariant !== next) {
                 this.navPrimaryText.dataset.labelVariant = next;
-                logEPUBNav('nav.visibility.variant-sync', {
-                    previousVariant,
-                    nextVariant: next,
-                    barHidden,
-                    hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-                    navHidden: this.navHidden,
-                    navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-                    navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-                    primaryLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
-                    compactLabel: this.navPrimaryTextCompact?.textContent || '',
-                });
             }
         }
     }
@@ -1171,25 +821,6 @@ export class NavigationHUD {
             if (hasValue) overlay.removeAttribute('aria-hidden');
             else overlay.setAttribute('aria-hidden', 'true');
         }
-        logNavHide('hud:compact-percent', {
-            isCompact: this.navPrimaryText?.dataset?.labelVariant === 'compact',
-            hasValue,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            locationLabel: this.navPrimaryTextFull?.textContent || this.navPrimaryText?.textContent || '',
-            compactLabel: this.navPrimaryTextCompact?.textContent || '',
-            primaryPercent: '',
-            primaryPercentHidden: true,
-            overlayLabel: this.navHiddenOverlay?.text?.textContent || '',
-            overlayLabelHidden: this.navHiddenOverlay?.text?.hidden ?? null,
-            overlayLabelWidth: this.navHiddenOverlay?.text?.offsetWidth ?? null,
-            overlayPercent: overlay?.textContent || '',
-            overlayPercentHidden: overlay?.hidden ?? null,
-            overlayPercentWidth: overlay?.offsetWidth ?? null,
-            overlayPercentDisplay: overlay ? window.getComputedStyle(overlay).display : null,
-            overlayPercentVisibility: overlay ? window.getComputedStyle(overlay).visibility : null,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-        });
         this._postNativeOverlayState('compact-percent');
     }
 
@@ -1235,15 +866,8 @@ export class NavigationHUD {
 
     _requestAuxiliaryInsetsUpdate() {
         if (this.auxiliaryInsetsFrame) {
-            logMay15('ebook.navHUD.auxiliaryInsets.skipSchedule', {
-                reason: 'alreadyScheduled',
-                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            });
             return;
         }
-        logMay15('ebook.navHUD.auxiliaryInsets.schedule', {
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-        });
         this.auxiliaryInsetsFrame = requestAnimationFrame(() => {
             this.auxiliaryInsetsFrame = 0;
             this._updateAuxiliaryInsets();
@@ -1254,11 +878,6 @@ export class NavigationHUD {
         const startedAt = performance.now();
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
-        logMay15('ebook.navHUD.auxiliaryInsets.entered', {
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            hasNavBar: !!this.navBar,
-            stack: may15Stack(),
-        });
         const lookupPopoverPresented = document.body?.dataset?.mnbLookupPopoverPresented === 'true';
         const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
         const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
@@ -1279,12 +898,6 @@ export class NavigationHUD {
         this.lastAuxiliaryInsetsState = nextState;
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
-        logMay15('ebook.navHUD.auxiliaryInsets.finished', {
-            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            changed,
-            leftInset,
-            rightInset,
-        });
     }
 
     _descriptorForRelocateLabel(direction) {
@@ -1431,13 +1044,6 @@ export class NavigationHUD {
         ];
         for (const candidate of candidates) {
             if (typeof candidate.value === 'number' && candidate.value >= 0) {
-                this._logPageNumberDiagnostic('section-index.resolved', {
-                    resolution: 'numeric',
-                    source: candidate.source,
-                    resolvedHref: null,
-                    sectionIndex: candidate.value,
-                    sectionMapSize: this.sectionIndexByHref?.size ?? 0,
-                });
                 return { index: candidate.value, source: candidate.source, resolvedHref: null };
             }
         }
@@ -1460,34 +1066,14 @@ export class NavigationHUD {
             const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
             const indexFromHref = normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null;
             if (typeof indexFromHref === 'number' && indexFromHref >= 0) {
-                this._logPageNumberDiagnostic('section-index.resolved', {
-                    resolution: 'href',
-                    source: candidate.source,
-                    resolvedHref: normalizedHref,
-                    sectionIndex: indexFromHref,
-                    sectionMapSize: this.sectionIndexByHref?.size ?? 0,
-                });
                 return { index: indexFromHref, source: candidate.source, resolvedHref: normalizedHref };
             }
         }
         const hasSectionMetadata = (this.sectionIndexByHref?.size ?? 0) > 0
             || (Array.isArray(this.navContext?.sections) && this.navContext.sections.length > 0);
         if (!hasSectionMetadata) {
-            this._logPageNumberDiagnostic('section-index.pending-metadata', {
-                hrefCandidates: hrefCandidateSummary,
-                sectionMapSize: this.sectionIndexByHref?.size ?? 0,
-                navSectionCount: Array.isArray(this.navContext?.sections) ? this.navContext.sections.length : 0,
-            });
             return { index: null, source: 'none', resolvedHref: null };
         }
-        this._logPageNumberDiagnostic('section-index.unresolved', {
-            hrefCandidates: hrefCandidateSummary,
-            numericCandidates: candidates.map((candidate) => ({
-                source: candidate.source,
-                value: typeof candidate.value === 'number' ? candidate.value : null,
-            })),
-            sectionMapSize: this.sectionIndexByHref?.size ?? 0,
-        });
         return { index: null, source: 'none', resolvedHref: null };
     }
 
@@ -1542,17 +1128,6 @@ export class NavigationHUD {
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
         const center = this.navSectionProgress?.center;
-        const logSectionProgress = (verdict, details = {}) => {
-        };
-        logMay15('ebook.navHUD.sectionProgress.entered', {
-            source,
-            refreshSnapshot,
-            requestToken,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            hasCenter: !!center,
-            centerHidden: center?.hidden ?? null,
-            stack: may15Stack(),
-        });
         const setCenterPagesLeftVisible = (visible, label = '') => {
             if (!center) return;
             if (center.__pagesLeftFadeTimer) {
@@ -1564,11 +1139,6 @@ export class NavigationHUD {
                 center.textContent = label;
                 if (center.dataset.pagesLeftVisible !== 'true') {
                     center.dataset.pagesLeftVisible = 'false';
-                    logMay15('ebook.navHUD.sectionProgress.forceLayoutForFade', {
-                        source,
-                        requestToken,
-                        label,
-                    });
                     void center.offsetWidth;
                     requestAnimationFrame(() => {
                         requestAnimationFrame(() => {
@@ -1606,15 +1176,6 @@ export class NavigationHUD {
                     pagesLeftLabel: '',
                     source,
                 });
-                logMay15('ebook.navHUD.sectionProgress.return', {
-                    source,
-                    requestToken,
-                    verdict: this.hideNavigationDueToScroll ? 'hiddenNavigation' : 'showingCompletion',
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-                });
-                logSectionProgress(this.hideNavigationDueToScroll ? 'hiddenNavigation' : 'showingCompletion', {
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-                });
                 return;
             }
             if (sectionResolution.index == null) {
@@ -1623,15 +1184,6 @@ export class NavigationHUD {
                     pagesLeftVisible: false,
                     pagesLeftLabel: '',
                     source,
-                });
-                logMay15('ebook.navHUD.sectionProgress.return', {
-                    source,
-                    requestToken,
-                    verdict: 'noSectionIndex',
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-                });
-                logSectionProgress('noSectionIndex', {
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
                 });
                 return;
             }
@@ -1643,21 +1195,6 @@ export class NavigationHUD {
                     pagesLeftVisible: false,
                     pagesLeftLabel: '',
                     source,
-                });
-                logMay15('ebook.navHUD.sectionProgress.return', {
-                    source,
-                    requestToken,
-                    verdict: 'noPagesLeft',
-                    sectionIndex: sectionResolution.index,
-                    currentPageNumber: result?.currentPageNumber ?? null,
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-                });
-                logSectionProgress('noPagesLeft', {
-                    sectionIndex: sectionResolution.index,
-                    currentPageNumber: result?.currentPageNumber ?? null,
-                    totalPages: result?.totalPages ?? null,
-                    resultSource: result?.source ?? null,
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
                 });
                 return;
             }
@@ -1681,20 +1218,6 @@ export class NavigationHUD {
                     pagesLeftLabel: '',
                     source,
                 });
-                logMay15('ebook.navHUD.sectionProgress.return', {
-                    source,
-                    requestToken,
-                    verdict: 'terminalSectionCached',
-                    sectionIndex: sectionResolution.index,
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-                });
-                logSectionProgress('terminalSectionCached', {
-                    sectionIndex: sectionResolution.index,
-                    currentPageNumber: result?.currentPageNumber ?? null,
-                    totalPages: result?.totalPages ?? null,
-                    resultSource: result?.source ?? null,
-                    elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-                });
                 return;
             }
             if (
@@ -1715,35 +1238,7 @@ export class NavigationHUD {
                 pagesLeftLabel: label,
                 source,
             });
-            logMay15('ebook.navHUD.sectionProgress.return', {
-                source,
-                requestToken,
-                verdict: 'visible',
-                sectionIndex: sectionResolution.index,
-                pagesLeft,
-                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            });
-            logSectionProgress('visible', {
-                sectionIndex: sectionResolution.index,
-                pagesLeft,
-                currentPageNumber: result?.currentPageNumber ?? null,
-                totalPages: result?.totalPages ?? null,
-                resultSource: result?.source ?? null,
-                label,
-                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            });
         } catch (error) {
-            logMay15('ebook.navHUD.sectionProgress.return', {
-                source,
-                requestToken,
-                verdict: 'error',
-                message: String(error?.message ?? error),
-                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            });
-            logSectionProgress('error', {
-                message: String(error?.message ?? error),
-                elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            });
             console.error('Failed to update section progress', error);
         }
     }
@@ -1818,15 +1313,6 @@ export class NavigationHUD {
             || this.pendingRelocateJump
         );
         if (!shouldMutateRelocateHistory && isImplicitProgressEvent) {
-            this._logJumpDiagnostic('relocate-history-suppressed', {
-                reason,
-                backDepth: this.relocateStacks.back.length,
-                forwardDepth: this.relocateStacks.forward.length,
-                descriptor: this._serializeDescriptorForJumpLog(descriptor),
-                previousDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
-                descriptorChanged: false,
-                source: isImplicitProgressEvent ? 'non-explicit-progress' : 'non-explicit-explicit-fallback',
-            });
             this.currentLocationDescriptor = descriptor;
             this.pendingReleasedScrubDescriptor = null;
             this._maybeCommitPendingScrub(detail, descriptor);
@@ -1835,10 +1321,6 @@ export class NavigationHUD {
         const lastOrigin = this.scrubSession?.originDescriptor;
         // If the relocate matches the scrub origin immediately after a jump, don't clobber history yet.
         if (this.scrubSession?.pendingCommit && lastOrigin && this._isSameDescriptor(lastOrigin, descriptor)) {
-            logFix('jumpback:skip-origin-relocate', {
-                reason: detail?.reason ?? null,
-                fraction: descriptor?.fraction ?? null,
-            });
             this.scrubSession.pendingCommit = false;
             this.currentLocationDescriptor = descriptor;
             return;
@@ -1847,10 +1329,6 @@ export class NavigationHUD {
             this.currentLocationDescriptor = descriptor;
             this._finalizePendingRelocateJump(descriptor);
             if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
-                this._logJumpBack('relocate-finalize-pending', {
-                    pending: !!this.pendingRelocateJump,
-                    descriptorFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
-                });
                 return;
             }
             // fall through to normal handling to capture subsequent movement if needed
@@ -1860,20 +1338,9 @@ export class NavigationHUD {
             if (this.relocateStacks.back.length || this.relocateStacks.forward.length) {
                 this.relocateStacks.back.length = 0;
                 this.relocateStacks.forward.length = 0;
-                this._logStackSnapshot('restore-clear', {
-                    reason,
-                });
             }
             this.currentLocationDescriptor = descriptor;
             this.pendingReleasedScrubDescriptor = null;
-            this._logJumpDiagnostic('relocate-history-suppressed', {
-                reason,
-                restoreInProgress: true,
-                backDepth: this.relocateStacks.back.length,
-                forwardDepth: this.relocateStacks.forward.length,
-                descriptor: this._serializeDescriptorForJumpLog(descriptor),
-                currentDescriptor: this._serializeDescriptorForJumpLog(this.currentLocationDescriptor),
-            });
             this._updateRelocateButtons();
             return;
         }
@@ -1898,44 +1365,10 @@ export class NavigationHUD {
         if (shouldMutateRelocateHistory && isJumpReason && descriptorChanged && !isLiveScrollReason) {
             if (!isScrubbing && previousDescriptor) {
                 this._pushBackStack(previousDescriptor);
-                logFix('jumpback:push', {
-                    reason,
-                    liveScrollPhase,
-                    backDepth: this.relocateStacks.back.length,
-                    descriptorFraction: descriptor?.fraction ?? null,
-                    prevFraction: previousDescriptor?.fraction ?? null,
-                });
-                logBug('EBOOKJUMP', {
-                    event: 'push',
-                    reason,
-                    backDepth: this.relocateStacks.back.length,
-                    forwardDepth: this.relocateStacks.forward.length,
-                    prevFraction: previousDescriptor?.fraction ?? null,
-                    newFraction: descriptor?.fraction ?? null,
-                });
             }
         } else if (shouldMutateRelocateHistory && !isScrubbing && descriptorChanged) {
             this.relocateStacks.forward.length = 0;
-            this._logStackSnapshot('forward-clear');
         }
-        this._logJumpDiagnostic('relocate-history', {
-            reason,
-            isJumpReason,
-            explicitMutation: explicitMutate,
-            explicitMutationSource,
-            historyMutationAllowed: shouldMutateRelocateHistory,
-            descriptorChanged,
-            backDepth: this.relocateStacks.back.length,
-            forwardDepth: this.relocateStacks.forward.length,
-            scrubbing: isScrubbing,
-            movedFromOrigin,
-            hiddenDueToScroll: this.hideNavigationDueToScroll,
-            liveScrollPhase,
-            descriptor: this._serializeDescriptorForJumpLog(descriptor),
-            previousDescriptor: this._serializeDescriptorForJumpLog(previousDescriptor),
-            originDescriptor: this._serializeDescriptorForJumpLog(originDescriptor),
-            pendingReleasedScrubDescriptor: this._serializeDescriptorForJumpLog(this.pendingReleasedScrubDescriptor),
-        });
         this.currentLocationDescriptor = descriptor;
         this.pendingReleasedScrubDescriptor = null;
         this._maybeCommitPendingScrub(detail, descriptor);
@@ -1949,20 +1382,11 @@ export class NavigationHUD {
             if (session.originFraction == null && typeof descriptor?.fraction === 'number') {
                 session.originFraction = descriptor.fraction;
             }
-            logFix('scrub:origin-set', {
-                originFraction: session.originFraction ?? null,
-                descriptorFraction: descriptor?.fraction ?? null,
-            });
         }
         const fractionFromDescriptor = typeof descriptor?.fraction === 'number' ? descriptor.fraction : null;
         const previewFraction = fractionFromDescriptor ?? detailFraction ?? null;
         if (movedFromOrigin) {
             session.hasMoved = true;
-            this._logPageScrub('update', {
-                fraction: previewFraction,
-                originFraction: session.originFraction ?? null,
-                movedFromOrigin,
-            });
         }
     }
 
@@ -1973,41 +1397,13 @@ export class NavigationHUD {
         if (stripCFI) {
             entry.cfi = null;
         }
-        this._logJumpDiagnostic('descriptor-stack-push', {
-            fraction: typeof entry.fraction === 'number' ? Number(entry.fraction.toFixed(6)) : null,
-            cfi: entry.cfi ?? null,
-            sectionIndex: typeof entry.sectionIndex === 'number' ? entry.sectionIndex : null,
-            localSectionIndex: typeof entry.localSectionIndex === 'number' ? entry.localSectionIndex : null,
-            rendererTotal: typeof entry.rendererTotal === 'number' ? entry.rendererTotal : null,
-            pageItemKey: entry.pageItemKey ?? null,
-            stripCFI,
-        });
         const backStack = this.relocateStacks.back;
         backStack.push(entry);
         const index = backStack.length - 1;
         if (backStack.length > MAX_RELOCATE_STACK) {
             backStack.shift();
-            this._logPageScrub('pop', { index: 0, reason: 'truncate' });
         }
         this.relocateStacks.forward.length = 0;
-        this._logPageScrub('stack', {
-            action: 'push',
-            index,
-            fraction: entry.fraction ?? null,
-        });
-        this._logJumpDiagnostic('relocate-stack-push', {
-            backDepth: backStack.length,
-            forwardDepth: this.relocateStacks.forward.length,
-            hiddenDueToScroll: this.hideNavigationDueToScroll,
-        });
-        logBug('EBOOKJUMP', {
-            event: 'stack-push',
-            index,
-            backDepth: backStack.length,
-            forwardDepth: this.relocateStacks.forward.length,
-            fraction: entry.fraction ?? null,
-        });
-        this._logStackSnapshot('push');
         return { entry, index };
     }
     
@@ -2050,14 +1446,6 @@ export class NavigationHUD {
                 const drift = Math.abs(locCurrent - derivedLocCurrent);
                 const staleAtStart = locCurrent === 0 && derivedLocCurrent > 0;
                 if (drift > 1 || staleAtStart) {
-                    logEBookPageNumLimited('nav:location.normalize', {
-                        reason: staleAtStart ? 'stale-zero-current' : 'fraction-drift',
-                        rawCurrent: rawLocCurrent,
-                        derivedCurrent: derivedLocCurrent,
-                        fraction: typeof fraction === 'number' ? Number(fraction.toFixed(6)) : null,
-                        total: locTotal,
-                        cfi: detail.cfi ?? null,
-                    });
                     locCurrent = derivedLocCurrent;
                 }
             }
@@ -2077,21 +1465,6 @@ export class NavigationHUD {
             location,
             locationTotalHint,
         };
-        this._logJumpDiagnostic('descriptor-derived', {
-            reason: detail?.reason ?? null,
-            rawSectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
-            rawIndex: typeof detail?.index === 'number' ? detail.index : null,
-            rendererCurrentIndex,
-            lastSectionIndexSeen: typeof this.lastSectionIndexSeen === 'number' ? this.lastSectionIndexSeen : null,
-            fraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
-            sectionIndex: descriptor.sectionIndex,
-            localSectionIndex: descriptor.localSectionIndex,
-            rendererTotal: descriptor.rendererTotal,
-            locCurrent: descriptor.location?.current ?? null,
-            locTotal: descriptor.location?.total ?? null,
-            pageItemKey: descriptor.pageItemKey ?? null,
-            cfi: descriptor.cfi ?? null,
-        });
         return descriptor;
     }
 
@@ -2165,14 +1538,6 @@ export class NavigationHUD {
         if (shouldAdjustForSentinels) {
             const textTotal = Math.max(1, total - 2); // strip lead/trail sentinels
             const textCurrent = Math.max(1, Math.min(textTotal, current)); // clamp without subtracting so page 2 -> text page 2
-            logEBookPageNumLimited('nav:normalize:calc', {
-                ...snapshotBeforeAdjust,
-                mode: 'text-only',
-                textCurrent,
-                textTotal,
-                returnedCurrent: textCurrent,
-                returnedTotal: textTotal,
-            });
             return {
                 current: textCurrent,
                 total: textTotal,
@@ -2181,12 +1546,6 @@ export class NavigationHUD {
                 scrolled,
             };
         }
-        logEBookPageNumLimited('nav:normalize:calc', {
-            ...snapshotBeforeAdjust,
-            mode: 'raw',
-            returnedCurrent: current,
-            returnedTotal: total,
-        });
         return {
             current,
             total,
@@ -2218,120 +1577,10 @@ export class NavigationHUD {
             if (!normalized) return null;
             this.rendererPageSnapshot = normalized;
             this._updateFallbackTotalPages(normalized.total);
-            logEBookPageNumLimited('nav:renderer-snapshot:inputs', {
-                rawPage: pageResult.value,
-                rawTotal: pagesResult.value,
-                normalizedCurrent: normalized.current,
-                normalizedTotal: normalized.total,
-                rawCurrent: normalized.rawCurrent,
-                rawTotal: normalized.rawTotal,
-                isPaginated: renderer?.scrolled === false,
-                scrolled: renderer?.scrolled ?? null,
-                rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
-                currentBase: normalized.rawCurrent,
-                totalBase: normalized.rawTotal,
-            });
-            this._logPageNumberDiagnostic('renderer-snapshot', {
-                rendererCurrent: normalized.current,
-                rendererTotal: normalized.total,
-                rawRendererCurrent: normalized.rawCurrent,
-                rawRendererTotal: normalized.rawTotal,
-            });
-            logEBookPageNumLimited('nav:renderer-snapshot', {
-                rawPage: pageResult.value,
-                rawTotal: pagesResult.value,
-                normalizedCurrent: normalized.current,
-                normalizedTotal: normalized.total,
-                rawCurrent: normalized.rawCurrent,
-                rawTotal: normalized.rawTotal,
-                scrolled: renderer?.scrolled ?? null,
-                rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
-                totalPageCount: this.totalPageCount,
-                totalSource: this.lastTotalSource ?? null,
-            });
             return normalized;
         } catch (_error) {
             return null;
         }
-    }
-
-    _logPageNumberDiagnostic(event, payload = {}) {
-        if (event === 'section-index.resolved') {
-            const signature = JSON.stringify({
-                source: payload?.source ?? null,
-                sectionIndex: payload?.sectionIndex ?? null,
-                resolvedHref: payload?.resolvedHref ?? null,
-            });
-            if (this.lastResolvedSectionIndexLog === signature) {
-                return;
-            }
-            this.lastResolvedSectionIndexLog = signature;
-        }
-        if (event === 'relocate-buttons.state') {
-            const signature = JSON.stringify({
-                backDepth: payload?.backDepth ?? null,
-                forwardDepth: payload?.forwardDepth ?? null,
-                showBack: payload?.showBack ?? null,
-                showForward: payload?.showForward ?? null,
-                disableBack: payload?.disableBack ?? null,
-                disableForward: payload?.disableForward ?? null,
-                scrubbing: payload?.scrubbing ?? null,
-                busy: payload?.busy ?? null,
-                backLabel: payload?.backLabel ?? '',
-                forwardLabel: payload?.forwardLabel ?? '',
-            });
-            if (this.lastRelocateButtonsStateLog === signature) {
-                return;
-            }
-            this.lastRelocateButtonsStateLog = signature;
-        }
-        const base = {
-            event,
-            totalPageCount: this.totalPageCount,
-            totalSource: this.lastTotalSource ?? null,
-            ...payload,
-        };
-        if (event === 'renderer-snapshot') {
-            const signature = JSON.stringify({
-                rendererCurrent: base?.rendererCurrent ?? null,
-                rendererTotal: base?.rendererTotal ?? null,
-                rawRendererCurrent: base?.rawRendererCurrent ?? null,
-                rawRendererTotal: base?.rawRendererTotal ?? null,
-            });
-            if (this.lastRendererSnapshotLog === signature) {
-                return;
-            }
-            this.lastRendererSnapshotLog = signature;
-        }
-        void base;
-    }
-
-    _logPageScrub(_event, _payload = {}) {}
-
-    _serializeDescriptorForJumpLog(descriptor) {
-        if (!descriptor) return null;
-        return {
-            fraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
-            cfi: descriptor.cfi ?? null,
-            sectionIndex: typeof descriptor.sectionIndex === 'number' ? descriptor.sectionIndex : null,
-            localSectionIndex: typeof descriptor.localSectionIndex === 'number' ? descriptor.localSectionIndex : null,
-            rendererTotal: typeof descriptor.rendererTotal === 'number' ? descriptor.rendererTotal : null,
-            locationCurrent: typeof descriptor.location?.current === 'number' ? descriptor.location.current : null,
-            locationTotal: typeof descriptor.location?.total === 'number' ? descriptor.location.total : null,
-            locationTotalHint: typeof descriptor.locationTotalHint === 'number' ? descriptor.locationTotalHint : null,
-            pageItemKey: descriptor.pageItemKey ?? null,
-            pageLabel: descriptor.pageLabel ?? null,
-        };
-    }
-
-    _logJumpDiagnostic(event, payload = {}) {
-        void event;
-        void payload;
-    }
-
-    _logJumpPosition(event, payload = {}) {
-        void event;
-        void payload;
     }
 
     _isSameDescriptor(a, b) {
@@ -2471,17 +1720,6 @@ export class NavigationHUD {
             if (typeof count === 'number' && count > 0) {
                 sum += count;
             } else {
-                this._logPageNumberDiagnostic('section-offset.blocked', {
-                    requestedSectionIndex: sectionIndex,
-                    missingSectionIndex: i,
-                    knownCountsPreview: Array.from(this.sectionPageCounts.entries())
-                        .sort((a, b) => a[0] - b[0])
-                        .slice(0, 8)
-                        .map(([index, total]) => ({ index, count: total })),
-                    linearCount: this.linearSectionCount ?? null,
-                    cacheWarmerFinished: !!globalThis.__manabiCacheWarmerFinished,
-                    cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
-                });
                 return null;
             }
         }
@@ -2561,19 +1799,6 @@ export class NavigationHUD {
             || this.lastTotalPagesSnapshot.candidateCount !== summary.length;
         if (changed) {
             const sectionCountsState = this._sectionCountsState();
-            logEBookPageNumLimited('nav:total-pages-source', {
-                chosenSource: best?.source ?? null,
-                chosenTotal: best?.total ?? null,
-                candidates: summary,
-                sectionCountsComplete: sectionCountsState.complete,
-                sectionCountsFilledLinear: sectionCountsState.filledLinear,
-                linearSectionCount: sectionCountsState.linearCount,
-                missingLinearSectionIndexesPreview: sectionCountsState.missingLinearSectionIndexesPreview,
-                fallbackTotalPageCount: this.fallbackTotalPageCount ?? null,
-                fallbackTotalPageCountSource: this.fallbackTotalPageCountSource ?? null,
-                cacheWarmerFinished: this._cacheWarmerHasFinishedBook(),
-                cacheWarmerHighestSectionIndex: this._cacheWarmerHighestSectionIndex(),
-            });
             this.lastTotalPagesSnapshot = {
                 source: best?.source ?? null,
                 total: best?.total ?? null,
@@ -2627,63 +1852,17 @@ export class NavigationHUD {
         const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
         const disableBack = busy || !showBack;
         const disableForward = busy || !showForward;
-        logMay15('ebook.navHUD.relocateButtons.entered', {
-            source,
-            backDepth: backStack.length,
-            forwardDepth: forwardStack.length,
-            showBack,
-            showForward,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            stack: may15Stack(),
-        });
         const backLabelDescriptor = this._descriptorForRelocateLabel('back');
         const forwardLabelDescriptor = this._descriptorForRelocateLabel('forward');
         const backLabel = showBack ? this._labelForDescriptor(backLabelDescriptor) : '';
         const forwardLabel = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
-        this._logPageNumberDiagnostic('relocate-buttons.state', {
-            backDepth: backStack.length,
-            forwardDepth: forwardStack.length,
-            showBack,
-            showForward,
-            disableBack,
-            disableForward,
-            scrubbing,
-            busy,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            backLabel,
-            forwardLabel,
-            backHidden: !showBack,
-            forwardHidden: !showForward,
-            backDisabled: disableBack,
-            forwardDisabled: disableForward,
-        });
         this._postNativeOverlayState(`relocate-buttons:${source}`);
         this._updateSectionProgress({ source: 'relocate-buttons' });
-        logMay15('ebook.navHUD.relocateButtons.afterSectionProgressDispatch', {
-            source,
-            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
-            showBack,
-            showForward,
-        });
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;
-            this._logJumpDiagnostic('relocate-visibility', {
-                direction: 'back',
-                visible: showBack,
-                backDepth: backStack.length,
-                hiddenDueToScroll: this.hideNavigationDueToScroll,
-            });
         }
         if (this.previousRelocateVisibility.forward !== showForward) {
             this.previousRelocateVisibility.forward = showForward;
-            this._logJumpDiagnostic('relocate-visibility', {
-                direction: 'forward',
-                visible: showForward,
-                forwardDepth: forwardStack.length,
-                hiddenDueToScroll: this.hideNavigationDueToScroll,
-            });
         }
         this._requestAuxiliaryInsetsUpdate();
     }
@@ -2695,7 +1874,7 @@ export class NavigationHUD {
         const LIMIT = 5;
         const total = stack.length;
         const tail = stack.slice(-LIMIT);
-        return tail.map((entry, offset) => {
+        return tail.map(function(entry, offset) {
             const index = total - tail.length + offset;
             return {
                 index,
@@ -2704,21 +1883,6 @@ export class NavigationHUD {
             };
         });
     }
-
-    _logStackSnapshot(reason, extra = {}) {
-        this._logJumpDiagnostic('relocate-stack-snapshot', {
-            reason,
-            backDepth: this.relocateStacks?.back?.length ?? 0,
-            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
-            backStack: this._serializeStack(this.relocateStacks?.back),
-            forwardStack: this._serializeStack(this.relocateStacks?.forward),
-            scrubActive: !!this.scrubSession?.active,
-            pendingCommit: !!this.pendingScrubCommit,
-            ...extra,
-        });
-    }
-
-    _logRelocateDetail(_detail) {}
 
     _pruneBackStackIfReturnedToOrigin(detail) {
         if (!detail) return;
@@ -2737,12 +1901,6 @@ export class NavigationHUD {
             return;
         }
         backStack.pop();
-        this._logPageScrub('pop', {
-            index: backStack.length,
-            reason: 'returned-to-origin-after-scrub',
-            descriptorFraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
-        });
-        this._logStackSnapshot('returned-to-origin');
         this._updateRelocateButtons();
     }
 
@@ -2755,36 +1913,16 @@ export class NavigationHUD {
         let effectiveDescriptor = descriptor || releaseDescriptor || null;
         if (!origin || !effectiveDescriptor) {
             this.pendingScrubCommit = null;
-            this._logPageScrub('pending-commit-skipped', {
-                reason: 'missing-descriptor',
-                releaseReason: reason ?? null,
-            });
             return false;
         }
         const shouldSkipForOrigin = this._isSameDescriptor(origin, effectiveDescriptor)
             && !(typeof releaseFraction === 'number' && typeof origin.fraction === 'number' && Math.abs(releaseFraction - origin.fraction) > FRACTION_EPSILON);
         if (shouldSkipForOrigin) {
             this.pendingScrubCommit = null;
-            this._logPageScrub('pending-commit-skipped', {
-                reason: 'returned-to-origin',
-                releaseReason: reason ?? null,
-                descriptorFraction: typeof effectiveDescriptor?.fraction === 'number' ? Number(effectiveDescriptor.fraction.toFixed(6)) : null,
-            });
             return false;
         }
         const result = this._pushBackStack(origin, { stripCFI: true });
         if (result?.entry) {
-            this._logPageScrub('push', {
-                index: result.index,
-                fraction: result.entry?.fraction ?? null,
-                reason: reason ?? 'pending-commit',
-                commitPhase: phase ?? null,
-                elapsedMs: scheduledAt ? Date.now() - scheduledAt : null,
-                stackDepth: this.relocateStacks?.back?.length ?? null,
-            });
-            this._logStackSnapshot('pending-commit', {
-                commitReason: reason ?? 'pending-commit',
-            });
         }
         this.pendingScrubCommit = null;
         if (updateButtons) {
@@ -2826,61 +1964,23 @@ export class NavigationHUD {
         }
         this.pendingRelocateJump = null;
         this.isProcessingRelocateJump = false;
-        this._logJumpBack('jump-finalized', {
-            direction,
-            targetFraction,
-            backDepth: this.relocateStacks?.back?.length ?? 0,
-            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
-        });
-        this._logStackSnapshot('jump-finalized', {
-            direction,
-            targetFraction,
-            backDepth: this.relocateStacks?.back?.length ?? 0,
-            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
-        });
-        logBug('EBOOKJUMP', {
-            event: 'jump-finalized',
-            direction,
-            targetFraction,
-            backDepth: this.relocateStacks?.back?.length ?? 0,
-            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
-        });
         this._updateRelocateButtons();
     }
     
     async _handleRelocateJump(direction) {
-        this._logJumpButton('tap', {
-            direction,
-            backDepth: this.relocateStacks?.back?.length ?? 0,
-            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            isProcessingRelocateJump: !!this.isProcessingRelocateJump,
-        });
 
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length) {
-            this._logJumpBack('tap-ignored-empty', { direction });
-            this._logJumpButton('tap-ignored-empty', { direction });
-            logBug('EBOOKJUMP', { event: 'tap-empty', direction });
             return;
         }
         if (this.hideNavigationDueToScroll) {
-            this._logJumpBack('tap-ignored-hidden', { direction });
-            this._logJumpButton('tap-ignored-hidden', { direction });
-            logBug('EBOOKJUMP', { event: 'tap-hidden', direction });
             return;
         }
         if (this.pendingRelocateJump) {
-            this._logJumpBack('tap-ignored-pending', { direction });
-            this._logJumpButton('tap-ignored-pending', { direction });
             return;
         }
         const descriptor = this._cloneDescriptor(stack[stack.length - 1]);
         if (!descriptor) {
-            this._logJumpBack('tap-ignored-nodescriptor', { direction });
-            this._logJumpButton('tap-ignored-nodescriptor', { direction });
             return;
         }
 
@@ -2901,80 +2001,17 @@ export class NavigationHUD {
         this._updateRelocateButtons();
 
         const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
-        this._logJumpBack('tap', {
-            direction,
-            stackDepth: stack.length,
-            targetFraction,
-            oppositeDepth: oppositeStack?.length ?? 0,
-            hiddenDueToScroll: this.hideNavigationDueToScroll,
-        });
-        this._logJumpButton('tap-valid', {
-            direction,
-            stackDepth: stack.length,
-            targetFraction,
-            oppositeDepth: oppositeStack?.length ?? 0,
-            hiddenDueToScroll: this.hideNavigationDueToScroll,
-        });
-        this._logJumpDiagnostic('relocate-button', {
-            direction,
-            stackDepth: stack.length,
-            hiddenDueToScroll: this.hideNavigationDueToScroll,
-            targetFraction,
-            oppositeDepth: oppositeStack?.length ?? 0,
-        });
-        this._logStackSnapshot('button-prejump', {
-            direction,
-            targetFraction,
-        });
 
         try {
-            this._logJumpBack('request', {
-                direction,
-                targetFraction,
-                stackDepth: stack.length,
-            });
-            this._logJumpButton('request', {
-                direction,
-                targetFraction,
-                stackDepth: stack.length,
-            });
 
             await this.onJumpRequest?.(descriptor);
 
-            this._logJumpBack('request-complete', {
-                direction,
-                targetFraction,
-            });
-            this._logJumpButton('request-complete', {
-                direction,
-                targetFraction,
-            });
         } catch (error) {
             console.error('Failed to navigate to saved location', error);
-            this._logJumpBack('error', {
-                direction,
-                message: error?.message ?? String(error),
-            });
-            this._logJumpButton('error', {
-                direction,
-                message: error?.message ?? String(error),
-            });
             this.pendingRelocateJump = null;
             this.isProcessingRelocateJump = false;
-            this._logStackSnapshot('button-error', { direction });
             this._updateRelocateButtons();
         } finally {
-            this._logJumpBack('postjump', {
-                direction,
-                pending: !!this.pendingRelocateJump,
-                processing: !!this.isProcessingRelocateJump,
-            });
-            this._logJumpButton('postjump', {
-                direction,
-                pending: !!this.pendingRelocateJump,
-                processing: !!this.isProcessingRelocateJump,
-            });
-            this._logStackSnapshot('button-postjump', { direction });
         }
     }
 }

@@ -105,7 +105,7 @@ export class View extends HTMLElement {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
         this.#isCacheWarmer = isCacheWarmer
-        
+
         if (book.splitTOCHref && book.getTOCFragment) {
             const ids = book.sections.map(s => s.id)
             this.#sectionProgress = new SectionProgress(book.sections, 1500, 1600)
@@ -116,7 +116,7 @@ export class View extends HTMLElement {
             this.#pageProgress = new TOCProgress({
                 toc: book.pageList ?? [], ids, splitHref, getFragment })
         }
-        
+
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
         if (this.isFixedLayout) {
             await import('./fixed-layout.js')
@@ -145,7 +145,7 @@ export class View extends HTMLElement {
             ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
             //            });
         }
-        
+
         this.renderer.open(book, isCacheWarmer)
         this.#root.append(this.renderer)
     }
@@ -205,7 +205,7 @@ export class View extends HTMLElement {
             doc.documentElement.lang ||= this.language.canonical ?? ''
             if (!this.language.isCJK)
                 doc.documentElement.dir ||= this.language.direction ?? ''
-                
+
                 this.#handleLinks(doc, index)
                 }
         this.#emit('load', { doc, location, index })
@@ -223,7 +223,7 @@ export class View extends HTMLElement {
                     .then(x => x ? globalThis.open(href, '_blank') : null)
                     .catch(e => console.error(e))
                     else Promise.resolve(this.#emit('link', { a, href }, true))
-                        .then(async x => x ? await this.goTo(href) : null)
+                        .then(async (x) => x ? await this.goTo(href) : null)
                         .catch(e => console.error(e))
                         })
             }
@@ -273,10 +273,10 @@ export class View extends HTMLElement {
                 this.#emit('show-annotation', { value, range })
             }
         }, false)
-        
+
         const list = this.#searchResults.get(index)
         if (list) for (const item of list) this.addAnnotation(item)
-            
+
             this.#emit('create-overlay', { index })
             return overlayer
             }
@@ -449,10 +449,10 @@ export class View extends HTMLElement {
         const iter = index != null
         ? this.#searchSection(matcher, query, index)
         : this.#searchBook(matcher, query)
-        
+
         const list = []
         this.#searchResults.set(index, list)
-        
+
         for await (const result of iter) {
             if (result.subitems){
                 const list = result.subitems

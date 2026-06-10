@@ -403,7 +403,7 @@ const deobfuscate = async (key, length, blob) => {
     })
 }
 
-const WebCryptoSHA1 = async str => {
+const WebCryptoSHA1 = async (str) => {
     const data = new TextEncoder().encode(str)
     const buffer = await globalThis.crypto.subtle.digest('SHA-1', data)
     return new Uint8Array(buffer)
@@ -766,7 +766,7 @@ class Loader {
         }).flat().filter(x => x)
         if (!urls.length) return str
         const regex = new RegExp(urls.map(regexEscape).join('|'), 'g')
-        return replaceSeries(str, regex, async match =>
+        return replaceSeries(str, regex, async (match) =>
             this.loadItem(assetMap.get(match.replace(/^\//, '')),
                 parents.concat(href)))
     }

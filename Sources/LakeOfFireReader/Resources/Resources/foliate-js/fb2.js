@@ -146,7 +146,7 @@ class FB2Converter {
     }
 }
 
-const parseXML = async blob => {
+const parseXML = async (blob) => {
     const buffer = await blob.arrayBuffer()
     const str = new TextDecoder('utf-8').decode(buffer)
     const parser = new DOMParser()
@@ -221,7 +221,7 @@ const template = html => `<?xml version="1.0" encoding="utf-8"?>
 // name of custom ID attribute for TOC items
 const dataID = 'data-foliate-id'
 
-export const makeFB2 = async blob => {
+export const makeFB2 = async (blob) => {
     const book = {}
     const doc = await parseXML(blob)
     const converter = new FB2Converter(doc)

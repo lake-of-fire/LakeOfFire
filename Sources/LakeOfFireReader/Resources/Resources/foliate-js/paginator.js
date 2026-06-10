@@ -76,23 +76,6 @@ export const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summa
     }
     return target;
 };
-const sectionDebugInfo = section => section
-    ? {
-        href: section.href ?? null,
-        id: section.id ?? null,
-        linear: section.linear ?? null,
-        loadState: section.loadState ?? section.state ?? null,
-    }
-    : null;
-const prefetchEntryDebugInfo = entry => entry
-    ? {
-        fulfilled: !!entry.fulfilled,
-        rejected: !!entry.rejected,
-        released: !!entry.released,
-        dropped: !!entry.dropped,
-        hasPromise: !!entry.promise,
-    }
-    : null;
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
     let timeout;
@@ -1275,8 +1258,7 @@ export class Paginator extends HTMLElement {
         const index = this.#index
         clearTimeout(this.#prefetchTimer)
         this.#prefetchTimer = setTimeout(() => {
-            void this.#refreshNeighborPrefetch(index, reason).catch(error => {
-            })
+            void this.#refreshNeighborPrefetch(index, reason).catch(() => undefined)
         }, delayMs)
     }
     async #refreshNeighborPrefetch(index, reason = 'unknown') {
@@ -1298,21 +1280,19 @@ export class Paginator extends HTMLElement {
             ) {
                 const entry = this.#prefetchCache.get(i)
                     ?? this.#cacheNeighborPrefetch(i, this.sections[i].load())
-                entry.promise.catch(() => { })
+                void entry.promise.catch(() => undefined)
             }
         })
     }
     async #waitForNeighborPrefetch(index) {
         const entry = this.#prefetchCache.get(index)
         if (!entry?.promise) return null
-        const startedAt = Date.now()
-        let watchdog = null
-            watchdog = setTimeout(() => {
+        try {
             await entry.promise
         } catch (_error) {
-        } finally {
-            clearTimeout(watchdog)
+            return null
         }
+        return entry.fulfilled ? entry : null
     }
     async #onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
@@ -1869,7 +1849,6 @@ export class Paginator extends HTMLElement {
                 && candidateDivisor > 1
                 && inlineCharsPerColumn < MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN
             divisor = shouldDisableMultiColumnForTypography ? 1 : candidateDivisor
-            if (shouldDisableMultiColumnForTypography) {
             columnWidth = (size / divisor) - gap
         }
 
@@ -2948,10 +2927,12 @@ export class Paginator extends HTMLElement {
                     usedPrefetchPromise = true;
                     sectionLoadPromise = prefetchEntry.promise;
                 } else {
-                    const sectionLoadStartedAt = Date.now()
+                    sectionLoadPromise = this.sections[index].load()
                         .then(src => {
+                            return src
                         })
                         .catch(error => {
+                            throw error
                         });
                 }
                 await this.#display(Promise.resolve(sectionLoadPromise)
@@ -2963,6 +2944,7 @@ export class Paginator extends HTMLElement {
                         select
                     }))
                     .catch(error => {
+                        throw error
                     }));
             } catch (error) {
                 throw error;
