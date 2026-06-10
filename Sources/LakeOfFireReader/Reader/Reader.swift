@@ -11,6 +11,16 @@ import LakeOfFireContent
 import UIKit
 #endif
 
+#if os(iOS)
+private func currentReaderWindowTopSafeAreaInset() -> CGFloat {
+    UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap(\.windows)
+        .first { $0.isKeyWindow }?
+        .safeAreaInsets.top ?? 0
+}
+#endif
+
 private struct ReaderStatusBarFadeOverlay: ViewModifier {
     var topFadeHeight: CGFloat
     var backgroundColor: Color
@@ -85,10 +95,18 @@ typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiT
 private enum EBookViewportStabilityCoordinator {
     static let suspiciousTopSafeAreaChangeThreshold: CGFloat = 32
 
-    static func acceptedSampledTopInset(current: CGFloat, previous: CGFloat?) -> CGFloat {
+    static func acceptedSampledTopInset(
+        current: CGFloat,
+        previous: CGFloat?,
+        preservesPreviousWhenDecreasing: Bool = false
+    ) -> CGFloat {
         let clampedCurrent = min(max(0, current), 88)
         guard let previous, previous > 0 else { return clampedCurrent }
         if clampedCurrent <= 0 {
+            return previous
+        }
+        if preservesPreviousWhenDecreasing,
+           clampedCurrent < previous {
             return previous
         }
         if abs(clampedCurrent - previous) > suspiciousTopSafeAreaChangeThreshold {
@@ -915,9 +933,27 @@ public struct Reader: View {
             darkModeTheme: darkModeTheme
         )
         let sampledTopInset = max(0, obscuredInsets?.top ?? 0)
+        let effectiveSampledTopInset: CGFloat = {
+            guard ignoresSampledTopObscuredInset else { return sampledTopInset }
+#if os(iOS)
+            let fallbackTopInset = max(0, currentReaderWindowTopSafeAreaInset())
+            let clampedSampledInset = sampledTopInset > 0 ? min(sampledTopInset, 88) : 0
+            return max(fallbackTopInset, clampedSampledInset)
+#else
+            return 0
+#endif
+        }()
+        let effectiveObscuredInsets = ignoresSampledTopObscuredInset
+            ? EdgeInsets(
+                top: effectiveSampledTopInset,
+                leading: obscuredInsets?.leading ?? 0,
+                bottom: obscuredInsets?.bottom ?? 0,
+                trailing: obscuredInsets?.trailing ?? 0
+            )
+            : obscuredInsets
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
         let effectiveTopInset = pageURL.isEBookURL
-            ? max(explicitTopInset, sampledTopInset)
+            ? max(explicitTopInset, effectiveSampledTopInset)
             : explicitTopInset
         let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
         let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
@@ -952,11 +988,11 @@ public struct Reader: View {
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
-            obscuredInsets: obscuredInsets,
+            obscuredInsets: effectiveObscuredInsets,
             usesEBookChromeInsets: pageURL.isEBookURL,
             ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
             bounces: bounces,
-            additionalTopSafeAreaInset: additionalTopSafeAreaInset,
+            additionalTopSafeAreaInset: effectiveTopInset,
             additionalLeadingSafeAreaInset: additionalLeadingInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
@@ -971,7 +1007,7 @@ public struct Reader: View {
         )
 #if os(iOS)
         .readerStatusBarFadeForCurrentDevice(
-            top: max(0, (obscuredInsets?.top ?? 0) + 8 + 2),
+            top: effectiveSampledTopInset,
             backgroundColor: statusBarFadeBackgroundColor
         )
         .ignoresSafeArea(.all, edges: .all)
@@ -1003,7 +1039,8 @@ public struct Reader: View {
                         if pageURL.isEBookURL {
                             sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
                                 current: sampledInsets.top,
-                                previous: obscuredInsets?.top
+                                previous: obscuredInsets?.top,
+                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
                             )
                         } else if explicitTopInset > 0,
                                   sampledInsets.top > explicitTopInset {
@@ -1022,7 +1059,8 @@ public struct Reader: View {
                         if pageURL.isEBookURL {
                             sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
                                 current: sampledInsets.top,
-                                previous: previousInsets?.top
+                                previous: previousInsets?.top,
+                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
                             )
                         } else {
                             if explicitTopInset > 0,
