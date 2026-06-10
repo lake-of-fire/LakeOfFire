@@ -6565,11 +6565,18 @@ class Reader {
         this.#postBookInsetSnapshot('didDisplay.after-two-frames-before-force', {
             initialSettleResult,
         });
-        const postFrameSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear.post-frame', {
-            allowWhileLoading: true,
-            force: true,
-            forceRender: true,
-        });
+        const shouldRunPostFrameSettle =
+            initialSettleResult?.rendered === true
+            || initialSettleResult?.reason === 'error';
+        const postFrameSettleResult = shouldRunPostFrameSettle
+            ? await this.#settleInitialPaginatorLayout('did-display.pre-clear.post-frame', {
+                allowWhileLoading: true,
+                force: true,
+            })
+            : {
+                rendered: false,
+                reason: 'initial-settle-stable',
+            };
         this.#postBookInsetSnapshot('didDisplay.after-post-frame-settle', {
             initialSettleResult,
             postFrameSettleResult,

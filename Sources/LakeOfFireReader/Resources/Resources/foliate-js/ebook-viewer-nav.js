@@ -157,6 +157,7 @@ export class NavigationHUD {
         this.pendingRelocateJump = null;
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
+        this.nativeOverlayPageSnapshot = null;
         this.rendererSnapshotRefreshHandle = null;
         this.lastTerminalPagesLeftSection = null;
         this.lastTerminalPagesLeftPageNumber = null;
@@ -726,6 +727,11 @@ export class NavigationHUD {
                 scrolled,
             };
             this.rendererPageSnapshot = normalized;
+            this.nativeOverlayPageSnapshot = {
+                current: normalized.current,
+                total: normalized.total,
+                source: 'detail',
+            };
             this._updateFallbackTotalPages(normalized.total);
             return normalized;
         }
@@ -796,6 +802,24 @@ export class NavigationHUD {
         const pagesLeftLabel = this.lastPagesLeftLabel || '';
         const relocateBackEnabled = this._relocateButtonEnabled('back');
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
+        const pageSnapshot = this.nativeOverlayPageSnapshot || this.rendererPageSnapshot || null;
+        const currentPageNumber = typeof pageSnapshot?.current === 'number'
+            ? pageSnapshot.current
+            : null;
+        const totalPages = typeof pageSnapshot?.total === 'number'
+            ? pageSnapshot.total
+            : null;
+        try {
+            console.log('# PERCENT', 'nativeOverlay.post', JSON.stringify({
+                source,
+                percentLabel,
+                currentPageNumber,
+                totalPages,
+                pageSnapshotSource: this.nativeOverlayPageSnapshot ? this.nativeOverlayPageSnapshot.source : (this.rendererPageSnapshot ? 'renderer' : null),
+                rendererCurrent: this.rendererPageSnapshot?.current ?? null,
+                rendererTotal: this.rendererPageSnapshot?.total ?? null,
+            }));
+        } catch (_error) {}
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
                 percentLabel,
@@ -806,6 +830,8 @@ export class NavigationHUD {
                 pagesLeftLabel,
                 relocateBackEnabled,
                 relocateForwardEnabled,
+                currentPageNumber,
+                totalPages,
                 source,
             });
         } catch (_error) {}
@@ -1173,6 +1199,18 @@ export class NavigationHUD {
             const pagesLeft = result?.pagesLeft ?? null;
             if (requestToken !== this.sectionProgressRequestToken) {
                 return;
+            }
+            if (
+                typeof result?.currentPageNumber === 'number'
+                && result.currentPageNumber > 0
+                && typeof result?.totalPages === 'number'
+                && result.totalPages > 0
+            ) {
+                this.nativeOverlayPageSnapshot = {
+                    current: result.currentPageNumber,
+                    total: result.totalPages,
+                    source: `section-progress:${result.source ?? source}`,
+                };
             }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) {
@@ -1582,6 +1620,11 @@ export class NavigationHUD {
             const normalized = this._normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
             if (!normalized) return null;
             this.rendererPageSnapshot = normalized;
+            this.nativeOverlayPageSnapshot = {
+                current: normalized.current,
+                total: normalized.total,
+                source: 'renderer',
+            };
             this._updateFallbackTotalPages(normalized.total);
             return normalized;
         } catch (_error) {
