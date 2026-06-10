@@ -1,7 +1,7 @@
 export const makeComicBook = ({ entries, loadBlob, getSize }, file) => {
     const cache = new Map()
     const urls = new Map()
-    const load = async name => {
+    const load = async (name) => {
         if (cache.has(name)) return cache.get(name)
         const src = URL.createObjectURL(await loadBlob(name))
         const page = URL.createObjectURL(
@@ -18,7 +18,7 @@ export const makeComicBook = ({ entries, loadBlob, getSize }, file) => {
 
     const exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']
     const files = entries
-        .map(entry => entry.filename)
+        .map(function(entry) { return entry.filename; })
         .filter(name => exts.some(ext => name.endsWith(ext)))
         .sort()
 

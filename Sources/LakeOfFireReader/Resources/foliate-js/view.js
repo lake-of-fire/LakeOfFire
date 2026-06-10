@@ -223,7 +223,7 @@ export class View extends HTMLElement {
                     .then(x => x ? globalThis.open(href, '_blank') : null)
                     .catch(e => console.error(e))
                     else Promise.resolve(this.#emit('link', { a, href }, true))
-                        .then(async x => x ? await this.goTo(href) : null)
+                        .then(async (x) => x ? await this.goTo(href) : null)
                         .catch(e => console.error(e))
                         })
             }
