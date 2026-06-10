@@ -3776,11 +3776,19 @@ const navSpinnerMaximumMs = 1200;
 class Reader {
     #show(btn, show = true) {
         if (show) {
-            btn.hidden = false;
-            btn.style.visibility = 'visible';
+            if (btn.hidden) {
+                btn.hidden = false;
+            }
+            if (btn.style.visibility !== 'visible') {
+                btn.style.visibility = 'visible';
+            }
         } else {
-            btn.hidden = true;
-            btn.style.visibility = 'hidden';
+            if (!btn.hidden) {
+                btn.hidden = true;
+            }
+            if (btn.style.visibility !== 'hidden') {
+                btn.style.visibility = 'hidden';
+            }
         }
     }
     setLoadingIndicator(visible) {
@@ -5217,12 +5225,17 @@ class Reader {
             ? range
             : null;
     }
-    #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result') {
+    #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', {
+        postIfCached = false,
+    } = {}) {
         const snapshot = this.visiblePageSegmentSnapshot;
         if (snapshot
             && snapshot.generation === this.visiblePageCollectionGeneration
             && snapshot.doc === doc
             && snapshot.visibleRange === visibleRange) {
+            if (postIfCached) {
+                postNativeLookupHitTargetsForVisibleSegments(doc, snapshot.result, reason);
+            }
             return snapshot.result;
         }
         const result = collectVisibleSegmentNodesFromRange(doc, visibleRange);
@@ -5247,8 +5260,7 @@ class Reader {
                 : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
             for (const doc of docs) {
                 const visibleRange = this.#visibleRangeForDocument(doc);
-                this.visiblePageSegmentSnapshot = null;
-                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`);
+                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
             }
         });
     }
@@ -5264,9 +5276,13 @@ class Reader {
             if (!body) continue;
             const isSubscribed = body.getAttribute('data-mnb-subscription-is-active') === 'true'
                 || body.getAttribute('data-manabi-subscription-is-active') === 'true';
-            const shouldShowPreviewHighlights = !isSubscribed && isFirstPageInSection;
-            body.setAttribute('data-mnb-ebook-subscription-preview-page', shouldShowPreviewHighlights ? 'true' : 'false');
-            body.setAttribute('data-manabi-ebook-subscription-preview-page', shouldShowPreviewHighlights ? 'true' : 'false');
+            const previewValue = !isSubscribed && isFirstPageInSection ? 'true' : 'false';
+            if (body.getAttribute('data-mnb-ebook-subscription-preview-page') !== previewValue) {
+                body.setAttribute('data-mnb-ebook-subscription-preview-page', previewValue);
+            }
+            if (body.getAttribute('data-manabi-ebook-subscription-preview-page') !== previewValue) {
+                body.setAttribute('data-manabi-ebook-subscription-preview-page', previewValue);
+            }
         }
     }
     #postBookInsetSnapshot(_event, _extra = {}) {

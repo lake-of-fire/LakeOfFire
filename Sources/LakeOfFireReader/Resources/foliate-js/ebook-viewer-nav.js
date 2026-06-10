@@ -157,6 +157,7 @@ export class NavigationHUD {
         this.pendingRelocateJump = null;
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
+        this.rendererSnapshotRefreshHandle = null;
         this.lastTerminalPagesLeftSection = null;
         this.lastTerminalPagesLeftPageNumber = null;
         this.sectionProgressRequestToken = 0;
@@ -623,9 +624,12 @@ export class NavigationHUD {
         if (typeof detail.sectionIndex === 'number' && typeof detail.pageCount === 'number' && detail.pageCount > 0) {
             this.sectionPageCounts.set(detail.sectionIndex, detail.pageCount);
         }
-        // Prefer the renderer's live snapshot, but prime it from detail when available
-        this._updateRendererSnapshotFromDetail(detail);
-        await this._refreshRendererSnapshot();
+        const detailSnapshot = this._updateRendererSnapshotFromDetail(detail);
+        if (detailSnapshot) {
+            this._scheduleRendererSnapshotRefresh('relocate-detail');
+        } else {
+            await this._refreshRendererSnapshot();
+        }
         this._applyPageTurnNavigationVisibility(detail);
         this.lastRelocateDetail = detail;
         this._handleRelocateHistory(detail);
@@ -723,7 +727,9 @@ export class NavigationHUD {
             };
             this.rendererPageSnapshot = normalized;
             this._updateFallbackTotalPages(normalized.total);
+            return normalized;
         }
+        return null;
     }
     
     _updatePrimaryLine(detail) {
@@ -1581,6 +1587,25 @@ export class NavigationHUD {
         } catch (_error) {
             return null;
         }
+    }
+
+    _scheduleRendererSnapshotRefresh(source = 'scheduled') {
+        if (this.rendererSnapshotRefreshHandle) {
+            cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
+            this.rendererSnapshotRefreshHandle = null;
+        }
+        this.rendererSnapshotRefreshHandle = requestAnimationFrame(async () => {
+            this.rendererSnapshotRefreshHandle = null;
+            try {
+                await this._refreshRendererSnapshot();
+                if (this.lastRelocateDetail) {
+                    this._updatePrimaryLine(this.lastRelocateDetail);
+                    await this._updateSectionProgress({ refreshSnapshot: false, source: `snapshot-refresh:${source}` });
+                    this._updateRelocateButtons(`snapshot-refresh:${source}`);
+                }
+            } catch (_error) {
+            }
+        });
     }
 
     _isSameDescriptor(a, b) {
