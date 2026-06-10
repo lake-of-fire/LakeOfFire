@@ -8,7 +8,6 @@ import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
-const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiEPUBLoadVerboseLoggingEnabled = () => !!globalThis.manabi_epubLoadVerboseLoggingEnabled;
 const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
@@ -608,15 +607,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         }
         const responseTextLength = html.length;
         const transformStartedAt = performanceNowMs();
-        postReaderLog('ebook.replaceText.responseSummary', {
-            href,
-            isCacheWarmer: !!isCacheWarmer,
-            containsSegmentTag: html.includes('<mnb-seg'),
-            containsSentenceTag: html.includes('<mnb-sen'),
-            firstSegmentIndex: html.indexOf('<mnb-seg'),
-            firstSentenceIndex: html.indexOf('<mnb-sen'),
-        });
-        const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
+                const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
         const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
         html = injectBodyDatasetAttributes(html, {
             'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
@@ -789,25 +780,6 @@ const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null, v
         visibleSegmentCount,
         observedSegmentCount,
     };
-};
-
-const postReaderLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = {
-        prefix: '# READER',
-        event,
-    };
-    for (const [key, value] of Object.entries(details)) {
-        if (value === undefined || value === null) {
-            continue;
-        }
-        payload[key] = value;
-    }
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# READER', event, details, error);
-    }
 };
 
 const postLookupPositionLog = (event, details = {}) => {
@@ -1383,16 +1355,49 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     bookDebugLastLog.set(throttleKey, now);
     const finalPayload = { event, ...payload };
     postBookLog(event, finalPayload, { dedupeKey: throttleKey, minIntervalMs: 0 });
-    try {
-        if (typeof postReaderLog === 'function') {
-            postReaderLog(`book.${event}`, finalPayload);
-        }
-    } catch {}
 };
 
 const compactBookCSSValue = (value, limit = 140) => {
     if (typeof value !== 'string') return value ?? null;
     return value.length > limit ? `${value.slice(0, limit)}...` : value;
+};
+
+const compactBookRect = (element) => {
+    if (!element?.getBoundingClientRect) return null;
+    const rect = element.getBoundingClientRect();
+    const round = (value) => Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+    return {
+        x: round(rect.x),
+        y: round(rect.y),
+        width: round(rect.width),
+        height: round(rect.height),
+    };
+};
+
+const compactBookComputedStyle = (style) => {
+    if (!style) return null;
+    return {
+        writingMode: style.writingMode ?? null,
+        direction: style.direction ?? null,
+        display: style.display ?? null,
+        backgroundImage: compactBookCSSValue(style.backgroundImage),
+        backgroundColor: compactBookCSSValue(style.backgroundColor),
+        backgroundOrigin: style.backgroundOrigin ?? null,
+        backgroundClip: style.backgroundClip ?? null,
+        backgroundSize: style.backgroundSize ?? null,
+        backgroundPosition: style.backgroundPosition ?? null,
+        transitionProperty: compactBookCSSValue(style.transitionProperty),
+        transitionDuration: style.transitionDuration ?? null,
+        contain: style.contain ?? null,
+        lineHeight: style.lineHeight ?? null,
+        paddingInlineStart: style.paddingInlineStart ?? null,
+        paddingInlineEnd: style.paddingInlineEnd ?? null,
+        paddingBlockStart: style.paddingBlockStart ?? null,
+        paddingBlockEnd: style.paddingBlockEnd ?? null,
+        gradientDirection: style.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        highlightFillOpacity: style.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        trackingHighlightAlpha: style.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+    };
 };
 
 const sampleBookHighlightState = (doc, reason = 'unknown') => {
@@ -1408,6 +1413,9 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
     const surface = segment?.querySelector?.('mnb-sur') ?? null;
     const surfaceStyle = surface ? doc.defaultView?.getComputedStyle?.(surface) : null;
     const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
+    const htmlStyle = doc.defaultView?.getComputedStyle?.(doc.documentElement);
+    const readerContent = doc.getElementById?.('reader-content') ?? null;
+    const readerContentStyle = readerContent ? doc.defaultView?.getComputedStyle?.(readerContent) : null;
     let writingSnapshot = null;
     try {
         writingSnapshot = doc.defaultView?.manabiGetWritingDirectionSnapshot?.() ?? null;
@@ -1416,20 +1424,28 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         sampled: !!segment,
         reason,
         bodyClass: body.className || '',
+        htmlClass: doc.documentElement?.className || '',
         hasVerticalCheck: typeof doc.defaultView?.manabiApplyVerticalWritingCheck === 'function',
         writingSnapshot,
         navHidden: body.classList?.contains?.('nav-hidden') ?? null,
         navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
         dataHideNavigation: body.dataset?.mnbNavigationHiddenDueToScroll ?? body.dataset?.mnbHideNavigationDueToScroll ?? null,
+        writingDirectionDataset: body.dataset?.mnbWritingDirection ?? null,
         writingMode: bodyStyle?.writingMode ?? null,
         direction: bodyStyle?.direction ?? null,
         gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         highlightFillOpacity: bodyStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
         trackingHighlightAlpha: bodyStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        htmlStyle: compactBookComputedStyle(htmlStyle),
+        bodyStyle: compactBookComputedStyle(bodyStyle),
+        readerContentStyle: compactBookComputedStyle(readerContentStyle),
+        readerContentRect: compactBookRect(readerContent),
         segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
         segmentClass: segment?.className ?? null,
         segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
+        segmentRect: compactBookRect(segment),
         segmentBackgroundImage: compactBookCSSValue(segmentStyle?.backgroundImage),
+        segmentStyle: compactBookComputedStyle(segmentStyle),
         segmentHorizontalIsland: segment?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
         segmentTransitionProperty: segmentStyle?.transitionProperty ?? null,
         segmentTransitionDuration: segmentStyle?.transitionDuration ?? null,
@@ -1438,7 +1454,9 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
         segmentTrackingHighlightAlpha: segmentStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
         surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
         surfaceHorizontalIsland: surface?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
+        surfaceRect: compactBookRect(surface),
         surfaceBackgroundImage: compactBookCSSValue(surfaceStyle?.backgroundImage),
+        surfaceStyle: compactBookComputedStyle(surfaceStyle),
         surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
     };
 };
@@ -2267,8 +2285,7 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
         beforeLabelVariant: before.labelVariant ?? null,
         ...captureNavVisibilityState(),
     };
-    postReaderLog('ebook.navigationVisibility.bridge', bridgeState);
-    postPageNumLog('nav.visibility.bridge', {
+        postPageNumLog('nav.visibility.bridge', {
         sequence,
         source,
         shouldHide: normalized,
@@ -2863,8 +2880,7 @@ const logReplaceTextOnce = (event, details = {}) => {
         return;
     }
     replaceTextLogKeys.add(key);
-    postReaderLog(event, details);
-};
+    };
 
 const safeRound = (value, digits = 1) =>
     typeof value === 'number' && Number.isFinite(value)
@@ -5068,13 +5084,7 @@ class Reader {
             onHideNavigationDueToScrollChange: (hidden, details = {}) => {
                 this.#applyHideNavigationDueToScrollToBookContent(hidden);
                 if (details?.context?.bridgeSource) {
-                    postReaderLog('ebook.navigationVisibility.bridgeEchoSuppressed', {
-                        hidden: !!hidden,
-                        source: details?.source ?? null,
-                        bridgeSource: details.context.bridgeSource,
-                        previous: details?.previous ?? null,
-                    });
-                    return;
+                                        return;
                 }
                 postEbookNavigationVisibilityToNative(
                     hidden,
@@ -5473,8 +5483,7 @@ class Reader {
         });
     }
     #logPageTracking(event, details = {}) {
-        postReaderLog(event, details);
-    }
+            }
     #logRead(event, details = {}) {
         void event;
         void details;
@@ -7521,11 +7530,7 @@ class Reader {
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
             : Date.now();
-        postReaderLog('ebook.readerOpen.begin', {
-            fileKind: file?.kind || 'nil',
-            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
-        });
-
+        
         this.hasLoadedLastPosition = false
         this.lastCFIPersistenceObservation = null;
         this.unstableCFIs.clear();
@@ -8121,11 +8126,7 @@ class Reader {
         })
         
         const toc = book.toc
-        postReaderLog('ebook.readerOpen.toc.start', {
-            hasTOC: !!toc,
-            tocCount: Array.isArray(toc) ? toc.length : 'nil',
-        });
-        if (toc) {
+                if (toc) {
             this.#tocView = createTOCView(toc, async (href) => {
                 await runWithNavigationIntent({
                     source: 'toc',
@@ -8136,51 +8137,25 @@ class Reader {
             })
             $('#toc-view').append(this.#tocView.element)
         }
-        postReaderLog('ebook.readerOpen.toc.end', {
-            hasTOCView: !!this.#tocView,
-        });
-        
+                
         // load and show highlights embedded in the file by Calibre
-        postReaderLog('ebook.readerOpen.calibreBookmarks.start', {
-            hasMethod: typeof book.getCalibreBookmarks === 'function',
-        });
-        let calibreBookmarksPendingLogged = false;
+                let calibreBookmarksPendingLogged = false;
         const calibreBookmarksPendingTimer = setTimeout(() => {
             calibreBookmarksPendingLogged = true;
-            postReaderLog('ebook.readerOpen.calibreBookmarks.pending', {
-                elapsedMs: Math.round(
-                    (typeof performance !== 'undefined' && typeof performance.now === 'function'
-                        ? performance.now()
-                        : Date.now()) - readerOpenStartedAt
-                ),
-            });
-        }, 1000);
+                    }, 1000);
         let bookmarks;
         try {
             bookmarks = await book.getCalibreBookmarks?.()
         } catch (error) {
             clearTimeout(calibreBookmarksPendingTimer);
-            postReaderLog('ebook.readerOpen.calibreBookmarks.error', {
-                message: error?.message || String(error),
-            });
-            throw error;
+                        throw error;
         }
         clearTimeout(calibreBookmarksPendingTimer);
-        postReaderLog('ebook.readerOpen.calibreBookmarks.end', {
-            pendingLogged: calibreBookmarksPendingLogged,
-            bookmarkCount: Array.isArray(bookmarks) ? bookmarks.length : 'nil',
-        });
-        if (bookmarks) {
-            postReaderLog('ebook.readerOpen.calibreBookmarks.import.start', {
-                bookmarkCount: bookmarks.length,
-            });
-            const {
+                if (bookmarks) {
+                        const {
                 fromCalibreHighlight
             } = await import('./epubcfi.js')
-            postReaderLog('ebook.readerOpen.calibreBookmarks.import.end', {
-                bookmarkCount: bookmarks.length,
-            });
-            for (const obj of bookmarks) {
+                        for (const obj of bookmarks) {
                 if (obj.type === 'highlight') {
                     const value = fromCalibreHighlight(obj)
                     const color = obj.style.which
@@ -8222,16 +8197,7 @@ class Reader {
                 if (annotation.note) alert(annotation.note)
                     })
         }
-        postReaderLog('ebook.readerOpen.end', {
-            elapsedMs: Math.round(
-                (typeof performance !== 'undefined' && typeof performance.now === 'function'
-                    ? performance.now()
-                    : Date.now()) - readerOpenStartedAt
-            ),
-            hasRenderer: !!this.view?.renderer,
-            bodyClassName: document.body?.className || 'nil',
-        });
-    }
+            }
     
     async updateNavButtons() {
         const navVisibilityBefore = captureNavVisibilityState();
@@ -8581,16 +8547,7 @@ class Reader {
         const maxPageTurns = Math.max(1, Math.min(12, Number.isFinite(request?.maxPageTurns) ? Math.round(request.maxPageTurns) : 8));
         const startedAt = performance.now();
         const attempts = [];
-        postReaderLog('lookup.navigation.pageTurn.begin', {
-            token,
-            kind,
-            direction,
-            failureReason: request?.failureReason ?? null,
-            currentElementID: request?.currentElementID ?? null,
-            currentSegmentIdentifier: request?.currentSegmentIdentifier ?? null,
-            maxPageTurns,
-        });
-        for (let pageTurnIndex = 0; pageTurnIndex < maxPageTurns; pageTurnIndex += 1) {
+                for (let pageTurnIndex = 0; pageTurnIndex < maxPageTurns; pageTurnIndex += 1) {
             if (this.lookupNavigationPageTurnToken !== token) {
                 return {
                     opened: false,
@@ -8649,15 +8606,7 @@ class Reader {
             attempt.visibleTargetOpened = visibleTargetResult?.opened === true;
             attempt.visibleTargetFailureReason = visibleTargetResult?.failureReason ?? null;
             if (visibleTargetResult?.opened === true) {
-                postReaderLog('lookup.navigation.pageTurn.visibleTargetOpened', {
-                    token,
-                    kind,
-                    direction,
-                    pageTurnIndex,
-                    elapsedMs: Math.round(performance.now() - startedAt),
-                    attempts,
-                });
-                return {
+                                return {
                     opened: true,
                     kind,
                     direction,
@@ -8671,14 +8620,7 @@ class Reader {
                 break;
             }
         }
-        postReaderLog('lookup.navigation.pageTurn.failed', {
-            token,
-            kind,
-            direction,
-            elapsedMs: Math.round(performance.now() - startedAt),
-            attempts,
-        });
-        return {
+                return {
             opened: false,
             failureReason: 'pageTurnLookupTargetNotFound',
             kind,
@@ -9729,18 +9671,7 @@ class CacheWarmer {
             segmentCount: segmentNodes.length,
             navHUDReady: !!globalThis.reader?.navHUD,
         });
-        postReaderLog('ebook.cacheWarmer.sectionLoaded', {
-            sectionURL: location,
-            documentURL: doc?.location?.href || 'nil',
-            sectionIndex: Number.isInteger(index) ? index : 'nil',
-            sourceHref: sourceHref || 'nil',
-            sectionHref: sectionHref || 'nil',
-            sentenceCount: sentenceNodes.length,
-            segmentCount: segmentNodes.length,
-            isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
-            isLikelyTitlePage,
-        });
-        postReplaceTextPerfLog('cache-warmer.section', {
+                postReplaceTextPerfLog('cache-warmer.section', {
             sectionURL: location,
             sectionIndex: Number.isInteger(index) ? index : null,
             highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
@@ -9759,21 +9690,9 @@ class CacheWarmer {
         }
         const shouldDeferSentenceCountUpdate = this.uniqueSentenceIdentifiers.size === 0 && isLikelyTitlePage;
         if (shouldDeferSentenceCountUpdate) {
-            postReaderLog('ebook.cacheWarmer.sentenceCountDeferred', {
-                sectionURL: location,
-                sectionIndex: Number.isInteger(index) ? index : 'nil',
-                sourceHref: sourceHref || 'nil',
-                reason: 'title-page-without-sentences',
-            });
-        } else if (this.lastPostedSentenceCount !== this.uniqueSentenceIdentifiers.size) {
+                    } else if (this.lastPostedSentenceCount !== this.uniqueSentenceIdentifiers.size) {
             this.lastPostedSentenceCount = this.uniqueSentenceIdentifiers.size;
-            postReaderLog('ebook.cacheWarmer.sentenceCountUpdate', {
-                sectionURL: location,
-                sectionIndex: Number.isInteger(index) ? index : 'nil',
-                sourceHref: sourceHref || 'nil',
-                articleSentenceCount: this.uniqueSentenceIdentifiers.size,
-            });
-            window.webkit.messageHandlers.updateArticleSentenceCount.postMessage({
+                        window.webkit.messageHandlers.updateArticleSentenceCount.postMessage({
                 windowURL: window.top.location.href,
                 articleSentenceCount: this.uniqueSentenceIdentifiers.size,
             });
@@ -9934,11 +9853,7 @@ window.loadEBook = ({
         for (const timer of loadWatchdogTimers) clearTimeout(timer);
     };
     globalThis.__manabiFinishEPUBLoadWatchdogs = finishLoadWatchdogs;
-    postReaderLog('ebook.viewer.load.start', {
-        hasURL: typeof url === 'string' && url.length > 0,
-        layoutMode: layoutMode || 'default',
-    });
-    const previousReader = globalThis.reader?.view?.renderer ? globalThis.reader : null;
+        const previousReader = globalThis.reader?.view?.renderer ? globalThis.reader : null;
     try {
         globalThis.reader?.view?.close?.()
     } catch (_error) {}
@@ -9968,11 +9883,7 @@ window.loadEBook = ({
                 .then(res => res.blob())
                 .then((blob) => {
                     window.blob = blob
-                    postReaderLog('ebook.viewer.load.blobReady', {
-                        blobSize: blob.size,
-                        blobType: blob.type || 'nil',
-                    });
-                    return makeFileSource(new File([blob], new URL(url).pathname))
+                                        return makeFileSource(new File([blob], new URL(url).pathname))
                 })
 
         const openPromise = sourcePromise
@@ -9981,10 +9892,7 @@ window.loadEBook = ({
             globalThis.manabiLoadEBookLastState = 'source-ready';
             globalThis.manabiPendingLoadEBookArgs = null;
             if (source?.kind === 'native') {
-                postReaderLog('ebook.viewer.load.nativeSource', {
-                    sourceURL: source.url,
-                });
-            }
+                            }
             if (layoutMode) {
                 window.initialLayoutMode = layoutMode
             }
@@ -10000,12 +9908,7 @@ window.loadEBook = ({
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = true;
             globalThis.manabiLoadEBookLastState = 'reader-open-resolved';
-            postReaderLog('ebook.viewer.load.opened', {
-                hasRenderer: !!globalThis.reader?.view?.renderer,
-                bookDir: globalThis.reader?.bookDir || 'nil',
-                isRTL: !!globalThis.reader?.isRTL,
-            });
-            const probe = globalThis.reader?.collectLayoutGapProbe?.('ebookViewerLoaded', {
+                        const probe = globalThis.reader?.collectLayoutGapProbe?.('ebookViewerLoaded', {
                 bookDir: globalThis.reader?.bookDir || null,
                 isRTL: !!globalThis.reader?.isRTL,
             }) ?? null;
@@ -10026,10 +9929,7 @@ window.loadEBook = ({
             try {
                 reader?.setLoadingIndicator?.(false);
             } catch (_error) {}
-            postReaderLog('ebook.viewer.load.error', {
-                message: error?.message || String(error),
-            });
-            throw error;
+                        throw error;
         })
         .finally(() => {
             if (globalThis.manabiLoadEBookToken !== loadToken) return;
@@ -10173,11 +10073,7 @@ window.loadLastPosition = async ({
             ? Math.max(0, Math.min(1, restoreState.currentFraction))
             : null;
     };
-    postReaderLog('ebook.viewer.loadLastPosition.start', {
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        fractionalCompletion: Number.isFinite(fractionalCompletion) ? fractionalCompletion : 'nil',
-    });
-    postPageNumLog('restore.request', {
+        postPageNumLog('restore.request', {
         hasCFI: typeof cfi === 'string' && cfi.length > 0,
         cfiLength: typeof cfi === 'string' ? cfi.length : 0,
         fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
@@ -10237,15 +10133,7 @@ window.loadLastPosition = async ({
     };
     try {
         if (syntheticRestoreLocator) {
-            postReaderLog('ebook.viewer.loadLastPosition.path', {
-                mode: 'synthetic-locator',
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                localSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                rendererTotal: syntheticRestoreLocator.rendererTotal,
-                fractionInSection: safeRound(syntheticRestoreLocator.fractionInSection, 6),
-                fraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
-            });
-            postPageNumLog('restore.synthetic-locator', {
+                        postPageNumLog('restore.synthetic-locator', {
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
                 localSectionIndex: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
@@ -10271,10 +10159,7 @@ window.loadLastPosition = async ({
             });
             postRestoreMarkReadLog('after-synthetic-locator', syntheticState);
         } else if (cfi.length > 0) {
-            postReaderLog('ebook.viewer.loadLastPosition.path', {
-                mode: 'cfi',
-            });
-            await runWithNavigationIntent({
+                        await runWithNavigationIntent({
                 source: 'restore.cfi',
                 target: 'view.goTo',
                 cfiLength: cfi.length,
@@ -10284,16 +10169,9 @@ window.loadLastPosition = async ({
                     message: e?.message || String(e),
                     fallback: hasFractionalCompletion ? 'fraction-fallback' : null,
                 });
-                postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                    hasCFI: true,
-                    message: e?.message || String(e),
-                });
-                console.error(e)
+                                console.error(e)
                 if (hasFractionalCompletion) {
-                    postReaderLog('ebook.viewer.loadLastPosition.path', {
-                        mode: 'fraction-fallback',
-                    });
-                    await runWithNavigationIntent({
+                                        await runWithNavigationIntent({
                         source: 'restore.cfi-fallback',
                         target: 'view.goToFraction',
                         fraction: fractionalCompletion,
@@ -10309,10 +10187,7 @@ window.loadLastPosition = async ({
                 'after-cfi-fraction-reconcile',
             );
         } else if (hasFractionalCompletion) {
-            postReaderLog('ebook.viewer.loadLastPosition.path', {
-                mode: 'fraction',
-            });
-            try {
+                        try {
                 await runWithNavigationIntent({
                     source: 'restore.fraction',
                     target: 'view.goToFraction',
@@ -10326,49 +10201,22 @@ window.loadLastPosition = async ({
                     message: error?.message || String(error),
                     fallback: 'default-next',
                 });
-                postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                    hasCFI: false,
-                    mode: 'fraction',
-                    message: error?.message || String(error),
-                    fallback: 'default-next',
-                });
-                try {
+                                try {
                     await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
                 } catch (nextError) {
-                    postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                        hasCFI: false,
-                        mode: 'default-next',
-                        message: nextError?.message || String(nextError),
-                        fallback: 'nextSection',
-                    });
-                    await globalThis.reader.view.renderer.nextSection();
+                                        await globalThis.reader.view.renderer.nextSection();
                 }
-                postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
-                    mode: 'default-next',
-                });
-                await waitForFrames(2);
+                                await waitForFrames(2);
                 const fallbackState = captureRestoreState('after-default-next-fallback');
                 postRestoreMarkReadLog('after-default-next-fallback', fallbackState);
             }
         } else {
-            postReaderLog('ebook.viewer.loadLastPosition.path', {
-                mode: 'default-next',
-            });
-            try {
+                        try {
                 await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
             } catch (error) {
-                postReaderLog('ebook.viewer.loadLastPosition.goToError', {
-                    hasCFI: false,
-                    mode: 'default-next',
-                    message: error?.message || String(error),
-                    fallback: 'nextSection',
-                });
-                await globalThis.reader.view.renderer.nextSection();
+                                await globalThis.reader.view.renderer.nextSection();
             }
-            postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
-                mode: 'default-next',
-            });
-            await waitForFrames(2);
+                        await waitForFrames(2);
             const defaultState = captureRestoreState('after-default-next');
             postRestoreMarkReadLog('after-default-next', defaultState);
         }
@@ -10380,10 +10228,7 @@ window.loadLastPosition = async ({
             requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
         });
         postRestoreMarkReadLog('done', doneState);
-        postReaderLog('ebook.viewer.loadLastPosition.done', {
-            hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        });
-        postReplaceTextPerfLog('restore.done', {
+                postReplaceTextPerfLog('restore.done', {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
             ...captureEPUBOverlapState(),
         });
@@ -10400,19 +10245,10 @@ window.loadLastPosition = async ({
 
 window.refreshBookReadingProgress = async (articleReadingProgress) => {
     if (!globalThis.reader) {
-        postReaderLog('ebook.pageTracking.progressRefresh.skip', {
-            reason: 'missing-reader',
-        });
-        return;
+                return;
     }
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
-    postReaderLog('ebook.pageTracking.progressRefresh.received', {
-        articleMarkedAsFinished: normalizedProgress.articleMarkedAsFinished,
-        sentenceIdentifiersRead: normalizedProgress.sentenceIdentifiersRead.length,
-        readSegmentIdentifiers: normalizedProgress.readSegmentIdentifiers.length,
-        articleSentenceCount: normalizedProgress.articleSentenceCount,
-    });
-    globalThis.reader.applyBookReadingProgress(articleReadingProgress, 'native-refresh');
+        globalThis.reader.applyBookReadingProgress(articleReadingProgress, 'native-refresh');
     await globalThis.reader.updateNavButtons();
 }
 
@@ -10731,6 +10567,3 @@ window.manabi_applyOptimisticMarkAllSectionsAsReadPayload = (payload) => {
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
-postReaderLog('ebook.viewer.js.version', {
-    version: 'replace-text-summary-v1',
-});

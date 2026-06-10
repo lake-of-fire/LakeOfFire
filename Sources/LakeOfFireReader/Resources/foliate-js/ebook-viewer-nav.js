@@ -16,7 +16,6 @@ const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
-const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
