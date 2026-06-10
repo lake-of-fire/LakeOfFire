@@ -52,9 +52,9 @@ const logMay15 = (event, detail = {}) => {
 };
 
 const postBookNavLog = (event, details = {}, options = {}) => {
-    try {
-        globalThis.manabiPostBookLog?.(`nav.${event}`, details, options);
-    } catch (_error) {}
+    void event;
+    void details;
+    void options;
 };
 
 const bookNavRect = (element) => {
@@ -252,35 +252,13 @@ export class NavigationHUD {
     }
 
     _logJumpBack(event, payload = {}) {
-        const cleanedEntries = Object.entries(payload ?? {}).filter(([, value]) => value !== undefined);
-        const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
-        const line = metadata ? `# JUMPBACK ${event} ${metadata}` : `# JUMPBACK ${event}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional native logger
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console logger
-        }
+        void event;
+        void payload;
     }
 
     _logJumpButton(event, payload = {}) {
-        const cleanedEntries = Object.entries(payload ?? {}).filter(([, value]) => value !== undefined);
-        const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
-        const line = metadata ? `# JUMPTOBUTTON ${event} ${metadata}` : `# JUMPTOBUTTON ${event}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional native logger
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console logger
-        }
+        void event;
+        void payload;
     }
 
     requestExplicitRelocateHistoryMutation(source = 'unknown') {
@@ -2415,45 +2393,13 @@ export class NavigationHUD {
     }
 
     _logJumpDiagnostic(event, payload = {}) {
-        const currentPercent = typeof this.lastPrimaryLabelDiagnostics?.currentPercent === 'number'
-            ? this.lastPrimaryLabelDiagnostics.currentPercent
-            : null;
-        const context = {
-            timestamp: Date.now(),
-            currentPercent,
-            ...payload,
-        };
-        const cleanedEntries = Object.entries(context).filter(([, value]) => value !== undefined && value !== null);
-        const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
-        const line = metadata ? `# EBOOKJUMP ${event} ${metadata}` : `# EBOOKJUMP ${event}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (error) {
-            // optional handler
-        }
-        try {
-            console.log(line);
-        } catch (error) {
-            // optional console
-        }
+        void event;
+        void payload;
     }
 
     _logJumpPosition(event, payload = {}) {
-        const line = `# JUMP ${JSON.stringify({
-            timestamp: Date.now(),
-            event,
-            ...payload,
-        })}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional handler
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console
-        }
+        void event;
+        void payload;
     }
 
     _isSameDescriptor(a, b) {

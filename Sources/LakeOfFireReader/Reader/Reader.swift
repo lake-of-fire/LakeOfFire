@@ -446,7 +446,6 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
-    print("# BOOK native.chromeInsets.sync pageURL=\(pageURL.absoluteString) revision=\(revision) top=\(obscuredTopInset) toolbarBottomOffset=\(toolbarBottomOffset) bottom=\(obscuredBottomInset)")
     do {
         try await evaluateJavaScript(
             """

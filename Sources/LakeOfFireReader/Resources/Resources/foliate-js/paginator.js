@@ -66,13 +66,8 @@ const postEBookBugLog = (event, details = {}) => {
     void details;
 };
 const postBlankPageLog = (event, details = {}) => {
-    const payload = { event, timestamp: Date.now(), ...details };
-    const line = `# BLANKPAGE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        try { console.log(line); } catch (_) {}
-    }
+    void event;
+    void details;
 };
 export const manabiPageSummaryIsVisiblyBlank = summary =>
     !!summary
@@ -1818,64 +1813,6 @@ export class Paginator extends HTMLElement {
         }
         return placements;
     }
-    async #logBlankPageCandidate(reason) {
-        if (this.#isCacheWarmer || this.scrolled || !this.#view?.document) return;
-        try {
-            const page = await this.page();
-            const pages = await this.pages();
-            const size = await this.size();
-            if (!Number.isFinite(page) || !Number.isFinite(pages) || pages <= 2 || page <= 0 || page >= pages - 1) {
-                return;
-            }
-            const rectMapper = await this.#getRectMapper();
-            const current = await this.#blankPageContentSummary(page, size, rectMapper);
-            if (!current || current.textCharCount > 0 || current.mediaCount > 0) {
-                return;
-            }
-            const previousPage = page > 1 ? await this.#blankPageContentSummary(page - 1, size, rectMapper) : null;
-            const nextPage = page < pages - 2 ? await this.#blankPageContentSummary(page + 1, size, rectMapper) : null;
-            postBlankPageLog('candidate', {
-                reason: reason ?? null,
-                index: this.#index,
-                section: sectionDebugInfo(this.sections?.[this.#index]),
-                page,
-                pages,
-                size: manabiRound(size, 1),
-                start: manabiRound(await this.start(), 1),
-                viewSize: manabiRound(await this.viewSize(), 1),
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-                flow: this.getAttribute('flow') || null,
-                layout: {
-                    width: this.#view.layout?.width ?? null,
-                    height: this.#view.layout?.height ?? null,
-                    gap: this.#view.layout?.gap ?? null,
-                    columnWidth: this.#view.layout?.columnWidth ?? null,
-                    divisor: this.#view.layout?.divisor ?? null,
-                },
-                container: {
-                    clientWidth: this.#container?.clientWidth ?? null,
-                    clientHeight: this.#container?.clientHeight ?? null,
-                    scrollLeft: this.#container?.scrollLeft ?? null,
-                    scrollTop: this.#container?.scrollTop ?? null,
-                    scrollWidth: this.#container?.scrollWidth ?? null,
-                    scrollHeight: this.#container?.scrollHeight ?? null,
-                },
-                previousPage,
-                currentPage: current,
-                nextPage,
-                nearbyMediaPlacements: this.#blankPageMediaPlacements(size, rectMapper, page),
-            });
-        } catch (error) {
-            postBlankPageLog('probe-error', {
-                reason: reason ?? null,
-                index: this.#index,
-                section: sectionDebugInfo(this.sections?.[this.#index]),
-                message: error?.message || String(error),
-                stack: error?.stack || null,
-            });
-        }
-    }
     async #resolveBlankPageTarget(page, direction, reason = 'unknown') {
         if (
             this.#isCacheWarmer
@@ -2970,7 +2907,6 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
-        void this.#logBlankPageCandidate(reason)
 
     }
     #logicalDirectionForSwipeDelta(dx, input = 'touch') {

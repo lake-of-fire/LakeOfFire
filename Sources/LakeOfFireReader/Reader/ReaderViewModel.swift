@@ -37,8 +37,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeMarkReadIsBusy: Bool = false
     @Published public private(set) var ebookNativeMarkReadStateVersion: UInt64 = 0
     @Published public private(set) var ebookNativeMarkReadStateReason: String = ""
-    private var lastEbookNativeOverlayBookLogSignature: String?
-    
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
@@ -76,21 +74,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         relocateBackEnabled: Bool,
         relocateForwardEnabled: Bool
     ) {
-        let bookLogSignature = [
-            "percent=\(percentLabel)",
-            "hidden=\(navigationHidden)",
-            "titleVisible=\(titleLocationVisible)",
-            "title=\(titleLocationLabel)",
-            "bookTitle=\(bookTitleLabel)",
-            "pagesLeft=\(pagesLeftLabel)",
-            "source=\(source)",
-            "back=\(relocateBackEnabled)",
-            "forward=\(relocateForwardEnabled)"
-        ].joined(separator: " ")
-        if lastEbookNativeOverlayBookLogSignature != bookLogSignature {
-            lastEbookNativeOverlayBookLogSignature = bookLogSignature
-            print("# BOOK native.overlayState \(bookLogSignature)")
-        }
         if ebookNativeOverlayPercentLabel != percentLabel {
             ebookNativeOverlayPercentLabel = percentLabel
         }

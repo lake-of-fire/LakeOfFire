@@ -101,33 +101,11 @@ const shouldPostReplaceTextPerfLog = (event, details = {}) => {
 const postReplaceTextPerfLog = (event, details = {}) => {
 };
 
-const popoverLogLastAtByKey = new Map();
-const popoverLogLastSignatureByKey = new Map();
-
 const postPopoverLog = (event, details = {}, { dedupeKey = event, minIntervalMs = 350 } = {}) => {
-    const now = Date.now();
-    const throttleKey = dedupeKey || event;
-    const lastAt = popoverLogLastAtByKey.get(throttleKey) || 0;
-    if (now - lastAt < minIntervalMs) return;
-    const payload = {
-        event,
-        t: now,
-        ...details,
-    };
-    let signature = null;
-    try {
-        signature = JSON.stringify(payload);
-    } catch {}
-    if (signature && popoverLogLastSignatureByKey.get(throttleKey) === signature) return;
-    if (signature) popoverLogLastSignatureByKey.set(throttleKey, signature);
-    popoverLogLastAtByKey.set(throttleKey, now);
-    const line = `# POPOVER ${signature || event}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch {}
-    try {
-        console.log(line);
-    } catch {}
+    void event;
+    void details;
+    void dedupeKey;
+    void minIntervalMs;
 };
 
 globalThis.manabiPostPopoverLog = postPopoverLog;
@@ -145,6 +123,56 @@ const lastPageNumLogSignatureByEvent = new Map();
 const postPageNumLog = (event, details = {}) => {
     void event;
     void details;
+};
+
+const postBookDiagnosticLine = (payload = {}) => {
+    const line = `# BOOKDIAGNOSTIC ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch {}
+    try {
+        console.log(line);
+    } catch {}
+};
+
+const compactBackgroundImage = (value) => {
+    if (!value || value === 'none') return value || null;
+    return value.length > 240 ? `${value.slice(0, 240)}…` : value;
+};
+
+const sampleBookGradientDiagnostic = (doc, reason = 'unknown') => {
+    const body = doc?.body ?? null;
+    if (!body) {
+        return { sampled: false, reason, missing: 'body' };
+    }
+    const win = doc.defaultView ?? null;
+    const bodyStyle = win?.getComputedStyle?.(body) ?? null;
+    const readerContent = doc.getElementById?.('reader-content') ?? null;
+    const readerContentStyle = readerContent && win ? win.getComputedStyle(readerContent) : null;
+    const segment = body.querySelector?.('mnb-seg') ?? null;
+    const surface = segment?.querySelector?.('mnb-sur') ?? null;
+    const segmentStyle = segment && win ? win.getComputedStyle(segment) : null;
+    const surfaceStyle = surface && win ? win.getComputedStyle(surface) : null;
+    return {
+        sampled: true,
+        reason,
+        bodyClass: body.className || '',
+        htmlClass: doc.documentElement?.className || '',
+        writingDirectionDataset: body.dataset?.mnbWritingDirection ?? null,
+        navHidden: body.classList?.contains?.('nav-hidden') ?? null,
+        navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        bodyWritingMode: bodyStyle?.writingMode ?? null,
+        readerContentWritingMode: readerContentStyle?.writingMode ?? null,
+        gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        highlightFillOpacity: bodyStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        trackingHighlightAlpha: bodyStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        segmentWritingMode: segmentStyle?.writingMode ?? null,
+        segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        segmentBackgroundImage: compactBackgroundImage(segmentStyle?.backgroundImage ?? null),
+        surfaceWritingMode: surfaceStyle?.writingMode ?? null,
+        surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        surfaceBackgroundImage: compactBackgroundImage(surfaceStyle?.backgroundImage ?? null),
+    };
 };
 
 const MARKREAD_ALLOWED_EVENTS = new Set([
@@ -228,22 +256,8 @@ const markReadLogSignatureDetails = (event, details = {}) => {
 };
 
 const postMarkReadGoneLog = (event, details = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    const line = `# MARKREADGONE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        // optional native logger
-    }
-    try {
-        console.log(line);
-    } catch (_error) {
-        // optional console logger
-    }
+    void event;
+    void details;
 };
 
 const roundedDisplayPercent = value => {
@@ -254,22 +268,8 @@ const roundedDisplayPercent = value => {
 };
 
 const postVisibleRangeLog = (event, details = {}) => {
-    const payload = {
-        event,
-        timestamp: Date.now(),
-        ...details,
-    };
-    const line = `# VISIBLERANGE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        // optional native logger
-    }
-    try {
-        console.log(line);
-    } catch (_error) {
-        // optional console logger
-    }
+    void event;
+    void details;
 };
 
 const describeMarkReadNode = (node) => {
@@ -771,22 +771,8 @@ const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null, v
 };
 
 const postReaderLog = (event, details = {}) => {
-    if (!manabiDiagnosticsEnabled()) return;
-    const payload = {
-        prefix: '# READER',
-        event,
-    };
-    for (const [key, value] of Object.entries(details)) {
-        if (value === undefined || value === null) {
-            continue;
-        }
-        payload[key] = value;
-    }
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-    } catch (error) {
-        if (manabiDiagnosticsEnabled()) console.debug('# READER', event, details, error);
-    }
+    void event;
+    void details;
 };
 
 const postLookupPositionLog = (event, details = {}) => {
@@ -1257,12 +1243,8 @@ const ignoreNextIncomingRevealNavigation = (source) => {
 };
 
 const postReaderBridgeDebug = (message, details = {}) => {
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.({
-            message,
-            ...details,
-        });
-    } catch (_error) {}
+    void message;
+    void details;
 };
 
 const postEbookNavigationVisibilityToNative = (shouldHide, source, details = {}) => {
@@ -4890,13 +4872,25 @@ class Reader {
         const hidden = !!shouldHide;
         document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
         const contents = this.view?.renderer?.getContents?.() || [];
+        const samples = [];
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+            if (samples.length < 2) {
+                samples.push(sampleBookGradientDiagnostic(content?.doc, hidden ? 'hide' : 'show'));
+            }
         }
+        postBookDiagnosticLine({
+            event: 'hideNav.applyToBookContent',
+            hidden,
+            contentCount: contents.length,
+            outerBodyClass: document.body?.className || '',
+            outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            samples,
+        });
         postPopoverLog('js.hideNavigation.applyToBookContent', {
             hidden,
             contentCount: contents.length,
@@ -5282,29 +5276,11 @@ class Reader {
             return await this.markVisiblePageAsRead(source);
         };
         window.addEventListener('resize', () => {
-            postBookRotateLog('window.resize', {
-                innerWidth: window.innerWidth ?? null,
-                innerHeight: window.innerHeight ?? null,
-                visualViewportWidth: window.visualViewport?.width ?? null,
-                visualViewportHeight: window.visualViewport?.height ?? null,
-                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-                orientationType: screen.orientation?.type ?? null,
-            });
             this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('window-resize');
             requestAnimationFrame(() => this.#syncPageTrackingButtons('window-resize', null, 1).catch((error) => console.error(error)));
         });
         window.visualViewport?.addEventListener?.('resize', () => {
-            postBookRotateLog('visualViewport.resize', {
-                innerWidth: window.innerWidth ?? null,
-                innerHeight: window.innerHeight ?? null,
-                visualViewportWidth: window.visualViewport?.width ?? null,
-                visualViewportHeight: window.visualViewport?.height ?? null,
-                visualViewportOffsetLeft: window.visualViewport?.offsetLeft ?? null,
-                visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
-                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-                orientationType: screen.orientation?.type ?? null,
-            });
             this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('visual-viewport-resize');
             requestAnimationFrame(() => this.#syncPageTrackingButtons('visual-viewport-resize', null, 1).catch((error) => console.error(error)));
@@ -5314,14 +5290,6 @@ class Reader {
             requestAnimationFrame(() => this.#syncPageTrackingButtons(reason, null, 1).catch((error) => console.error(error)));
         };
         screen.orientation?.addEventListener?.('change', () => {
-            postBookRotateLog('screen.orientation.change', {
-                innerWidth: window.innerWidth ?? null,
-                innerHeight: window.innerHeight ?? null,
-                visualViewportWidth: window.visualViewport?.width ?? null,
-                visualViewportHeight: window.visualViewport?.height ?? null,
-                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-                orientationType: screen.orientation?.type ?? null,
-            });
             this.#invalidateVisiblePageSegmentSnapshot();
             this.#updatePageReadMarker('screen-orientation-change');
             requestAnimationFrame(() => this.#syncPageTrackingButtons('screen-orientation-change', null, 1).catch((error) => console.error(error)));
@@ -5955,11 +5923,6 @@ class Reader {
                 rendered: result?.rendered ?? false,
                 resultReason: result?.reason ?? null,
             });
-            logBookDiagnostic('initial-paginator-settle', this.view, {
-                settleReason: reason,
-                rendered: result?.rendered ?? false,
-                resultReason: result?.reason ?? null,
-            });
             const hasGap = [
                 snapshot.toolbarGapPx,
                 snapshot.stageGapPx,
@@ -6409,20 +6372,6 @@ class Reader {
         return this.#buildLayoutSnapshot(reason, extra);
     }
     #postBookInsetSnapshot(event, extra = {}) {
-        let snapshot = null;
-        try {
-            snapshot = this.#buildLayoutSnapshot(`book-inset.${event}`, extra);
-        } catch (error) {
-            postBookInsetLog(event, {
-                ...extra,
-                snapshotError: error?.message ?? String(error),
-            });
-            return;
-        }
-        postBookInsetLog(event, {
-            ...extra,
-            snapshot,
-        });
     }
     refreshPageTrackingVisibility(reason = 'settings-changed') {
         this.#renderPageTrackingButtons(reason);
@@ -7425,11 +7374,6 @@ class Reader {
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         applyStoredChromeInsets('reader.open');
         postLayoutLog('reader.open', collectEBookLayoutSnapshot(this.view, {
-            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
-            bookDir: this.bookDir,
-            isRTL: this.isRTL,
-        }));
-        requestAnimationFrame(() => logBookDiagnostic('reader.open', this.view, {
             initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
             bookDir: this.bookDir,
             isRTL: this.isRTL,
@@ -9020,13 +8964,6 @@ class Reader {
             rendererTotal,
             cfiLength: typeof cfi === 'string' ? cfi.length : 0,
         }));
-        logBookDiagnostic('reader.relocate', this.view, {
-            relocateReason: reason ?? null,
-            fraction: safeRound(fraction),
-            sectionIndex,
-            localSectionIndex,
-            rendererTotal,
-        });
         const sectionBaseCFI = typeof sectionIndex === 'number'
             ? (this.view?.book?.sections?.[sectionIndex]?.cfi ?? null)
             : null;
@@ -9160,38 +9097,6 @@ class Reader {
                 normalizedRelocateReason !== 'anchor'
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
-            globalThis.manabiPostBookLog?.('position.relocate', {
-                reason: reason ?? null,
-                normalizedRelocateReason,
-                shouldPersistRelocatePosition,
-                shouldSuppressRestoreSettleSave,
-                requiresUserInputBeforePositionSave,
-                hasLoadedLastPosition: this.hasLoadedLastPosition,
-                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
-                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
-                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
-                displayPercent: progressBridgePayload.displayPercent,
-                sectionIndex,
-                localSectionIndex,
-                rendererTotal,
-                currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
-                    ? this.navHUD.rendererPageSnapshot.current
-                    : null,
-                cfiLooksSectionBase,
-                cfiIsUnstableAcrossPages,
-                persistedLocatorKind: progressBridgePayload.persistedLocatorKind,
-                persistedLocatorLength: progressBridgePayload.persistedLocatorLength,
-                syntheticRestoreLocator,
-                orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-                orientationType: screen.orientation?.type ?? null,
-                viewportWidth: window.innerWidth,
-                viewportHeight: window.innerHeight,
-                visualViewportWidth: window.visualViewport?.width ?? null,
-                visualViewportHeight: window.visualViewport?.height ?? null,
-            }, {
-                dedupeKey: `position.relocate.${normalizedRelocateReason || 'unknown'}`,
-                minIntervalMs: 500,
-            });
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
@@ -9219,15 +9124,6 @@ class Reader {
                 ...captureEPUBOverlapState(),
             });
         }
-        postBookRotateLog('reader.relocate', {
-            reason: detail?.reason || null,
-            fraction: safeRound(detail?.fraction),
-            currentPercent,
-            currentLocation: detail?.location?.current ?? null,
-            totalLocation: detail?.location?.total ?? null,
-            orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-            orientationType: screen.orientation?.type ?? null,
-        });
         postReaderVisibilityProbe('reader.relocate', this.view, {
             reason: detail?.reason || null,
             fraction: safeRound(detail?.fraction),
@@ -9737,7 +9633,6 @@ window.setEbookViewerLayout = (layoutMode) => {
     postLayoutLog('setEbookViewerLayout', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         layoutMode,
     }));
-    logBookDiagnostic('setEbookViewerLayout', globalThis.reader?.view, { layoutMode });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
@@ -9765,7 +9660,6 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));
-    logBookDiagnostic('setEbookViewerWritingDirection', globalThis.reader?.view, { writingDirection });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 
@@ -10055,27 +9949,6 @@ window.loadLastPosition = async ({
     const restoreLocatorKind = syntheticRestoreLocator
         ? 'synthetic'
         : (typeof cfi === 'string' && cfi.length > 0 ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none'));
-    globalThis.manabiPostBookLog?.('restore.start', {
-        restoreLocatorKind,
-        hasCFI: typeof cfi === 'string' && cfi.length > 0,
-        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-        fractionalCompletion: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-        syntheticSectionIndex: syntheticRestoreLocator?.sectionIndex ?? null,
-        syntheticLocalSectionIndex: syntheticRestoreLocator?.localSectionIndex ?? null,
-        syntheticRendererTotal: syntheticRestoreLocator?.rendererTotal ?? null,
-        syntheticFractionInSection: Number.isFinite(syntheticRestoreLocator?.fractionInSection)
-            ? safeRound(syntheticRestoreLocator.fractionInSection, 6)
-            : null,
-        orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-        orientationType: screen.orientation?.type ?? null,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-        visualViewportWidth: window.visualViewport?.width ?? null,
-        visualViewportHeight: window.visualViewport?.height ?? null,
-    }, {
-        dedupeKey: 'restore.start',
-        minIntervalMs: 0,
-    });
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
         if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
             return;
@@ -10263,29 +10136,6 @@ window.loadLastPosition = async ({
         }
         globalThis.reader.hasLoadedLastPosition = true
         const doneState = captureRestoreState('done');
-        globalThis.manabiPostBookLog?.('restore.done', {
-            restoreLocatorKind,
-            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
-            landedFraction: typeof doneState?.currentFraction === 'number' ? safeRound(doneState.currentFraction, 6) : null,
-            landedSectionIndex: doneState?.sectionIndex ?? null,
-            landedLocationCurrent: doneState?.locationCurrent ?? null,
-            landedLocationTotal: doneState?.locationTotal ?? null,
-            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
-            rendererCurrentIndex: typeof globalThis.reader?.view?.renderer?.currentIndex === 'number'
-                ? globalThis.reader.view.renderer.currentIndex
-                : null,
-            rendererPageCurrent: globalThis.reader?.navHUD?.rendererPageSnapshot?.current ?? null,
-            rendererPageTotal: globalThis.reader?.navHUD?.rendererPageSnapshot?.total ?? null,
-            orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-            orientationType: screen.orientation?.type ?? null,
-            viewportWidth: window.innerWidth,
-            viewportHeight: window.innerHeight,
-            visualViewportWidth: window.visualViewport?.width ?? null,
-            visualViewportHeight: window.visualViewport?.height ?? null,
-        }, {
-            dedupeKey: 'restore.done',
-            minIntervalMs: 0,
-        });
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
         postLandscapeInsetRestoreProbe('done', doneState, {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
@@ -10403,22 +10253,8 @@ window.manabiCancelScheduledReaderFractionGoTo = () => {
 }
 
 const postEBookJumpLog = (event, payload = {}) => {
-    const cleanedEntries = Object.entries({
-        timestamp: Date.now(),
-        ...payload,
-    }).filter(([, value]) => value !== undefined && value !== null);
-    const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
-    const line = metadata ? `# EBOOKJUMP ${event} ${metadata}` : `# EBOOKJUMP ${event}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {
-        // optional handler
-    }
-    try {
-        console.log(line);
-    } catch (_error) {
-        // optional console
-    }
+    void event;
+    void payload;
 };
 
 window.manabiBeginReaderProgressScrub = () => {
