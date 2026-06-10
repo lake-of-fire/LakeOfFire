@@ -51,12 +51,6 @@ const logNavHide = (event, detail = {}) => {
 const logMay15 = (event, detail = {}) => {
 };
 
-const postBookNavLog = (event, details = {}, options = {}) => {
-    void event;
-    void details;
-    void options;
-};
-
 const bookNavRect = (element) => {
     const rect = element?.getBoundingClientRect?.() ?? null;
     if (!rect) return null;
@@ -1147,27 +1141,6 @@ export class NavigationHUD {
         const pagesLeftLabel = this.lastPagesLeftLabel || '';
         const relocateBackEnabled = this._relocateButtonEnabled('back');
         const relocateForwardEnabled = this._relocateButtonEnabled('forward');
-        postBookNavLog('overlayState', {
-            source,
-            percentLabel,
-            hideNavigationDueToScroll,
-            titleLocationLabel,
-            titleLocationVisible,
-            bookTitleLabel,
-            pagesLeftLabel,
-            relocateBackEnabled,
-            relocateForwardEnabled,
-            lookupPopoverPresented: document.body?.dataset?.mnbLookupPopoverPresented === 'true',
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            navBarRect: bookNavRect(this.navBar),
-            titleLocationRect: bookNavRect(this.navTitleLocationLabel),
-            pagesLeftRect: bookNavRect(this.navSectionProgress?.center),
-            primaryTextRect: bookNavRect(this.navPrimaryText),
-        }, {
-            dedupeKey: 'nav.overlayState',
-            minIntervalMs: 450,
-        });
         try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
                 percentLabel,
@@ -1299,27 +1272,6 @@ export class NavigationHUD {
             leftInset,
             rightInset,
         };
-        postBookNavLog('auxiliaryInsets', {
-            lookupPopoverPresented,
-            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            navHidden: this.navHidden,
-            leftInset,
-            rightInset,
-            navRect: bookNavRect(this.navBar),
-            pageReadRect: pageReadRect
-                ? {
-                    x: safeRound(pageReadRect.x, 1),
-                    y: safeRound(pageReadRect.y, 1),
-                    width: safeRound(pageReadRect.width, 1),
-                    height: safeRound(pageReadRect.height, 1),
-                    top: safeRound(pageReadRect.top, 1),
-                    bottom: safeRound(pageReadRect.bottom, 1),
-                }
-                : null,
-        }, {
-            dedupeKey: 'nav.auxiliaryInsets',
-            minIntervalMs: 600,
-        });
         const previousState = this.lastAuxiliaryInsetsState;
         const changed = !previousState
             || previousState.leftInset !== nextState.leftInset
@@ -1592,25 +1544,6 @@ export class NavigationHUD {
         const trailing = this.navSectionProgress?.trailing;
         const center = this.navSectionProgress?.center;
         const logSectionProgress = (verdict, details = {}) => {
-            postBookNavLog('sectionProgress', {
-                source,
-                requestToken,
-                verdict,
-                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
-                navHidden: this.navHidden,
-                lookupPopoverPresented: document.body?.dataset?.mnbLookupPopoverPresented === 'true',
-                centerHidden: center?.hidden ?? null,
-                centerPagesLeftVisible: center?.dataset?.pagesLeftVisible ?? null,
-                centerText: center?.textContent || '',
-                centerRect: bookNavRect(center),
-                titleLocationText: this.navTitleLocationLabel?.dataset?.titleLocationText || '',
-                titleLocationVisible: this.navTitleLocationLabel?.dataset?.visible ?? null,
-                titleLocationRect: bookNavRect(this.navTitleLocationLabel),
-                ...details,
-            }, {
-                dedupeKey: `nav.sectionProgress.${verdict}`,
-                minIntervalMs: 600,
-            });
         };
         logMay15('ebook.navHUD.sectionProgress.entered', {
             source,

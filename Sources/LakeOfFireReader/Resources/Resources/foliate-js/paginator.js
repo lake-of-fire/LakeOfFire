@@ -50,25 +50,6 @@ const manabiRound = (value, digits = 1) =>
         ?? (typeof value === 'number' && Number.isFinite(value)
             ? Number(value.toFixed(digits))
             : null);
-const postPaginatorPageNumLog = (event, details = {}) => {
-    void event;
-    void details;
-};
-const markPaginatorPerf = (stage, details = {}, options = {}) => {
-    void stage;
-    void details;
-    void options;
-};
-const postPaginatorLoadLog = (event, details = {}) => {
-};
-const postEBookBugLog = (event, details = {}) => {
-    void event;
-    void details;
-};
-const postBlankPageLog = (event, details = {}) => {
-    void event;
-    void details;
-};
 export const manabiPageSummaryIsVisiblyBlank = summary =>
     !!summary
     && (summary.textCharCount ?? 0) === 0
@@ -447,10 +428,6 @@ class View {
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         const loadStartedAt = manabiPerfNow();
-        postPaginatorLoadLog('view.load.start', {
-            src,
-            isCacheWarmer: !!this.#isCacheWarmer,
-        });
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
@@ -462,18 +439,8 @@ class View {
                 this.#iframe.addEventListener('load', async () => {
                     try {
                         const doc = this.document
-                        postPaginatorLoadLog('view.iframe.load', {
-                            src,
-                            readyState: doc?.readyState || null,
-                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                        });
 
                         await afterLoad?.(doc)
-                        postPaginatorLoadLog('view.afterLoad.end', {
-                            src,
-                            documentURL: doc?.location?.href || null,
-                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                        });
 
                         let direction = getDirectionFromDocument(doc);
                         let directionSource = 'document';
@@ -486,16 +453,6 @@ class View {
                         this.#verticalRTL = direction.verticalRTL;
                         this.#rtl = direction.rtl;
                         this.#directionReadyResolve?.();
-                        postPaginatorLoadLog('view.direction.ready', {
-                            src,
-                            vertical: this.#vertical,
-                            verticalRTL: this.#verticalRTL,
-                            rtl: this.#rtl,
-                            directionSource,
-                            writingMode: direction.writingMode || null,
-                            cssDirection: direction.direction || null,
-                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                        });
 
                         this.#contentRange.selectNodeContents(doc.body)
 
@@ -503,46 +460,20 @@ class View {
                             vertical: this.#vertical,
                             rtl: this.#rtl,
                         })
-                        postPaginatorLoadLog('view.beforeRender.end', {
-                            src,
-                            flow: layout?.flow || null,
-                            width: layout?.width ?? null,
-                            height: layout?.height ?? null,
-                            gap: layout?.gap ?? null,
-                            columnWidth: layout?.columnWidth ?? null,
-                            divisor: layout?.divisor ?? null,
-                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                        });
                         await this.render(layout)
 
                         this.#resizeObserver.observe(doc.body)
                         doc.fonts?.ready?.then?.(() => {
                             void this.expand()
                         })
-
-                        postPaginatorLoadLog('view.load.end', {
-                            src,
-                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                        });
                         resolve()
                     } catch (error) {
-                        postPaginatorLoadLog('view.load.error', {
-                            src,
-                            message: error?.message || String(error),
-                            stack: error?.stack || null,
-                            elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                        });
                         reject(error)
                     }
                 }, {
                     once: true
                 })
                 this.#iframe.addEventListener('error', error => {
-                    postPaginatorLoadLog('view.iframe.error', {
-                        src,
-                        message: error?.message || String(error),
-                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
-                    });
                     reject(error);
                 }, { once: true })
                 this.#iframe.src = src
@@ -553,31 +484,14 @@ class View {
         //        console.log("render(layout)...")
         if (!layout) {
             //            console.log("render(layout)... return")
-            postPaginatorLoadLog('view.render.skip', {
-                reason: 'missing-layout',
-            });
             return
         }
         const doc = this.document
         if (!doc?.documentElement || !doc?.body) {
-            postPaginatorLoadLog('view.render.skip', {
-                reason: 'document-not-ready',
-                hasDocumentElement: !!doc?.documentElement,
-                hasBody: !!doc?.body,
-            });
             return
         }
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
-        postPaginatorLoadLog('view.render.start', {
-            flow: layout.flow,
-            column: this.#column,
-            vertical: this.#vertical,
-            width: layout.width ?? null,
-            height: layout.height ?? null,
-            columnWidth: layout.columnWidth ?? null,
-            gap: layout.gap ?? null,
-        });
 
         if (this.#vertical) {
             doc.body.classList.add('reader-vertical-writing')
@@ -592,11 +506,6 @@ class View {
             await this.scrolled(layout)
             //            console.log("render(layout)... await'd scrolled")
         }
-        postPaginatorLoadLog('view.render.end', {
-            flow: layout.flow,
-            column: this.#column,
-            vertical: this.#vertical,
-        });
     }
     async scrolled({
         gap,
@@ -660,15 +569,6 @@ class View {
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
-        postPaginatorLoadLog('view.columnize.start', {
-            vertical,
-            width,
-            height,
-            pageSize: this.#size,
-            gap,
-            columnWidth,
-            divisor: divisor ?? null,
-        });
         //        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
@@ -806,26 +706,11 @@ class View {
             }
         }
         if (globalThis.manabiVerboseImageLayout === true) {
-            postPaginatorLoadLog('view.image-size.apply', {
-                vertical,
-                imageCount,
-                width: numericWidth,
-                height: numericHeight,
-                topMargin,
-                bottomMargin,
-                margin,
-                verticalMaxWidth,
-                horizontalMaxHeight,
-            });
         }
     }
     async expand() {
         const expandStartedAt = manabiPerfNow();
         await this.onBeforeExpand()
-        postPaginatorLoadLog('view.expand.start', {
-            vertical: this.#vertical,
-            column: this.#column,
-        });
         //        console.log("expand...")
         return new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
@@ -834,16 +719,6 @@ class View {
                     const doc = this.document
                     const documentElement = doc?.documentElement
                     if (!doc?.body || !documentElement || !this.#iframe?.isConnected) {
-                        postPaginatorLoadLog('view.expand.skip', {
-                            reason: 'document-not-ready',
-                            hasBody: !!doc?.body,
-                            hasDocumentElement: !!documentElement,
-                            iframeConnected: !!this.#iframe?.isConnected,
-                            elementConnected: !!this.#element?.isConnected,
-                            vertical: this.#vertical,
-                            column: this.#column,
-                            elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
-                        });
                         resolve()
                         return
                     }
@@ -922,20 +797,8 @@ class View {
                     //                console.log("expand... call onexpand")
                     await this.onExpand()
                     //                console.log("expand... call'd onexpand")
-                    postPaginatorLoadLog('view.expand.end', {
-                        vertical: this.#vertical,
-                        column: this.#column,
-                        elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
-                    });
                     resolve()
                 } catch (error) {
-                    postPaginatorLoadLog('view.expand.error', {
-                        vertical: this.#vertical,
-                        column: this.#column,
-                        message: error?.message || String(error),
-                        stack: error?.stack || null,
-                        elapsedMs: manabiRound(manabiPerfNow() - expandStartedAt, 1),
-                    });
                     reject(error)
                 }
             })
@@ -1445,48 +1308,12 @@ export class Paginator extends HTMLElement {
         if (!entry?.promise) return null
         const startedAt = Date.now()
         let watchdog = null
-        postEBookBugLog('paginator-prefetch-wait-start', {
-            index,
-            currentIndex: this.#index,
-            section: sectionDebugInfo(this.sections[index]),
-            entry: prefetchEntryDebugInfo(entry),
-        })
-        try {
             watchdog = setTimeout(() => {
-                postEBookBugLog('paginator-prefetch-wait-watchdog', {
-                    index,
-                    currentIndex: this.#index,
-                    elapsedMs: Date.now() - startedAt,
-                    section: sectionDebugInfo(this.sections[index]),
-                    entry: prefetchEntryDebugInfo(entry),
-                    cacheHasSameEntry: this.#prefetchCache.get(index) === entry,
-                })
-            }, 8000)
             await entry.promise
         } catch (_error) {
-            postEBookBugLog('paginator-prefetch-wait-end', {
-                index,
-                currentIndex: this.#index,
-                elapsedMs: Date.now() - startedAt,
-                result: 'rejected',
-                section: sectionDebugInfo(this.sections[index]),
-                entry: prefetchEntryDebugInfo(entry),
-                cacheHasSameEntry: this.#prefetchCache.get(index) === entry,
-            })
-            return null
         } finally {
             clearTimeout(watchdog)
         }
-        postEBookBugLog('paginator-prefetch-wait-end', {
-            index,
-            currentIndex: this.#index,
-            elapsedMs: Date.now() - startedAt,
-            result: entry.fulfilled ? 'fulfilled' : 'not-fulfilled',
-            section: sectionDebugInfo(this.sections[index]),
-            entry: prefetchEntryDebugInfo(entry),
-            cacheHasSameEntry: this.#prefetchCache.get(index) === entry,
-        })
-        return entry.fulfilled ? entry : null
     }
     async #onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
@@ -1849,15 +1676,6 @@ export class Paginator extends HTMLElement {
         }
 
         if (target !== page) {
-            postBlankPageLog('skip', {
-                reason,
-                index: this.#index,
-                section: sectionDebugInfo(this.sections?.[this.#index]),
-                fromPage: page,
-                toPage: target,
-                pages,
-                direction: direction > 0 ? 'forward' : 'backward',
-            });
         }
         return target;
     }
@@ -1901,11 +1719,6 @@ export class Paginator extends HTMLElement {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#invalidateVisibleRangeCache();
-        postPaginatorLoadLog('typography.render', {
-            reason,
-            previousSignature,
-            signature,
-        });
         await this.render();
         return { rendered: true, reason, previousSignature, signature };
     }
@@ -1926,13 +1739,6 @@ export class Paginator extends HTMLElement {
         //        this.#background.style.background = background
 
         if (!this.#isCacheWarmer) {
-            markPaginatorPerf('before-render.visible', {
-                vertical,
-                verticalRTL,
-                rtl,
-            }, {
-                once: true,
-            });
         }
 
         const {
@@ -2065,20 +1871,6 @@ export class Paginator extends HTMLElement {
                 && inlineCharsPerColumn < MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN
             divisor = shouldDisableMultiColumnForTypography ? 1 : candidateDivisor
             if (shouldDisableMultiColumnForTypography) {
-                postPaginatorLoadLog('layout.multicolumn-disabled', {
-                    reason: 'inline-character-capacity',
-                    inlineCharsPerColumn: manabiRound(inlineCharsPerColumn, 2),
-                    minInlineCharsForMultiColumn: MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN,
-                    candidateDivisor,
-                    size,
-                    gap,
-                    candidateColumnWidth: manabiRound(candidateColumnWidth, 2),
-                    fontSize: manabiRound(typographyMetrics.fontSize, 2),
-                    lineHeight: manabiRound(typographyMetrics.lineHeight, 2),
-                    inlineCharacterAdvance: manabiRound(typographyMetrics.inlineCharacterAdvance, 2),
-                    vertical,
-                })
-            }
             columnWidth = (size / divisor) - gap
         }
 
@@ -2567,37 +2359,17 @@ export class Paginator extends HTMLElement {
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
                 const shouldFade = !(reason === 'page' || reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation');
-                postPaginatorPageNumLog('paginator.transition.begin', {
-                    reason: reason ?? null,
-                    shouldFade,
-                    scrolled: this.scrolled,
-                    vertical: this.#vertical,
-                    hasAnimatedAttribute: this.hasAttribute('animated'),
-                    containerClassList: this.#container?.className ?? null,
-                });
                 if (!shouldFade) {
                     await scroll()
                 } else {
                     this.#container.classList.add('view-fade')
-                    postPaginatorPageNumLog('paginator.transition.fade-applied', {
-                        reason: reason ?? null,
-                        classList: this.#container?.className ?? null,
-                    });
                     // Allow the browser to paint the fade
                     /*await new Promise(r => setTimeout(r, 65));
                      this.#container.classList.add('view-faded')*/
                     await scroll()
                     this.#container.classList.remove('view-faded')
                     this.#container.classList.remove('view-fade')
-                    postPaginatorPageNumLog('paginator.transition.fade-cleared', {
-                        reason: reason ?? null,
-                        classList: this.#container?.className ?? null,
-                    });
                 }
-                postPaginatorPageNumLog('paginator.transition.end', {
-                    reason: reason ?? null,
-                    shouldFade,
-                });
                 resolve()
             })
         })
@@ -2981,16 +2753,7 @@ export class Paginator extends HTMLElement {
         this.#setLoading(true, 'display.start')
         const displayStartedAt = manabiPerfNow();
         let displayError = null
-        postPaginatorLoadLog('display.start', {
-            currentIndex: this.#index,
-            isCacheWarmer: !!this.#isCacheWarmer,
-        });
         if (!this.#isCacheWarmer) {
-            markPaginatorPerf('display.start', {
-                currentIndex: this.#index,
-            }, {
-                once: true,
-            });
         }
         try {
             const {
@@ -3001,25 +2764,7 @@ export class Paginator extends HTMLElement {
                 select
             } = await promise
         if (!this.#isCacheWarmer) {
-            markPaginatorPerf('display.resolved', {
-                targetIndex: index,
-                hasSource: !!src,
-            anchorKind: typeof anchor === 'function'
-                ? 'function'
-                : (anchor instanceof Range ? 'range' : typeof anchor),
-        }, {
-            once: true,
-        });
         }
-        postPaginatorLoadLog('display.resolved', {
-            targetIndex: index,
-            hasSource: !!src,
-            anchorKind: typeof anchor === 'function'
-                ? 'function'
-                : (anchor instanceof Range ? 'range' : typeof anchor),
-            select: !!select,
-            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-        });
 
         //            console.log("#display...awaited promise")
         this.#index = index
@@ -3068,32 +2813,12 @@ export class Paginator extends HTMLElement {
                 const beforeRender = this.#beforeRender.bind(this)
 
                 if (!this.#isCacheWarmer) {
-                    markPaginatorPerf('view.load.start', {
-                        targetIndex: index,
-                    }, {
-                        once: true,
-                    });
                 }
-                postPaginatorLoadLog('display.view-load.start', {
-                    targetIndex: index,
-                    src,
-                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-                });
                 await view.load(src, afterLoad, beforeRender)
                 this.#view = view
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
-                    markPaginatorPerf('view.load.end', {
-                        targetIndex: index,
-                    }, {
-                        once: true,
-                    });
                 }
-                postPaginatorLoadLog('display.view-load.end', {
-                    targetIndex: index,
-                    src,
-                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-                });
 
                 // Reset chevrons when loading new section
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons', {
@@ -3117,20 +2842,7 @@ export class Paginator extends HTMLElement {
 
         const scrollToAnchorStartedAt = manabiPerfNow();
         if (!this.#isCacheWarmer) {
-            markPaginatorPerf('scroll-to-anchor.start', {
-                targetIndex: index,
-            }, {
-                once: true,
-            });
         }
-        postPaginatorLoadLog('display.scroll-to-anchor.start', {
-            targetIndex: index,
-            anchorKind: typeof anchor === 'function'
-                ? 'function'
-                : (anchor instanceof Range ? 'range' : typeof anchor),
-            select: !!select,
-            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-        });
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
         if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
@@ -3155,30 +2867,9 @@ export class Paginator extends HTMLElement {
             this.style.visibility = 'visible'
         }
         if (!this.#isCacheWarmer) {
-            markPaginatorPerf('scroll-to-anchor.end', {
-                targetIndex: index,
-                elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
-            }, {
-                once: true,
-            });
         }
-        postPaginatorLoadLog('display.scroll-to-anchor.end', {
-            targetIndex: index,
-            elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
-            totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-        });
         if (!this.#isCacheWarmer) {
-            markPaginatorPerf('did-display.dispatch', {
-                targetIndex: index,
-                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-            }, {
-                once: true,
-            });
         }
-        postPaginatorLoadLog('display.didDisplay.dispatch', {
-            targetIndex: index,
-            totalElapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
-        });
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
         } catch (error) {
@@ -3203,13 +2894,6 @@ export class Paginator extends HTMLElement {
             ? 'function'
             : (anchor instanceof Range ? 'range' : typeof anchor);
         if (!willLoadNewIndex && anchor == null && !select) {
-            postPaginatorLoadLog('goTo.noop-same-index', {
-                index,
-                currentIndex: this.#index,
-                willLoadNewIndex,
-                anchorKind,
-                select: !!select,
-            });
             return
         }
         this.dispatchEvent(new CustomEvent('goTo', {
@@ -3221,13 +2905,6 @@ export class Paginator extends HTMLElement {
                 select: !!select,
             },
         }))
-        postPaginatorLoadLog('goTo.request', {
-            index,
-            currentIndex: this.#index,
-            willLoadNewIndex,
-            anchorKind,
-            select: !!select,
-        });
         if (!willLoadNewIndex) {
             try {
                 await this.#display({
@@ -3236,12 +2913,6 @@ export class Paginator extends HTMLElement {
                     select
                 })
             } catch (error) {
-                postPaginatorLoadLog('goTo.display.error', {
-                    index,
-                    willLoadNewIndex,
-                    message: error?.message || String(error),
-                    stack: error?.stack || null,
-                });
                 throw error;
             }
         } else {
@@ -3279,39 +2950,9 @@ export class Paginator extends HTMLElement {
                     sectionLoadPromise = prefetchEntry.promise;
                 } else {
                     const sectionLoadStartedAt = Date.now()
-                    postEBookBugLog('paginator-section-load-start', {
-                        index,
-                        currentIndex: this.#index,
-                        hadPrefetchEntry: !!prefetchEntry,
-                        section: sectionDebugInfo(this.sections[index]),
-                        prefetchEntry: prefetchEntryDebugInfo(prefetchEntry),
-                    })
-                    sectionLoadPromise = this.sections[index].load()
                         .then(src => {
-                            postEBookBugLog('paginator-section-load-end', {
-                                index,
-                                currentIndex: this.#index,
-                                elapsedMs: Date.now() - sectionLoadStartedAt,
-                                result: 'fulfilled',
-                                hadPrefetchEntry: !!prefetchEntry,
-                                section: sectionDebugInfo(this.sections[index]),
-                                prefetchEntry: prefetchEntryDebugInfo(prefetchEntry),
-                                srcType: typeof src,
-                            })
-                            return src
                         })
                         .catch(error => {
-                            postEBookBugLog('paginator-section-load-end', {
-                                index,
-                                currentIndex: this.#index,
-                                elapsedMs: Date.now() - sectionLoadStartedAt,
-                                result: 'rejected',
-                                message: error?.message || String(error),
-                                hadPrefetchEntry: !!prefetchEntry,
-                                section: sectionDebugInfo(this.sections[index]),
-                                prefetchEntry: prefetchEntryDebugInfo(prefetchEntry),
-                            })
-                            throw error
                         });
                 }
                 await this.#display(Promise.resolve(sectionLoadPromise)
@@ -3323,25 +2964,8 @@ export class Paginator extends HTMLElement {
                         select
                     }))
                     .catch(error => {
-                        postPaginatorLoadLog('goTo.section-load.error', {
-                            index,
-                            message: error?.message || String(error),
-                            stack: error?.stack || null,
-                        });
-                        postEBookBugLog('paginator-section-load-error', {
-                            index,
-                            message: error?.message || String(error),
-                            stack: error?.stack || null,
-                        })
-                        throw error
                     }));
             } catch (error) {
-                postPaginatorLoadLog('goTo.display.error', {
-                    index,
-                    willLoadNewIndex,
-                    message: error?.message || String(error),
-                    stack: error?.stack || null,
-                });
                 throw error;
             } finally {
                 if (prefetchEntry) {
