@@ -1512,13 +1512,6 @@ const logBookDiagnostic = (reason = 'unknown', view = globalThis.reader?.view ??
     if (now - last < minIntervalMs) return;
     bookDebugLastLog.set(throttleKey, now);
     const snapshot = collectBookDiagnosticSnapshot(view, reason, extra);
-    const line = `# BOOKDIAGNOSTIC ${JSON.stringify(snapshot)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch {}
-    try {
-        console.log(line);
-    } catch {}
     logBookDebug(
         'diagnostic',
         snapshot,
