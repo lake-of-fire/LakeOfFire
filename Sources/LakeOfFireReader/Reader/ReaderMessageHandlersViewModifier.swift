@@ -484,11 +484,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 """,
                 in: frameInfo
             )
-            if let line = result as? String {
-                print("# BOOKDIAGNOSTIC \(line)")
-            }
+            _ = result
         } catch {
-            print("# BOOKDIAGNOSTIC {\"event\":\"swift-dom-error\",\"message\":\"\(String(describing: error))\"}")
         }
     }
 
@@ -1330,7 +1327,7 @@ extension ReaderMessageHandlersViewModifier {
             && lastNativeLookupTapAtMs > 0
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
-            print("# BOOK native.hideNavigation.skip reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            print("# POPOVER native.hideNavigation.bridge.skip reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
@@ -1338,7 +1335,7 @@ extension ReaderMessageHandlersViewModifier {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
-            print("# BOOK native.hideNavigation.push reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            print("# POPOVER native.hideNavigation.bridge.push reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
         } catch {
             // Ignore boot timing races.
         }

@@ -101,53 +101,6 @@ const shouldPostReplaceTextPerfLog = (event, details = {}) => {
 const postReplaceTextPerfLog = (event, details = {}) => {
 };
 
-const bookLogLastSignatureByEvent = new Map();
-const bookLogLastAtByKey = new Map();
-
-const postBookLog = (event, details = {}, { dedupeKey = event, minIntervalMs = 250 } = {}) => {
-    const now = Date.now();
-    const throttleKey = dedupeKey || event;
-    const lastAt = bookLogLastAtByKey.get(throttleKey) || 0;
-    if (now - lastAt < minIntervalMs) return;
-    const payload = {
-        prefix: '# BOOK',
-        event,
-        t: now,
-        ...details,
-    };
-    let signature = null;
-    try {
-        signature = JSON.stringify(payload);
-    } catch {}
-    if (signature && bookLogLastSignatureByEvent.get(throttleKey) === signature) return;
-    if (signature) bookLogLastSignatureByEvent.set(throttleKey, signature);
-    bookLogLastAtByKey.set(throttleKey, now);
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
-    } catch {}
-    try {
-        console.log('# BOOK', event, payload);
-    } catch {}
-};
-
-globalThis.manabiPostBookLog = postBookLog;
-
-const postBookDiagnosticLine = (payload = {}) => {
-    const line = `# BOOKDIAGNOSTIC ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch {}
-    try {
-        console.log(line);
-    } catch {}
-};
-
-postBookDiagnosticLine({
-    event: 'boot',
-    href: window.location?.href ?? null,
-    readyState: document.readyState ?? null,
-});
-
 const popoverLogLastAtByKey = new Map();
 const popoverLogLastSignatureByKey = new Map();
 
@@ -179,16 +132,7 @@ const postPopoverLog = (event, details = {}, { dedupeKey = event, minIntervalMs 
 
 globalThis.manabiPostPopoverLog = postPopoverLog;
 
-const postBookRotateLog = (event, details = {}) => {
-    postBookLog(event, details, { dedupeKey: `rotate.${event}`, minIntervalMs: 350 });
-};
-
-const postBookInsetLog = (event, details = {}) => {
-    postBookLog(`inset.${event}`, details, { dedupeKey: `inset.${event}`, minIntervalMs: 500 });
-};
-
 const postPageTrackingBookLayoutLog = (event, details = {}) => {
-    postBookLog(event, details, { dedupeKey: event, minIntervalMs: 750 });
 };
 
 const PAGE_NUM_DEDUP_EVENTS = new Set([
@@ -2303,6 +2247,16 @@ const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
 
 window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabiSetHideNavigationDueToScroll') => {
     const requestedHide = !!shouldHide;
+    postPopoverLog('js.hideNavigation.request', {
+        source,
+        requestedHide,
+        currentHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll ?? null,
+        outerBodyClass: document.body?.className || '',
+        innerWidth: window.innerWidth ?? null,
+        innerHeight: window.innerHeight ?? null,
+        visualViewportHeight: window.visualViewport?.height ?? null,
+        visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
+    }, { dedupeKey: `js.hideNavigation.request.${source}.${requestedHide}`, minIntervalMs: 0 });
     logMay15('ebook.navBridge.windowRequest', {
         source,
         requestedHide,
@@ -2368,6 +2322,17 @@ window.manabiSetHideNavigationDueToScroll = (shouldHide, source = 'window.manabi
         }
     }
     const result = setNativeHideNavigationState(requestedHide, source);
+    postPopoverLog('js.hideNavigation.result', {
+        source,
+        requestedHide,
+        result,
+        currentHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll ?? null,
+        outerBodyClass: document.body?.className || '',
+        innerWidth: window.innerWidth ?? null,
+        innerHeight: window.innerHeight ?? null,
+        visualViewportHeight: window.visualViewport?.height ?? null,
+        visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
+    }, { dedupeKey: `js.hideNavigation.result.${source}.${requestedHide}.${result}`, minIntervalMs: 0 });
     logMay15('ebook.navBridge.windowReturn', {
         source,
         requestedHide,
@@ -5096,6 +5061,17 @@ class Reader {
                 samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
             }
         }
+        postPopoverLog('js.hideNavigation.applyToBookContent', {
+            hidden,
+            contentCount: contents.length,
+            outerBodyClass: document.body?.className || '',
+            outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            innerWidth: window.innerWidth ?? null,
+            innerHeight: window.innerHeight ?? null,
+            visualViewportHeight: window.visualViewport?.height ?? null,
+            visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
+            samples,
+        }, { dedupeKey: `js.hideNavigation.applyToBookContent.${hidden}.${contents.length}`, minIntervalMs: 0 });
         logBookDebug('hideNav.applyToBookContent', {
             hidden,
             contentCount: contents.length,

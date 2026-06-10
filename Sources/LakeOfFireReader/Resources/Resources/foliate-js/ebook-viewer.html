@@ -1676,15 +1676,6 @@
                 <path d="M8 7 L16 27 L8 48" />
             </svg>
         </button>
-        <script>
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKDIAGNOSTIC ${JSON.stringify({
-                    event: 'html',
-                    href: window.location?.href ?? null,
-                    readyState: document.readyState ?? null,
-                })}`);
-            } catch (_) {}
-        </script>
         <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
     </body>
 </html>

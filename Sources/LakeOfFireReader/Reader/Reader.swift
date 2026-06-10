@@ -42,13 +42,23 @@ private func currentWindowTopSafeAreaInset() -> CGFloat {
 #endif
 
 private enum EBookViewportStabilityCoordinator {
-    static let suspiciousTopSafeAreaIncreaseThreshold: CGFloat = 32
+    static let suspiciousTopSafeAreaChangeThreshold: CGFloat = 32
 
-    static func acceptedSampledTopInset(current: CGFloat, previous: CGFloat?) -> CGFloat {
+    static func acceptedSampledTopInset(
+        current: CGFloat,
+        previous: CGFloat?,
+        preservesPreviousWhenDecreasing: Bool = false
+    ) -> CGFloat {
         let clampedCurrent = min(max(0, current), 88)
         guard let previous, previous > 0 else { return clampedCurrent }
-        if clampedCurrent > previous,
-           clampedCurrent - previous > suspiciousTopSafeAreaIncreaseThreshold {
+        if clampedCurrent <= 0 {
+            return previous
+        }
+        if preservesPreviousWhenDecreasing,
+           clampedCurrent < previous {
+            return previous
+        }
+        if abs(clampedCurrent - previous) > suspiciousTopSafeAreaChangeThreshold {
             return previous
         }
         return clampedCurrent
@@ -1110,13 +1120,17 @@ public struct Reader: View {
                             trailing: max(0, geometrySafeAreaInsets.trailing)
                         )
                         if pageURL.isEBookURL {
-                            sampledInsets.top = min(sampledInsets.top, 88)
+                            sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
+                                current: sampledInsets.top,
+                                previous: obscuredInsets?.top,
+                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
+                            )
                         } else if explicitTopInset > 0,
                                   sampledInsets.top > explicitTopInset {
                             sampledInsets.top = explicitTopInset
                         }
                         if pageURL.isEBookURL {
-                            print("# BOOK native.safeArea.appear size=\(geometrySize.width)x\(geometrySize.height) rawTop=\(geometrySafeAreaInsets.top) rawLeading=\(geometrySafeAreaInsets.leading) rawBottom=\(geometrySafeAreaInsets.bottom) rawTrailing=\(geometrySafeAreaInsets.trailing) sampledTop=\(sampledInsets.top) sampledLeading=\(sampledInsets.leading) sampledBottom=\(sampledInsets.bottom) sampledTrailing=\(sampledInsets.trailing)")
+                            print("# POPOVER native.safeArea.appear rawTop=\(geometrySafeAreaInsets.top) acceptedTop=\(sampledInsets.top) previousTop=\(obscuredInsets?.top ?? -1) effectiveTop=\(effectiveTopInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) size=\(geometrySize.width)x\(geometrySize.height) rawBottom=\(geometrySafeAreaInsets.bottom) acceptedBottom=\(sampledInsets.bottom)")
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1132,7 +1146,8 @@ public struct Reader: View {
                         if pageURL.isEBookURL {
                             sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
                                 current: sampledInsets.top,
-                                previous: previousInsets?.top
+                                previous: previousInsets?.top,
+                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
                             )
                         } else {
                             if explicitTopInset > 0,
@@ -1146,7 +1161,7 @@ public struct Reader: View {
                             }
                         }
                         if pageURL.isEBookURL {
-                            print("# BOOK native.safeArea.change size=\(geometrySize.width)x\(geometrySize.height) rawTop=\(safeAreaInsets.top) rawLeading=\(safeAreaInsets.leading) rawBottom=\(safeAreaInsets.bottom) rawTrailing=\(safeAreaInsets.trailing) sampledTop=\(sampledInsets.top) sampledLeading=\(sampledInsets.leading) sampledBottom=\(sampledInsets.bottom) sampledTrailing=\(sampledInsets.trailing) previousTop=\(previousInsets?.top ?? -1) previousBottom=\(previousInsets?.bottom ?? -1)")
+                            print("# POPOVER native.safeArea.change rawTop=\(safeAreaInsets.top) acceptedTop=\(sampledInsets.top) previousTop=\(previousInsets?.top ?? -1) effectiveTop=\(effectiveTopInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) size=\(geometrySize.width)x\(geometrySize.height) rawBottom=\(safeAreaInsets.bottom) acceptedBottom=\(sampledInsets.bottom)")
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1189,7 +1204,7 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                print("# BOOK native.chromeInsets.attempt attempt=\(attempt) pageURL=\(pageURL.absoluteString) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
+                print("# POPOVER native.chromeInsets.attempt attempt=\(attempt) pageURL=\(pageURL.absoluteString) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
                     obscuredTopInset: effectiveTopInset,
