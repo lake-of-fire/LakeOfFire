@@ -1028,12 +1028,6 @@ const compactBookLayoutDetails = details => ({
 });
 
 const postLayoutLog = (event, details = {}) => {
-    if (!BOOK_LAYOUT_LOG_EVENTS.has(event)) return;
-    const compactDetails = compactBookLayoutDetails(details);
-    const signature = JSON.stringify(compactDetails);
-    if (lastLayoutLogSignatureByEvent.get(event) === signature) return;
-    lastLayoutLogSignatureByEvent.set(event, signature);
-    postBookLog(`layout.${event}`, compactDetails, { dedupeKey: `layout.${event}`, minIntervalMs: 500 });
 };
 
 const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
@@ -2671,24 +2665,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
 
 window.manabiApplyChromeInsets = (rawState, reason = 'window.manabiApplyChromeInsets') => {
     const nextState = applyStoredChromeInsets(reason, rawState);
-    globalThis.manabiPostBookLog?.('chromeInsets.apply', {
-        reason,
-        obscuredTopInset: nextState?.obscuredTopInset ?? null,
-        toolbarBottomOffset: nextState?.toolbarBottomOffset ?? null,
-        obscuredBottomInset: nextState?.obscuredBottomInset ?? null,
-        source: nextState?.source ?? null,
-        revision: nextState?.revision ?? null,
-        orientationAngle: screen.orientation?.angle ?? window.orientation ?? null,
-        orientationType: screen.orientation?.type ?? null,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-        visualViewportWidth: window.visualViewport?.width ?? null,
-        visualViewportHeight: window.visualViewport?.height ?? null,
-        lookupPopoverActive: window.__manabiLookupPopoverActive === true,
-    }, {
-        dedupeKey: 'chromeInsets.apply',
-        minIntervalMs: 500,
-    });
     return nextState;
 };
 
@@ -4914,16 +4890,12 @@ class Reader {
         const hidden = !!shouldHide;
         document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
         const contents = this.view?.renderer?.getContents?.() || [];
-        const samples = [];
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
-            if (samples.length < 2) {
-                samples.push(sampleBookHighlightState(content?.doc, hidden ? 'hide' : 'show'));
-            }
         }
         postPopoverLog('js.hideNavigation.applyToBookContent', {
             hidden,
@@ -4934,19 +4906,7 @@ class Reader {
             innerHeight: window.innerHeight ?? null,
             visualViewportHeight: window.visualViewport?.height ?? null,
             visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
-            samples,
         }, { dedupeKey: `js.hideNavigation.applyToBookContent.${hidden}.${contents.length}`, minIntervalMs: 0 });
-        logBookDebug('hideNav.applyToBookContent', {
-            hidden,
-            contentCount: contents.length,
-            outerBodyClass: document.body?.className || '',
-            outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            samples,
-        }, `hideNav.applyToBookContent.${hidden}.${contents.length}`, 200);
-        logBookDiagnostic(hidden ? 'hideNav.hidden' : 'hideNav.visible', this.view, {
-            hidden,
-            contentCount: contents.length,
-        });
         requestAnimationFrame(() => this.#logPageTrackingLayout(
             'hide-navigation-due-to-scroll',
             hidden ? 'nav-hidden' : 'nav-visible',
