@@ -39,7 +39,6 @@ const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
 const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
         ?? (typeof performance !== 'undefined' && typeof performance.now === 'function'

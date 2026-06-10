@@ -8,7 +8,6 @@ import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
-const manabiDiagnosticsEnabled = () => !!globalThis.manabi_debugDiagnosticsEnabled;
 const manabiEPUBLoadVerboseLoggingEnabled = () => !!globalThis.manabi_epubLoadVerboseLoggingEnabled;
 const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
@@ -134,16 +133,60 @@ const compactBackgroundImage = (value) => {
     return value.length > 240 ? `${value.slice(0, 240)}…` : value;
 };
 
+const compactBookCSSValue = (value, limit = 160) => {
+    if (typeof value !== 'string') return value ?? null;
+    return value.length > limit ? `${value.slice(0, limit)}...` : value;
+};
+
+const compactBookRect = (element) => {
+    if (!element?.getBoundingClientRect) return null;
+    const rect = element.getBoundingClientRect();
+    const round = (value) => Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+    return {
+        x: round(rect.x),
+        y: round(rect.y),
+        width: round(rect.width),
+        height: round(rect.height),
+    };
+};
+
+const compactBookComputedStyle = (style) => {
+    if (!style) return null;
+    return {
+        writingMode: style.writingMode ?? null,
+        direction: style.direction ?? null,
+        display: style.display ?? null,
+        backgroundImage: compactBookCSSValue(style.backgroundImage),
+        backgroundColor: compactBookCSSValue(style.backgroundColor),
+        backgroundOrigin: style.backgroundOrigin ?? null,
+        backgroundClip: style.backgroundClip ?? null,
+        backgroundSize: style.backgroundSize ?? null,
+        backgroundPosition: style.backgroundPosition ?? null,
+        transitionProperty: compactBookCSSValue(style.transitionProperty),
+        transitionDuration: style.transitionDuration ?? null,
+        contain: style.contain ?? null,
+        lineHeight: style.lineHeight ?? null,
+        paddingInlineStart: style.paddingInlineStart ?? null,
+        paddingInlineEnd: style.paddingInlineEnd ?? null,
+        paddingBlockStart: style.paddingBlockStart ?? null,
+        paddingBlockEnd: style.paddingBlockEnd ?? null,
+        gradientDirection: style.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
+        highlightFillOpacity: style.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
+        trackingHighlightAlpha: style.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+    };
+};
+
 const sampleBookGradientDiagnostic = (doc, reason = 'unknown') => {
     const body = doc?.body ?? null;
     if (!body) {
         return { sampled: false, reason, missing: 'body' };
     }
     const win = doc.defaultView ?? null;
+    const htmlStyle = win?.getComputedStyle?.(doc.documentElement) ?? null;
     const bodyStyle = win?.getComputedStyle?.(body) ?? null;
     const readerContent = doc.getElementById?.('reader-content') ?? null;
     const readerContentStyle = readerContent && win ? win.getComputedStyle(readerContent) : null;
-    const segment = body.querySelector?.('mnb-seg') ?? null;
+    const segment = body.querySelector?.('mnb-seg.mnb-learning, mnb-seg.mnb-read, mnb-seg.mnb-known, mnb-seg.mnb-unseen, mnb-seg[data-jlpt-level], mnb-seg') ?? null;
     const surface = segment?.querySelector?.('mnb-sur') ?? null;
     const segmentStyle = segment && win ? win.getComputedStyle(segment) : null;
     const surfaceStyle = surface && win ? win.getComputedStyle(surface) : null;
@@ -160,12 +203,26 @@ const sampleBookGradientDiagnostic = (doc, reason = 'unknown') => {
         gradientDirection: bodyStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         highlightFillOpacity: bodyStyle?.getPropertyValue?.('--mnb-highlight-fill-opacity')?.trim?.() ?? null,
         trackingHighlightAlpha: bodyStyle?.getPropertyValue?.('--mnb-tracking-highlight-alpha')?.trim?.() ?? null,
+        htmlStyle: compactBookComputedStyle(htmlStyle),
+        bodyStyle: compactBookComputedStyle(bodyStyle),
+        readerContentStyle: compactBookComputedStyle(readerContentStyle),
+        readerContentRect: compactBookRect(readerContent),
+        segmentTag: segment?.tagName?.toLowerCase?.() ?? null,
+        segmentClass: segment?.className ?? null,
+        segmentText: segment?.textContent?.trim?.()?.slice?.(0, 24) ?? null,
+        segmentRect: compactBookRect(segment),
         segmentWritingMode: segmentStyle?.writingMode ?? null,
         segmentGradientDirection: segmentStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         segmentBackgroundImage: compactBackgroundImage(segmentStyle?.backgroundImage ?? null),
+        segmentStyle: compactBookComputedStyle(segmentStyle),
+        segmentHorizontalIsland: segment?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
+        surfaceTag: surface?.tagName?.toLowerCase?.() ?? null,
+        surfaceHorizontalIsland: surface?.getAttribute?.('data-mnb-horizontal-writing-island') ?? null,
+        surfaceRect: compactBookRect(surface),
         surfaceWritingMode: surfaceStyle?.writingMode ?? null,
         surfaceGradientDirection: surfaceStyle?.getPropertyValue?.('--mnb-highlight-gradient-direction')?.trim?.() ?? null,
         surfaceBackgroundImage: compactBackgroundImage(surfaceStyle?.backgroundImage ?? null),
+        surfaceStyle: compactBookComputedStyle(surfaceStyle),
     };
 };
 
