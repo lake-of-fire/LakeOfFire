@@ -9657,6 +9657,14 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
     for (const content of contents) {
         applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
     }
+    postBookDiagnosticLine({
+        event: 'setEbookViewerWritingDirection',
+        writingDirection,
+        contentCount: contents.length,
+        samples: contents.slice(0, 2).map((content) =>
+            sampleBookGradientDiagnostic(content?.doc ?? content?.document ?? null, 'writing-direction')
+        ),
+    });
     postLayoutLog('setEbookViewerWritingDirection', collectEBookLayoutSnapshot(globalThis.reader?.view, {
         writingDirection,
     }));

@@ -291,18 +291,6 @@
                         viewOriginal,
                     ].filter(Boolean)
                     let metaLine = metaItems.length ? `<div id="reader-meta-line" class="byline-meta-line">${metaItems.join('<span class="reader-meta-divider">·</span>')}</div>` : ''
-                    if (globalThis.manabi_debugDiagnosticsEnabled) {
-                    window.webkit?.messageHandlers?.print?.postMessage({
-                        message: '# BYLINE readabilityParsed.js',
-                        pageURL: loc.href,
-                        byline: byline || null,
-                        bylineBytes: byline.length,
-                        publishedTime: publishedTime || null,
-                        hasMetaLine: metaLine.length > 0,
-                        hasViewOriginal: viewOriginal.length > 0,
-                    })
-                    }
-                    
                     /*
                      let openGraphImage = document.head.querySelector('meta[property="og:image"]')
                      if (openGraphImage) {
