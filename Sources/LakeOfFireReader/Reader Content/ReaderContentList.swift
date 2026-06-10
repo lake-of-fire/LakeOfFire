@@ -1584,11 +1584,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         }
                     )
                 }
+            } else if separateRowsIntoSections {
+                ForEach(groupedSections) { section in
+                    groupedRows(section: section)
+                }
             } else {
                 ForEach(groupedSections) { section in
-                    if separateRowsIntoSections {
-                        groupedRows(section: section)
-                    } else if #available(iOS 17, macOS 14, *) {
+                    if #available(iOS 17, macOS 14, *) {
                         sectionWithSpacing(
                             Section(isExpanded: binding(for: section.id)) {
                                 groupedRows(section: section)

@@ -191,14 +191,6 @@ export class NavigationHUD {
             trailing: document.getElementById('nav-section-progress-trailing'),
             center: document.getElementById('nav-section-progress-center'),
         };
-        this.navRelocateButtons = {
-            back: document.getElementById('nav-relocate-back'),
-            forward: document.getElementById('nav-relocate-forward'),
-        };
-        this.navRelocateLabels = {
-            back: document.getElementById('nav-relocate-label-back'),
-            forward: document.getElementById('nav-relocate-label-forward'),
-        };
         this.progressWrapper = document.getElementById('progress-wrapper');
         this.progressSlider = document.getElementById('progress-slider');
         this.pageTrackingContainer = document.getElementById('page-tracking-container');
@@ -255,8 +247,6 @@ export class NavigationHUD {
             this.pendingScrubCommit = null;
         }
 
-        this.navRelocateButtons.back?.addEventListener('click', () => this._handleRelocateJump('back'));
-        this.navRelocateButtons.forward?.addEventListener('click', () => this._handleRelocateJump('forward'));
         this._updateRelocateButtons();
         this._applyRelocateButtonEdges();
     }
@@ -1216,12 +1206,8 @@ export class NavigationHUD {
     }
 
     _relocateButtonEnabled(direction) {
-        const button = this.navRelocateButtons?.[direction] ?? null;
-        return !!button
-            && button.hidden !== true
-            && button.disabled !== true
-            && button.getAttribute('aria-hidden') !== 'true'
-            && button.getAttribute('aria-disabled') !== 'true';
+        if (this.hideNavigationDueToScroll || this.isProcessingRelocateJump) return false;
+        return !!this.relocateStacks?.[direction]?.length;
     }
 
     _updateCompactPercent(detail) {
@@ -1294,16 +1280,6 @@ export class NavigationHUD {
     }
 
     _applyRelocateButtonEdges() {
-        const backEdge = 'left';
-        const forwardEdge = 'right';
-        this._setButtonEdge(this.navRelocateButtons?.back, backEdge);
-        this._setButtonEdge(this.navRelocateButtons?.forward, forwardEdge);
-        if (this.navRelocateButtons?.back) {
-            this.navRelocateButtons.back.dataset.navRtl = 'false';
-        }
-        if (this.navRelocateButtons?.forward) {
-            this.navRelocateButtons.forward.dataset.navRtl = 'false';
-        }
         this._requestAuxiliaryInsetsUpdate();
     }
 
@@ -1331,64 +1307,19 @@ export class NavigationHUD {
         logMay15('ebook.navHUD.auxiliaryInsets.entered', {
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             hasNavBar: !!this.navBar,
-            hasBackButton: !!this.navRelocateButtons?.back,
-            hasForwardButton: !!this.navRelocateButtons?.forward,
             stack: may15Stack(),
         });
         const lookupPopoverPresented = document.body?.dataset?.mnbLookupPopoverPresented === 'true';
         const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
-        const pageReadButton = lookupPopoverPresented
-            ? null
-            : (this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
-                ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
-                ?? null);
+        const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
+            ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
+            ?? null;
         const pageReadRect = pageReadButton?.getBoundingClientRect?.() ?? null;
-        const reserveGap = 18;
-        const leftVisible = !lookupPopoverPresented
-            && !!this.navRelocateButtons?.back
-            && !this.navRelocateButtons.back.hidden
-            && this.navRelocateButtons.back.offsetWidth > 0
-            && this.navRelocateButtons.back.dataset.navEdge === 'left';
-        const rightVisible = !lookupPopoverPresented
-            && !!this.navRelocateButtons?.back
-            && !this.navRelocateButtons.back.hidden
-            && this.navRelocateButtons.back.offsetWidth > 0
-            && this.navRelocateButtons.back.dataset.navEdge === 'right';
-        const leftForwardVisible = !lookupPopoverPresented
-            && !!this.navRelocateButtons?.forward
-            && !this.navRelocateButtons.forward.hidden
-            && this.navRelocateButtons.forward.offsetWidth > 0
-            && this.navRelocateButtons.forward.dataset.navEdge === 'left';
-        const rightForwardVisible = !lookupPopoverPresented
-            && !!this.navRelocateButtons?.forward
-            && !this.navRelocateButtons.forward.hidden
-            && this.navRelocateButtons.forward.offsetWidth > 0
-            && this.navRelocateButtons.forward.dataset.navEdge === 'right';
-        const leftInset = Math.max(
-            leftVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
-            leftForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
-        );
-        const rightInset = Math.max(
-            rightVisible ? this.navRelocateButtons.back.offsetWidth + reserveGap : 0,
-            rightForwardVisible ? this.navRelocateButtons.forward.offsetWidth + reserveGap : 0,
-        );
-        for (const button of [this.navRelocateButtons?.back, this.navRelocateButtons?.forward]) {
-            if (!button?.style) continue;
-            const buttonRect = button.getBoundingClientRect?.() ?? null;
-            if (pageReadRect && navRect && buttonRect && buttonRect.height > 0) {
-                const targetTopInNav = (pageReadRect.top - navRect.top) + ((pageReadRect.height - buttonRect.height) / 2);
-                button.style.top = `${Math.round(targetTopInNav)}px`;
-                button.style.bottom = 'auto';
-            } else {
-                button.style.top = '';
-                button.style.bottom = '';
-            }
-        }
+        const leftInset = 0;
+        const rightInset = 0;
         const nextState = {
             leftInset,
             rightInset,
-            backButtonEdge: this.navRelocateButtons?.back?.dataset?.navEdge ?? null,
-            forwardButtonEdge: this.navRelocateButtons?.forward?.dataset?.navEdge ?? null,
         };
         postBookNavLog('auxiliaryInsets', {
             lookupPopoverPresented,
@@ -1407,8 +1338,6 @@ export class NavigationHUD {
                     bottom: safeRound(pageReadRect.bottom, 1),
                 }
                 : null,
-            backRect: bookNavRect(this.navRelocateButtons?.back),
-            forwardRect: bookNavRect(this.navRelocateButtons?.forward),
         }, {
             dedupeKey: 'nav.auxiliaryInsets',
             minIntervalMs: 600,
@@ -1416,9 +1345,7 @@ export class NavigationHUD {
         const previousState = this.lastAuxiliaryInsetsState;
         const changed = !previousState
             || previousState.leftInset !== nextState.leftInset
-            || previousState.rightInset !== nextState.rightInset
-            || previousState.backButtonEdge !== nextState.backButtonEdge
-            || previousState.forwardButtonEdge !== nextState.forwardButtonEdge;
+            || previousState.rightInset !== nextState.rightInset;
         if (!changed) return;
         this.lastAuxiliaryInsetsState = nextState;
         styleTarget.style.setProperty('--nav-left-aux-inset', `${leftInset}px`);
@@ -1428,28 +1355,7 @@ export class NavigationHUD {
             changed,
             leftInset,
             rightInset,
-            backButtonEdge: nextState.backButtonEdge,
-            forwardButtonEdge: nextState.forwardButtonEdge,
         });
-    }
-
-    _setButtonEdge(button, edge) {
-        if (!button || (edge !== 'left' && edge !== 'right')) return;
-        if (button.dataset.navEdge !== edge) {
-            button.dataset.navEdge = edge;
-        }
-        const icon = button.querySelector('.nav-relocate-icon');
-        const label = button.querySelector('.nav-relocate-page');
-        if (!icon || !label) return;
-        if (edge === 'left') {
-            if (icon.nextElementSibling !== label) {
-                button.insertBefore(icon, label);
-            }
-        } else {
-            if (label.nextElementSibling !== icon) {
-                button.insertBefore(label, icon);
-            }
-        }
     }
 
     _descriptorForRelocateLabel(direction) {
@@ -1683,8 +1589,6 @@ export class NavigationHUD {
             ? forceShow
             : !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
         const fadeTargets = [
-            this.navRelocateButtons?.back,
-            this.navRelocateButtons?.forward,
             this.navSectionProgress?.leading,
             this.navSectionProgress?.trailing,
             this.navSectionProgress?.center,
@@ -2832,17 +2736,13 @@ export class NavigationHUD {
     }
     
     _isRelocateButtonVisible(direction) {
-        if (!direction) return false;
-        const button = this.navRelocateButtons?.[direction];
-        return !!(button && !button.hidden && !button.disabled);
+        return this._relocateButtonEnabled(direction);
     }
 
     _updateRelocateButtons(source = 'unknown') {
         const startedAt = performance.now();
         const backStack = this.relocateStacks.back;
         const forwardStack = this.relocateStacks.forward;
-        const backBtn = this.navRelocateButtons?.back;
-        const forwardBtn = this.navRelocateButtons?.forward;
         const scrubbing = !!this.scrubSession?.active;
         const busy = !!this.isProcessingRelocateJump;
         const showBack = !this.hideNavigationDueToScroll && backStack.length > 0;
@@ -2859,36 +2759,10 @@ export class NavigationHUD {
             navHidden: this.navHidden,
             stack: may15Stack(),
         });
-        if (backBtn) {
-            backBtn.hidden = !showBack;
-            backBtn.disabled = disableBack;
-            if (disableBack) {
-                backBtn.setAttribute('aria-disabled', 'true');
-            } else {
-                backBtn.removeAttribute('aria-disabled');
-            }
-            if (!showBack) backBtn.setAttribute('aria-hidden', 'true');
-            else backBtn.removeAttribute('aria-hidden');
-        }
-        if (forwardBtn) {
-            forwardBtn.hidden = !showForward;
-            forwardBtn.disabled = disableForward;
-            if (disableForward) {
-                forwardBtn.setAttribute('aria-disabled', 'true');
-            } else {
-                forwardBtn.removeAttribute('aria-disabled');
-            }
-            if (!showForward) forwardBtn.setAttribute('aria-hidden', 'true');
-            else forwardBtn.removeAttribute('aria-hidden');
-        }
         const backLabelDescriptor = this._descriptorForRelocateLabel('back');
         const forwardLabelDescriptor = this._descriptorForRelocateLabel('forward');
-        if (this.navRelocateLabels?.back) {
-            this.navRelocateLabels.back.textContent = showBack ? this._labelForDescriptor(backLabelDescriptor) : '';
-        }
-        if (this.navRelocateLabels?.forward) {
-            this.navRelocateLabels.forward.textContent = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
-        }
+        const backLabel = showBack ? this._labelForDescriptor(backLabelDescriptor) : '';
+        const forwardLabel = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
         this._logPageNumberDiagnostic('relocate-buttons.state', {
             backDepth: backStack.length,
             forwardDepth: forwardStack.length,
@@ -2900,14 +2774,12 @@ export class NavigationHUD {
             busy,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             navHidden: this.navHidden,
-            backLabel: this.navRelocateLabels?.back?.textContent || '',
-            forwardLabel: this.navRelocateLabels?.forward?.textContent || '',
-            backHidden: backBtn?.hidden ?? null,
-            forwardHidden: forwardBtn?.hidden ?? null,
-            backDisabled: backBtn?.disabled ?? null,
-            forwardDisabled: forwardBtn?.disabled ?? null,
-            backEdge: backBtn?.dataset?.navEdge ?? null,
-            forwardEdge: forwardBtn?.dataset?.navEdge ?? null,
+            backLabel,
+            forwardLabel,
+            backHidden: !showBack,
+            forwardHidden: !showForward,
+            backDisabled: disableBack,
+            forwardDisabled: disableForward,
         });
         this._postNativeOverlayState(`relocate-buttons:${source}`);
         this._updateSectionProgress({ source: 'relocate-buttons' });

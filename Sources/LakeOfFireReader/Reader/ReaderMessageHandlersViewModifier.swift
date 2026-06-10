@@ -400,6 +400,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                     let state = String(describing: result ?? "nil")
                     if state.contains(#""ready""#) {
+                        await logEBookSwiftDOMDiagnostic(scriptCaller: scriptCaller, frameInfo: frameInfo)
                         return
                     }
                 } catch {
@@ -417,6 +418,78 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             uuid: "ebook-viewer-frame:\(pageURL.absoluteString)",
             canonicalURL: pageURL
         )
+    }
+
+    @MainActor
+    private func logEBookSwiftDOMDiagnostic(scriptCaller: WebViewScriptCaller, frameInfo: WKFrameInfo?) async {
+        guard let frameInfo else { return }
+        do {
+            let result = try await scriptCaller.evaluateJavaScript(
+                """
+                return (() => {
+                    const view = globalThis.reader?.view ?? null;
+                    const renderer = view?.renderer ?? null;
+                    const contents = renderer?.getContents?.() ?? [];
+                    const content = contents[0] ?? null;
+                    const doc = content?.doc ?? content?.document ?? null;
+                    const body = doc?.body ?? null;
+                    const root = doc?.documentElement ?? null;
+                    const readerContent = doc?.getElementById?.('reader-content') ?? null;
+                    const segment = doc?.querySelector?.('mnb-seg') ?? null;
+                    const surface = segment?.querySelector?.('mnb-sur') ?? doc?.querySelector?.('mnb-sur') ?? null;
+                    const css = (el) => el && doc?.defaultView ? doc.defaultView.getComputedStyle(el) : null;
+                    const bodyStyle = css(body);
+                    const rootStyle = css(root);
+                    const readerContentStyle = css(readerContent);
+                    const segmentStyle = css(segment);
+                    const surfaceStyle = css(surface);
+                    const prop = (style, name) => style?.getPropertyValue?.(name)?.trim?.() ?? null;
+                    let writingSnapshot = null;
+                    try {
+                        writingSnapshot = doc?.defaultView?.manabiGetWritingDirectionSnapshot?.() ?? null;
+                    } catch (_) {}
+                    return JSON.stringify({
+                        event: 'swift-dom',
+                        outerHref: location.href,
+                        outerReadyState: document.readyState,
+                        hasLoadEBook: typeof window.loadEBook === 'function',
+                        hasReader: !!globalThis.reader,
+                        hasRenderer: !!renderer,
+                        contentCount: contents.length,
+                        activeHref: body?.dataset?.mnbSourceHref ?? null,
+                        bodyClass: body?.className ?? null,
+                        hasVerticalCheck: typeof doc?.defaultView?.manabiApplyVerticalWritingCheck === 'function',
+                        writingSnapshot,
+                        bodyWritingDirectionDataset: body?.dataset?.mnbWritingDirection ?? null,
+                        bodyNavigationHiddenDataset: body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+                        bodyWritingMode: prop(bodyStyle, 'writing-mode'),
+                        bodyDirection: prop(bodyStyle, 'direction'),
+                        rootWritingMode: prop(rootStyle, 'writing-mode'),
+                        rootDirection: prop(rootStyle, 'direction'),
+                        readerContentWritingMode: prop(readerContentStyle, 'writing-mode'),
+                        readerContentDirection: prop(readerContentStyle, 'direction'),
+                        gradientDirection: prop(bodyStyle, '--mnb-highlight-gradient-direction'),
+                        highlightFillOpacity: prop(bodyStyle, '--mnb-highlight-fill-opacity'),
+                        trackingHighlightAlpha: prop(bodyStyle, '--mnb-tracking-highlight-alpha'),
+                        segmentText: segment?.textContent?.slice?.(0, 32) ?? null,
+                        segmentClass: segment?.className ?? null,
+                        segmentWritingMode: prop(segmentStyle, 'writing-mode'),
+                        segmentGradientDirection: prop(segmentStyle, '--mnb-highlight-gradient-direction'),
+                        segmentBackgroundImage: segmentStyle?.backgroundImage?.slice?.(0, 180) ?? null,
+                        surfaceWritingMode: prop(surfaceStyle, 'writing-mode'),
+                        surfaceGradientDirection: prop(surfaceStyle, '--mnb-highlight-gradient-direction'),
+                        surfaceBackgroundImage: surfaceStyle?.backgroundImage?.slice?.(0, 180) ?? null,
+                    });
+                })();
+                """,
+                in: frameInfo
+            )
+            if let line = result as? String {
+                print("# BOOKDIAGNOSTIC \(line)")
+            }
+        } catch {
+            print("# BOOKDIAGNOSTIC {\"event\":\"swift-dom-error\",\"message\":\"\(String(describing: error))\"}")
+        }
     }
 
     @MainActor

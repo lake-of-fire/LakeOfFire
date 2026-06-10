@@ -41,6 +41,20 @@ private func currentWindowTopSafeAreaInset() -> CGFloat {
 }
 #endif
 
+private enum EBookViewportStabilityCoordinator {
+    static let suspiciousTopSafeAreaIncreaseThreshold: CGFloat = 32
+
+    static func acceptedSampledTopInset(current: CGFloat, previous: CGFloat?) -> CGFloat {
+        let clampedCurrent = min(max(0, current), 88)
+        guard let previous, previous > 0 else { return clampedCurrent }
+        if clampedCurrent > previous,
+           clampedCurrent - previous > suspiciousTopSafeAreaIncreaseThreshold {
+            return previous
+        }
+        return clampedCurrent
+    }
+}
+
 private func readerLoadDurationString(_ interval: TimeInterval) -> String {
     let milliseconds = Int64((max(0, Double(interval)) * 1_000).rounded())
     let seconds = milliseconds / 1_000
@@ -1116,12 +1130,10 @@ public struct Reader: View {
                         )
                         let previousInsets = obscuredInsets
                         if pageURL.isEBookURL {
-                            sampledInsets.top = min(sampledInsets.top, 88)
-                            if let previousInsets,
-                               previousInsets.top > 0,
-                               sampledInsets.top > previousInsets.top {
-                                sampledInsets.top = previousInsets.top
-                            }
+                            sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
+                                current: sampledInsets.top,
+                                previous: previousInsets?.top
+                            )
                         } else {
                             if explicitTopInset > 0,
                                sampledInsets.top > explicitTopInset {

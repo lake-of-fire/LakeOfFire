@@ -614,6 +614,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? Data(contentsOf: fileUrl) {
+                    if url.path.contains("/foliate-js/"), url.path.hasSuffix(".js") {
+                        print("# BOOKDIAGNOSTIC {\"event\":\"scheme-js\",\"asset\":\"\(url.lastPathComponent)\",\"url\":\"\(url.absoluteString)\",\"file\":\"\(fileUrl.path)\",\"bytes\":\(data.count)}")
+                    }
                     if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                         logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
                     }
@@ -631,6 +634,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
+                        if url.path.hasSuffix("/ebook-viewer.html") || url.path == "/load" {
+                            print("# BOOKDIAGNOSTIC {\"event\":\"scheme-html\",\"url\":\"\(url.absoluteString)\",\"file\":\"\(viewerHtmlPath)\"}")
+                        }
                         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                             logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
                         }

@@ -132,6 +132,22 @@ const postBookLog = (event, details = {}, { dedupeKey = event, minIntervalMs = 2
 
 globalThis.manabiPostBookLog = postBookLog;
 
+const postBookDiagnosticLine = (payload = {}) => {
+    const line = `# BOOKDIAGNOSTIC ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch {}
+    try {
+        console.log(line);
+    } catch {}
+};
+
+postBookDiagnosticLine({
+    event: 'boot',
+    href: window.location?.href ?? null,
+    readyState: document.readyState ?? null,
+});
+
 const popoverLogLastAtByKey = new Map();
 const popoverLogLastSignatureByKey = new Map();
 
@@ -1514,11 +1530,18 @@ const collectBookDiagnosticSnapshot = (view = globalThis.reader?.view ?? null, r
 const logBookDiagnostic = (reason = 'unknown', view = globalThis.reader?.view ?? null, extra = {}, minIntervalMs = 750) => {
     const doc = getPrimaryEBookContentDocument(view);
     const href = doc?.body?.dataset?.mnbSourceHref ?? 'no-content';
+    const throttleKey = `diagnostic.${reason}.${href}`;
+    const now = Date.now();
+    const last = bookDebugLastLog.get(throttleKey) || 0;
+    if (now - last < minIntervalMs) return;
+    bookDebugLastLog.set(throttleKey, now);
+    const snapshot = collectBookDiagnosticSnapshot(view, reason, extra);
+    postBookDiagnosticLine(snapshot);
     logBookDebug(
         'diagnostic',
-        collectBookDiagnosticSnapshot(view, reason, extra),
-        `diagnostic.${reason}.${href}`,
-        minIntervalMs
+        snapshot,
+        `${throttleKey}.object`,
+        0
     );
 };
 
@@ -5003,11 +5026,9 @@ class Reader {
             : null;
         const canJumpBack = !!this.navHUD?._isRelocateButtonVisible?.('back');
         const canJumpForward = !!this.navHUD?._isRelocateButtonVisible?.('forward');
-        const backLabel = this.navHUD?.navRelocateLabels?.back?.textContent
-            || this.navHUD?.labelForDescriptor?.(this.navHUD?._descriptorForRelocateLabel?.('back'))
+        const backLabel = this.navHUD?.labelForDescriptor?.(this.navHUD?._descriptorForRelocateLabel?.('back'))
             || '';
-        const forwardLabel = this.navHUD?.navRelocateLabels?.forward?.textContent
-            || this.navHUD?.labelForDescriptor?.(this.navHUD?._descriptorForRelocateLabel?.('forward'))
+        const forwardLabel = this.navHUD?.labelForDescriptor?.(this.navHUD?._descriptorForRelocateLabel?.('forward'))
             || '';
         const snapshot = {
             isRTL: !!this.isRTL,
@@ -5319,7 +5340,7 @@ class Reader {
         });
         document.getElementById('nav-bar')?.addEventListener('click', (event) => {
             const target = event.target;
-            const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button, .nav-section-progress') || null;
+            const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-section-progress') || null;
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             const shouldHide = !wasHidden;
             const now = Date.now();
@@ -6888,7 +6909,7 @@ class Reader {
             return;
         }
         const isExcludedTouchTarget = target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
-        const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
+        const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button');
         if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
             return;
@@ -8085,7 +8106,7 @@ class Reader {
             if (!navBar) {
                 return;
             }
-            const interactiveTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-relocate-button');
+            const interactiveTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper');
             if (interactiveTarget) {
                 clearPendingChromeBlankNavigationTouch();
                 return;
@@ -10134,6 +10155,7 @@ const markRestorePositionSaveUserInput = (eventOrSource) => {
         : (eventOrSource?.type ?? null);
     globalThis.__manabiRequireUserInputBeforePositionSave = false;
     globalThis.__manabiSuppressNextRestoreRelocateSave = false;
+    void eventType;
 };
 
 const ensureRestorePositionSaveUserInputTracking = () => {
@@ -10765,6 +10787,7 @@ window.manabiScheduleReaderPercentGoTo = (percent) => {
     if (!Number.isFinite(numericPercent)) {
         return;
     }
+    markRestorePositionSaveUserInput('bridge.scheduleReaderPercentGoTo');
     postPageNumLog('goto.live-schedule.request-percent', {
         requestedPercent: numericPercent,
         requestedFraction: numericPercent / 100,
