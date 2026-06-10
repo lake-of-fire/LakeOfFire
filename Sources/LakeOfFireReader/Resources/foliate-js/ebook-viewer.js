@@ -101,6 +101,46 @@ const shouldPostReplaceTextPerfLog = (event, details = {}) => {
 const postReplaceTextPerfLog = (event, details = {}) => {
 };
 
+const bookLogLastAtByKey = new Map();
+
+const postBookLog = (event, details = {}, { dedupeKey = event, minIntervalMs = 250 } = {}) => {
+    const now = Date.now();
+    const throttleKey = dedupeKey || event;
+    const lastAt = bookLogLastAtByKey.get(throttleKey) || 0;
+    if (now - lastAt < minIntervalMs) return;
+    bookLogLastAtByKey.set(throttleKey, now);
+    const payload = {
+        prefix: '# BOOK',
+        event,
+        t: now,
+        ...details,
+    };
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch {}
+    try {
+        console.log('# BOOK', event, payload);
+    } catch {}
+};
+
+globalThis.manabiPostBookLog = postBookLog;
+
+const bookRestoreSettlingMs = () => {
+    const settlingUntil = Number(globalThis.__manabiBookRestoreSettlingUntil || 0);
+    return Math.max(0, settlingUntil - Date.now());
+};
+
+const markBookRestoreSettling = (source, settleMs = 2500) => {
+    const now = Date.now();
+    const until = now + settleMs;
+    const previousUntil = Number(globalThis.__manabiBookRestoreSettlingUntil || 0);
+    globalThis.__manabiBookRestoreSettlingUntil = Math.max(previousUntil, until);
+    globalThis.__manabiBookRestoreSettlingSource = source;
+    return bookRestoreSettlingMs();
+};
+
+globalThis.manabiBookRestoreSettlingMs = bookRestoreSettlingMs;
+
 const postBookRotateLog = (event, details = {}) => {
     void event;
     void details;
@@ -1342,9 +1382,7 @@ const logBookDebug = (event, payload = {}, throttleKey = event, minIntervalMs = 
     if (now - last < minIntervalMs) return;
     bookDebugLastLog.set(throttleKey, now);
     const finalPayload = { event, ...payload };
-    try {
-        console.log('# BOOK', event, finalPayload);
-    } catch {}
+    postBookLog(event, finalPayload, { dedupeKey: throttleKey, minIntervalMs: 0 });
     try {
         if (typeof postReaderLog === 'function') {
             postReaderLog(`book.${event}`, finalPayload);
@@ -1370,10 +1408,16 @@ const sampleBookHighlightState = (doc, reason = 'unknown') => {
     const surface = segment?.querySelector?.('mnb-sur') ?? null;
     const surfaceStyle = surface ? doc.defaultView?.getComputedStyle?.(surface) : null;
     const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
+    let writingSnapshot = null;
+    try {
+        writingSnapshot = doc.defaultView?.manabiGetWritingDirectionSnapshot?.() ?? null;
+    } catch {}
     return {
         sampled: !!segment,
         reason,
         bodyClass: body.className || '',
+        hasVerticalCheck: typeof doc.defaultView?.manabiApplyVerticalWritingCheck === 'function',
+        writingSnapshot,
         navHidden: body.classList?.contains?.('nav-hidden') ?? null,
         navHiddenDueToScroll: body.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
         dataHideNavigation: body.dataset?.mnbNavigationHiddenDueToScroll ?? body.dataset?.mnbHideNavigationDueToScroll ?? null,
@@ -1424,6 +1468,10 @@ const collectBookDiagnosticSnapshot = (view = globalThis.reader?.view ?? null, r
     const rootStyle = root && win ? win.getComputedStyle(root) : null;
     const bodyStyle = body && win ? win.getComputedStyle(body) : null;
     const readerContentStyle = readerContent && win ? win.getComputedStyle(readerContent) : null;
+    let writingSnapshot = null;
+    try {
+        writingSnapshot = win?.manabiGetWritingDirectionSnapshot?.() ?? null;
+    } catch {}
     return {
         reason,
         ...layout,
@@ -1432,6 +1480,8 @@ const collectBookDiagnosticSnapshot = (view = globalThis.reader?.view ?? null, r
         outerBodyClass: document.body?.className || null,
         contentBodyClass: body?.className || null,
         contentReadyState: doc?.readyState ?? null,
+        contentHasVerticalCheck: typeof win?.manabiApplyVerticalWritingCheck === 'function',
+        contentWritingSnapshot: writingSnapshot,
         contentWritingDirectionDataset: body?.dataset?.mnbWritingDirection ?? null,
         contentNavigationHiddenDataset: body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
         rootWritingMode: rootStyle?.writingMode ?? null,
@@ -1456,11 +1506,24 @@ const collectBookDiagnosticSnapshot = (view = globalThis.reader?.view ?? null, r
 const logBookDiagnostic = (reason = 'unknown', view = globalThis.reader?.view ?? null, extra = {}, minIntervalMs = 750) => {
     const doc = getPrimaryEBookContentDocument(view);
     const href = doc?.body?.dataset?.mnbSourceHref ?? 'no-content';
+    const throttleKey = `diagnostic.${reason}.${href}`;
+    const now = Date.now();
+    const last = bookDebugLastLog.get(throttleKey) || 0;
+    if (now - last < minIntervalMs) return;
+    bookDebugLastLog.set(throttleKey, now);
+    const snapshot = collectBookDiagnosticSnapshot(view, reason, extra);
+    const line = `# BOOKDIAGNOSTIC ${JSON.stringify(snapshot)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch {}
+    try {
+        console.log(line);
+    } catch {}
     logBookDebug(
         'diagnostic',
-        collectBookDiagnosticSnapshot(view, reason, extra),
-        `diagnostic.${reason}.${href}`,
-        minIntervalMs
+        snapshot,
+        `${throttleKey}.object`,
+        0
     );
 };
 
@@ -4272,7 +4335,7 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
     body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"]:not(mnb-seg > mnb-sur) {
+    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
         --mnb-highlight-gradient-direction: to bottom;
     }
     body.reader-vertical-writing [data-mnb-display-token="1"] {
@@ -9191,6 +9254,13 @@ class Reader {
                 persistedLocator,
             });
             const normalizedRelocateReason = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
+            const restoreSettlingMs = bookRestoreSettlingMs();
+            const isRestoreSettlingRelocate =
+                restoreSettlingMs > 0
+                && (normalizedRelocateReason === ''
+                    || normalizedRelocateReason === 'page'
+                    || normalizedRelocateReason === 'resize'
+                    || normalizedRelocateReason === 'relocate');
             const shouldSuppressRestoreSettleSave =
                 globalThis.__manabiSuppressNextRestoreRelocateSave === true
                 && normalizedRelocateReason === 'page';
@@ -9202,7 +9272,29 @@ class Reader {
             const shouldPersistRelocatePosition =
                 normalizedRelocateReason !== 'anchor'
                 && !shouldSuppressRestoreSettleSave
-                && !requiresUserInputBeforePositionSave;
+                && !requiresUserInputBeforePositionSave
+                && !isRestoreSettlingRelocate;
+            globalThis.manabiPostBookLog?.('position.relocate', {
+                reason: reason ?? null,
+                normalizedRelocateReason,
+                shouldPersistRelocatePosition,
+                shouldSuppressRestoreSettleSave,
+                requiresUserInputBeforePositionSave,
+                isRestoreSettlingRelocate,
+                restoreSettlingMs: Math.round(restoreSettlingMs),
+                restoreSettlingSource: globalThis.__manabiBookRestoreSettlingSource ?? null,
+                hasLoadedLastPosition: this.hasLoadedLastPosition,
+                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
+                sectionIndex,
+                localSectionIndex,
+                rendererTotal,
+                syntheticRestoreLocator,
+            }, {
+                dedupeKey: `position.relocate.${normalizedRelocateReason || 'unknown'}`,
+                minIntervalMs: 500,
+            });
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
@@ -9958,14 +10050,43 @@ window.loadEBook = ({
 }
 
 const markRestorePositionSaveUserInput = (eventOrSource) => {
-    if (globalThis.__manabiRequireUserInputBeforePositionSave !== true) {
-        return;
-    }
     const eventType = typeof eventOrSource === 'string'
         ? eventOrSource
         : (eventOrSource?.type ?? null);
+    if (
+        globalThis.__manabiRequireUserInputBeforePositionSave !== true
+        && bookRestoreSettlingMs() <= 0
+    ) {
+        return;
+    }
     globalThis.__manabiRequireUserInputBeforePositionSave = false;
     globalThis.__manabiSuppressNextRestoreRelocateSave = false;
+    globalThis.__manabiBookRestoreSettlingUntil = 0;
+    globalThis.__manabiBookRestoreSettlingSource = eventType || 'user-input';
+};
+
+const shouldSuppressScheduledRestorePositionGoTo = (source, details = {}) => {
+    const restoreSettlingMs = bookRestoreSettlingMs();
+    const requiresUserInputBeforePositionSave =
+        globalThis.__manabiRequireUserInputBeforePositionSave === true;
+    const shouldSuppress =
+        requiresUserInputBeforePositionSave
+        || restoreSettlingMs > 0
+        || globalThis.__manabiRestoreInProgress === true;
+    if (shouldSuppress) {
+        globalThis.manabiPostBookLog?.('position.schedule.skip', {
+            source,
+            requiresUserInputBeforePositionSave,
+            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+            restoreSettlingMs: Math.round(restoreSettlingMs),
+            restoreSettlingSource: globalThis.__manabiBookRestoreSettlingSource ?? null,
+            ...details,
+        }, {
+            dedupeKey: `position.schedule.skip.${source}`,
+            minIntervalMs: 500,
+        });
+    }
+    return shouldSuppress;
 };
 
 const ensureRestorePositionSaveUserInputTracking = () => {
@@ -10004,6 +10125,7 @@ window.loadLastPosition = async ({
         ? Math.max(0, Math.min(1, fractionalCompletion))
         : null;
     globalThis.__manabiRestoreInProgress = true;
+    markBookRestoreSettling('loadLastPosition.start', 5000);
     const awaitWithTimeout = (promise, timeoutMs) =>
         Promise.race([
             promise,
@@ -10269,6 +10391,7 @@ window.loadLastPosition = async ({
         // Let the visible section finish rendering before warming secondary sections.
         scheduleDeferredCacheWarmerOpen('load-last-position-done', 2200);
     } finally {
+        markBookRestoreSettling('loadLastPosition.done', 2500);
         globalThis.__manabiRestoreInProgress = false;
         globalThis.__manabiSuppressNextRestoreRelocateSave = false;
         globalThis.__manabiRequireUserInputBeforePositionSave = true;
@@ -10319,6 +10442,11 @@ window.manabiGetReaderGoToSheetSnapshot = async () => {
 }
 
 window.manabiScheduleReaderPageGoTo = (pageNumber) => {
+    if (shouldSuppressScheduledRestorePositionGoTo('bridge.scheduleReaderPageGoTo', {
+        pageNumber,
+    })) {
+        return;
+    }
     markRestorePositionSaveUserInput('bridge.scheduleReaderPageGoTo');
     globalThis.reader?.scheduleGoToPageNumber?.(pageNumber);
 }
@@ -10330,6 +10458,11 @@ window.manabiGoToReaderPage = async (pageNumber) => {
 }
 
 window.manabiScheduleReaderLocationGoTo = (locationNumber) => {
+    if (shouldSuppressScheduledRestorePositionGoTo('bridge.scheduleReaderLocationGoTo', {
+        locationNumber,
+    })) {
+        return;
+    }
     markRestorePositionSaveUserInput('bridge.scheduleReaderLocationGoTo');
     globalThis.reader?.scheduleGoToPageNumber?.(locationNumber);
 }
@@ -10353,6 +10486,11 @@ window.manabiGoToReaderHref = async (href) => {
 }
 
 window.manabiScheduleReaderFractionGoTo = (fraction) => {
+    if (shouldSuppressScheduledRestorePositionGoTo('bridge.scheduleReaderFractionGoTo', {
+        requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
+    })) {
+        return;
+    }
     markRestorePositionSaveUserInput('bridge.scheduleReaderFractionGoTo');
     postPageNumLog('goto.live-schedule.request', {
         requestedFraction: typeof fraction === 'number' && Number.isFinite(fraction) ? fraction : null,
@@ -10553,6 +10691,13 @@ window.manabiScheduleReaderPercentGoTo = (percent) => {
     if (!Number.isFinite(numericPercent)) {
         return;
     }
+    if (shouldSuppressScheduledRestorePositionGoTo('bridge.scheduleReaderPercentGoTo', {
+        requestedPercent: numericPercent,
+        requestedFraction: numericPercent / 100,
+    })) {
+        return;
+    }
+    markRestorePositionSaveUserInput('bridge.scheduleReaderPercentGoTo');
     postPageNumLog('goto.live-schedule.request-percent', {
         requestedPercent: numericPercent,
         requestedFraction: numericPercent / 100,
