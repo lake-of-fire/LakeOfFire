@@ -2837,6 +2837,16 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         ?? null;
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
+    const visualViewportScale = Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1;
+    const viewportPayload = {
+        visualViewportWidth: viewportWidth,
+        visualViewportHeight: viewportHeight,
+        visualViewportOffsetLeft: 0,
+        visualViewportOffsetTop: 0,
+        scale: visualViewportScale,
+        pageLeft: Number.isFinite(window.visualViewport?.pageLeft) ? window.visualViewport.pageLeft : null,
+        pageTop: Number.isFinite(window.visualViewport?.pageTop) ? window.visualViewport.pageTop : null,
+    };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     const frameElement = view?.frameElement ?? null;
     const frameRect = frameElement?.getBoundingClientRect?.() ?? null;
@@ -2848,7 +2858,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             reason,
             nativeLookupFrameKey,
             isExplicitReset: false,
-            visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+            visualViewportScale,
             viewportWidth,
             viewportHeight,
             viewportLeft,
@@ -2870,7 +2880,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             top: rect.top + frameTop,
             width: rect.width,
             height: rect.height,
-        })));
+        })), viewportPayload);
         if (target) {
             targets.push(target);
         }
@@ -2882,7 +2892,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         reason,
         nativeLookupFrameKey,
         isExplicitReset: false,
-        visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+        visualViewportScale,
         viewportWidth,
         viewportHeight,
         viewportLeft,
