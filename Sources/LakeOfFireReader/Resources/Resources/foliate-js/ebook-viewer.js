@@ -5067,12 +5067,86 @@ class Reader {
             ...details,
         });
     }
+    #pageReadMarkerTransitionMode(reason = 'unspecified') {
+        const value = String(reason || '');
+        if (
+            value === 'page-turn-start'
+            || value.startsWith('relocate')
+            || value.startsWith('goTo')
+            || value.startsWith('did-display')
+            || value.startsWith('page-tracking-visibility.relocate')
+        ) {
+            return 'instant';
+        }
+        return 'animated';
+    }
+    #updatePageReadMarker(reason = 'unspecified', explicitState = null, explicitDoc = null) {
+        const transitionMode = this.#pageReadMarkerTransitionMode(reason);
+        const state = explicitState || (this.pageTrackingStates || []).find((candidate) => candidate.id === 'visible-screen') || null;
+        let isRead = !!state?.isRead && !this.completionAction;
+        if (explicitState) {
+            this.pageReadMarkerAwaitingPageState = false;
+        } else if (this.pageReadMarkerAwaitingPageState && isRead) {
+            isRead = false;
+        }
+        const doc = isDocumentLike(explicitDoc)
+            ? explicitDoc
+            : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
+        const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
+        const readerStage = document.getElementById('reader-stage');
+        const preferredFoliateView = this.view?.isConnected ? this.view : null;
+        const liveFoliateView =
+            (preferredFoliateView && preferredFoliateView.offsetParent !== null ? preferredFoliateView : null)
+            || document.querySelector('foliate-view:not([hidden])')
+            || preferredFoliateView
+            || null;
+        if (readerStage instanceof HTMLElement) {
+            readerStage.style.removeProperty('--mnb-ebook-read-marker-top-left');
+            readerStage.style.removeProperty('--mnb-ebook-read-marker-top-width');
+            const stageRect = readerStage.getBoundingClientRect();
+            const viewRect = liveFoliateView?.getBoundingClientRect?.() || null;
+            const livePaginator = resolveFoliatePaginator(liveFoliateView);
+            const paginatorContainer = livePaginator?.shadowRoot?.getElementById?.('container') || null;
+            const containerRect = paginatorContainer?.getBoundingClientRect?.() || null;
+            const rootStyle = getComputedStyle(document.documentElement);
+            const thickness = parseFloat(rootStyle.getPropertyValue('--mnb-tracking-section-border-size')) || 2;
+            const sideNavWidth = parseFloat(rootStyle.getPropertyValue('--side-nav-width')) || 32;
+            const containerStyle = containerRect ? getComputedStyle(paginatorContainer) : null;
+            const containerTopMargin = parseFloat(containerStyle?.getPropertyValue('--_top-margin')) || 0;
+            const containerBottomMargin = parseFloat(containerStyle?.getPropertyValue('--_bottom-margin')) || 0;
+            const markerAnchorRect = containerRect && containerRect.width > 0 && containerRect.height > 0
+                ? containerRect
+                : viewRect;
+            if (markerAnchorRect && markerAnchorRect.width > 0 && markerAnchorRect.height > 0 && stageRect.width > 0) {
+                const markerLeft = markerAnchorRect.left - stageRect.left - thickness;
+                const markerTopInset = markerAnchorRect === containerRect ? containerTopMargin : 0;
+                const markerBottomInset = markerAnchorRect === containerRect ? containerBottomMargin : 0;
+                const markerHeight = Math.max(0, markerAnchorRect.height - markerTopInset - markerBottomInset);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-left', `${markerLeft}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', `${Math.max(0, markerAnchorRect.top - stageRect.top + markerTopInset)}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${markerHeight}px`);
+            } else if (stageRect.width > 0) {
+                const markerLeft = Math.max(0, sideNavWidth - thickness);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-left', `${markerLeft}px`);
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-top', '0px');
+                readerStage.style.setProperty('--mnb-ebook-read-marker-side-height', `${stageRect.height}px`);
+            } else {
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-side-left');
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-side-top');
+                readerStage.style.removeProperty('--mnb-ebook-read-marker-side-height');
+            }
+        }
+        document.body?.setAttribute?.('data-page-read-marker-transition', transitionMode);
+        document.body?.setAttribute?.('data-page-read-marker-read', isRead ? 'true' : 'false');
+        document.body?.setAttribute?.('data-page-read-marker-axis', isVertical ? 'block' : 'inline');
+    }
     #clearVisiblePageReadChrome(reason = 'unspecified') {
         const isPageTurnStart = reason === 'page-turn-start' || reason === 'lookup-navigation-page-turn-start';
         if (isPageTurnStart) {
             this.#invalidateVisiblePageSegmentSnapshot(reason);
             this.pageReadMarkerAwaitingPageState = true;
         }
+        document.body?.setAttribute?.('data-page-read-marker-transition', this.#pageReadMarkerTransitionMode(reason));
         document.body?.setAttribute?.('data-page-read-marker-read', 'false');
     }
     #clearOptimisticMarkReadState(_reason = 'unspecified') {
