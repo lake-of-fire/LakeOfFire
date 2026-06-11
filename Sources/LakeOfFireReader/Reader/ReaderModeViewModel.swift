@@ -1653,6 +1653,7 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedReadabilityBytes = cachedReadabilityContent?.utf8.count ?? 0
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
+        let hasProcessReadabilityContent = processReadabilityContent != nil
         beginReaderModeLoad(for: contentURL, reason: "showReaderView")
         logTrace(.readabilityTaskScheduled, url: contentURL, details: "readabilityBytes=\(cachedReadabilityBytes)")
         let startedRenderTask = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
@@ -1664,6 +1665,15 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
             let route = routeDecision.route
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReaderView.route",
+                "contentURL=\(contentURL.absoluteString)",
+                "route=\(route.rawValue)",
+                "readabilityBytes=\(cachedReadabilityBytes)",
+                "prefetchedLocalHTMLBytes=\(routeDecision.prefetchedLocalHTML?.utf8.count ?? 0)",
+                "hasProcessReadabilityContent=\(hasProcessReadabilityContent)",
+                "generation=\(generation.uuidString)"
+            )
             switch route {
             case .localHTML:
                 await self.showReaderViewUsingSwiftProcessing(
@@ -1808,6 +1818,12 @@ public class ReaderModeViewModel: ObservableObject {
 
             if let resolvedReadabilityHTML {
                 readabilityContent = resolvedReadabilityHTML
+                debugPrint(
+                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityReady",
+                    "contentURL=\(content.url.absoluteString)",
+                    "bytes=\(resolvedReadabilityHTML.utf8.count)",
+                    "source=\(hasCanonicalReadabilityMarkup(in: html) ? "canonicalHTML" : "swiftReadability")"
+                )
                 let showReadabilityStart = CFAbsoluteTimeGetCurrent()
                 try await showReadabilityContent(
                     readerContent: readerContent,
@@ -1978,6 +1994,12 @@ public class ReaderModeViewModel: ObservableObject {
                 if isXML {
                     doc?.outputSettings().escapeMode(.xhtml)
                 }
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.parse",
+                    "contentURL=\(url.absoluteString)",
+                    "path=swiftSoup",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s"
+                )
             }
 
             guard let doc else {
@@ -2031,6 +2053,7 @@ public class ReaderModeViewModel: ObservableObject {
             let processedSegmentCount = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
             let processedBodyExists = doc.body() != nil
             let processedIsEbook = ((try? doc.body()?.attr("data-is-ebook")) ?? "") == "true"
+            let processedContentTextLength = ((try? doc.getElementById("reader-content")?.text()) ?? "").count
             let shouldInjectProcessedStyles = !(processedIsEbook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis)
             let processedBodyClasses = (try? doc.body()?.className()) ?? ""
             let processedBodyClassesForFrameInjection: String = {
@@ -2069,6 +2092,12 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 let processHTMLBytesElapsed = CFAbsoluteTimeGetCurrent() - processHTMLBytesStart
                 processHTMLElapsed += processHTMLBytesElapsed
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.processHTMLBytes",
+                    "contentURL=\(url.absoluteString)",
+                    "bytes=\(transformedHTMLBytes.count)",
+                    "elapsed=\(String(format: "%.3f", processHTMLBytesElapsed))s"
+                )
             }
             if let processHTML {
                 let processHTMLStart = CFAbsoluteTimeGetCurrent()
@@ -2081,7 +2110,28 @@ public class ReaderModeViewModel: ObservableObject {
                 transformedHTMLBytes = Array(processedHTML.utf8)
                 let processHTMLStringElapsed = CFAbsoluteTimeGetCurrent() - processHTMLStart
                 processHTMLElapsed += processHTMLStringElapsed
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.processHTML",
+                    "contentURL=\(url.absoluteString)",
+                    "bytes=\(transformedHTMLBytes.count)",
+                    "elapsed=\(String(format: "%.3f", processHTMLStringElapsed))s"
+                )
             }
+
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.transformed",
+                "contentURL=\(url.absoluteString)",
+                "renderBaseURL=\(renderBaseURL.absoluteString)",
+                "readabilityBytes=\(readabilityContent.utf8.count)",
+                "serializedBytes=\(serializedHTMLBytes.count)",
+                "transformedBytes=\(transformedHTMLBytes.count)",
+                "segmentCount=\(processedSegmentCount)",
+                "readerContentTextLength=\(processedContentTextLength)",
+                "hasBody=\(processedBodyExists)",
+                "hasProcessReadabilityContent=\(processReadabilityContent != nil)",
+                "processHTMLElapsed=\(String(format: "%.3f", processHTMLElapsed))s",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
+            )
 
             let frameInjectionPrepStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedContentForFrameInjection: String?
@@ -2127,6 +2177,17 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedHTMLData = Data(transformedHTMLBytes)
             let mainActorHandoffStartedAt = CFAbsoluteTimeGetCurrent()
             try await { @MainActor in
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.mainActorHandoff",
+                    "contentURL=\(url.absoluteString)",
+                    "pageURL=\(readerContent.pageURL.absoluteString)",
+                    "matchesPage=\(url.matchesReaderURL(readerContent.pageURL))",
+                    "hasFrameInfo=\(frameInfo != nil)",
+                    "isMainFrame=\(frameInfo?.isMainFrame ?? true)",
+                    "bytes=\(transformedHTMLData.count)",
+                    "segmentCount=\(processedSegmentCount)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - mainActorHandoffStartedAt))s"
+                )
                 guard url.matchesReaderURL(readerContent.pageURL) else {                    cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
@@ -2188,6 +2249,13 @@ public class ReaderModeViewModel: ObservableObject {
                     self?.markSyntheticLoadIssued(for: renderBaseURL)
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedHTMLData.count)")
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.syntheticLoad.data",
+                        "contentURL=\(url.absoluteString)",
+                        "renderBaseURL=\(renderBaseURL.absoluteString)",
+                        "bytes=\(transformedHTMLData.count)",
+                        "segmentCount=\(processedSegmentCount)"
+                    )
                     navigator?.load(
                         transformedHTMLData,
                         mimeType: "text/html",

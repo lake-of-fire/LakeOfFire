@@ -810,17 +810,6 @@ export class NavigationHUD {
             ? pageSnapshot.total
             : null;
         try {
-            console.log('# PERCENT', 'nativeOverlay.post', JSON.stringify({
-                source,
-                percentLabel,
-                currentPageNumber,
-                totalPages,
-                pageSnapshotSource: this.nativeOverlayPageSnapshot ? this.nativeOverlayPageSnapshot.source : (this.rendererPageSnapshot ? 'renderer' : null),
-                rendererCurrent: this.rendererPageSnapshot?.current ?? null,
-                rendererTotal: this.rendererPageSnapshot?.total ?? null,
-            }));
-        } catch (_error) {}
-        try {
             window.webkit?.messageHandlers?.ebookNativeOverlayState?.postMessage?.({
                 percentLabel,
                 hideNavigationDueToScroll,
