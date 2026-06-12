@@ -4471,6 +4471,9 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
+        if (this.hasLoadedLastPosition === true) {
+            this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
+        }
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
         const syncStartedAt = performance.now();
@@ -5246,6 +5249,14 @@ class Reader {
                 this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
             }
         });
+    }
+    refreshNativeLookupHitTargets(reason = 'manual') {
+        this.visiblePageSegmentSnapshot = null;
+        this.#scheduleNativeLookupHitTargetRefreshSettle(reason);
+        setTimeout(() => {
+            this.visiblePageSegmentSnapshot = null;
+            this.#scheduleNativeLookupHitTargetRefreshSettle(`${reason}.settled`);
+        }, 180);
     }
     #updateEbookSubscriptionPreviewPageState({
         localSectionIndex = null,
@@ -7713,6 +7724,7 @@ window.loadLastPosition = async ({
             const defaultState = captureRestoreState('after-default-next');
         }
         globalThis.reader.hasLoadedLastPosition = true
+        globalThis.reader.refreshNativeLookupHitTargets?.('load-last-position-done');
         const doneState = captureRestoreState('done');
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
         postLandscapeInsetRestoreProbe('done', doneState, {

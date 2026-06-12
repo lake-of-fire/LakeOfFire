@@ -553,21 +553,6 @@ fileprivate struct ThemeModifier: ViewModifier {
         }
     }
 
-    @MainActor
-    private func applyThemeAfterSceneActivation() async {
-        for delay in [UInt64(0), 120_000_000, 450_000_000] {
-            if delay > 0 {
-                do {
-                    try await Task.sleep(nanoseconds: delay)
-                } catch {
-                    return
-                }
-            }
-            guard scenePhase == .active else { return }
-            await applyTheme(reason: "scene-active")
-        }
-    }
-    
     func body(content: Content) -> some View {
         content
             .onChange(of: lightModeTheme) { newValue in
@@ -633,7 +618,7 @@ fileprivate struct ThemeModifier: ViewModifier {
             .onChange(of: scenePhase) { scenePhase in
                 guard scenePhase == .active else { return }
                 Task { @MainActor in
-                    await applyThemeAfterSceneActivation()
+                    await applyTheme(reason: "scene-active")
                 }
             }
             .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
