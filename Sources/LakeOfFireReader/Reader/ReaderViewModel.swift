@@ -222,9 +222,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
         if let historyRecord = content as? HistoryRecord {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
             Task { @RealmBackgroundActor in
-                guard let content = try await contentRef?.resolveOnBackgroundActor() as? HistoryRecord else { return }
-//                await content.realm?.asyncRefresh()
-                try await content.realm?.asyncWrite {
+                guard let contentRef else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: contentRef.realmConfiguration)
+                try await realm.asyncRefresh()
+                guard let content = realm.object(ofType: HistoryRecord.self, forPrimaryKey: contentRef.contentKey) else { return }
+                try realm.writeIfNeeded {
                     content.lastVisitedAt = Date()
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
