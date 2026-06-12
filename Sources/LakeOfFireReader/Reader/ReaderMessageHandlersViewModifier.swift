@@ -523,9 +523,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
-                    if logMessage.hasPrefix("# STATUS") {
-                        Logger.shared.logger.info("\(logMessage)")
-                    }
                     if logMessage.contains("\"module:posting-initialized\"") {
                         scheduleEbookViewerInitializationFallback(in: message.frameInfo)
                     }
@@ -562,7 +559,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 if components.isEmpty {
                 } else {
                 }
-                if logMessage.hasPrefix("# READER") || logMessage.hasPrefix("# STATUS")
+                if logMessage.hasPrefix("# READER")
                 {
                     let line = components.isEmpty
                         ? logMessage

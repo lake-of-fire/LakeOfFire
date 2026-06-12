@@ -982,97 +982,12 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     };
 };
 
-const postTargetGradientStatusForDocument = (doc, reason = 'unknown') => {
-    const body = doc?.body;
-    if (!body || doc === document) return false;
-    const candidates = Array.from(doc.querySelectorAll?.('mnb-seg') || []);
-    const target = doc.getElementById?.('mnb-sFanXrQXnNz-5')
-        || candidates.find((node) => (node.textContent || '').trim() === 'なんぞ')
-        || candidates.find((node) => (node.textContent || '').includes('なんぞ'));
-    if (!target) return false;
-    const surface = target.querySelector?.('mnb-sur') || target;
-    const targetStyle = doc.defaultView?.getComputedStyle?.(target);
-    const surfaceStyle = doc.defaultView?.getComputedStyle?.(surface);
-    const htmlStyle = doc.defaultView?.getComputedStyle?.(doc.documentElement);
-    const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
-    const readerContent = doc.getElementById?.('reader-content');
-    const readerContentStyle = doc.defaultView?.getComputedStyle?.(readerContent);
-    const paragraph = target.closest?.('p, li, blockquote, dd');
-    const paragraphStyle = doc.defaultView?.getComputedStyle?.(paragraph);
-    const rect = target.getBoundingClientRect?.();
-    const surfaceRect = surface.getBoundingClientRect?.();
-    const snapshotStyle = (style) => style ? {
-        background: style.background,
-        backgroundColor: style.backgroundColor,
-        backgroundImage: style.backgroundImage,
-        backgroundOrigin: style.backgroundOrigin,
-        boxShadow: style.boxShadow,
-        direction: style.getPropertyValue('--mnb-highlight-gradient-direction').trim(),
-        fillOpacity: style.getPropertyValue('--mnb-highlight-fill-opacity').trim(),
-        trackingAlpha: style.getPropertyValue('--mnb-tracking-highlight-alpha').trim(),
-        learningNav: style.getPropertyValue('--word-tracking-learning-highlight-nav-conditional').trim(),
-        learningHighlight: style.getPropertyValue('--word-tracking-learning-highlight').trim(),
-        transition: style.transition,
-    } : null;
-    const rectJSON = (value) => value ? {
-        left: value.left,
-        top: value.top,
-        right: value.right,
-        bottom: value.bottom,
-        width: value.width,
-        height: value.height,
-    } : null;
-    window.webkit?.messageHandlers?.print?.postMessage?.({
-        message: '# STATUS gradient.target',
-        reason,
-        id: target.id || null,
-        text: (target.textContent || '').trim(),
-        className: target.className || null,
-        htmlClassName: doc.documentElement?.className || null,
-        bodyClassName: body.className || null,
-        bodyDataset: {
-            isEbook: body.dataset?.isEbook ?? null,
-            subscription: body.dataset?.mnbSubscriptionIsActive ?? null,
-            statusVisibility: body.dataset?.mnbLearningStatusVisibility ?? null,
-            highlightsEnabled: body.dataset?.mnbTrackingHighlightsEnabled ?? null,
-            trackingEnabled: body.dataset?.mnbTrackingEnabled ?? null,
-            navHidden: body.dataset?.mnbNavigationHiddenDueToScroll ?? null,
-            detectedVerticalWriting: body.dataset?.mnbDetectedVerticalWriting ?? null,
-            detectedVerticalWritingReason: body.dataset?.mnbDetectedVerticalWritingReason ?? null,
-            detectedVerticalWritingModes: body.dataset?.mnbDetectedVerticalWritingModes ?? null,
-            lookupMode: body.dataset?.mnbLookupHighlightMode ?? null,
-            nativeOverlay: body.dataset?.mnbNativeLookupHighlightOverlay ?? null,
-        },
-        writingMode: {
-            html: htmlStyle?.writingMode || null,
-            body: bodyStyle?.writingMode || null,
-            readerContent: readerContentStyle?.writingMode || null,
-            paragraph: paragraphStyle?.writingMode || null,
-            target: targetStyle?.writingMode || null,
-            surface: surfaceStyle?.writingMode || null,
-        },
-        targetStyle: snapshotStyle(targetStyle),
-        surfaceStyle: snapshotStyle(surfaceStyle),
-        rect: rectJSON(rect),
-        surfaceRect: rectJSON(surfaceRect),
-        frameURL: String(doc.defaultView?.location?.href || ''),
-    });
-    return true;
-};
-
-const scheduleTargetGradientStatusForDocument = (doc, reason = 'unknown') => {
-    postTargetGradientStatusForDocument(doc, `${reason}.now`);
-    setTimeout(() => postTargetGradientStatusForDocument(doc, `${reason}.plus-120ms`), 120);
-    setTimeout(() => postTargetGradientStatusForDocument(doc, `${reason}.plus-450ms`), 450);
-};
-
 window.manabiApplyNavigationHiddenStateToEbookDocument = (reason = 'manual', explicitDoc = null) => {
     const docs = getLoadedEbookDocuments(explicitDoc);
     let appliedCount = 0;
     for (const doc of docs) {
         if (applyNavigationHiddenStateToEbookDocument(doc, reason).applied) {
             appliedCount += 1;
-            scheduleTargetGradientStatusForDocument(doc, `apply-nav-hidden:${reason}`);
         }
     }
     return {
@@ -4234,7 +4149,6 @@ class Reader {
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
-            scheduleTargetGradientStatusForDocument(content.doc, `nav-hidden:${hidden ? 'hidden' : 'shown'}`);
         }
     }
     constructor() {
@@ -6743,7 +6657,6 @@ class Reader {
     }) {
         applyStoredChromeInsets('reader.documentLoad');
         applyNavigationHiddenStateToEbookDocument(doc, 'document-load');
-        scheduleTargetGradientStatusForDocument(doc, 'document-load');
         const singleMediaInitialLayout = !isCacheWarmerDocument(doc)
             ? classifySingleMediaDocumentForInitialLayout(doc, 'document-load')
             : { applied: false, reason: 'cache-warmer-document' };
