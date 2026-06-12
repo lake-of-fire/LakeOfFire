@@ -62,16 +62,6 @@ function forwardShadowErrors(root) {
     });
 }
 
-const postBookDiagnosticLine = (payload = {}) => {
-    const line = `# EBOOKLAYOUT ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch {}
-    try {
-        console.log(line);
-    } catch {}
-};
-
 const roundedDisplayPercent = value => {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
         return null;
@@ -4151,13 +4141,6 @@ class Reader {
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
         }
-        postBookDiagnosticLine({
-            event: 'hideNav.applyToBookContent',
-            hidden,
-            contentCount: contents.length,
-            outerBodyClass: document.body?.className || '',
-            outerBodyNavHiddenDueToScroll: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-        });
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
@@ -7418,11 +7401,6 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
     for (const content of contents) {
         applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
     }
-    postBookDiagnosticLine({
-        event: 'setEbookViewerWritingDirection',
-        writingDirection,
-        contentCount: contents.length,
-    });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }
 

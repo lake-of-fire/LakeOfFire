@@ -321,6 +321,13 @@ public struct FeedView: View {
                         Label("More Options", systemImage: "ellipsis")
                             .labelStyle(.iconOnly)
                     }
+                    .modifier {
+                        if #available(iOS 16, macOS 13, *) {
+                            $0.menuIndicator(.hidden)
+                        } else {
+                            $0
+                        }
+                    }
                 }
             }
         }
