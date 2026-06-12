@@ -3370,10 +3370,12 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             return .failed
         }
 
+        let resolvedPublishedTime = trimmedNonEmptyReadabilityText(result.publishedTime)
+            ?? trimmedNonEmptyReadabilityText(snippetPublishedTime)
         let outputHTML = buildCanonicalReadabilityHTML(
             title: stripTemplateTagsForReadability(result.title ?? ""),
             byline: stripTemplateTagsForReadability(result.byline ?? ""),
-            publishedTime: result.publishedTime,
+            publishedTime: resolvedPublishedTime,
             content: rawContent,
             contentURL: url
         )

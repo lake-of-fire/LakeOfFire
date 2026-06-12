@@ -468,16 +468,51 @@ func syncEbookViewerChromeInsets(
 }
 
 fileprivate struct ThemeModifier: ViewModifier {
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
+    @EnvironmentObject var readerViewModel: ReaderViewModel
+
+    private var resolvedReaderFontSize: Double {
+        readerFontSize ?? Double(defaultFontSize)
+    }
+
+    private var initialReaderPresentationSettingsTaskID: String {
+        [
+            readerViewModel.state.pageURL.absoluteString,
+            String(readerViewModel.state.hasReaderRenderReady),
+            String(scriptCaller.hasAsyncCaller),
+            String(resolvedReaderFontSize),
+            colorScheme == .dark ? "dark" : "light",
+            lightModeTheme.rawValue,
+            darkModeTheme.rawValue,
+        ].joined(separator: "|")
+    }
 
     private func applyFontSize(_ size: Double, reason: String) async {
         await applyReaderFontSize(
             size,
-            readerFontSize: readerFontSize,
+            readerFontSize: size,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme,
+            reason: reason,
+            hasAsyncCaller: scriptCaller.hasAsyncCaller
+        ) { js, duplicateInMultiTargetFrames in
+            _ = try await scriptCaller.evaluateJavaScript(
+                js,
+                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+            )
+        }
+    }
+
+    @MainActor
+    private func applyTheme(reason: String) async {
+        await applyReaderTheme(
+            colorScheme: colorScheme,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme,
             reason: reason,
@@ -552,9 +587,15 @@ fileprivate struct ThemeModifier: ViewModifier {
                     }
                 }
             }
-            .task { @MainActor in
+            .onChange(of: scenePhase) { scenePhase in
+                guard scenePhase == .active else { return }
+                Task { @MainActor in
+                    await applyTheme(reason: "scene-active")
+                }
+            }
+            .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
                 await applyInitialReaderPresentationSettings(
-                    readerFontSize: readerFontSize,
+                    readerFontSize: resolvedReaderFontSize,
                     colorScheme: colorScheme,
                     lightModeTheme: lightModeTheme,
                     darkModeTheme: darkModeTheme,
@@ -567,7 +608,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                 }
             }
             .onChange(of: readerFontSize) { newValue in
-                guard let newValue else { return }
+                let newValue = newValue ?? resolvedReaderFontSize
                 Task { @MainActor in
                     await applyAdaptiveReaderWidth(
                         readerFontSize: newValue,

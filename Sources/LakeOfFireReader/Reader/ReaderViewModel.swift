@@ -91,6 +91,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public private(set) var ebookNativeOverlaySource: String = ""
     @Published public private(set) var ebookNativeOverlayRelocateBackEnabled: Bool = false
     @Published public private(set) var ebookNativeOverlayRelocateForwardEnabled: Bool = false
+    @Published public private(set) var ebookNativeOverlayCurrentPageNumber: Int?
+    @Published public private(set) var ebookNativeOverlayTotalPages: Int?
     @Published public private(set) var ebookNativeMarkReadAvailable: Bool = false
     @Published public private(set) var ebookNativeMarkReadIsRead: Bool = false
     @Published public private(set) var ebookNativeMarkReadIsBusy: Bool = false
@@ -135,7 +137,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
         pagesLeftLabel: String,
         source: String,
         relocateBackEnabled: Bool,
-        relocateForwardEnabled: Bool
+        relocateForwardEnabled: Bool,
+        currentPageNumber: Int? = nil,
+        totalPages: Int? = nil
     ) {
         if ebookNativeOverlayPercentLabel != percentLabel {
             ebookNativeOverlayPercentLabel = percentLabel
@@ -163,6 +167,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
         if ebookNativeOverlayRelocateForwardEnabled != relocateForwardEnabled {
             ebookNativeOverlayRelocateForwardEnabled = relocateForwardEnabled
+        }
+        if ebookNativeOverlayCurrentPageNumber != currentPageNumber {
+            ebookNativeOverlayCurrentPageNumber = currentPageNumber
+        }
+        if ebookNativeOverlayTotalPages != totalPages {
+            ebookNativeOverlayTotalPages = totalPages
         }
     }
 

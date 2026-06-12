@@ -63,7 +63,7 @@ function forwardShadowErrors(root) {
 }
 
 const postBookDiagnosticLine = (payload = {}) => {
-    const line = `# BOOKDIAGNOSTIC ${JSON.stringify(payload)}`;
+    const line = `# EBOOKLAYOUT ${JSON.stringify(payload)}`;
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch {}
@@ -929,6 +929,25 @@ const runWithNavigationIntent = async (intent, operation) => {
     } finally {
         globalThis.__manabiNavigationIntent = previousIntent;
     }
+};
+
+const shouldSkipScheduledReaderFractionGoToForRestoreSettling = (fraction) => {
+    const restoreSettlingMs = typeof bookRestoreSettlingMs === 'function'
+        ? bookRestoreSettlingMs()
+        : Math.max(0, Number(globalThis.__manabiBookRestoreSettlingUntil || 0) - Date.now());
+    if (
+        globalThis.__manabiRequireUserInputBeforePositionSave === true
+        && restoreSettlingMs > 0
+    ) {
+        globalThis.manabiPostBookLog?.('position.schedule.skip', {
+            reason: 'restore-settling',
+            restoreSettlingMs,
+            fraction: Number.isFinite(fraction) ? fraction : null,
+            source: globalThis.__manabiBookRestoreSettlingSource || null,
+        });
+        return true;
+    }
+    return false;
 };
 
 const getLoadedEbookDocuments = (explicitDoc = null) => {
@@ -4167,6 +4186,9 @@ class Reader {
         }, 120);
         this.scheduleGoToFraction = debounce((fraction) => {
             const clampedFraction = Math.max(0, Math.min(1, Number(fraction)));
+            if (shouldSkipScheduledReaderFractionGoToForRestoreSettling(clampedFraction)) {
+                return false;
+            }
             const currentDescriptor = this.navHUD?.getCurrentLocationDescriptor?.() ?? null;
             const targetDescriptor = this.navHUD?._descriptorFromFraction?.(clampedFraction) ?? null;
             const currentFraction = typeof currentDescriptor?.fraction === 'number'
@@ -4487,6 +4509,9 @@ class Reader {
         if (this.nativeLookupHitTargetRefreshHandle) {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
+        }
+        if (this.hasLoadedLastPosition === true) {
+            this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         }
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
@@ -5263,6 +5288,14 @@ class Reader {
                 this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
             }
         });
+    }
+    refreshNativeLookupHitTargets(reason = 'manual') {
+        this.visiblePageSegmentSnapshot = null;
+        this.#scheduleNativeLookupHitTargetRefreshSettle(reason);
+        setTimeout(() => {
+            this.visiblePageSegmentSnapshot = null;
+            this.#scheduleNativeLookupHitTargetRefreshSettle(`${reason}.settled`);
+        }, 180);
     }
     #updateEbookSubscriptionPreviewPageState({
         localSectionIndex = null,
@@ -7735,6 +7768,7 @@ window.loadLastPosition = async ({
             const defaultState = captureRestoreState('after-default-next');
         }
         globalThis.reader.hasLoadedLastPosition = true
+        globalThis.reader.refreshNativeLookupHitTargets?.('load-last-position-done');
         const doneState = captureRestoreState('done');
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
         postLandscapeInsetRestoreProbe('done', doneState, {
@@ -7820,8 +7854,15 @@ window.manabiGoToReaderHref = async (href) => {
 }
 
 window.manabiScheduleReaderFractionGoTo = (fraction) => {
-    markRestorePositionSaveUserInput('bridge.scheduleReaderFractionGoTo');
-    globalThis.reader?.scheduleGoToFraction?.(fraction);
+    const numericFraction = Number(fraction);
+    if (shouldSkipScheduledReaderFractionGoToForRestoreSettling(numericFraction)) {
+        return false;
+    }
+    const scheduled = globalThis.reader?.scheduleGoToFraction?.(fraction);
+    if (scheduled !== false) {
+        markRestorePositionSaveUserInput('bridge.scheduleReaderFractionGoTo');
+    }
+    return scheduled !== false;
 }
 
 window.manabiCancelScheduledReaderFractionGoTo = () => {
@@ -7889,10 +7930,16 @@ window.manabiTriggerReaderRelocateJump = async (direction) => {
 window.manabiScheduleReaderPercentGoTo = (percent) => {
     const numericPercent = Number(percent);
     if (!Number.isFinite(numericPercent)) {
-        return;
+        return false;
     }
-    markRestorePositionSaveUserInput('bridge.scheduleReaderPercentGoTo');
-    globalThis.reader?.scheduleGoToFraction?.(numericPercent / 100);
+    if (shouldSkipScheduledReaderFractionGoToForRestoreSettling(numericPercent / 100)) {
+        return false;
+    }
+    const scheduled = globalThis.reader?.scheduleGoToFraction?.(numericPercent / 100);
+    if (scheduled !== false) {
+        markRestorePositionSaveUserInput('bridge.scheduleReaderPercentGoTo');
+    }
+    return scheduled !== false;
 }
 
 window.manabiOpenReaderGoToSheet = (source = 'window.manabiOpenReaderGoToSheet') => {

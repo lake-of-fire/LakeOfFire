@@ -475,9 +475,8 @@ class View {
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
 
-        if (this.#vertical) {
-            doc.body.classList.add('reader-vertical-writing')
-        }
+        doc.body.dataset.mnbFoliateWritingDirection = this.#vertical ? 'vertical' : 'horizontal'
+        doc.body.classList.toggle('reader-vertical-writing', this.#vertical)
 
         if (this.#column) {
             //            console.log("render(layout)... await columnize(layout)")
