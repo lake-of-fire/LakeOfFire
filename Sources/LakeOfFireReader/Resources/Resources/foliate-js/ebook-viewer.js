@@ -937,32 +937,6 @@ const getLoadedEbookDocuments = (explicitDoc = null) => {
     return docs;
 };
 
-const updateDetectedVerticalWritingStateForDocument = (doc, reason = 'unknown') => {
-    const body = doc?.body;
-    if (!body || doc === document) return false;
-    const view = doc.defaultView;
-    const styleFor = (node) => node ? view?.getComputedStyle?.(node) : null;
-    const sampleNodes = [
-        doc.documentElement,
-        body,
-        doc.getElementById?.('reader-content'),
-        doc.querySelector?.('mnb-seg'),
-        doc.querySelector?.('p, li, blockquote, dd'),
-    ].filter(Boolean);
-    const writingModes = sampleNodes.map((node) => styleFor(node)?.writingMode || '');
-    const isVertical = doc.documentElement?.classList?.contains?.('vrtl') === true
-        || writingModes.some((mode) => /^vertical/i.test(mode));
-    body.dataset.mnbDetectedVerticalWriting = isVertical ? 'true' : 'false';
-    if (isVertical) {
-        body.style.setProperty('--mnb-highlight-gradient-direction', 'to right');
-    } else {
-        body.style.removeProperty('--mnb-highlight-gradient-direction');
-    }
-    body.dataset.mnbDetectedVerticalWritingReason = reason;
-    body.dataset.mnbDetectedVerticalWritingModes = writingModes.filter(Boolean).join(',');
-    return isVertical;
-};
-
 const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
     const body = doc?.body;
     if (!body || doc === document) {
@@ -971,7 +945,6 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
             reason: body ? 'outer-document' : 'missing-body',
         };
     }
-    updateDetectedVerticalWritingStateForDocument(doc, reason);
     const hidden = globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
     body.classList.toggle('nav-hidden', hidden);
     body.classList.toggle('nav-hidden-due-to-scroll', hidden);
@@ -4145,7 +4118,6 @@ class Reader {
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
-            updateDetectedVerticalWritingStateForDocument(content.doc, `nav-hidden:${hidden ? 'hidden' : 'shown'}`);
             body.classList.toggle('nav-hidden', hidden);
             body.classList.toggle('nav-hidden-due-to-scroll', hidden);
             body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
