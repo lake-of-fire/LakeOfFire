@@ -31,6 +31,7 @@ public class ReaderContent: ObservableObject {
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var loadingResolvedContentURL: URL?
+    private var loadingID: UUID?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
@@ -185,8 +186,10 @@ public class ReaderContent: ObservableObject {
         pageURL = displayURL
         
         loadingTask?.cancel()
+        let loadID = UUID()
+        loadingID = loadID
         loadingResolvedContentURL = resolvedContentURL
-        loadingTask = Task { @MainActor [weak self] in
+        loadingTask = Task { @MainActor [weak self, loadID] in
             try Task.checkCancellation()
             let content = try await ReaderContentLoader.getContent(
                 forURL: url,
@@ -197,12 +200,18 @@ public class ReaderContent: ObservableObject {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
             }
-            self?.content = content
+            guard let self, self.loadingID == loadID else {
+                return nil
+            }
+            self.content = content
             return content
         }
         let loadedContent = try await loadingTask?.value
-        loadingTask = nil
-        loadingResolvedContentURL = nil
+        if loadingID == loadID {
+            loadingTask = nil
+            loadingResolvedContentURL = nil
+            loadingID = nil
+        }
         let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
     }
 

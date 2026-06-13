@@ -30,6 +30,21 @@ fileprivate func lakeReaderLoadDebugLog(_ message: String) {
     }
 }
 
+fileprivate func lakeReaderModeLoadDebugLog(_ message: String) {
+    let line = "# READERLOAD stage=\(message)\n"
+    print(line, terminator: "")
+    guard let data = line.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/tmp/manabi-reader-load.log")
+    if FileManager.default.fileExists(atPath: url.path),
+       let handle = try? FileHandle(forWritingTo: url) {
+        defer { try? handle.close() }
+        try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    } else {
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 
 #if os(iOS)
 private func currentWindowTopSafeAreaInset() -> CGFloat {
@@ -886,16 +901,26 @@ public extension WebViewNavigator {
     ) async throws {
         let loadStartedAt = CFAbsoluteTimeGetCurrent()
         lakeReaderLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
+        lakeReaderModeLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad) hasReaderModeViewModel=\(readerModeViewModel != nil)")
+        let beginSnapshot = debugLoadSnapshot
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
             lakeReaderLoadDebugLog("navigator.content.resolved contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             let loadSnapshot = debugLoadSnapshot
             let resolvedAt = CFAbsoluteTimeGetCurrent()
+            lakeReaderModeLoadDebugLog(
+                "navigator.content.resolved contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) snapshotAttached=\(loadSnapshot.hasAttachedWebView) snapshotLoading=\(loadSnapshot.isLoading)"
+            )
             if let readerModeViewModel {
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                     let isLoading = content.isReaderModeByDefault || url.isReaderURLLoaderURL
+                    lakeReaderModeLoadDebugLog("navigator.content.readerModeLoading.set targetURL=\(url.absoluteString) isLoading=\(isLoading)")
                     readerModeViewModel.readerModeLoading(isLoading)
 //                    debugPrint("# WebViewNavigator load", isLoading)
+                } else {
+                    lakeReaderModeLoadDebugLog("navigator.content.readerModeLoading.skip targetURL=\(url.absoluteString) isHTTP=\(url.isHTTP) isFile=\(url.isFileURL) isSnippet=\(url.isSnippetURL) isLoader=\(url.isReaderURLLoaderURL)")
                 }
+            } else {
+                lakeReaderModeLoadDebugLog("navigator.content.readerModeLoading.noViewModel targetURL=\(url.absoluteString)")
             }
             if loadSnapshot.lastRequestURL == url.absoluteString
                 || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
@@ -903,13 +928,32 @@ public extension WebViewNavigator {
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
                 if loadSnapshot.isLoading {
                     lakeReaderLoadDebugLog("navigator.content.skipAlreadyLoading targetURL=\(url.absoluteString)")
+                    lakeReaderModeLoadDebugLog("navigator.content.skipAlreadyLoading targetURL=\(url.absoluteString) elapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - loadStartedAt)) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL)")
                     return
                 }
             }
+            let navigatorMovedSinceBegin =
+                beginSnapshot.currentWebViewURL != loadSnapshot.currentWebViewURL
+                || beginSnapshot.lastRequestURL != loadSnapshot.lastRequestURL
+                || beginSnapshot.lastDataLoadBaseURL != loadSnapshot.lastDataLoadBaseURL
+                || beginSnapshot.lastHTMLBaseURL != loadSnapshot.lastHTMLBaseURL
+            let targetStillCurrent =
+                loadSnapshot.currentWebViewURL == url.absoluteString
+                || loadSnapshot.lastRequestURL == url.absoluteString
+                || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
+                || loadSnapshot.lastHTMLBaseURL == url.absoluteString
+            if navigatorMovedSinceBegin && !targetStillCurrent {
+                lakeReaderModeLoadDebugLog("navigator.content.skipStaleAfterResolve targetURL=\(url.absoluteString) elapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - loadStartedAt)) beginCurrentWebViewURL=\(beginSnapshot.currentWebViewURL) currentWebViewURL=\(loadSnapshot.currentWebViewURL) beginLastRequestURL=\(beginSnapshot.lastRequestURL) lastRequestURL=\(loadSnapshot.lastRequestURL)")
+                return
+            }
             lakeReaderLoadDebugLog("navigator.content.dispatch targetURL=\(url.absoluteString)")
+            lakeReaderModeLoadDebugLog("navigator.content.dispatch.begin targetURL=\(url.absoluteString) elapsedSinceResolved=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt)) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             load(URLRequest(url: url))
+            let afterDispatchSnapshot = debugLoadSnapshot
+            lakeReaderModeLoadDebugLog("navigator.content.dispatch.returned targetURL=\(url.absoluteString) elapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - loadStartedAt)) currentWebViewURL=\(afterDispatchSnapshot.currentWebViewURL) lastRequestURL=\(afterDispatchSnapshot.lastRequestURL) lastDataLoadBaseURL=\(afterDispatchSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(afterDispatchSnapshot.lastHTMLBaseURL) snapshotLoading=\(afterDispatchSnapshot.isLoading)")
         } else {
             lakeReaderLoadDebugLog("navigator.content.nilTarget contentURL=\(content.url.absoluteString)")
+            lakeReaderModeLoadDebugLog("navigator.content.nilTarget contentURL=\(content.url.absoluteString) elapsed=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - loadStartedAt))")
         }
     }
 }

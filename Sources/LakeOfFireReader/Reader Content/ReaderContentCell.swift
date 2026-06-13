@@ -364,7 +364,6 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    @State private var clearBorderedLabelHeight: CGFloat = 0
     @State private var annotationStatus = ReaderContentCellAnnotationStatus()
 
     public init(
@@ -626,15 +625,6 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         readerContentCellStyle == .plain
     }
 
-    private var clearBorderedSmallMinHeight: CGFloat {
-        30
-    }
-
-    private var clearBorderedVerticalInset: CGFloat {
-        let measuredHeight = clearBorderedLabelHeight > 0 ? clearBorderedLabelHeight : buttonSize
-        return max(0, (clearBorderedSmallMinHeight - measuredHeight) / 2)
-    }
-
     private var metadataRowVerticalOffset: CGFloat {
         guard readerContentCellStyle == .card else { return 0 }
         return 4
@@ -646,7 +636,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
     }
 
     private var bottomBlockVerticalOffset: CGFloat {
-        clearBorderedVerticalInset
+        0
     }
 
     private var bottomBlockSpacing: CGFloat {
@@ -784,13 +774,6 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         .buttonStyle(.clearBordered)
         .controlSize(.small)
         .animation(.easeInOut(duration: 0.2), value: isProgressVisible)
-        .onPreferenceChange(ClearBorderedButtonHeightKey.self) { height in
-            guard height >= buttonSize else {
-                return
-            }
-            guard abs(height - clearBorderedLabelHeight) > 0.5 else { return }
-            clearBorderedLabelHeight = height
-        }
     }
 
     @ViewBuilder
