@@ -83,11 +83,10 @@ final class WebFeedButtonLibraryState: ObservableObject {
 
     @RealmBackgroundActor
     private func refreshFeeds(from realm: Realm) async throws {
-        let feedIDs = Array(
-            realm.objects(Feed.self)
-                .where { !$0.isDeleted }
-                .map(\.id)
-        )
+        var feedIDs: [UUID] = []
+        for feed in realm.objects(Feed.self).where({ !$0.isDeleted }) {
+            feedIDs.append(feed.id)
+        }
 
         try await { @MainActor [weak self] in
             guard let self else { return }

@@ -66,7 +66,7 @@ struct ReaderSettingsForm: View {
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
-    @AppStorage("appTint") private var appTint = Color.accentColor
+    @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
 
     var body: some View {
         Form {

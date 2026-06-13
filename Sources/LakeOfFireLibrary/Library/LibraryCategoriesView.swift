@@ -16,7 +16,7 @@ struct LibraryCategoriesView: View {
     
     @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
     
-    @AppStorage("appTint") private var appTint: Color = .accentColor
+    @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
