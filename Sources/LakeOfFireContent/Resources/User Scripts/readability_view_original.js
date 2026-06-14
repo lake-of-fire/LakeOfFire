@@ -83,7 +83,7 @@
 
             let updateControls = () => {
                 let index = currentIndex();
-                status.textContent = `${index + 1} / ${slides.length}`;
+                status.textContent = String(index + 1) + ' / ' + String(slides.length);
                 previousButton.disabled = index <= 0;
                 nextButton.disabled = index >= slides.length - 1;
             };
