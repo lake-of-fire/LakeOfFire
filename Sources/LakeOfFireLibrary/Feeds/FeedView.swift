@@ -62,9 +62,14 @@ public class FeedViewModel: ObservableObject {
     private func reloadEntries(feedID: UUID, reason: String) async {
         do {
             let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            let feedIDs = Feed.activeFeedGroupIDs(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                in: realm,
+                fallback: feedID
+            )
             let entries = Array(
                 realm.objects(FeedEntry.self)
-                    .where { $0.feedID == feedID && !$0.isDeleted }
+                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             )
             self.entries = entries
         } catch {
@@ -75,9 +80,14 @@ public class FeedViewModel: ObservableObject {
     private func reloadCollections(feedID: UUID, reason: String) async {
         do {
             let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            let feedIDs = Feed.activeFeedGroupIDs(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                in: realm,
+                fallback: feedID
+            )
             collections = sortFeedEntryCollections(Array(
                 realm.objects(FeedEntryCollection.self)
-                    .where { $0.feedID == feedID && !$0.isDeleted }
+                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             ))
         } catch {
         }
@@ -101,10 +111,16 @@ public class FeedViewModel: ObservableObject {
         isFeedGroupFollowed = feed.isFollowed
         canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         let feedID = feed.id
+        let canonicalFeedURLKey = canonicalFeedURLKey
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
+            let feedIDs = Feed.activeFeedGroupIDs(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                in: realm,
+                fallback: feedID
+            )
             realm.objects(FeedEntry.self)
-                .where { $0.feedID == feedID && !$0.isDeleted }
+                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
@@ -112,15 +128,13 @@ public class FeedViewModel: ObservableObject {
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                        let entries = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted })
-                        self?.entries = entries
+                        await self?.reloadEntries(feedID: feedID, reason: "entriesChanged")
                     }
                 })
                 .store(in: &cancellables)
 
             realm.objects(FeedEntryCollection.self)
-                .where { $0.feedID == feedID && !$0.isDeleted }
+                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
@@ -143,12 +157,15 @@ public class FeedViewModel: ObservableObject {
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         await self?.reloadFollowedStatus(reason: "feedsChanged")
+                        await self?.reloadEntries(feedID: feedID, reason: "feedsChanged")
+                        await self?.reloadCollections(feedID: feedID, reason: "feedsChanged")
                     }
                 })
                 .store(in: &cancellables)
         }
         Task { @MainActor [weak self] in
             await self?.reloadFollowedStatus(reason: "init")
+            await self?.reloadEntries(feedID: feedID, reason: "init")
             await self?.reloadCollections(feedID: feedID, reason: "init")
         }
     }

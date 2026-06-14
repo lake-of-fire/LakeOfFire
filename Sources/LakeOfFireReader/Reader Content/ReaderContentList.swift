@@ -56,13 +56,29 @@ public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiab
     public let id: String
     public let title: String
     public let items: [C]
+    public let itemIDs: [String]
     public let initiallyExpanded: Bool
 
-    public init(id: String, title: String, items: [C], initiallyExpanded: Bool = true) {
+    public init(id: String, title: String, items: [C], itemIDs: [String]? = nil, initiallyExpanded: Bool = true) {
         self.id = id
         self.title = title
         self.items = items
+        self.itemIDs = itemIDs ?? items.map(\.compoundKey)
         self.initiallyExpanded = initiallyExpanded
+    }
+}
+
+struct ReaderContentIdentifiedItem<C: ReaderContentProtocol>: Identifiable {
+    let id: String
+    let content: C
+}
+
+func readerContentIdentifiedItems<C: ReaderContentProtocol>(
+    contents: [C],
+    ids: [String]
+) -> [ReaderContentIdentifiedItem<C>] {
+    zip(ids, contents).map { id, content in
+        ReaderContentIdentifiedItem(id: id, content: content)
     }
 }
 
@@ -537,7 +553,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     }
 
     private static func initialDisplayContents(from contents: [C], sortOrder: ReaderContentSortOrder?) -> [C] {
-        let contents = contents.map { $0.realm == nil ? $0 : $0.freeze() }
         guard let sortOrder else { return contents }
 
         switch sortOrder {
@@ -629,7 +644,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
             applyFilteredContents(
-                contents.map { $0.realm == nil ? $0 : $0.freeze() },
+                contents,
                 ids: contentIDs
             )
             return
@@ -733,9 +748,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                     guard self.currentLoadID == loadID else {
                         return
                     }
-                    resolvedContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0)?.freeze() }
+                    resolvedContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
                 } else {
-                    resolvedContents = filtered.map { $0.realm == nil ? $0 : $0.freeze() }
+                    resolvedContents = filtered
                 }
                 self.applyFilteredContents(resolvedContents, ids: ids)
             }()
@@ -956,8 +971,13 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
 
     var body: some View {
         let lastIndex = viewModel.filteredContents.indices.last
+        let items = readerContentIdentifiedItems(
+            contents: viewModel.filteredContents,
+            ids: viewModel.filteredContentIDs
+        )
         Group {
-            ForEach(Array(viewModel.filteredContents.enumerated()), id: \.element.compoundKey) { index, content in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let content = item.content
                 let isFirst = index == viewModel.filteredContents.startIndex
                 let isLast = lastIndex.map { index == $0 } ?? false
                 ReaderContentInnerListItem(
@@ -1170,7 +1190,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     @ViewBuilder
     private var separateRowSections: some View {
-        ForEach(Array(viewModel.filteredContents.enumerated()), id: \.element.compoundKey) { index, content in
+        let items = readerContentIdentifiedItems(
+            contents: viewModel.filteredContents,
+            ids: viewModel.filteredContentIDs
+        )
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            let content = item.content
             sectionWithSpacing(
                 Section {
                     ReaderContentInnerListItem(
@@ -1523,8 +1548,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 
     @ViewBuilder
     private func groupedRows(section: ReaderContentGroupingSection<C>) -> some View {
+        let items = readerContentIdentifiedItems(contents: section.items, ids: section.itemIDs)
         if separateRowsIntoSections {
-            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let content = item.content
                 sectionWithSpacing(
                     Section {
                         groupedRowContent(section: section, index: index, content: content)
@@ -1536,11 +1563,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                     }
                     .headerProminence(.increased)
                 )
-                .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
+                .id(readerContentListSeparatedRowScrollAnchorID(item.id))
             }
         } else {
             let lastIndex = section.items.indices.last ?? section.items.startIndex
-            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let content = item.content
                 ReaderContentInnerListItem(
                     content: content,
                     entrySelection: $entrySelection,

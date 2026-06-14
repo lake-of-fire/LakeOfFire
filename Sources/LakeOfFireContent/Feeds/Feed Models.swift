@@ -225,7 +225,7 @@ public class FeedEntryCollection: Object, ObjectKeyIdentifiable, ChangeMetadataR
     @Persisted public var imageUrl: URL?
     @Persisted public var url: URL?
     @Persisted public var publicationDate: Date?
-    @Persisted public var order: Double?
+    @Persisted public var order: Int?
 
     @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
@@ -422,6 +422,29 @@ public extension Feed {
 
     public var canonicalFollowingFeedURLKey: String {
         Self.canonicalFollowingFeedURLKey(for: rssUrl)
+    }
+
+    public static func activeFeedGroupIDs(
+        canonicalFeedURLKey: String,
+        in realm: Realm,
+        fallback feedID: UUID? = nil
+    ) -> [UUID] {
+        let feedIDs = realm.objects(Feed.self)
+            .where { !$0.isDeleted && !$0.isArchived }
+            .filter { $0.canonicalFollowingFeedURLKey == canonicalFeedURLKey }
+            .map(\.id)
+        if feedIDs.isEmpty, let feedID {
+            return [feedID]
+        }
+        return Array(feedIDs)
+    }
+
+    public func activeFeedGroupIDs(in realm: Realm) -> [UUID] {
+        Self.activeFeedGroupIDs(
+            canonicalFeedURLKey: canonicalFollowingFeedURLKey,
+            in: realm,
+            fallback: id
+        )
     }
 
     public static func uniqueFollowingFeedRepresentatives(from feeds: [Feed]) -> [Feed] {
@@ -770,7 +793,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     @Persisted(indexed: true) public var feedID: UUID?
     
-    @Persisted public var url: URL
+    @Persisted(indexed: true) public var url: URL
     @Persisted public var title = ""
     @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var author = ""
@@ -784,7 +807,6 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var feedEntryCollectionTitle: String?
     @Persisted public var isPhysicalMedia = false
     
-    @Persisted public var isReaderModeOfferHidden = false
     //    @Persisted public var isFromClipboard = false
     @Persisted public var content: Data?
     //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
@@ -793,6 +815,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     public var isReaderModeAvailable: Bool {
         get { return isReaderModeByDefault }
+        set { }
+    }
+    public var isReaderModeOfferHidden: Bool {
+        get { false }
         set { }
     }
     
@@ -824,6 +850,12 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
     @Persisted public var audioSubtitlesURL: URL?
     @Persisted public var audioSubtitlesRoleRawValue: String?
+    @Persisted public var primaryMediaIdentity: String?
+    @Persisted public var primaryMediaSourceURL: URL?
+    @Persisted public var primaryMediaKindRawValue: String?
+    @Persisted public var primaryMediaDuration: Double?
+    @Persisted public var primaryMediaLastPlaybackTime: Double?
+    @Persisted public var offlineMediaID: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     @Persisted public var autoOpenMediaPlayer = false
@@ -1060,7 +1092,7 @@ fileprivate struct ParsedFeedEntryCollection {
     let imageUrl: URL?
     let url: URL?
     let publicationDate: Date?
-    let order: Double?
+    let order: Int?
 
     func compoundKey(feedID: UUID) -> String {
         FeedEntryCollection.makePrimaryKey(feedID: feedID, scheme: scheme, term: term)
@@ -1108,7 +1140,7 @@ fileprivate final class ManabiAtomCollectionParser: NSObject, XMLParserDelegate 
                 imageUrl: imageUrl,
                 url: url,
                 publicationDate: publicationDate,
-                order: attributeDict["order"].flatMap(Double.init)
+                order: attributeDict["order"].flatMap(Int.init)
             )
         )
     }

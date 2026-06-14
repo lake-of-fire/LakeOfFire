@@ -109,6 +109,7 @@ fileprivate struct EditorsPicksView: View {
                     },
                     onNavigateToReader: viewModel.onNavigateToReader
                 )
+                .accessibilityIdentifier("BookLibrary.EditorsPick.Row.\(publication.title)")
             }
         }
     }
@@ -172,6 +173,11 @@ public struct BookLibraryView: View {
         }
     }
 
+    private var editorsPicksHeader: some View {
+        Text("Editor's Picks")
+            .accessibilityIdentifier("BookLibrary.EditorsPicks.Header")
+    }
+
     @ViewBuilder
     private var myBooksSection: some View {
         if isMyBooksEmpty {
@@ -225,18 +231,23 @@ public struct BookLibraryView: View {
             }
 
             if #available(iOS 17, macOS 14.0, *) {
-                Section("Editor's Picks", isExpanded: $isEditorsPicksExpanded) {
+                Section(isExpanded: $isEditorsPicksExpanded) {
                     EditorsPicksView(viewModel: viewModel)
+                } header: {
+                    editorsPicksHeader
                 }
             } else {
-                Section("Editor's Picks") {
+                Section {
                     EditorsPicksView(viewModel: viewModel)
+                } header: {
+                    editorsPicksHeader
                 }
             }
         }
 #if os(iOS)
         .listStyle(.sidebar)
 #endif
+        .accessibilityIdentifier("BookLibrary.Root")
         .scrollContentBackgroundIfAvailable(.hidden)
         .task { @MainActor in
             await viewModel.fetchAllData()

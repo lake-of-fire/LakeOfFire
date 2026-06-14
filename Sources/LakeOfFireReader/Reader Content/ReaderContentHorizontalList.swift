@@ -188,6 +188,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
     var filteredContents: [C]
+    var filteredContentIDs: [String]
     let includeSource: Bool
     let customMenuOptions: ((C) -> AnyView)?
     let contentSelection: Binding<String?>
@@ -217,7 +218,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                 .scrollTargetBehavior(.viewAligned)
                 .scrollPosition(id: $scrollPositionID, anchor: .leading)
                 .onAppear { applyScrollPosition() }
-                .onChange(of: filteredContents.map(\.compoundKey)) { _ in
+                .onChange(of: filteredContentIDs) { _ in
                     applyScrollPosition()
                 }
                 .scrollClipDisabled()
@@ -236,7 +237,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                     .onAppear {
                         scheduleScrollToStart(proxy: proxy)
                     }
-                    .onChange(of: filteredContents.map(\.compoundKey)) { _ in
+                    .onChange(of: filteredContentIDs) { _ in
                         scheduleScrollToStart(proxy: proxy)
                     }
                 }
@@ -246,6 +247,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
 
     init(
         filteredContents: [C],
+        filteredContentIDs: [String],
         includeSource: Bool,
         customMenuOptions: ((C) -> AnyView)? = nil,
         contentSelection: Binding<String?>,
@@ -253,6 +255,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
         resetScrollOnAppear: Bool = false
     ) {
         self.filteredContents = filteredContents
+        self.filteredContentIDs = filteredContentIDs
         self.includeSource = includeSource
         self.customMenuOptions = customMenuOptions
         self.contentSelection = contentSelection
@@ -262,14 +265,14 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
 
     @MainActor
     private func applyScrollPosition() {
-        guard resetScrollOnAppear, let firstID = filteredContents.first?.compoundKey else { return }
+        guard resetScrollOnAppear, let firstID = filteredContentIDs.first else { return }
         Task { @MainActor in
             scrollPositionID = firstID
         }
     }
 
     private func scheduleScrollToStart(proxy: ScrollViewProxy) {
-        guard resetScrollOnAppear, let firstID = filteredContents.first?.compoundKey else { return }
+        guard resetScrollOnAppear, let firstID = filteredContentIDs.first else { return }
         pendingScrollTask?.cancel()
         pendingScrollTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 50_000_000)
@@ -279,8 +282,10 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
 
     @ViewBuilder
     private var contentStack: some View {
+        let items = readerContentIdentifiedItems(contents: filteredContents, ids: filteredContentIDs)
         HStack(spacing: 15) {
-            ForEach(filteredContents, id: \.compoundKey) { content in
+            ForEach(items) { item in
+                let content = item.content
                 ReaderContentInnerHorizontalListItem(
                     content: content,
                     includeSource: includeSource,
@@ -289,7 +294,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                     contentSelection: contentSelection,
                     onContentSelected: onContentSelected
                 )
-                .id(content.compoundKey)
+                .id(item.id)
             }
         }
         .modifier {
@@ -338,6 +343,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
                 ReaderContentInnerHorizontalList(
                     filteredContents: viewModel.filteredContents,
+                    filteredContentIDs: viewModel.filteredContentIDs,
                     includeSource: includeSource,
                     customMenuOptions: customMenuOptions,
                     contentSelection: contentSelection,

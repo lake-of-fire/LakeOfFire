@@ -1,9 +1,8 @@
 import Foundation
-import LakeOfFireCore
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 66
+    public static let schemaVersion: UInt64 = 71
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -25,99 +24,148 @@ public enum DefaultRealmConfiguration {
             FeedEntryCollection.self,
             FeedEntry.self,
             LibraryConfiguration.self,
+            MediaTranscript.self,
             UserScript.self,
             UserScriptAllowedDomain.self,
-            MediaStatus.self,
-            MediaTranscript.self,
         ]
         return config
     }
 
     public static func migrationBlock(migration: Migration, oldSchemaVersion: UInt64) {
-        if oldSchemaVersion < schemaVersion {
-            if oldSchemaVersion < 32 {
-                migration.deleteData(forType: FeedEntry.className())
-            }
-            if oldSchemaVersion < 52 {
-                migration.enumerateObjects(ofType: FeedEntry.className()) { oldObject, newObject in
-                    guard let newObject else { return }
-                    if let oldList = oldObject?["voiceAudioURLs"] as? List<URL>, let first = oldList.first {
-                        newObject["voiceAudioURL"] = first
-                    }
-                }
-            }
-            if oldSchemaVersion < 53 {
-                migration.enumerateObjects(ofType: FeedEntry.className()) { _, newObject in
-                    guard let newObject else { return }
-                    if newObject["audioSubtitlesURL"] != nil, newObject["audioSubtitlesRoleRawValue"] == nil {
-                        newObject["audioSubtitlesRoleRawValue"] = AudioSubtitlesRole.content.rawValue
-                    }
-                }
-            }
-            if oldSchemaVersion < 54 {
-                migration.enumerateObjects(ofType: FeedEntry.className()) { oldObject, newObject in
-                    guard let newObject,
-                          let url = oldObject?["url"] as? URL,
-                          let title = oldObject?["title"] as? String else {
-                        return
-                    }
-                    guard url.isSnippetURL else {
-                        newObject["isTitlePrefixOfContent"] = false
-                        return
-                    }
-                    let html: String? = {
-                        if let content = oldObject?["content"] as? Data {
-                            let nsContent: NSData = content as NSData
-                            if let data = try? nsContent.decompressed(using: .lzfse) as Data? {
-                                return String(decoding: data, as: UTF8.self)
-                            }
-                        }
-                        return nil
-                    }()
-                    newObject["isTitlePrefixOfContent"] = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
-                        title,
-                        sourceHTML: html
-                    )
-                }
-            }
-            if oldSchemaVersion < 55 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 56 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 57 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 58 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 59 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 61 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 62 {
-                migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 64 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 65 {
-                migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
-                migration.enumerateObjects(ofType: FeedDirectory.className()) { _, _ in }
-            }
-            if oldSchemaVersion < 66 {
-                migration.enumerateObjects(ofType: Feed.className()) { oldObject, newObject in
-                    guard oldSchemaVersion >= 65 else { return }
-                    newObject?["ordinal"] = oldObject?["opmlOrder"]
-                }
-                migration.enumerateObjects(ofType: FeedDirectory.className()) { oldObject, newObject in
-                    guard oldSchemaVersion >= 65 else { return }
-                    newObject?["ordinal"] = oldObject?["opmlOrder"]
+        if oldSchemaVersion < 32 {
+            migration.deleteData(forType: FeedEntry.className())
+        }
+
+        if oldSchemaVersion < 52 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { oldObject, newObject in
+                guard let newObject else { return }
+                if let oldList = oldObject?["voiceAudioURLs"] as? List<URL>, let first = oldList.first {
+                    newObject["voiceAudioURL"] = first
                 }
             }
         }
+
+        if oldSchemaVersion < 53 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { _, newObject in
+                guard let newObject else { return }
+                if newObject["audioSubtitlesURL"] != nil, newObject["audioSubtitlesRoleRawValue"] == nil {
+                    newObject["audioSubtitlesRoleRawValue"] = AudioSubtitlesRole.content.rawValue
+                }
+            }
+            migration.deleteData(forType: "MediaStatus")
+        }
+
+        if oldSchemaVersion < 54 {
+            migrateMediaTranscript_schemaVersionLessThan54(migration: migration)
+        }
+
+        if oldSchemaVersion < 55 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 56 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 57 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 58 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 59 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 60 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
+            migration.enumerateObjects(ofType: Bookmark.className()) { _, _ in }
+            migration.enumerateObjects(ofType: HistoryRecord.className()) { _, _ in }
+            migration.enumerateObjects(ofType: ContentFile.className()) { _, _ in }
+            migration.enumerateObjects(ofType: ContentPackageFile.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 61 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
+            migration.enumerateObjects(ofType: Bookmark.className()) { _, _ in }
+            migration.enumerateObjects(ofType: HistoryRecord.className()) { _, _ in }
+            migration.enumerateObjects(ofType: ContentFile.className()) { _, _ in }
+            migration.enumerateObjects(ofType: ContentPackageFile.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 62 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 65 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 66 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 67 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 69 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 70 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+            migration.enumerateObjects(ofType: FeedDirectory.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 71 {
+            migration.enumerateObjects(ofType: Feed.className()) { oldObject, newObject in
+                guard oldSchemaVersion >= 70 else { return }
+                newObject?["ordinal"] = oldObject?["opmlOrder"]
+            }
+            migration.enumerateObjects(ofType: FeedDirectory.className()) { oldObject, newObject in
+                guard oldSchemaVersion >= 70 else { return }
+                newObject?["ordinal"] = oldObject?["opmlOrder"]
+            }
+        }
+    }
+
+    private static func migrateMediaTranscript_schemaVersionLessThan54(migration: Migration) {
+        migration.enumerateObjects(ofType: MediaTranscript.className()) { oldObject, newObject in
+            guard let newObject else { return }
+
+            let contentURL = migrationURL(oldObject, key: "contentURL")
+            let stableMediaIdentity = migrationString(oldObject, key: "stableMediaIdentity")
+            let languageCode = migrationString(oldObject, key: "languageCode")?.lowercased() ?? "und"
+
+            guard let contentURL, let stableMediaIdentity, !stableMediaIdentity.isEmpty else {
+                newObject["isDeleted"] = true
+                return
+            }
+
+            let canonicalContentURL = MediaTranscript.canonicalContentURL(from: contentURL)
+            newObject["contentURL"] = canonicalContentURL
+            newObject["stableMediaIdentity"] = stableMediaIdentity
+            newObject["languageCode"] = languageCode
+            newObject["compoundKey"] = MediaTranscript.makeCompoundKey(
+                contentURL: canonicalContentURL,
+                stableMediaIdentity: stableMediaIdentity,
+                languageCode: languageCode
+            )
+            if migrationString(oldObject, key: "transcriptLocale")?.isEmpty != false {
+                newObject["transcriptLocale"] = languageCode
+            }
+        }
+    }
+
+    private static func migrationURL(_ object: MigrationObject?, key: String) -> URL? {
+        guard let object else { return nil }
+        if object.objectSchema.properties.contains(where: { $0.name == key }) == false {
+            return nil
+        }
+        if let url = object[key] as? URL {
+            return url
+        }
+        if let value = object[key] as? String {
+            return URL(string: value)
+        }
+        return nil
+    }
+
+    private static func migrationString(_ object: MigrationObject?, key: String) -> String? {
+        guard let object else { return nil }
+        if object.objectSchema.properties.contains(where: { $0.name == key }) == false {
+            return nil
+        }
+        return object[key] as? String
     }
 }

@@ -634,6 +634,29 @@ public class ReaderModeViewModel: ObservableObject {
     @Published var readabilityFrames = Set<WKFrameInfo>()
 
     public var hasRenderedReadabilityContent: Bool { lastRenderedURL != nil }
+
+    public func shouldIgnoreHideNavigationDueToScrollForNativeWebChrome(
+        pageURL: URL,
+        contentURL: URL?
+    ) -> Bool {
+        guard pageURL.isHTTP else { return false }
+        guard !pageURL.isEBookURL, contentURL?.isEBookURL != true else { return false }
+        guard !isReaderMode else { return false }
+        guard !isReaderModeLoading else { return false }
+        guard pendingReaderModeURL == nil else { return false }
+        guard expectedSyntheticReaderLoaderURL == nil else { return false }
+        return true
+    }
+
+    public func effectiveHideNavigationDueToScrollForNativeWebChrome(
+        _ hidden: Bool,
+        pageURL: URL,
+        contentURL: URL?
+    ) -> Bool {
+        shouldIgnoreHideNavigationDueToScrollForNativeWebChrome(pageURL: pageURL, contentURL: contentURL)
+            ? false
+            : hidden
+    }
     
 //    @Published var contentRules: String? = nil
 

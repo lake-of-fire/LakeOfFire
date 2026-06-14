@@ -719,13 +719,7 @@ export class NavigationHUD {
         const pageCount = typeof detail?.pageCount === 'number' ? detail.pageCount : null;
         // Only trust detail counts when renderer is paginated (scrolled === false) and counts are positive.
         if (scrolled === false && pageNumber != null && pageNumber > 0 && pageCount != null && pageCount > 0) {
-            const normalized = {
-                current: Math.min(pageCount, Math.max(1, Math.round(pageNumber))),
-                total: Math.max(1, Math.round(pageCount)),
-                rawCurrent: Math.round(pageNumber),
-                rawTotal: Math.round(pageCount),
-                scrolled,
-            };
+            const normalized = this._normalizeRendererPageInfo(pageNumber, pageCount, this.getRenderer?.());
             this.rendererPageSnapshot = normalized;
             this.nativeOverlayPageSnapshot = {
                 current: normalized.current,
@@ -736,6 +730,22 @@ export class NavigationHUD {
             return normalized;
         }
         return null;
+    }
+
+    _fractionFromRendererSnapshot() {
+        const snapshot = this.rendererPageSnapshot;
+        if (snapshot?.scrolled !== false) return null;
+        const current = typeof snapshot.current === 'number'
+            ? Math.max(1, Math.round(snapshot.current))
+            : null;
+        const total = typeof snapshot.total === 'number'
+            ? Math.max(1, Math.round(snapshot.total))
+            : null;
+        return this._scrubberFractionFromMetrics({
+            current,
+            total,
+            fallbackFraction: null,
+        });
     }
     
     _updatePrimaryLine(detail) {
@@ -846,6 +856,10 @@ export class NavigationHUD {
     }
 
     _fractionForPercent(detail) {
+        const snapshotFraction = this._fractionFromRendererSnapshot();
+        if (typeof snapshotFraction === 'number' && isFinite(snapshotFraction)) {
+            return Math.max(0, Math.min(1, snapshotFraction));
+        }
         const candidates = [
             { source: 'detail.fraction', value: detail?.fraction },
             { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
@@ -1501,6 +1515,14 @@ export class NavigationHUD {
         return descriptor;
     }
 
+    _rendererUsesRightToLeftPageOrder(renderer) {
+        return !!(
+            renderer?.bookDir === 'rtl'
+            || renderer?.isRTL === true
+            || this.isRTL === true
+        );
+    }
+
     _descriptorFromFraction(fraction) {
         if (typeof fraction !== 'number' || !isFinite(fraction)) return null;
         const locTotal = this.lastKnownLocationTotal ?? this.lastPrimaryLabelDiagnostics?.locationTotal ?? null;
@@ -1556,6 +1578,7 @@ export class NavigationHUD {
         // Foliate paginator inserts two sentinel “pages” (lead/trail). Adjust so UI shows text pages only.
         const scrolled = renderer?.scrolled ?? null;
         const isPaginated = renderer && scrolled === false;
+        const usesRightToLeftPageOrder = isPaginated && this._rendererUsesRightToLeftPageOrder(renderer);
         const snapshotBeforeAdjust = {
             rawPage,
             rawTotal,
@@ -1565,17 +1588,32 @@ export class NavigationHUD {
             currentBase,
             clampedCurrent: current,
             scrolled,
-            rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+            rtl: usesRightToLeftPageOrder,
         };
         const shouldAdjustForSentinels = MANABI_NAV_SENTINEL_ADJUST_ENABLED && isPaginated && total && total > 2;
         if (shouldAdjustForSentinels) {
             const textTotal = Math.max(1, total - 2); // strip lead/trail sentinels
-            const textCurrent = Math.max(1, Math.min(textTotal, current)); // clamp without subtracting so page 2 -> text page 2
+            const rawTextCurrent = Math.max(1, Math.min(textTotal, current)); // clamp without subtracting so page 2 -> text page 2
+            const textCurrent = usesRightToLeftPageOrder
+                ? (textTotal - rawTextCurrent + 1)
+                : rawTextCurrent;
             return {
                 current: textCurrent,
                 total: textTotal,
                 rawCurrent: current,
                 rawTotal: total,
+                rawTextCurrent,
+                rtl: usesRightToLeftPageOrder,
+                scrolled,
+            };
+        }
+        if (usesRightToLeftPageOrder && total && total > 1) {
+            return {
+                current: total - current + 1,
+                total,
+                rawCurrent: current,
+                rawTotal: total,
+                rtl: true,
                 scrolled,
             };
         }
@@ -1584,6 +1622,7 @@ export class NavigationHUD {
             total,
             rawCurrent: current,
             rawTotal: total,
+            rtl: usesRightToLeftPageOrder,
             scrolled,
         };
     }

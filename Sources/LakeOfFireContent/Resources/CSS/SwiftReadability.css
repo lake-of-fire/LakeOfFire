@@ -28,4 +28,82 @@ body.readability-mode[data-is-ebook="true"] #reader-content [style*="max-width"]
     width: auto !important;
 }
 
+body.readability-mode #reader-content [data-readability-carousel="true"] {
+    display: block !important;
+    position: relative;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 0 32px 0 !important;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-track] {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-track]::-webkit-scrollbar {
+    display: none;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-slide] {
+    flex: 0 0 100%;
+    min-width: 0;
+    scroll-snap-align: center;
+    scroll-snap-stop: always;
+    margin: 0 !important;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-slide] img {
+    display: block;
+    width: 100% !important;
+    height: auto !important;
+    max-height: min(72vh, 760px);
+    object-fit: contain;
+    background: rgba(127, 127, 127, 0.08);
+}
+
+body.readability-mode #reader-content [data-readability-carousel-controls] {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 10px;
+    min-height: 36px;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-button] {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid currentColor;
+    border-radius: 18px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 20px;
+    line-height: 1;
+    padding: 0;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-status] {
+    min-width: 4.5em;
+    text-align: center;
+    font-family: sans-serif;
+    font-size: 0.85em;
+    opacity: 0.74;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-button]:disabled {
+    opacity: 0.35;
+}
+
 /* TODO: Fonts! */

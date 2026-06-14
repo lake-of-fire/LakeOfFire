@@ -50,6 +50,11 @@ public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
     case media
 }
 
+public enum ReaderPrimaryMediaKind: String, Sendable, Codable {
+    case audio
+    case video
+}
+
 private enum ReaderContentFormatters {
     static let snippetChromeDate: DateFormatter = {
         let formatter = DateFormatter()
@@ -103,6 +108,12 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var voiceAudioURLs: RealmSwift.List<URL> { get set }
     var audioSubtitlesURL: URL? { get set }
     var audioSubtitlesRoleRawValue: String? { get set }
+    var primaryMediaIdentity: String? { get set }
+    var primaryMediaSourceURL: URL? { get set }
+    var primaryMediaKindRawValue: String? { get set }
+    var primaryMediaDuration: Double? { get set }
+    var primaryMediaLastPlaybackTime: Double? { get set }
+    var offlineMediaID: String? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
     var autoOpenMediaPlayer: Bool { get set }
@@ -143,6 +154,15 @@ public extension ReaderContentProtocol {
         !isContentListing
     }
 
+    var primaryMediaKind: ReaderPrimaryMediaKind? {
+        get {
+            primaryMediaKindRawValue.flatMap { ReaderPrimaryMediaKind(rawValue: $0) }
+        }
+        set {
+            primaryMediaKindRawValue = newValue?.rawValue
+        }
+    }
+
     var defaultSnippetChromeTitle: String {
         "Snippet — \(createdAt.readerSnippetChromeDateString)"
     }
@@ -168,8 +188,22 @@ public extension ReaderContentProtocol {
         hasContentAudio
     }
 
+    var hasPrimaryMedia: Bool {
+        isPhysicalMedia
+            || primaryMediaIdentity != nil
+            || primaryMediaSourceURL != nil
+            || primaryMediaKindRawValue != nil
+            || primaryMediaDuration != nil
+            || primaryMediaLastPlaybackTime != nil
+            || offlineMediaID != nil
+    }
+
     var contentSubtitleURL: URL? {
         audioSubtitlesRole == .media ? nil : audioSubtitlesURL
+    }
+
+    var mediaSubtitleURL: URL? {
+        audioSubtitlesRole == .media ? audioSubtitlesURL : nil
     }
 
     @discardableResult
