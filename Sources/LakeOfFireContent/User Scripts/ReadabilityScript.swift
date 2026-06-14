@@ -22,6 +22,7 @@ public struct Readability: Sendable {
         var readabilityInitializationJS: String
         var domPurifyJS: String
         var readabilityOriginalJS: String
+        var readabilityReaderModeJS: String
         
         var mozillaCSS: String
         var swiftReadabilityCSS: String
@@ -34,10 +35,11 @@ public struct Readability: Sendable {
             domPurifyJS = try loadModuleFile(name: "dompurify.min", type: "js", subdirectory: "User Scripts", in: Bundle.module)
             readabilityInitializationJS = try loadModuleFile(name: "readability_initialization.template", type: "js", subdirectory: "User Scripts", in: Bundle.module)
             readabilityOriginalJS = try loadModuleFile(name: "readability_view_original", type: "js", subdirectory: "User Scripts", in: Bundle.module)
+            readabilityReaderModeJS = try loadModuleFile(name: "readability_reader_mode", type: "js", subdirectory: "User Scripts", in: Bundle.module)
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }
-        scripts = readabilityOriginalJS
+        scripts = readabilityOriginalJS + readabilityReaderModeJS
 //        let regex = try! NSRegularExpression(pattern: "(\\|`|[$])", options: [])
 //        let range = NSRange(location: 0, length: scripts.utf16.count)
 //        let escapedScripts = regex.stringByReplacingMatches(in: scripts, options: [], range: range, withTemplate: "\\$1")

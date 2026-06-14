@@ -155,6 +155,29 @@ private struct SwiftReadabilityProcessingResult {
     let outputHTML: String
 }
 
+private func normalizeReadabilityBodyOrder(_ doc: SwiftSoup.Document) {
+    guard let body = doc.body(),
+          let readerHeader = try? doc.getElementById("reader-header"),
+          let readerContent = try? doc.getElementById("reader-content") else {
+        return
+    }
+
+    var nodesToMove: [SwiftSoup.Element] = []
+    for child in body.children().array() {
+        if child === readerHeader {
+            break
+        }
+        if child === readerContent {
+            continue
+        }
+        nodesToMove.append(child)
+    }
+
+    for node in nodesToMove.reversed() {
+        try? readerContent.prependChild(node)
+    }
+}
+
 private func escapeReadabilityText(_ raw: String) -> String {
     raw
         .replacingOccurrences(of: "&", with: "&amp;")
@@ -2048,6 +2071,7 @@ public class ReaderModeViewModel: ObservableObject {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
+            normalizeReadabilityBodyOrder(doc)
             if url.isSnippetURL {
                 let cleanedSnippetTitle = ReaderContentLoader.resolvedDisplayTitle(
                     snippetRawTitle,
