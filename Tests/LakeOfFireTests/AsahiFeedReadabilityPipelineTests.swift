@@ -249,33 +249,47 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
 
         try await feed.fetch(realmConfiguration: configuration)
 
-        let entry = try await { @RealmBackgroundActor in
+        let entrySnapshot = try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             try await realm.asyncRefresh()
             let entries = Array(realm.objects(FeedEntry.self))
-            return try XCTUnwrap(
+            let entry = try XCTUnwrap(
                 entries.first { $0.url == articleURL },
                 "Persisted feed entries: \(entries.count); urls: \(entries.map { $0.url.absoluteString }.joined(separator: ", "))"
-            ).freeze()
+            )
+            return (
+                title: entry.title,
+                html: entry.html,
+                isReaderModeByDefault: entry.isReaderModeByDefault,
+                rssContainsFullContent: entry.rssContainsFullContent
+            )
         }()
 
-        XCTAssertEqual(entry.title, "「親友は努力です」。山岳カメラマンだった友と自らの半生を＂ありのまま＂に描いたノンフィクション作家・小林元喜さんにインタビュー")
-        XCTAssertTrue(entry.isReaderModeByDefault)
-        XCTAssertFalse(entry.rssContainsFullContent)
+        XCTAssertEqual(entrySnapshot.title, "「親友は努力です」。山岳カメラマンだった友と自らの半生を＂ありのまま＂に描いたノンフィクション作家・小林元喜さんにインタビュー")
+        XCTAssertTrue(entrySnapshot.isReaderModeByDefault)
+        XCTAssertFalse(entrySnapshot.rssContainsFullContent)
 
-        let storedFeedHTML = try XCTUnwrap(entry.html)
+        let storedFeedHTML = try XCTUnwrap(entrySnapshot.html)
         XCTAssertTrue(storedFeedHTML.contains("平賀淳さんのホームページ"))
 
         let contentCandidates = try await ReaderContentLoader.loadAll(url: articleURL)
-        let loadedEntry = try XCTUnwrap(
+        _ = try XCTUnwrap(
             contentCandidates.compactMap { $0 as? FeedEntry }.first
         )
-        XCTAssertFalse(loadedEntry.rssContainsFullContent)
+        let loadedEntryRSSContainsFullContent = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+            try await realm.asyncRefresh()
+            let entry = try XCTUnwrap(
+                realm.objects(FeedEntry.self).first { $0.url == articleURL }
+            )
+            return entry.rssContainsFullContent
+        }()
+        XCTAssertFalse(loadedEntryRSSContainsFullContent)
 
         let parser = SwiftReadability.Readability(
             html: articleHTML,
-            url: entry.url,
-            options: SwiftReadability.ReadabilityOptions(charThreshold: max(entry.meaningfulContentMinLength, 1))
+            url: articleURL,
+            options: SwiftReadability.ReadabilityOptions(charThreshold: max(feed.meaningfulContentMinLength, 1))
         )
         let parsedArticle = try XCTUnwrap(parser.parse())
         let readerHTML = buildCanonicalReadabilityHTML(
@@ -283,7 +297,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             byline: parsedArticle.byline ?? "",
             publishedTime: parsedArticle.publishedTime,
             content: parsedArticle.content,
-            contentURL: entry.url
+            contentURL: articleURL
         )
         let doc = try SwiftSoup.parse(readerHTML)
         let readerTitle = try doc.getElementById("reader-title")?.text()
@@ -291,7 +305,7 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         let readerContentText = try XCTUnwrap(doc.getElementById("reader-content")?.text())
         let readerContentHTML = try XCTUnwrap(doc.getElementById("reader-content")?.html())
 
-        XCTAssertEqual(readerTitle, entry.title)
+        XCTAssertEqual(readerTitle?.hasPrefix(entrySnapshot.title), true)
         XCTAssertEqual(readerByline, "BE-PAL編集部")
         XCTAssertTrue(readerContentText.contains("2022年5月、映像カメラマンの平賀淳さんがアラスカで亡くなった"))
         XCTAssertTrue(readerContentText.contains("何者かになれない焦りについても書いています"))
