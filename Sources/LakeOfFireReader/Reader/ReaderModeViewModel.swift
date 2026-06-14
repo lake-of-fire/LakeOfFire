@@ -344,6 +344,21 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
     hasReadabilityModeBodyClassMarkup(in: html) && hasReaderContentNodeMarkup(in: html)
 }
 
+private func refreshCanonicalReadabilityScripts(in html: String) -> String {
+    guard hasCanonicalReadabilityMarkup(in: html),
+          let doc = try? SwiftSoup.parse(html),
+          let body = doc.body() else {
+        return html
+    }
+
+    let scripts = (try? body.getElementsByTag("script").array()) ?? []
+    for script in scripts {
+        try? script.remove()
+    }
+    try? body.appendElement("script").html(Readability.shared.scripts)
+    return (try? doc.outerHtml()) ?? html
+}
+
 internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
     try? doc.select("html").first()?.attr("data-mnb-reader-render-ready", "1")
     try? doc.body()?.attr("data-mnb-reader-render-ready", "1")
@@ -1843,7 +1858,7 @@ public class ReaderModeViewModel: ObservableObject {
 
             let resolvedReadabilityHTML: String?
             if hasCanonicalReadabilityMarkup(in: html) {
-                resolvedReadabilityHTML = html
+                resolvedReadabilityHTML = refreshCanonicalReadabilityScripts(in: html)
             } else {
                 let publicationDateFallback = await readerContentPublicationDateFallback(for: content.url)
                 let readabilityProcessingStart = CFAbsoluteTimeGetCurrent()
