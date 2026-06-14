@@ -228,6 +228,7 @@ let package = Package(
             path: "Tests/LakeOfFireTests",
             resources: [
                 .copy("Fixtures/Asahi/"),
+                .copy("Fixtures/BEPAL/"),
                 .copy("Fixtures/Readability/mozilla-wikipedia-minerva.html"),
             ]
         ),
