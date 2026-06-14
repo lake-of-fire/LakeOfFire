@@ -27,20 +27,27 @@
 
     function wireReadabilityCarousels() {
         let carousels = document.querySelectorAll('[data-readability-carousel="true"]');
+        if (carousels.length > 0) {
+            console.log('# CAROUSEL found', carousels.length);
+        }
         for (let carousel of carousels) {
             if (wiredNodes.has(carousel)) {
+                console.log('# CAROUSEL skip already-wired');
                 continue;
             }
             let track = carousel.querySelector('[data-readability-carousel-track]');
             if (!track) {
+                console.log('# CAROUSEL skip missing-track', carousel.outerHTML.slice(0, 240));
                 continue;
             }
             let slides = Array.from(track.querySelectorAll('[data-readability-carousel-slide]'));
             if (slides.length < 2) {
+                console.log('# CAROUSEL skip insufficient-slides', slides.length);
                 continue;
             }
 
             wiredNodes.set(carousel, true);
+            console.log('# CAROUSEL wire', slides.length);
 
             let controls = document.createElement('div');
             controls.setAttribute('data-readability-carousel-controls', '');
@@ -86,10 +93,13 @@
                 status.textContent = String(index + 1) + ' / ' + String(slides.length);
                 previousButton.disabled = index <= 0;
                 nextButton.disabled = index >= slides.length - 1;
+                console.log('# CAROUSEL update', index + 1, slides.length, Math.round(track.scrollLeft));
             };
 
             let scrollToIndex = (index) => {
-                slides[Math.max(0, Math.min(index, slides.length - 1))].scrollIntoView({
+                let boundedIndex = Math.max(0, Math.min(index, slides.length - 1));
+                console.log('# CAROUSEL scroll', boundedIndex + 1, slides.length);
+                slides[boundedIndex].scrollIntoView({
                     behavior: 'smooth',
                     block: 'nearest',
                     inline: 'center',
