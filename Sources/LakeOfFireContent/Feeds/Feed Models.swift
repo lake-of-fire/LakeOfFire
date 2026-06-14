@@ -429,6 +429,29 @@ public extension Feed {
         Self.canonicalFollowingFeedURLKey(for: rssUrl)
     }
 
+    public static func activeFeedGroupIDs(
+        canonicalFeedURLKey: String,
+        in realm: Realm,
+        fallback feedID: UUID? = nil
+    ) -> [UUID] {
+        let feedIDs = realm.objects(Feed.self)
+            .where { !$0.isDeleted && !$0.isArchived }
+            .filter { $0.canonicalFollowingFeedURLKey == canonicalFeedURLKey }
+            .map(\.id)
+        if feedIDs.isEmpty, let feedID {
+            return [feedID]
+        }
+        return Array(feedIDs)
+    }
+
+    public func activeFeedGroupIDs(in realm: Realm) -> [UUID] {
+        Self.activeFeedGroupIDs(
+            canonicalFeedURLKey: canonicalFollowingFeedURLKey,
+            in: realm,
+            fallback: id
+        )
+    }
+
     public static func uniqueFollowingFeedRepresentatives(from feeds: [Feed]) -> [Feed] {
         var representativesByURL = [String: Feed]()
 

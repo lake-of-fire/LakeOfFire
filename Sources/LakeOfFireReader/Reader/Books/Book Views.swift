@@ -158,6 +158,7 @@ fileprivate struct DownloadableBookListRow: View {
             ) { _ in
                 buttonPress()
             }
+            .accessibilityIdentifier("BookLibrary.Download.\(publication.title)")
             .font(.caption)
             .textCase(.uppercase)
             .foregroundStyle(.primary)
@@ -330,6 +331,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                 content
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("BookLibrary.Row.\(title)")
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         } else {

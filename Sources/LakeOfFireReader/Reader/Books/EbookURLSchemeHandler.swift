@@ -349,6 +349,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
             return
         }
         let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
@@ -575,7 +576,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }
                     }()
-                } else if let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js") {
+                } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
                         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                             logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
@@ -609,8 +610,16 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                     }()
                 }
+            } else {
+                await { @MainActor in
+                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                    }
+                }()
             }
         }
     }
@@ -620,11 +629,31 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetName = url.deletingPathExtension().lastPathComponent
         let assetExtension = url.lakePathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
-        let resolvedURL = Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
+        let resolvedURL = [
+            assetDirectory,
+            "Resources/\(assetDirectory)",
+            "Resources/Resources/\(assetDirectory)",
+        ].lazy.compactMap { subdirectory in
+            Bundle.module.url(
+                forResource: assetName,
+                withExtension: assetExtension,
+                subdirectory: subdirectory
+            )
+        }.first
         if resolvedURL == nil, ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
             logEbookAsset("# EBOOKASSET resolveMiss url=\(url.absoluteString) assetName=\(assetName) ext=\(assetExtension) dir=\(assetDirectory)")
         }
         return resolvedURL
+    }
+
+    nonisolated private static func viewerHTMLPath() -> String? {
+        [
+            "foliate-js",
+            "Resources/foliate-js",
+            "Resources/Resources/foliate-js",
+        ].lazy.compactMap { directory in
+            Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: directory)
+        }.first
     }
 
     @EbookURLSchemeActor

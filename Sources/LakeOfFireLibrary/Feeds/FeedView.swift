@@ -58,11 +58,16 @@ public class FeedViewModel: ObservableObject {
     private func reloadEntries(feedID: UUID, reason: String) async {
         do {
             let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            let feedIDs = Feed.activeFeedGroupIDs(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                in: realm,
+                fallback: feedID
+            )
             let entries = Array(
                 realm.objects(FeedEntry.self)
-                    .where { $0.feedID == feedID && !$0.isDeleted }
+                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             )
-            logRSS("stage=feedView.reloadEntries feedID=\(feedID.uuidString) reason=\(reason) count=\(entries.count)")
+            logRSS("stage=feedView.reloadEntries feedID=\(feedID.uuidString) reason=\(reason) groupCount=\(feedIDs.count) count=\(entries.count)")
             self.entries = entries
         } catch {
             logRSS("stage=feedView.reloadEntries.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
@@ -73,11 +78,16 @@ public class FeedViewModel: ObservableObject {
     private func reloadCollections(feedID: UUID, reason: String) async {
         do {
             let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+            let feedIDs = Feed.activeFeedGroupIDs(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                in: realm,
+                fallback: feedID
+            )
             collections = sortFeedEntryCollections(Array(
                 realm.objects(FeedEntryCollection.self)
-                    .where { $0.feedID == feedID && !$0.isDeleted }
+                    .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
             ))
-            logRSS("stage=feedView.reloadCollections feedID=\(feedID.uuidString) reason=\(reason) count=\(collections?.count ?? 0)")
+            logRSS("stage=feedView.reloadCollections feedID=\(feedID.uuidString) reason=\(reason) groupCount=\(feedIDs.count) count=\(collections?.count ?? 0)")
         } catch {
             logRSS("stage=feedView.reloadCollections.error feedID=\(feedID.uuidString) reason=\(reason) error=\(error)")
         }
@@ -104,11 +114,17 @@ public class FeedViewModel: ObservableObject {
         self.isFeedGroupFollowed = feed.isFollowed
         self.collections = feed.getCollections()
         let feedID = feed.id
+        let canonicalFeedURLKey = canonicalFeedURLKey
         debugPrint("# FeedViewModel.init feedID=\(feedID.uuidString) title=\(feedTitle)")
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
+            let feedIDs = Feed.activeFeedGroupIDs(
+                canonicalFeedURLKey: canonicalFeedURLKey,
+                in: realm,
+                fallback: feedID
+            )
             realm.objects(FeedEntry.self)
-                .where { $0.feedID == feedID && !$0.isDeleted }
+                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
@@ -117,16 +133,13 @@ public class FeedViewModel: ObservableObject {
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     debugPrint("# FeedViewModel.subscriptionTriggered feedID=\(feedID.uuidString)")
                     Task { @MainActor [weak self] in
-                        let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                        debugPrint("# FeedViewModel.reloadEntries feedID=\(feedID.uuidString)")
-                        self?.entries = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted })
-                        debugPrint("# FeedViewModel.reloadEntriesFinished feedID=\(feedID.uuidString) count=\(self?.entries?.count ?? 0)")
+                        await self?.reloadEntries(feedID: feedID, reason: "entriesChanged")
                     }
                 })
                 .store(in: &cancellables)
 
             realm.objects(FeedEntryCollection.self)
-                .where { $0.feedID == feedID && !$0.isDeleted }
+                .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
@@ -149,12 +162,15 @@ public class FeedViewModel: ObservableObject {
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         await self?.reloadFollowedStatus(reason: "feedsChanged")
+                        await self?.reloadEntries(feedID: feedID, reason: "feedsChanged")
+                        await self?.reloadCollections(feedID: feedID, reason: "feedsChanged")
                     }
                 })
                 .store(in: &cancellables)
         }
         Task { @MainActor [weak self] in
             await self?.reloadFollowedStatus(reason: "init")
+            await self?.reloadEntries(feedID: feedID, reason: "init")
             await self?.reloadCollections(feedID: feedID, reason: "init")
         }
     }
