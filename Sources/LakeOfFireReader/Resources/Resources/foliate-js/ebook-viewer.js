@@ -93,6 +93,117 @@ const describeMarkReadNode = (node) => {
     };
 };
 
+const highlightDiagnosticStyleSnapshot = (doc, element) => {
+    if (!doc || !element || !doc.defaultView?.getComputedStyle) return null;
+    const style = doc.defaultView.getComputedStyle(element);
+    const prop = (name) => style.getPropertyValue(name)?.trim?.() || null;
+    const rect = element.getBoundingClientRect?.();
+    return {
+        tag: element.tagName?.toLowerCase?.() || null,
+        id: element.id || null,
+        className: typeof element.className === 'string' ? element.className : null,
+        writingMode: style.writingMode || null,
+        direction: style.direction || null,
+        gradientDirection: prop('--mnb-highlight-gradient-direction'),
+        trackingAlpha: prop('--mnb-tracking-highlight-alpha'),
+        fillOpacity: prop('--mnb-highlight-fill-opacity'),
+        learningHighlight: prop('--word-tracking-learning-highlight'),
+        learningNav: prop('--word-tracking-learning-highlight-nav-conditional'),
+        background: style.background || null,
+        backgroundImage: style.backgroundImage || null,
+        backgroundOrigin: style.backgroundOrigin || null,
+        backgroundClip: style.backgroundClip || null,
+        boxDecorationBreak: style.boxDecorationBreak || style.webkitBoxDecorationBreak || null,
+        rect: rect ? {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height,
+        } : null,
+    };
+};
+
+const logHighlightGradientDiagnostic = (reason = 'unspecified', explicitDoc = null) => {
+    try {
+        const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
+        const doc = isDocumentLike(explicitDoc) ? explicitDoc : contents[0]?.doc;
+        if (!isDocumentLike(doc)) return;
+        const body = doc.body;
+        const root = doc.documentElement;
+        const learningSurface = doc.querySelector?.('mnb-seg.mnb-learning > mnb-sur');
+        const learningSegment = learningSurface?.closest?.('mnb-seg') ?? doc.querySelector?.('mnb-seg.mnb-learning');
+        const surface = learningSurface ?? learningSegment?.querySelector?.('mnb-sur') ?? null;
+        if (!body || !learningSegment) return;
+        const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
+        const rootStyle = doc.defaultView?.getComputedStyle?.(root);
+        const isVerticalBody = body.classList?.contains?.('reader-vertical-writing') === true
+            || root?.classList?.contains?.('vrtl') === true
+            || String(bodyStyle?.writingMode || rootStyle?.writingMode || '').startsWith('vertical');
+        if (!isVerticalBody) return;
+        const targetRect = learningSegment.getBoundingClientRect?.();
+        const inViewport = targetRect
+            && targetRect.bottom >= -200
+            && targetRect.top <= ((doc.defaultView?.innerHeight ?? 0) + 200)
+            && targetRect.right >= -200
+            && targetRect.left <= ((doc.defaultView?.innerWidth ?? 0) + 200);
+        if (!inViewport) return;
+        const datasetSnapshot = (element) => element?.dataset ? Object.fromEntries(Object.entries(element.dataset)) : null;
+        const ancestorChain = [];
+        for (let node = learningSegment; node && node !== body && ancestorChain.length < 6; node = node.parentElement) {
+            ancestorChain.push({
+                tag: node.tagName?.toLowerCase?.() || null,
+                id: node.id || null,
+                className: typeof node.className === 'string' ? node.className : null,
+                horizontalIsland: node.dataset?.mnbHorizontalWritingIsland ?? null,
+                displayToken: node.dataset?.mnbDisplayToken ?? null,
+            });
+        }
+        const payload = {
+            message: '# HIGHLIGHT ebook.gradient',
+            reason,
+            documentURL: doc.URL || doc.location?.href || null,
+            outerURL: window.location.href,
+            bodyClassName: body.className || null,
+            rootClassName: root?.className || null,
+            bodyDataset: datasetSnapshot(body),
+            rootDataset: datasetSnapshot(root),
+            bodyStyle: highlightDiagnosticStyleSnapshot(doc, body),
+            rootStyle: highlightDiagnosticStyleSnapshot(doc, root),
+            segmentStyle: highlightDiagnosticStyleSnapshot(doc, learningSegment),
+            surfaceStyle: highlightDiagnosticStyleSnapshot(doc, surface),
+            segmentHasRuby: !!learningSegment.querySelector?.('rt'),
+            segmentHorizontalIsland: learningSegment.dataset?.mnbHorizontalWritingIsland ?? null,
+            surfaceHorizontalIsland: surface?.dataset?.mnbHorizontalWritingIsland ?? null,
+            ancestorChain,
+            text: learningSegment.textContent?.trim?.().slice?.(0, 48) ?? null,
+            navHidden: body.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+            contentCount: contents.length,
+        };
+        const key = JSON.stringify({
+            reason,
+            documentURL: payload.documentURL,
+            id: learningSegment.id || null,
+            className: learningSegment.className || null,
+            bodyGradient: payload.bodyStyle?.gradientDirection,
+            segmentGradient: payload.segmentStyle?.gradientDirection,
+            surfaceGradient: payload.surfaceStyle?.gradientDirection,
+            surfaceBackgroundImage: payload.surfaceStyle?.backgroundImage,
+            navHidden: payload.navHidden,
+        });
+        if (globalThis.__manabiLastHighlightGradientDiagnosticKey === key) return;
+        globalThis.__manabiLastHighlightGradientDiagnosticKey = key;
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (error) {
+        window.webkit?.messageHandlers?.print?.postMessage?.({
+            message: '# HIGHLIGHT ebook.gradient.error',
+            reason,
+            error: String(error),
+        });
+    }
+};
+
 const MANABI_RESTORE_LOCATOR_PREFIX = 'mnb-loc-v1:';
 
 const makeSyntheticRestoreLocator = ({ sectionIndex, localSectionIndex, rendererTotal }) => {
