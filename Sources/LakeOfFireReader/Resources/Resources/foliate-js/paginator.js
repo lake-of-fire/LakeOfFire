@@ -882,6 +882,8 @@ export class Paginator extends HTMLElement {
 
     #cachedSizes = null
     #cachedStart = null
+    #sizesPromise = null
+    #viewSizePromise = null
     #lastRenderContainerSize = null
     #lastTypographyRenderSignature = null
     #visibleRangeCache = null
@@ -1947,7 +1949,10 @@ export class Paginator extends HTMLElement {
         //        await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
         if (/*true || */this.#cachedSizes === null) {
-            return new Promise(resolve => {
+            if (this.#sizesPromise) {
+                return this.#sizesPromise
+            }
+            this.#sizesPromise = new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#container.getBoundingClientRect()
                     //                    this.#cachedSizes = {
@@ -1961,9 +1966,11 @@ export class Paginator extends HTMLElement {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
                     }
+                    this.#sizesPromise = null
                     resolve(this.#cachedSizes)
                 })
             })
+            return this.#sizesPromise
             //        } else {
             //                                const r = this.#container.getBoundingClientRect()
             //            console.log("sizes() cached/real", this.#cachedSizes, r)
@@ -1976,12 +1983,24 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
-        return (await this.sizes())[await this.sideProp()]
+        return await this.#sizeForSide(await this.sideProp())
+    }
+    async #sizeForSide(sideProp) {
+        const sizes = await this.sizes()
+        return sizes?.[sideProp] ?? 0
     }
     async viewSize() {
+        return await this.#viewSizeForSide(await this.sideProp())
+    }
+    async #viewSizeForSide(sideProp) {
         if (this.#isCacheWarmer) return 0
         if (/*true ||*/ this.#view.cachedViewSize === null) {
-            return new Promise(resolve => {
+            if (this.#viewSizePromise) {
+                const cachedViewSize = await this.#viewSizePromise
+                return cachedViewSize?.[sideProp] ?? 0
+            }
+            const view = this.#view
+            this.#viewSizePromise = new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#view.element.getBoundingClientRect()
                     //                    this.#view.cachedViewSize = {
@@ -1990,27 +2009,36 @@ export class Paginator extends HTMLElement {
                     //                    }
                     //                    resolve(this.#view.cachedViewSize[await this.sideProp()])
                     //                    return ;
-                    const v = this.#view.element
-                    this.#view.cachedViewSize = {
+                    const v = view?.element
+                    const cachedViewSize = {
                         width: v.clientWidth,
                         height: v.clientHeight,
                     }
+                    if (this.#view === view) {
+                        this.#view.cachedViewSize = cachedViewSize
+                    }
+                    this.#viewSizePromise = null
                     //                                        console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
                     //                                        console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
                     //                                        console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
                     //                                        console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
-                    resolve(this.#view.cachedViewSize[await this.sideProp()])
+                    resolve(cachedViewSize)
                 })
             })
+            const cachedViewSize = await this.#viewSizePromise
+            return cachedViewSize?.[sideProp] ?? 0
         }
-        return this.#view.cachedViewSize[await this.sideProp()]
+        return this.#view.cachedViewSize[sideProp] ?? 0
     }
     async start() {
+        return await this.#startForScrollProp(await this.scrollProp())
+    }
+    async #startForScrollProp(scrollProp) {
         if (this.#cachedStart === null) {
             //        return new Promise(resolve => {
             //            requestAnimationFrame(async () => {
             //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
-            const start = Math.abs(this.#container[await this.scrollProp()])
+            const start = Math.abs(this.#container[scrollProp])
             this.#cachedStart = start
             //        return start
             //                resolve(start)
@@ -2028,9 +2056,10 @@ export class Paginator extends HTMLElement {
         return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
     }
     async pages() {
-        //        await this.#awaitDirection();
-        //        console.log("pages() view size & size:", (await this.viewSize()), (await this.size()))
-        const rawPages = Math.round((await this.viewSize()) / (await this.size()))
+        const metrics = await this.pageMetrics()
+        return metrics.pages
+    }
+    #normalizePages(rawPages) {
         if (
             MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
             && rawPages > 3
@@ -2039,6 +2068,33 @@ export class Paginator extends HTMLElement {
             return 3
         }
         return rawPages
+    }
+    async pageMetrics() {
+        await this.#awaitDirection()
+        const sideProp = await this.sideProp()
+        const scrollProp = await this.scrollProp()
+        const [size, viewSize, start] = await Promise.all([
+            this.#sizeForSide(sideProp),
+            this.#viewSizeForSide(sideProp),
+            this.#startForScrollProp(scrollProp),
+        ])
+        const end = start + size
+        const rawPages = size > 0 ? Math.round(viewSize / size) : 0
+        const pages = this.#normalizePages(rawPages)
+        const page = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
+        return {
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            sideProp,
+            scrollProp,
+            size,
+            viewSize,
+            start,
+            end,
+            page,
+            pages,
+        }
     }
     async scrollBy(dx, dy) {
         //        await this.#awaitDirection()
