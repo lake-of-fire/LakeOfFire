@@ -1,6 +1,6 @@
 (function () {
     const wiredNodes = new WeakMap();
-    
+
     function wireViewOriginal() {
         let nodes = document.body.getElementsByClassName('reader-view-original');
         for (let node of nodes) {
@@ -14,29 +14,12 @@
             }, false);
         }
     }
-    
-    function onReadabilityModeDetected() {
-        // Wire the existing nodes and start observing for new ones
-        wireViewOriginal();
-        new MutationObserver(() => {
-            wireViewOriginal();
-        }).observe(document, { childList: true, subtree: true, attributes: false });
-    }
-    
     function init() {
-        if (document.body?.classList.contains('readability-mode')) {
-            onReadabilityModeDetected();
-        } else {
-            const observer = new MutationObserver(() => {
-                if (document.body?.classList.contains('readability-mode')) {
-                    observer.disconnect();
-                    onReadabilityModeDetected();
-                }
-            });
-            observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-        }
+        wireViewOriginal();
+        new MutationObserver(() => wireViewOriginal())
+            .observe(document, { childList: true, subtree: true, attributes: false });
     }
-    
+
     if (document.readyState === 'complete') {
         init();
     } else {

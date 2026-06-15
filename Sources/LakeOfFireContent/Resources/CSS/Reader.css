@@ -64,10 +64,9 @@ body {
 }
 
 /* Image caption text */
-#reader-content .caption,
-#reader-content .wp-caption-text,
-#reader-content figcaption {
-  font-family: sans-serif;
+body:not([data-is-ebook="true"]) #reader-content .caption,
+body:not([data-is-ebook="true"]) #reader-content .wp-caption-text,
+body:not([data-is-ebook="true"]) #reader-content figcaption {
   margin: 0px !important;
   padding-top: 4px !important;
 }

@@ -162,6 +162,78 @@ private struct SwiftReadabilityProcessingResult {
     let outputHTML: String
 }
 
+private func normalizeReadabilityBodyOrder(_ doc: SwiftSoup.Document) {
+    guard let body = doc.body(),
+          let readerHeader = try? doc.getElementById("reader-header"),
+          let readerContent = try? doc.getElementById("reader-content") else {
+        return
+    }
+
+    var nodesToMove: [SwiftSoup.Element] = []
+    for child in body.children().array() {
+        if child === readerHeader {
+            break
+        }
+        if child === readerContent {
+            continue
+        }
+        nodesToMove.append(child)
+    }
+
+    for node in nodesToMove.reversed() {
+        try? readerContent.prependChild(node)
+    }
+}
+
+private func hasReaderContentMedia(in doc: SwiftSoup.Document) -> Bool {
+    guard let readerContent = try? doc.getElementById("reader-content") else {
+        return false
+    }
+    let selector = [
+        "[data-readability-carousel=\"true\"]",
+        "[data-readability-carousel=true]",
+        "img",
+        "picture",
+        "video",
+        "figure",
+    ].joined(separator: ",")
+    return ((try? readerContent.select(selector).isEmpty()) == false)
+}
+
+private func logReadabilityCarouselDOMState(_ doc: SwiftSoup.Document, url: URL, stage: String) {
+    let carousels = (try? doc.select("[data-readability-carousel=\"true\"], [data-readability-carousel=true]").array()) ?? []
+    guard !carousels.isEmpty else {
+        debugPrint("# CAROUSEL \(stage)", "contentURL=\(url.absoluteString)", "count=0")
+        return
+    }
+
+    let readerContent = try? doc.getElementById("reader-content")
+    let readerHeader = try? doc.getElementById("reader-header")
+    let bodyChildren = doc.body()?.children().array() ?? []
+    let headerIndex = readerHeader.flatMap { header in bodyChildren.firstIndex { $0 === header } } ?? -1
+    let firstContentChild = (try? readerContent?.children().first()?.tagName()) ?? "nil"
+    func containsCarousel(_ container: SwiftSoup.Element?, _ carousel: SwiftSoup.Element) -> Bool {
+        guard let container else { return false }
+        let matches = (try? container.select("[data-readability-carousel=\"true\"], [data-readability-carousel=true]").array()) ?? []
+        return matches.contains { match in match === carousel }
+    }
+    let placements = carousels.enumerated().map { index, carousel -> String in
+        let slideCount = (try? carousel.select("[data-readability-carousel-slide]").size()) ?? 0
+        let inContent = containsCarousel(readerContent, carousel)
+        let inHeader = containsCarousel(readerHeader, carousel)
+        let bodyIndex = bodyChildren.firstIndex { $0 === carousel } ?? -1
+        let beforeHeader = bodyIndex >= 0 && headerIndex >= 0 && bodyIndex < headerIndex
+        return "\(index + 1):slides=\(slideCount):content=\(inContent):header=\(inHeader):beforeHeader=\(beforeHeader)"
+    }
+    debugPrint(
+        "# CAROUSEL \(stage)",
+        "contentURL=\(url.absoluteString)",
+        "count=\(carousels.count)",
+        "firstContentChild=\(firstContentChild)",
+        "placements=\(placements.joined(separator: ","))"
+    )
+}
+
 private func escapeReadabilityText(_ raw: String) -> String {
     raw
         .replacingOccurrences(of: "&", with: "&amp;")
@@ -708,8 +780,42 @@ internal func hasReaderHeaderNodeMarkup(in html: String) -> Bool {
 
 internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
     hasReadabilityModeBodyClassMarkup(in: html)
-        && hasReaderHeaderNodeMarkup(in: html)
         && hasReaderContentNodeMarkup(in: html)
+}
+
+private func stripRuntimeReadabilityAssets(from html: String) -> String {
+    guard hasCanonicalReadabilityMarkup(in: html),
+          let doc = try? SwiftSoup.parse(html) else {
+        return html
+    }
+
+    try? doc.select("script").remove()
+    try? doc.select([
+        "style#swiftuiwebview-readability-styles",
+        "style#mnb-mark-read-buttons-visibility-style",
+        "style#mnb-readability-styles",
+    ].joined(separator: ",")).remove()
+    return (try? doc.outerHtml()) ?? html
+}
+
+private func readabilitySubstringCount(_ needle: String, in haystack: String) -> Int {
+    guard !needle.isEmpty else { return 0 }
+    var count = 0
+    var searchRange = haystack.startIndex..<haystack.endIndex
+    while let range = haystack.range(of: needle, options: [.caseInsensitive], range: searchRange) {
+        count += 1
+        searchRange = range.upperBound..<haystack.endIndex
+    }
+    return count
+}
+
+private func looksLikeStaleCachedCanonicalReadabilityHTML(_ html: String, url: URL) -> Bool {
+    guard hasCanonicalReadabilityMarkup(in: html),
+          let host = url.host?.lowercased(),
+          host == "hypebeast.com" || host.hasSuffix(".hypebeast.com") else {
+        return false
+    }
+    return readabilitySubstringCount("data-readability-carousel", in: html) == 0
 }
 
 internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
@@ -720,6 +826,14 @@ internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
         "baseURL=\(doc.getBaseUri())",
         "hasBody=\(doc.body() != nil)"
     )
+}
+
+internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document) {
+    guard let body = doc.body(),
+          ((try? body.hasAttr("data-mnb-subscription-is-active")) ?? false) == false else {
+        return
+    }
+    try? body.attr("data-mnb-subscription-is-active", "false")
 }
 
 internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document) {
@@ -1023,12 +1137,13 @@ private func propagateReaderModeDefaults(
         )
         return
     }
-    let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
+    let storageReadabilityHTML = stripRuntimeReadabilityAssets(from: readabilityHTML)
+    let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(storageReadabilityHTML) ?? fallbackTitle
     do {
         try await propagateReaderModeDefaultsOnBackgroundActor(
             for: url,
             primaryKey: primaryKey,
-            readabilityHTML: readabilityHTML,
+            readabilityHTML: storageReadabilityHTML,
             resolvedTitle: resolvedTitle
         )
     } catch {
@@ -2431,10 +2546,36 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 readerFileManager: activeReaderFileManager
             ),
                !html.isEmpty {
+                if looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url) {
+                    debugPrint(
+                        "# CAROUSEL route.skipStaleCachedCanonical",
+                        "contentURL=\(content.url.absoluteString)",
+                        "branch=rssFullContentNotDefault",
+                        "bytes=\(html.utf8.count)"
+                    )
+                } else {
+                    return ReaderModeRouteDecision(
+                        route: .localHTML,
+                        prefetchedContent: content,
+                        prefetchedLocalHTML: html
+                    )
+                }
+            }
+        }
+        if let readabilityContent, !readabilityContent.isEmpty {
+            let contentURL = readerContent.pageURL
+            if looksLikeStaleCachedCanonicalReadabilityHTML(readabilityContent, url: contentURL) {
+                debugPrint(
+                    "# CAROUSEL route.skipStaleCachedCanonical",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "branch=capturedReadability",
+                    "bytes=\(readabilityContent.utf8.count)"
+                )
+            } else {
                 return ReaderModeRouteDecision(
-                    route: .localHTML,
-                    prefetchedContent: content,
-                    prefetchedLocalHTML: html
+                    route: .capturedReadability,
+                    prefetchedContent: nil,
+                    prefetchedLocalHTML: nil
                 )
             }
         }
@@ -2444,18 +2585,27 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 readerFileManager: activeReaderFileManager
            ),
            !html.isEmpty {
-            debugPrint(
-                "# READERLOAD stage=readerMode.route.resolve",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "route=\(ReaderModeRoute.localHTML.rawValue)",
-                "reason=localHTMLAvailable",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
-            return ReaderModeRouteDecision(
-                route: .localHTML,
-                prefetchedContent: content,
-                prefetchedLocalHTML: html
-            )
+            if looksLikeStaleCachedCanonicalReadabilityHTML(html, url: content.url) {
+                debugPrint(
+                    "# CAROUSEL route.skipStaleCachedCanonical",
+                    "contentURL=\(content.url.absoluteString)",
+                    "branch=localHTML",
+                    "bytes=\(html.utf8.count)"
+                )
+            } else {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.route.resolve",
+                    "pageURL=\(readerContent.pageURL.absoluteString)",
+                    "route=\(ReaderModeRoute.localHTML.rawValue)",
+                    "reason=localHTMLAvailable",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
+                )
+                return ReaderModeRouteDecision(
+                    route: .localHTML,
+                    prefetchedContent: content,
+                    prefetchedLocalHTML: html
+                )
+            }
         }
         if let readabilityContent, !readabilityContent.isEmpty {
             debugPrint(
@@ -2532,9 +2682,33 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     return
                 }
                 do {
+                    let contentSnapshot = try await self.readerContentRenderSnapshot(readerContent: readerContent)
+                    let publicationDateFallback = cachedReadabilityContent.contains("id=\"reader-publication-date\"")
+                        ? nil
+                        : await readerContentPublicationDateFallback(for: contentURL)
+                    let resolvedReadabilityContent = rebuildCanonicalSnippetReadabilityHTML(
+                        html: cachedReadabilityContent,
+                        contentURL: contentSnapshot?.url ?? contentURL,
+                        fallbackTitle: titleFromReadabilityHTML(cachedReadabilityContent) ?? contentSnapshot?.title,
+                        publishedTime: publicationDateFallback,
+                        preferredTitle: contentSnapshot?.title,
+                        hideReaderTitleOverride: contentSnapshot?.isTitlePrefixOfContent
+                    )
+                    guard let resolvedReadabilityContent else {
+                        await self.cancelReaderModeLoad(for: contentURL, reason: "showReaderView.rebuildCachedReadabilityFailed")
+                        return
+                    }
+                    if let publicationDateFallback {
+                        debugPrint(
+                            "# BYLINE capturedReadability.publicationDateFallback",
+                            "contentURL=\((contentSnapshot?.url ?? contentURL).absoluteString)",
+                            "publishedTime=\(publicationDateFallback)",
+                            "result=rebuildCanonical"
+                        )
+                    }
                     try await self.showReadabilityContent(
                         readerContent: readerContent,
-                        readabilityContent: cachedReadabilityContent,
+                        readabilityContent: resolvedReadabilityContent,
                         renderToSelector: cachedContainerSelector,
                         in: cachedContainerFrameInfo,
                         scriptCaller: scriptCaller,
@@ -2664,7 +2838,11 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
 
             let resolvedReadabilityHTML: String?
             if hasCanonicalReadabilityMarkup(in: html) {
-                resolvedReadabilityHTML = html
+                resolvedReadabilityHTML = rebuildCanonicalSnippetReadabilityHTML(
+                    html: html,
+                    contentURL: content.url,
+                    fallbackTitle: titleFromReadabilityHTML(html)
+                )
             } else {
                 let readabilityProcessingStart = CFAbsoluteTimeGetCurrent()
                 let swiftReadability = await processReadabilityHTMLInSwift(
@@ -2797,7 +2975,18 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             && !url.isNativeReaderView
             && !url.isReaderFileURL
             && (content.content?.isEmpty ?? true)
-        let resolvedStoredHTML = shouldStoreReaderHTML ? readabilityContent : nil
+        let resolvedStoredHTML = shouldStoreReaderHTML ? stripRuntimeReadabilityAssets(from: readabilityContent) : nil
+        if url.host?.lowercased().contains("hypebeast.com") == true {
+            debugPrint(
+                "# CAROUSEL input",
+                "contentURL=\(url.absoluteString)",
+                "bytes=\(readabilityContent.utf8.count)",
+                "canonical=\(hasCanonicalReadabilityMarkup(in: readabilityContent))",
+                "carouselMarkers=\(readabilitySubstringCount("data-readability-carousel", in: readabilityContent))",
+                "hypebeastGalleryHints=\(readabilitySubstringCount("hb-gallery", in: readabilityContent) + readabilitySubstringCount("shortcode-slider", in: readabilityContent) + readabilitySubstringCount("flickity-carousel", in: readabilityContent))",
+                "storedBytes=\(resolvedStoredHTML?.utf8.count ?? 0)"
+            )
+        }
         let resolvedTitleIfNeeded: String? = {
             guard content.title.isEmpty else { return nil }
             return (resolvedStoredHTML ?? content.html)?
@@ -2940,6 +3129,9 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
+            logReadabilityCarouselDOMState(doc, url: url, stage: "native.afterProcessForReaderMode")
+            normalizeReadabilityBodyOrder(doc)
+            logReadabilityCarouselDOMState(doc, url: url, stage: "native.afterNormalizeBodyOrder")
             if url.isSnippetURL {
                 let cleanedSnippetTitle = ReaderContentLoader.resolvedDisplayTitle(
                     snippetRawTitle,
@@ -3151,12 +3343,24 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                         if (document.body) {
                             document.body.className = bodyClassNames || 'readability-mode'
                         }
+                        if (readerModeScript) {
+                            try {
+                                new Function(readerModeScript)()
+                            } catch (error) {
+                                const message = '# CAROUSEL script-error ' + String(error && error.message ? error.message : error)
+                                console.log(message)
+                                try {
+                                    window.webkit?.messageHandlers?.print?.postMessage?.(message)
+                                } catch (_error) {}
+                            }
+                        }
                         """,
                         arguments: [
                             "renderToSelector": renderToSelector ?? "",
                             "html": transformedContent,
                             "css": transformedStyleText,
                             "bodyClassNames": transformedBodyClasses,
+                            "readerModeScript": Readability.shared.scripts,
                         ], in: frameInfo)
                     self?.markReaderModeLoadComplete(for: url)
                 } else {
@@ -3883,8 +4087,14 @@ nonisolated public func processForReaderMode(
                 "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(fixTitlesStartedAt)))s"
             )
         }
-
-        if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+        let readerContentAlreadyHasMedia = hasReaderContentMedia(in: doc)
+        let documentHasImages = try !(doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true)
+        let shouldInjectHeaderImage = (injectEntryImageIntoHeader && !readerContentAlreadyHasMedia)
+            || !documentHasImages
+        if shouldInjectHeaderImage,
+           let imageURL = imageURL,
+           let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"),
+           existing.isEmpty() {
             let headerImageStartedAt = Date()
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")

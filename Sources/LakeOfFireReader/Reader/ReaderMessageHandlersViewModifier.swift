@@ -465,6 +465,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
+                    if logMessage.hasPrefix("# CAROUSEL") {
+                        print(logMessage)
+                        Logger.shared.logger.info("\(logMessage)")
+                    }
                     if logMessage.contains("\"module:posting-initialized\"") {
                         scheduleEbookViewerInitializationFallback(in: message.frameInfo)
                     }
@@ -505,10 +509,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                     components.append("\(key)=\(printable)")
                 }
-                if components.isEmpty {
-                    debugPrint(logMessage)
-                } else {
-                    debugPrint(logMessage, components.joined(separator: " "))
+                if logMessage.hasPrefix("# READER") || logMessage.hasPrefix("# CAROUSEL") {
+                    let line = components.isEmpty
+                        ? logMessage
+                        : "\(logMessage) \(components.joined(separator: " "))"
+                    if line.hasPrefix("# CAROUSEL") {
+                        print(line)
+                    }
+                    Logger.shared.logger.info("\(line)")
                 }
             }),
             ("readerDocState", { @MainActor [weak self] message in
