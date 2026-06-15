@@ -484,7 +484,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 """,
                 in: frameInfo
             )
-            _ = result
+            if let result = result as? String {
+                let line = "# HIGHLIGHT ebook.swiftDOM \(result)"
+                print(line)
+                Logger.shared.logger.info("\(line)")
+            }
         } catch {
         }
     }

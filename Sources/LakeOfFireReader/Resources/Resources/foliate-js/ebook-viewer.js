@@ -4722,6 +4722,10 @@ class Reader {
         this.#renderPageTrackingButtons(reason);
         const renderElapsedMs = performanceNowMs() - renderStartedAt;
         const syncElapsedMs = performanceNowMs() - syncStartedAt;
+        logHighlightGradientDiagnostic(`page-tracking:${reason}`, doc);
+        requestAnimationFrame(() => {
+            logHighlightGradientDiagnostic(`page-tracking:${reason}:raf`, doc);
+        });
         if (syncElapsedMs >= 12 || String(reason || '').includes('display') || String(reason || '').includes('document-load') || String(reason || '').includes('nav-buttons')) {
         }
         const diagnosticsKey = JSON.stringify({
@@ -4790,6 +4794,10 @@ class Reader {
         if (this.lastBookReadingProgressKey !== progressKey) {
             this.lastBookReadingProgressKey = progressKey;
         }
+        logHighlightGradientDiagnostic(`progress-applied:${reason}`);
+        requestAnimationFrame(() => {
+            logHighlightGradientDiagnostic(`progress-applied:${reason}:raf`);
+        });
         this.#syncPageTrackingButtons('progress-applied', null, 2).catch((error) => console.error(error));
     }
     async #handleCompletionAction(actionType) {
