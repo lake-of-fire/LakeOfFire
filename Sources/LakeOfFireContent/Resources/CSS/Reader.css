@@ -70,7 +70,6 @@ body:not([data-is-ebook="true"]) #reader-content figure img {
 body:not([data-is-ebook="true"]) #reader-content .caption,
 body:not([data-is-ebook="true"]) #reader-content .wp-caption-text,
 body:not([data-is-ebook="true"]) #reader-content figcaption {
-  font-family: sans-serif;
   margin: 0px !important;
   padding-top: 4px !important;
 }

@@ -39,7 +39,10 @@ public struct Readability: Sendable {
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }
-        scripts = readabilityOriginalJS + readabilityReaderModeJS
+        scripts = [
+            readabilityOriginalJS,
+            readabilityReaderModeJS,
+        ].joined(separator: "\n;\n")
 //        let regex = try! NSRegularExpression(pattern: "(\\|`|[$])", options: [])
 //        let range = NSRange(location: 0, length: scripts.utf16.count)
 //        let escapedScripts = regex.stringByReplacingMatches(in: scripts, options: [], range: range, withTemplate: "\\$1")

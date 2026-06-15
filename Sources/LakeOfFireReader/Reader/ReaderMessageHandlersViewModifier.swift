@@ -524,6 +524,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 if let logMessage = message.body as? String {
                     if logMessage.hasPrefix("# CAROUSEL") {
+                        print(logMessage)
                         Logger.shared.logger.info("\(logMessage)")
                     }
                     if logMessage.contains("\"module:posting-initialized\"") {
@@ -567,6 +568,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     let line = components.isEmpty
                         ? logMessage
                         : "\(logMessage) \(components.joined(separator: " "))"
+                    if line.hasPrefix("# CAROUSEL") {
+                        print(line)
+                    }
                     Logger.shared.logger.info("\(line)")
                 }
             }),

@@ -1,5 +1,7 @@
 (function () {
     const wiredCarousels = new WeakMap();
+    let observerStarted = false;
+    let lastScanSignature = '';
 
     function logCarousel() {
         let parts = Array.from(arguments).map((part) => {
@@ -19,29 +21,61 @@
         } catch (_error) {}
     }
 
+    function carouselPlacement(carousel) {
+        let readerContent = document.getElementById('reader-content');
+        let readerHeader = document.getElementById('reader-header');
+        if (readerContent && readerContent.contains(carousel)) {
+            return 'reader-content';
+        }
+        if (readerHeader && readerHeader.contains(carousel)) {
+            return 'reader-header';
+        }
+        return 'outside-reader-content';
+    }
+
     function wireReadabilityCarousels() {
         let carousels = document.querySelectorAll('[data-readability-carousel="true"]');
-        if (carousels.length > 0) {
-            logCarousel('found', carousels.length);
+        let scanSignature = [
+            document.readyState,
+            document.body?.className || '',
+            carousels.length,
+            Boolean(document.getElementById('reader-content')),
+        ].join('|');
+        if (carousels.length > 0 || scanSignature !== lastScanSignature) {
+            lastScanSignature = scanSignature;
+            logCarousel(
+                'scan',
+                'readyState=' + document.readyState,
+                'bodyClass=' + (document.body?.className || ''),
+                'count=' + carousels.length,
+                'hasReaderContent=' + Boolean(document.getElementById('reader-content'))
+            );
         }
-        for (let carousel of carousels) {
+        for (let carouselIndex = 0; carouselIndex < carousels.length; carouselIndex += 1) {
+            let carousel = carousels[carouselIndex];
             if (wiredCarousels.has(carousel)) {
-                logCarousel('skip already-wired');
+                logCarousel('skip already-wired', 'index=' + (carouselIndex + 1), 'placement=' + carouselPlacement(carousel));
                 continue;
             }
             let track = carousel.querySelector('[data-readability-carousel-track]');
             if (!track) {
-                logCarousel('skip missing-track', carousel.outerHTML.slice(0, 240));
+                logCarousel('skip missing-track', 'index=' + (carouselIndex + 1), 'placement=' + carouselPlacement(carousel), carousel.outerHTML.slice(0, 240));
                 continue;
             }
             let slides = Array.from(track.querySelectorAll('[data-readability-carousel-slide]'));
             if (slides.length < 2) {
-                logCarousel('skip insufficient-slides', slides.length);
+                logCarousel('skip insufficient-slides', 'index=' + (carouselIndex + 1), 'placement=' + carouselPlacement(carousel), 'slides=' + slides.length);
                 continue;
             }
 
             wiredCarousels.set(carousel, true);
-            logCarousel('wire', slides.length);
+            logCarousel(
+                'wire',
+                'index=' + (carouselIndex + 1),
+                'placement=' + carouselPlacement(carousel),
+                'slides=' + slides.length,
+                'trackChildren=' + track.children.length
+            );
 
             let controls = document.createElement('div');
             controls.setAttribute('data-readability-carousel-controls', '');
@@ -87,12 +121,12 @@
                 status.textContent = String(index + 1) + ' / ' + String(slides.length);
                 previousButton.disabled = index <= 0;
                 nextButton.disabled = index >= slides.length - 1;
-                logCarousel('update', index + 1, slides.length, Math.round(track.scrollLeft));
+                logCarousel('update', 'index=' + (carouselIndex + 1), 'slide=' + (index + 1), 'slides=' + slides.length, 'scrollLeft=' + Math.round(track.scrollLeft));
             };
 
             let scrollToIndex = (index) => {
                 let boundedIndex = Math.max(0, Math.min(index, slides.length - 1));
-                logCarousel('scroll', boundedIndex + 1, slides.length);
+                logCarousel('scroll', 'index=' + (carouselIndex + 1), 'slide=' + (boundedIndex + 1), 'slides=' + slides.length);
                 slides[boundedIndex].scrollIntoView({
                     behavior: 'smooth',
                     block: 'nearest',
@@ -108,10 +142,20 @@
     }
 
     function init() {
+        logCarousel(
+            'init',
+            'readyState=' + document.readyState,
+            'bodyClass=' + (document.body?.className || ''),
+            'hasReaderContent=' + Boolean(document.getElementById('reader-content'))
+        );
         if (document.body?.classList.contains('readability-mode')) {
             wireReadabilityCarousels();
-            new MutationObserver(() => wireReadabilityCarousels())
-                .observe(document, { childList: true, subtree: true, attributes: false });
+            if (!observerStarted) {
+                observerStarted = true;
+                new MutationObserver(() => wireReadabilityCarousels())
+                    .observe(document, { childList: true, subtree: true, attributes: false });
+                logCarousel('observer-started');
+            }
         } else {
             const observer = new MutationObserver(() => {
                 if (document.body?.classList.contains('readability-mode')) {
@@ -120,6 +164,7 @@
                 }
             });
             observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+            logCarousel('waiting-for-readability-mode');
         }
     }
 

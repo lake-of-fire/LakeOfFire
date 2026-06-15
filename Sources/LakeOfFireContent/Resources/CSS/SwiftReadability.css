@@ -77,6 +77,7 @@ body.readability-mode #reader-content [data-readability-carousel-controls] {
     gap: 12px;
     margin-top: 10px;
     min-height: 36px;
+    font: -apple-system-body;
 }
 
 body.readability-mode #reader-content [data-readability-carousel-button] {
@@ -92,7 +93,6 @@ body.readability-mode #reader-content [data-readability-carousel-button] {
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 20px;
     line-height: 1;
     padding: 0;
 }
@@ -100,13 +100,23 @@ body.readability-mode #reader-content [data-readability-carousel-button] {
 body.readability-mode #reader-content [data-readability-carousel-status] {
     min-width: 4.5em;
     text-align: center;
-    font-family: sans-serif;
-    font-size: 0.85em;
     opacity: 0.74;
 }
 
 body.readability-mode #reader-content [data-readability-carousel-button]:disabled {
     opacity: 0.35;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption {
+    color: var(--theme-secondary-text, -apple-system-secondary-label);
+}
+
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:not(:has(mnb-seg)) {
+    font: -apple-system-caption1;
+}
+
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:has(mnb-seg) {
+    font-size: 0.8em;
 }
 
 /* TODO: Fonts! */
