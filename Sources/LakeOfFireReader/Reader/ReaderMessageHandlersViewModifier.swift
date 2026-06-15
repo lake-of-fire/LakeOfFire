@@ -724,6 +724,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
+                print(
+                    "# HIDENAV bridge.receive",
+                    "shouldHide=\(shouldHide)",
+                    "current=\(hideNavigationDueToScroll.wrappedValue)",
+                    "source=\(source ?? "nil")",
+                    "direction=\(direction ?? "nil")",
+                    "payload=\(payload)"
+                )
                 if source == "toolbar.blankTap" {
                     navigationVisibilityWillChangeHandler?(
                         ReaderNavigationVisibilityChange(
@@ -1185,6 +1193,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
         guard previousValue != shouldHide else {
+            print(
+                "# HIDENAV bridge.set.noop",
+                "value=\(shouldHide)",
+                "source=\(source ?? "nil")",
+                "reason=\(reason ?? "nil")",
+                "direction=\(direction ?? "nil")",
+                "isPageTurn=\(isPageTurnVisibilityChange)"
+            )
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
                     ReaderNavigationVisibilityChange(
@@ -1212,6 +1228,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
         }
+        print(
+            "# HIDENAV bridge.set.applied",
+            "new=\(shouldHide)",
+            "old=\(previousValue)",
+            "source=\(source ?? "nil")",
+            "reason=\(reason ?? "nil")",
+            "direction=\(direction ?? "nil")",
+            "isPageTurn=\(isPageTurnVisibilityChange)"
+        )
     }
 
     private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
@@ -1335,16 +1360,20 @@ extension ReaderMessageHandlersViewModifier {
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
             print("# POPOVER native.hideNavigation.bridge.skip reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            print("# HIDENAV bridge.push.skip reason=recentNativeLookupHide trigger=\(reason) shouldHide=\(shouldHide) current=\(hideNavigationDueToScroll.wrappedValue) pageURL=\(pageURL.absoluteString)")
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
         do {
+            print("# HIDENAV bridge.push.begin trigger=\(reason) shouldHide=\(shouldHide) current=\(hideNavigationDueToScroll.wrappedValue) force=\(force) pageURL=\(pageURL.absoluteString)")
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
             print("# POPOVER native.hideNavigation.bridge.push reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            print("# HIDENAV bridge.push.end trigger=\(reason) pushed=\(shouldHide) pageURL=\(pageURL.absoluteString)")
         } catch {
             // Ignore boot timing races.
+            print("# HIDENAV bridge.push.error trigger=\(reason) shouldHide=\(shouldHide) error=\(error)")
         }
     }
 }

@@ -276,6 +276,16 @@ export class NavigationHUD {
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        console.info?.('# HIDENAV js.navHUD.set.begin', {
+            sequence,
+            next,
+            previous,
+            previousClass,
+            source,
+            context,
+            preserveHidden: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
+            navHidden: this.navHidden,
+        });
         if (!next && globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             this.onHideNavigationDueToScrollChange?.(this.hideNavigationDueToScroll, {
                 source,
@@ -284,6 +294,11 @@ export class NavigationHUD {
                     ...(context || {}),
                     resyncReason: 'preservedHiddenNavigation',
                 },
+            });
+            console.info?.('# HIDENAV js.navHUD.set.preserved', {
+                sequence,
+                value: this.hideNavigationDueToScroll,
+                source,
             });
             return this.hideNavigationDueToScroll;
         }
@@ -296,6 +311,11 @@ export class NavigationHUD {
                     resyncReason: 'noop',
                 },
             });
+            console.info?.('# HIDENAV js.navHUD.set.noop', {
+                sequence,
+                value: this.hideNavigationDueToScroll,
+                source,
+            });
             return this.hideNavigationDueToScroll;
         }
         this.hideNavigationDueToScroll = next;
@@ -304,6 +324,12 @@ export class NavigationHUD {
             source,
             previous,
             context,
+        });
+        console.info?.('# HIDENAV js.navHUD.set.applied', {
+            sequence,
+            value: this.hideNavigationDueToScroll,
+            source,
+            classApplied: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
         });
         this._applyLabelVariant();
         if (this.progressWrapper) {

@@ -755,13 +755,7 @@ public class ReaderModeViewModel: ObservableObject {
         pageURL: URL,
         contentURL: URL?
     ) -> Bool {
-        guard pageURL.isHTTP else { return false }
-        guard !pageURL.isEBookURL, contentURL?.isEBookURL != true else { return false }
-        guard !isReaderMode else { return false }
-        guard !isReaderModeLoading else { return false }
-        guard pendingReaderModeURL == nil else { return false }
-        guard expectedSyntheticReaderLoaderURL == nil else { return false }
-        return true
+        false
     }
 
     public func effectiveHideNavigationDueToScrollForNativeWebChrome(

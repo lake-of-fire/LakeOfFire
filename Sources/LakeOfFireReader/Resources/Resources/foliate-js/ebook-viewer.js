@@ -4131,7 +4131,18 @@ class Reader {
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
             onHideNavigationDueToScrollChange: (hidden, details = {}) => {
                 this.#applyHideNavigationDueToScrollToBookContent(hidden);
+                console.info?.('# HIDENAV js.reader.visibilityChange', {
+                    hidden,
+                    source: details?.source || 'unknown',
+                    previous: details?.previous ?? null,
+                    context: details?.context ?? null,
+                    bridgeSource: !!details?.context?.bridgeSource,
+                });
                 if (details?.context?.bridgeSource) {
+                    console.info?.('# HIDENAV js.reader.visibilityChange.skipNativePost', {
+                        hidden,
+                        source: details?.source || 'unknown',
+                    });
                     return;
                 }
                 postEbookNavigationVisibilityToNative(
