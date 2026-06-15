@@ -1192,15 +1192,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
+        print(
+            "# HIDENAV bridge.set.begin",
+            "shouldHide=\(shouldHide)",
+            "current=\(previousValue)",
+            "source=\(source ?? "nil")",
+            "reason=\(reason ?? "nil")",
+            "direction=\(direction ?? "nil")",
+            "isPageTurn=\(isPageTurnVisibilityChange)"
+        )
         guard previousValue != shouldHide else {
-            print(
-                "# HIDENAV bridge.set.noop",
-                "value=\(shouldHide)",
-                "source=\(source ?? "nil")",
-                "reason=\(reason ?? "nil")",
-                "direction=\(direction ?? "nil")",
-                "isPageTurn=\(isPageTurnVisibilityChange)"
-            )
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
                     ReaderNavigationVisibilityChange(
@@ -1211,6 +1212,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 )
             }
+            print("# HIDENAV bridge.set.noop value=\(shouldHide) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
             return
         }
         navigationVisibilityWillChangeHandler?(
@@ -1228,27 +1230,40 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
         }
-        print(
-            "# HIDENAV bridge.set.applied",
-            "new=\(shouldHide)",
-            "old=\(previousValue)",
-            "source=\(source ?? "nil")",
-            "reason=\(reason ?? "nil")",
-            "direction=\(direction ?? "nil")",
-            "isPageTurn=\(isPageTurnVisibilityChange)"
-        )
+        print("# HIDENAV bridge.set.applied new=\(shouldHide) old=\(previousValue) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
     }
 
     private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
         let normalizedReason = result.reason.lowercased()
         if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
+            let recentPageMotionHide = lastNavigationVisibilityEvent.flatMap { event -> (age: TimeInterval, source: String?, direction: String?)? in
+                let isPageMotion =
+                    event.source?.contains("page-turn") == true
+                    || event.source?.contains("relocate") == true
+                    || event.source?.contains("goTo") == true
+                guard event.shouldHide, isPageMotion else { return nil }
+                return (Date().timeIntervalSince(event.timestamp), event.source, event.direction)
+            }
             if normalizedReason == "navigation",
-               let event = lastNavigationVisibilityEvent,
-               event.shouldHide,
-               event.direction == "forward",
-               Date().timeIntervalSince(event.timestamp) < 0.8 {
+               hideNavigationDueToScroll.wrappedValue,
+               let recentPageMotionHide,
+               recentPageMotionHide.age >= 0,
+               recentPageMotionHide.age < 5.0 {
+                print(
+                    "# HIDENAV bridge.updateReadingProgress.skip",
+                    "reason=\(normalizedReason)",
+                    "current=\(hideNavigationDueToScroll.wrappedValue)",
+                    "lastSource=\(recentPageMotionHide.source ?? "nil")",
+                    "lastDirection=\(recentPageMotionHide.direction ?? "nil")",
+                    "age=\(recentPageMotionHide.age)"
+                )
                 return
             }
+            print(
+                "# HIDENAV bridge.updateReadingProgress.apply",
+                "reason=\(normalizedReason)",
+                "current=\(hideNavigationDueToScroll.wrappedValue)"
+            )
             setHideNavigationDueToScroll(
                 false,
                 reason: normalizedReason,
@@ -1360,20 +1375,16 @@ extension ReaderMessageHandlersViewModifier {
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
             print("# POPOVER native.hideNavigation.bridge.skip reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
-            print("# HIDENAV bridge.push.skip reason=recentNativeLookupHide trigger=\(reason) shouldHide=\(shouldHide) current=\(hideNavigationDueToScroll.wrappedValue) pageURL=\(pageURL.absoluteString)")
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
         do {
-            print("# HIDENAV bridge.push.begin trigger=\(reason) shouldHide=\(shouldHide) current=\(hideNavigationDueToScroll.wrappedValue) force=\(force) pageURL=\(pageURL.absoluteString)")
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
             print("# POPOVER native.hideNavigation.bridge.push reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
-            print("# HIDENAV bridge.push.end trigger=\(reason) pushed=\(shouldHide) pageURL=\(pageURL.absoluteString)")
         } catch {
             // Ignore boot timing races.
-            print("# HIDENAV bridge.push.error trigger=\(reason) shouldHide=\(shouldHide) error=\(error)")
         }
     }
 }

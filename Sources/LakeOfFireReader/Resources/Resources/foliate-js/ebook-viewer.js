@@ -2539,6 +2539,48 @@ const rangeBoundarySegmentIndex = (visibleRange, boundary, orderedSegments) => {
     return null;
 };
 
+const collectSegmentNodesInVisibleRange = (visibleRange) => {
+    const doc = visibleRange?.commonAncestorContainer?.ownerDocument
+        || visibleRange?.startContainer?.ownerDocument
+        || visibleRange?.endContainer?.ownerDocument
+        || null;
+    if (!doc || !visibleRange?.commonAncestorContainer) {
+        return null;
+    }
+    const root = visibleRange.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+        ? visibleRange.commonAncestorContainer
+        : visibleRange.commonAncestorContainer?.parentElement;
+    if (!root) {
+        return null;
+    }
+    const nodes = [];
+    const appendSegment = (node) => {
+        if (node?.nodeType !== Node.ELEMENT_NODE) return;
+        if (node.matches?.('mnb-seg')) {
+            nodes.push(node);
+        }
+    };
+    appendSegment(root);
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+        acceptNode(node) {
+            if (node === root) return NodeFilter.FILTER_SKIP;
+            try {
+                return visibleRange.intersectsNode(node)
+                    ? NodeFilter.FILTER_ACCEPT
+                    : NodeFilter.FILTER_REJECT;
+            } catch (_error) {
+                return NodeFilter.FILTER_REJECT;
+            }
+        },
+    });
+    let current = walker.nextNode();
+    while (current) {
+        appendSegment(current);
+        current = walker.nextNode();
+    }
+    return nodes.length > 0 ? nodes : null;
+};
+
 const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBounds) => {
     const visibleSegments = [];
     let hiddenTooltipCount = 0;
@@ -2605,6 +2647,16 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds) => {
     if (!visibleRange || visibleRange.collapsed === true) {
         return null;
     }
+    const rangeSegmentNodes = collectSegmentNodesInVisibleRange(visibleRange);
+    if (rangeSegmentNodes?.length > 0) {
+        return {
+            ...measureVisibleSegmentsInWindow(rangeSegmentNodes, visibleRange, visibleBounds),
+            segmentNodes: rangeSegmentNodes,
+            segmentCandidateSource: 'sentinel-range',
+            orderedSegmentCount: rangeSegmentNodes.length,
+            boundedByWindow: true,
+        };
+    }
     const orderedSegments = orderedSegmentNodesForDocument(doc);
     const allSegmentNodes = orderedSegments.nodes;
     if (allSegmentNodes.length === 0) {
@@ -2651,7 +2703,7 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds) => {
             return best;
         }
     }
-    return null;
+    return best?.visibleSegments?.length > 0 ? best : null;
 };
 
 const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
@@ -2815,6 +2867,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         frameLeft: Number.isFinite(frameRect?.left) ? frameRect.left : 0,
         frameTop: Number.isFinite(frameRect?.top) ? frameRect.top : 0,
         totalSegmentCount,
+        segmentCandidateSource,
         hiddenTooltipCount,
         missingIdentifierCount,
         outOfViewportCount,
@@ -2848,8 +2901,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         pageTop: Number.isFinite(window.visualViewport?.pageTop) ? window.visualViewport.pageTop : null,
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
-    const frameElement = view?.frameElement ?? null;
-    const frameRect = frameElement?.getBoundingClientRect?.() ?? null;
     if (globalThis.manabiVerboseLookupPositionTargets === true) {
     }
     if (typeof builder !== 'function') {
@@ -4131,18 +4182,7 @@ class Reader {
             onJumpRequest: descriptor => this._goToDescriptor(descriptor),
             onHideNavigationDueToScrollChange: (hidden, details = {}) => {
                 this.#applyHideNavigationDueToScrollToBookContent(hidden);
-                console.info?.('# HIDENAV js.reader.visibilityChange', {
-                    hidden,
-                    source: details?.source || 'unknown',
-                    previous: details?.previous ?? null,
-                    context: details?.context ?? null,
-                    bridgeSource: !!details?.context?.bridgeSource,
-                });
                 if (details?.context?.bridgeSource) {
-                    console.info?.('# HIDENAV js.reader.visibilityChange.skipNativePost', {
-                        hidden,
-                        source: details?.source || 'unknown',
-                    });
                     return;
                 }
                 postEbookNavigationVisibilityToNative(

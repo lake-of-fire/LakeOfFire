@@ -77,7 +77,9 @@ body.readability-mode #reader-content [data-readability-carousel-controls] {
     gap: 12px;
     margin-top: 10px;
     min-height: 36px;
-    font: -apple-system-body;
+    font: -apple-system-footnote;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 body.readability-mode #reader-content [data-readability-carousel-button] {
@@ -93,6 +95,7 @@ body.readability-mode #reader-content [data-readability-carousel-button] {
     background: transparent;
     color: inherit;
     font: inherit;
+    font-weight: 600;
     line-height: 1;
     padding: 0;
 }
