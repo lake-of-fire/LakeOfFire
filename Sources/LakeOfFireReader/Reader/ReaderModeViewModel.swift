@@ -722,6 +722,14 @@ internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
     )
 }
 
+internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document) {
+    guard let body = doc.body(),
+          ((try? body.hasAttr("data-mnb-subscription-is-active")) ?? false) == false else {
+        return
+    }
+    try? body.attr("data-mnb-subscription-is-active", "false")
+}
+
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
     if let doc = try? SwiftSoup.parse(html),
        let title = titleFromReadabilityDocument(doc) {
@@ -3714,11 +3722,15 @@ func prepareHTMLForDirectLoad(_ html: String) -> String {
         return """
         <html>
         <head></head>
-        <body>
+        <body data-mnb-subscription-is-active="false">
         \(updatedHTML)
         </body>
         </html>
         """
+    }
+    if updatedHTML.range(of: #"(?i)<body\b[^>]*\bdata-mnb-subscription-is-active\s*=\s*['"]"#, options: .regularExpression) == nil,
+       let bodyRange = updatedHTML.range(of: #"(?i)<body\b"#, options: .regularExpression) {
+        updatedHTML.insert(contentsOf: #" data-mnb-subscription-is-active="false""#, at: bodyRange.upperBound)
     }
     return updatedHTML
 }
@@ -3820,6 +3832,7 @@ nonisolated public func processForReaderMode(
     if !isCacheWarmer {
         if let bodyTag = doc.body() {
             let bodyAttributesStartedAt = Date()
+            markReaderSubscriptionInactiveByDefault(in: doc)
             // TODO: font size and theme set elsewhere already..?
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
