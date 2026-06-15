@@ -1641,6 +1641,19 @@ export class NavigationHUD {
             return null;
         }
         try {
+            if (typeof renderer.pageMetrics === 'function') {
+                const metrics = await renderer.pageMetrics();
+                const normalized = this._normalizeRendererPageInfo(metrics?.page, metrics?.pages, renderer);
+                if (!normalized) return null;
+                this.rendererPageSnapshot = normalized;
+                this.nativeOverlayPageSnapshot = {
+                    current: normalized.current,
+                    total: normalized.total,
+                    source: 'renderer',
+                };
+                this._updateFallbackTotalPages(normalized.total);
+                return normalized;
+            }
             const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
             if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
                 return null;

@@ -523,7 +523,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
-                    if logMessage.hasPrefix("# CAROUSEL") {
+                    if logMessage.hasPrefix("# CAROUSEL") || logMessage.hasPrefix("# HIGHLIGHT") {
                         print(logMessage)
                         Logger.shared.logger.info("\(logMessage)")
                     }
@@ -563,7 +563,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 if components.isEmpty {
                 } else {
                 }
-                if logMessage.hasPrefix("# READER") || logMessage.hasPrefix("# CAROUSEL")
+                if logMessage.hasPrefix("# READER") || logMessage.hasPrefix("# CAROUSEL") || logMessage.hasPrefix("# HIGHLIGHT")
                 {
                     let line = components.isEmpty
                         ? logMessage

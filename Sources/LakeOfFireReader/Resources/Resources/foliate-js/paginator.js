@@ -2001,6 +2001,7 @@ export class Paginator extends HTMLElement {
     }
     async #viewSizeForSide(sideProp) {
         if (this.#isCacheWarmer) return 0
+        if (!this.#view) return 0
         if (/*true ||*/ this.#view.cachedViewSize === null) {
             if (this.#viewSizePromise) {
                 const cachedViewSize = await this.#viewSizePromise
@@ -2853,6 +2854,7 @@ export class Paginator extends HTMLElement {
 
                 this.#cachedSizes = null
                 this.#sizesPromise = null
+                this.#viewSizePromise = null
                 this.#cachedStart = null
                 this.#invalidateVisibleRangeCache()
 
