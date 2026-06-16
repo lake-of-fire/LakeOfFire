@@ -527,7 +527,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
-                    if logMessage.hasPrefix("# CAROUSEL") || logMessage.hasPrefix("# HIGHLIGHT") {
+                    if logMessage.hasPrefix("# EBOOKLOAD") {
+                        print(logMessage)
+                    } else if logMessage.hasPrefix("# CAROUSEL")
+                        || logMessage.hasPrefix("# HIGHLIGHT") {
                         print(logMessage)
                         Logger.shared.logger.info("\(logMessage)")
                     }
@@ -718,6 +721,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let source = result.source.absoluteString
                 let messageText = result.message ?? "unknown message"
                 let errorText = result.error ?? "n/a"
+                let sanitizedMessageText = messageText.replacingOccurrences(of: "\n", with: " ")
+                let sanitizedErrorText = errorText.replacingOccurrences(of: "\n", with: " ")
+                let ebookLoadLine = "# EBOOKLOAD swift.message.readerOnError source=\(source) message=\(sanitizedMessageText) error=\(sanitizedErrorText)"
+                print(ebookLoadLine)
+                Logger.shared.logger.error("\(ebookLoadLine)")
                 Logger.shared.logger.error("[JS] Error: \(messageText) @ \(source):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(errorText)")
             }),
             ("ebookNavigationVisibility", { @MainActor [weak self] message in

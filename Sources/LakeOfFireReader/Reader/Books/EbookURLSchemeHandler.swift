@@ -40,15 +40,61 @@ fileprivate func logEbookAsset(_ line: String) {
     Logger.shared.logger.info("\(line)")
 }
 
+fileprivate func ebookLoadLogValue(_ value: Any?) -> String {
+    func truncated(_ string: String, limit: Int = 240) -> String {
+        guard string.count > limit else { return string }
+        return String(string.prefix(limit))
+    }
+    guard let value else { return "nil" }
+    switch value {
+    case let value as Bool:
+        return value ? "true" : "false"
+    case let value as Int:
+        return "\(value)"
+    case let value as UInt:
+        return "\(value)"
+    case let value as Double:
+        return value.isFinite ? String(format: "%.0f", value) : "\(value)"
+    case let value as Float:
+        return value.isFinite ? String(format: "%.0f", Double(value)) : "\(value)"
+    case let value as URL:
+        return truncated(value.absoluteString.replacingOccurrences(of: "\n", with: " "))
+    default:
+        return truncated(String(describing: value).replacingOccurrences(of: "\n", with: " "))
+    }
+}
+
+fileprivate func ebookLoadLog(_ event: String, _ payload: [String: Any?] = [:]) {
+    guard shouldLogNativeEbookLoad(event: event, payload: payload) else { return }
+    let details = payload
+        .sorted { $0.key < $1.key }
+        .map { "\($0.key)=\(ebookLoadLogValue($0.value))" }
+        .joined(separator: " ")
+    let line = details.isEmpty ? "# EBOOKLOAD swift.\(event)" : "# EBOOKLOAD swift.\(event) \(details)"
+    print(line)
+}
+
+fileprivate enum EbookLoadRequestIDGenerator {
+    private static let lock = NSLock()
+    private static var nextID: UInt64 = 0
+
+    static func next() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        nextID += 1
+        return String(nextID)
+    }
+}
+
 fileprivate let ebookLoadVerboseLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_EPUBLOAD_VERBOSE_LOGS"] == "1"
 
-fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any]) -> Bool {
+fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any?]) -> Bool {
     if ebookLoadVerboseLoggingEnabled { return true }
-    if event.contains("error") { return true }
-    if payload["isCacheWarmer"] as? Bool == true { return false }
-    if event == "processText.response",
-       let elapsedMs = payload["elapsedMs"] as? Int,
+    if event.localizedCaseInsensitiveContains("error") { return true }
+    if (payload["isCacheWarmer"] ?? nil) as? Bool == true { return false }
+    if event == "processText.responseReady",
+       let elapsedMs = (payload["responseReadyElapsedMs"] ?? nil) as? Int,
        elapsedMs >= 5_000 {
         return true
     }
@@ -166,32 +212,81 @@ fileprivate actor EBookProcessTextRequestDeduper {
         operation: @Sendable () async throws -> String
     ) async throws -> (responseText: String, didCoalesce: Bool) {
         let startedAt = Date()
+        ebookLoadLog("processText.deduper.enter", [
+            "location": key.location,
+            "isCacheWarmer": key.isCacheWarmer,
+            "fingerprint": key.textFingerprint,
+            "activeKeys": inFlightWaitersByKey.count
+        ])
         if inFlightWaitersByKey[key] != nil {
             let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
+            ebookLoadLog("processText.deduper.coalesce", [
+                "location": key.location,
+                "isCacheWarmer": key.isCacheWarmer,
+                "fingerprint": key.textFingerprint,
+                "waitersBefore": waiterCountBeforeAppend
+            ])
             if ebookReplaceTextVerboseLoggingEnabled {
             }
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
             }
             let joinElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            ebookLoadLog("processText.deduper.coalesce.finish", [
+                "location": key.location,
+                "isCacheWarmer": key.isCacheWarmer,
+                "fingerprint": key.textFingerprint,
+                "elapsedMs": joinElapsedMs
+            ])
             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: joinElapsedMs, didCoalesce: true) {
             }
             return (try resolve(response), true)
         }
 
         inFlightWaitersByKey[key] = []
+        ebookLoadLog("processText.deduper.owner.start", [
+            "location": key.location,
+            "isCacheWarmer": key.isCacheWarmer,
+            "fingerprint": key.textFingerprint
+        ])
         if ebookReplaceTextVerboseLoggingEnabled {
         }
         let response: ProcessTextOutcome
         do {
             response = .success(try await operation())
+            ebookLoadLog("processText.deduper.owner.operation.finish", [
+                "location": key.location,
+                "isCacheWarmer": key.isCacheWarmer,
+                "fingerprint": key.textFingerprint,
+                "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000)
+            ])
         } catch is CancellationError {
             response = .cancelled
+            ebookLoadLog("processText.deduper.owner.operation.cancelled", [
+                "location": key.location,
+                "isCacheWarmer": key.isCacheWarmer,
+                "fingerprint": key.textFingerprint,
+                "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000)
+            ])
         } catch {
             response = .failure(error.localizedDescription)
+            ebookLoadLog("processText.deduper.owner.operation.error", [
+                "location": key.location,
+                "isCacheWarmer": key.isCacheWarmer,
+                "fingerprint": key.textFingerprint,
+                "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000),
+                "error": error.localizedDescription
+            ])
         }
         let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
         let resolveElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        ebookLoadLog("processText.deduper.owner.resolve", [
+            "location": key.location,
+            "isCacheWarmer": key.isCacheWarmer,
+            "fingerprint": key.textFingerprint,
+            "waiters": waiters.count,
+            "elapsedMs": resolveElapsedMs
+        ])
         if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: resolveElapsedMs, didCoalesce: !waiters.isEmpty) {
         }
         for waiter in waiters {
@@ -229,9 +324,19 @@ actor EBookProcessingActor {
         isCacheWarmer: Bool
     ) async throws -> String {
         let startedAt = Date()
+        ebookLoadLog("processText.actor.start", [
+            "location": location,
+            "contentURL": contentURL.absoluteString,
+            "isCacheWarmer": isCacheWarmer,
+            "requestChars": text.count
+        ])
         if ebookReplaceTextVerboseLoggingEnabled {
         }
         guard let ebookTextProcessor else {
+            ebookLoadLog("processText.actor.noProcessor", [
+                "location": location,
+                "isCacheWarmer": isCacheWarmer
+            ])
             return text
         }
 
@@ -245,6 +350,12 @@ actor EBookProcessingActor {
             processHTML
         )
         let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        ebookLoadLog("processText.actor.finish", [
+            "location": location,
+            "isCacheWarmer": isCacheWarmer,
+            "responseChars": result.count,
+            "elapsedMs": elapsedMs
+        ])
         if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: elapsedMs) {
         }
         return result
@@ -384,6 +495,13 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        ebookLoadLog("scheme.stop", [
+            "requestID": urlSchemeTask.hash,
+            "url": urlSchemeTask.request.url?.absoluteString,
+            "path": urlSchemeTask.request.url?.path,
+            "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString,
+            "wasActive": schemeHandlers[urlSchemeTask.hash] != nil
+        ])
         schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
     }
     
@@ -391,8 +509,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
         
         guard let url = urlSchemeTask.request.url else { return }
+        let requestID = EbookLoadRequestIDGenerator.next()
         let schemeRequestStartedAt = Date()
         let entrySubpath = ebookEntrySubpath(from: url)
+        ebookLoadLog("scheme.start", [
+            "requestID": requestID,
+            "taskHash": urlSchemeTask.hash,
+            "url": url.absoluteString,
+            "path": url.path,
+            "method": urlSchemeTask.request.httpMethod,
+            "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString,
+            "entrySubpath": entrySubpath
+        ])
         let shouldLogSchemeStart = url.path != "/entry"
             || entrySubpath.map { shouldLogEbookEntry(subpath: $0) } == true
         if shouldLogSchemeStart {
@@ -406,6 +534,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             for: url,
             asset: sharedReaderFontAsset
         ) {
+            ebookLoadLog("scheme.finish.font", [
+                "requestID": requestID,
+                "url": url.absoluteString,
+                "bytes": fontResponse.data.count,
+                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+            ])
             urlSchemeTask.didReceive(fontResponse.response)
             urlSchemeTask.didReceive(fontResponse.data)
             urlSchemeTask.didFinish()
@@ -414,6 +548,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
+            ebookLoadLog("scheme.fail", [
+                "requestID": requestID,
+                "url": url.absoluteString,
+                "reason": "missingReaderFileManager",
+                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+            ])
             ebookReaderLoadDebugLog("ebook.scheme.fail reason=missingReaderFileManager url=\(url.absoluteString)")
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
             schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
@@ -432,9 +572,16 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let self else { return }
             if url.path == "/process-text" {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
+                    let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
+                    ebookLoadLog("processText.start", [
+                        "requestID": requestID,
+                        "location": replacedTextLocation,
+                        "contentURL": contentURL.absoluteString,
+                        "isCacheWarmer": isCacheWarmer,
+                        "requestBytes": payload.count
+                    ])
                     if let ebookTextProcessor {
                         let requestStartedAt = Date()
-                        let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                         let processRequestKey = EBookProcessTextRequestKey(
                             contentURL: contentURL,
                             location: replacedTextLocation,
@@ -464,10 +611,31 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 )
                             }
                         } catch {
+                            ebookLoadLog("processText.error", [
+                                "requestID": requestID,
+                                "location": replacedTextLocation,
+                                "isCacheWarmer": isCacheWarmer,
+                                "elapsedMs": Int(Date().timeIntervalSince(requestStartedAt) * 1000),
+                                "error": error.localizedDescription
+                            ])
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                    ebookLoadLog("scheme.fail.processText", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "active": true,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                        "error": error.localizedDescription
+                                    ])
                                     urlSchemeTask.didFailWithError(error)
                                     self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                } else {
+                                    ebookLoadLog("scheme.skipFail.processText", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "active": false,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                    ])
                                 }
                             }()
                             return
@@ -478,6 +646,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
                             }
+                            ebookLoadLog("processText.responseReady", [
+                                "requestID": requestID,
+                                "location": replacedTextLocation,
+                                "isCacheWarmer": isCacheWarmer,
+                                "didCoalesce": didCoalesce,
+                                "responseBytes": respData.count,
+                                "responseReadyElapsedMs": responseReadyElapsedMs,
+                                "responseEncodeElapsedMs": responseDataEncodeElapsedMs
+                            ])
                             let httpResponseBuildStartedAt = Date()
                             let resp = HTTPURLResponse(
                                 url: url,
@@ -497,10 +674,32 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                     urlSchemeTask.didReceive(respData)
                                     urlSchemeTask.didFinish()
                                     self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                    ebookLoadLog("scheme.finish.processText", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "bytes": respData.count,
+                                        "active": true,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                    ])
+                                } else {
+                                    ebookLoadLog("scheme.skipFinish.processText", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "bytes": respData.count,
+                                        "active": false,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                    ])
                                 }
                             }()
                         }
                     } else if let respData = text.data(using: .utf8) {
+                        ebookLoadLog("processText.noProcessorEcho", [
+                            "requestID": requestID,
+                            "location": replacedTextLocation,
+                            "bytes": respData.count
+                        ])
                         let resp = HTTPURLResponse(
                             url: url,
                             mimeType: nil,
@@ -513,19 +712,55 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 urlSchemeTask.didReceive(respData)
                                 urlSchemeTask.didFinish()
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                ebookLoadLog("scheme.finish.processText.echo", [
+                                    "requestID": requestID,
+                                    "location": replacedTextLocation,
+                                    "bytes": respData.count,
+                                    "active": true,
+                                    "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                ])
+                            } else {
+                                ebookLoadLog("scheme.skipFinish.processText.echo", [
+                                    "requestID": requestID,
+                                    "location": replacedTextLocation,
+                                    "bytes": respData.count,
+                                    "active": false,
+                                    "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                ])
                             }
                         }()
                     } else {
+                        ebookLoadLog("processText.invalidBody", [
+                            "requestID": requestID,
+                            "payloadBytes": payload.count
+                        ])
                         await { @MainActor in
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                ebookLoadLog("scheme.fail.processText.invalidBody", [
+                                    "requestID": requestID,
+                                    "active": true,
+                                    "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                ])
                                 urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                             }
                         }()
                     }
                 } else {
+                    ebookLoadLog("processText.invalidRequest", [
+                        "requestID": requestID,
+                        "method": urlSchemeTask.request.httpMethod,
+                        "hasBody": ebookRequestBodyData(urlSchemeTask.request) != nil,
+                        "location": urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"),
+                        "contentURL": urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION")
+                    ])
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            ebookLoadLog("scheme.fail.processText.invalidRequest", [
+                                "requestID": requestID,
+                                "active": true,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
                             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }
@@ -533,19 +768,37 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } else if url.path == "/entries" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
+                    ebookLoadLog("entries.invalidMainDocument", [
+                        "requestID": requestID,
+                        "url": url.absoluteString,
+                        "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString,
+                        "sourceHeader": urlSchemeTask.request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
+                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                     }()
                     return
                 }
 
                 do {
+                    ebookLoadLog("entries.sourceCache.start", [
+                        "requestID": requestID,
+                        "mainDocumentURL": mainDocumentURL.absoluteString
+                    ])
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
                     let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
                     let data = try JSONEncoder().encode(responseBody)
+                    ebookLoadLog("entries.responseReady", [
+                        "requestID": requestID,
+                        "mainDocumentURL": mainDocumentURL.absoluteString,
+                        "entryCount": cachedSource.entries.count,
+                        "bytes": data.count,
+                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                    ])
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: "application/json",
@@ -558,9 +811,30 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             urlSchemeTask.didReceive(data)
                             urlSchemeTask.didFinish()
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                            ebookLoadLog("scheme.finish.entries", [
+                                "requestID": requestID,
+                                "entryCount": cachedSource.entries.count,
+                                "bytes": data.count,
+                                "active": true,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
+                        } else {
+                            ebookLoadLog("scheme.skipFinish.entries", [
+                                "requestID": requestID,
+                                "entryCount": cachedSource.entries.count,
+                                "bytes": data.count,
+                                "active": false,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
                         }
                     }()
                 } catch {
+                    ebookLoadLog("entries.error", [
+                        "requestID": requestID,
+                        "mainDocumentURL": mainDocumentURL.absoluteString,
+                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                        "error": error.localizedDescription
+                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(error)
                         self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
@@ -572,8 +846,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         .queryItems?
                         .first(where: { $0.name == "subpath" })?
                         .value else {
+                    ebookLoadLog("entry.invalidRequest", [
+                        "requestID": requestID,
+                        "url": url.absoluteString,
+                        "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString,
+                        "sourceHeader": urlSchemeTask.request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
+                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                     }()
                     return
                 }
@@ -582,15 +863,32 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let shouldLogEntryStart = shouldLogEbookEntry(subpath: subpath)
                     if shouldLogEntryStart {
                     }
+                    ebookLoadLog("entry.sourceCache.start", [
+                        "requestID": requestID,
+                        "mainDocumentURL": mainDocumentURL.absoluteString,
+                        "subpath": subpath
+                    ])
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    ebookLoadLog("entry.read.start", [
+                        "requestID": requestID,
+                        "subpath": subpath
+                    ])
                     let data = try cachedSource.source.readEntry(subpath: subpath)
                     let metadata = try cachedSource.source.mimeType(subpath: subpath)
                     let elapsedMs = Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
                     if shouldLogEbookEntry(subpath: subpath, mimeType: metadata.mimeType, elapsedMs: elapsedMs) {
                     }
+                    ebookLoadLog("entry.responseReady", [
+                        "requestID": requestID,
+                        "subpath": subpath,
+                        "mimeType": metadata.mimeType,
+                        "encoding": metadata.textEncodingName,
+                        "bytes": data.count,
+                        "elapsedMs": elapsedMs
+                    ])
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: metadata.mimeType,
@@ -603,6 +901,23 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             urlSchemeTask.didReceive(data)
                             urlSchemeTask.didFinish()
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                            ebookLoadLog("scheme.finish.entry", [
+                                "requestID": requestID,
+                                "subpath": subpath,
+                                "mimeType": metadata.mimeType,
+                                "bytes": data.count,
+                                "active": true,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
+                        } else {
+                            ebookLoadLog("scheme.skipFinish.entry", [
+                                "requestID": requestID,
+                                "subpath": subpath,
+                                "mimeType": metadata.mimeType,
+                                "bytes": data.count,
+                                "active": false,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
                         }
                     }()
                 } catch {
@@ -619,21 +934,46 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 urlSchemeTask.didReceive(response)
                                 urlSchemeTask.didFinish()
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                ebookLoadLog("scheme.finish.entry404", [
+                                    "requestID": requestID,
+                                    "subpath": subpath,
+                                    "active": true,
+                                    "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                ])
                             }
                         }()
                         return
                     }
+                    ebookLoadLog("entry.error", [
+                        "requestID": requestID,
+                        "subpath": subpath,
+                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                        "error": error.localizedDescription
+                    ])
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(error)
                         self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                     }()
                 }
             } else if url.pathComponents.starts(with: ["/", "load"]) {
+                ebookLoadLog("load.start", [
+                    "requestID": requestID,
+                    "url": url.absoluteString,
+                    "pathComponents": url.pathComponents.joined(separator: "|")
+                ])
                 ebookReaderLoadDebugLog("ebook.scheme.load.begin url=\(url.absoluteString) pathComponents=\(url.pathComponents.joined(separator: "|"))")
                 // Bundle file.
                 if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? Data(contentsOf: fileUrl) {
+                    ebookLoadLog("load.bundle.responseReady", [
+                        "requestID": requestID,
+                        "url": url.absoluteString,
+                        "fileURL": fileUrl.absoluteString,
+                        "mimeType": mimeType,
+                        "bytes": data.count,
+                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                    ])
                     ebookReaderLoadDebugLog("ebook.scheme.load.bundleHit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) bytes=\(data.count)")
                     if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                         logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
@@ -648,9 +988,31 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             urlSchemeTask.didReceive(data)
                             urlSchemeTask.didFinish()
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                            ebookLoadLog("scheme.finish.load.bundle", [
+                                "requestID": requestID,
+                                "url": url.absoluteString,
+                                "mimeType": mimeType,
+                                "bytes": data.count,
+                                "active": true,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
+                        } else {
+                            ebookLoadLog("scheme.skipFinish.load.bundle", [
+                                "requestID": requestID,
+                                "url": url.absoluteString,
+                                "mimeType": mimeType,
+                                "bytes": data.count,
+                                "active": false,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
                         }
                     }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
+                    ebookLoadLog("load.viewer.start", [
+                        "requestID": requestID,
+                        "url": url.absoluteString,
+                        "viewerHtmlPath": viewerHtmlPath
+                    ])
                     ebookReaderLoadDebugLog("ebook.scheme.load.viewerBegin url=\(url.absoluteString) viewerHtmlPath=\(viewerHtmlPath)")
                     // File viewer bundle file.
                         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
@@ -663,15 +1025,43 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 sharedFontCSSBase64: sharedFontCSSBase64,
                                 sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
                             )
+                            ebookLoadLog("load.viewer.responseReady", [
+                                "requestID": requestID,
+                                "url": url.absoluteString,
+                                "bytes": data.count,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                            ])
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     urlSchemeTask.didReceive(response)
                                     urlSchemeTask.didReceive(data)
                                     urlSchemeTask.didFinish()
                                     self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                    ebookLoadLog("scheme.finish.load.viewer", [
+                                        "requestID": requestID,
+                                        "url": url.absoluteString,
+                                        "bytes": data.count,
+                                        "active": true,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                    ])
+                                } else {
+                                    ebookLoadLog("scheme.skipFinish.load.viewer", [
+                                        "requestID": requestID,
+                                        "url": url.absoluteString,
+                                        "bytes": data.count,
+                                        "active": false,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                    ])
                                 }
                             }()
                         } catch {
+                            ebookLoadLog("load.viewer.error", [
+                                "requestID": requestID,
+                                "url": url.absoluteString,
+                                "viewerHtmlPath": viewerHtmlPath,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                "error": error.localizedDescription
+                            ])
                             ebookReaderLoadDebugLog("ebook.scheme.load.viewerError url=\(url.absoluteString) viewerHtmlPath=\(viewerHtmlPath) error=\(String(describing: error))")
                             await { @MainActor in
                                 urlSchemeTask.didFailWithError(error)
@@ -679,6 +1069,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                         }
                 } else {
+                    ebookLoadLog("load.error", [
+                        "requestID": requestID,
+                        "url": url.absoluteString,
+                        "reason": "missingViewerHTMLPath",
+                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                    ])
                     ebookReaderLoadDebugLog("ebook.scheme.fail reason=missingViewerHTMLPath url=\(url.absoluteString)")
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
@@ -686,6 +1082,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 }
             } else {
+                ebookLoadLog("scheme.fail.unhandledPath", [
+                    "requestID": requestID,
+                    "url": url.absoluteString,
+                    "path": url.path,
+                    "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                ])
                 ebookReaderLoadDebugLog("ebook.scheme.fail reason=unhandledPath url=\(url.absoluteString) path=\(url.path)")
                 await { @MainActor in
                     if self.schemeHandlers[urlSchemeTask.hash] != nil {

@@ -12,6 +12,31 @@ const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 const MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS = false;
+const MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS = 5000;
+
+const ebookLoadLogValue = (value) => {
+    if (value == null) return 'nil';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(Math.round(value)) : String(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    return String(value).replace(/\s+/g, ' ').slice(0, 180);
+};
+
+const ebookLoadLog = (event, payload = {}) => {
+    try {
+        const details = Object.entries(payload)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
+            .join(' ');
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            details.length > 0 ? `# EBOOKLOAD js.${event} ${details}` : `# EBOOKLOAD js.${event}`
+        );
+    } catch (_error) {}
+};
+
+const nextEbookLoadRequestID = (prefix) => {
+    globalThis.__manabiEBookLoadRequestSeq = (globalThis.__manabiEBookLoadRequestSeq ?? 0) + 1;
+    return `${prefix}-${globalThis.__manabiEBookLoadRequestSeq}`;
+};
 
 const ignoredWindowErrorMessages = new Set([
     'ResizeObserver loop completed with undelivered notifications.',
@@ -181,6 +206,18 @@ const logHighlightGradientDiagnostic = (reason = 'unspecified', explicitDoc = nu
             navHidden: body.dataset?.mnbNavigationHiddenDueToScroll ?? null,
             contentCount: contents.length,
         };
+        const expectedDirection = (payload.segmentHorizontalIsland === 'true' || payload.surfaceHorizontalIsland === 'true')
+            ? 'to bottom'
+            : 'to right';
+        const directionValues = [
+            payload.bodyStyle?.gradientDirection,
+            payload.segmentStyle?.gradientDirection,
+            payload.surfaceStyle?.gradientDirection,
+        ].filter((value) => typeof value === 'string' && value.length > 0 && value !== '<null>');
+        const hasDirectionAnomaly = directionValues.some((value) => value !== expectedDirection);
+        if (!hasDirectionAnomaly) return;
+        payload.expectedDirection = expectedDirection;
+        payload.directionValues = directionValues;
         const key = JSON.stringify({
             reason,
             documentURL: payload.documentURL,
@@ -307,8 +344,8 @@ const fingerprintReplaceTextInput = (text) => {
     return `${text.length}:${(hash >>> 0).toString(16)}`;
 };
 
-const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer }) => {
-    return `${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
+const makeReplaceTextCacheKey = ({ href, text }) => {
+    return `neutral|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
 };
 
 const rememberReplaceTextResult = (key, value) => {
@@ -321,10 +358,13 @@ const rememberReplaceTextResult = (key, value) => {
 };
 
 const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
-    if (!isCacheWarmer) return html;
+    const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
+    const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
     return injectBodyDatasetAttributes(html, {
-        'data-is-cache-warmer': 'true',
+        'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
         'data-mnb-source-href': href,
+        'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
+        'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
     });
 };
 
@@ -339,39 +379,20 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const cacheKey = makeReplaceTextCacheKey({
         href,
         text,
-        isCacheWarmer: !!isCacheWarmer,
     });
-    const liveEquivalentCacheKey = isCacheWarmer
-        ? makeReplaceTextCacheKey({ href, text, isCacheWarmer: false })
-        : null;
-    const resultCacheKey = replaceTextResultCache.has(cacheKey)
-        ? cacheKey
-        : liveEquivalentCacheKey && replaceTextResultCache.has(liveEquivalentCacheKey)
-            ? liveEquivalentCacheKey
-            : null;
-    if (resultCacheKey) {
-        const cachedSourceHTML = replaceTextResultCache.get(resultCacheKey);
-        const cachedHTML = resultCacheKey === cacheKey
-            ? cachedSourceHTML
-            : adaptReplaceTextHTMLForMode(cachedSourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
-        replaceTextResultCache.delete(resultCacheKey);
-        replaceTextResultCache.set(resultCacheKey, cachedSourceHTML);
+    if (replaceTextResultCache.has(cacheKey)) {
+        const cachedNeutralHTML = replaceTextResultCache.get(cacheKey);
+        const cachedHTML = adaptReplaceTextHTMLForMode(cachedNeutralHTML, { href, isCacheWarmer: !!isCacheWarmer });
+        replaceTextResultCache.delete(cacheKey);
+        replaceTextResultCache.set(cacheKey, cachedNeutralHTML);
         if (!isCacheWarmer) {
             window.manabi_recordLiveProcessedSection?.(href);
         }
         return cachedHTML;
     }
-    const inFlightCacheKey = replaceTextInFlightCache.has(cacheKey)
-        ? cacheKey
-        : liveEquivalentCacheKey && replaceTextInFlightCache.has(liveEquivalentCacheKey)
-            ? liveEquivalentCacheKey
-            : null;
-    if (inFlightCacheKey) {
-        const cacheWaitStartedAt = performanceNowMs();
-        const sourceHTML = await replaceTextInFlightCache.get(inFlightCacheKey);
-        const html = inFlightCacheKey === cacheKey
-            ? sourceHTML
-            : adaptReplaceTextHTMLForMode(sourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
+    if (replaceTextInFlightCache.has(cacheKey)) {
+        const neutralHTML = await replaceTextInFlightCache.get(cacheKey);
+        const html = adaptReplaceTextHTMLForMode(neutralHTML, { href, isCacheWarmer: !!isCacheWarmer });
         if (!isCacheWarmer) {
             window.manabi_recordLiveProcessedSection?.(href);
         }
@@ -379,6 +400,13 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     }
     const run = async () => {
     const replaceTextStartedAt = performanceNowMs();
+    const processTextRequestID = nextEbookLoadRequestID('process-text');
+    manabiTimelineMark('processText.start', {
+        requestID: processTextRequestID,
+        href,
+        cacheWarmer: !!isCacheWarmer,
+        requestBytes: text?.length ?? 0,
+    });
     globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
     if (!isCacheWarmer) {
         globalThis.__manabiInflightLiveReplaceTextCount = (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
@@ -404,41 +432,58 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         cache: "no-cache",
         headers: headers,
         body: text
+    }).catch((error) => {
+        ebookLoadLog('processText.fetch.error', {
+            requestID: processTextRequestID,
+            href,
+            isCacheWarmer: !!isCacheWarmer,
+            elapsedMs: performanceNowMs() - replaceTextStartedAt,
+            error: error?.message || String(error),
+        });
+        throw error;
     })
     try {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
-        const bodyReadStartedAt = performanceNowMs();
         let html = await response.text()
-        const bodyReadElapsedMs = safeRound(performanceNowMs() - bodyReadStartedAt, 1);
         if (isCacheWarmer && html.length === 0) {
-            const escapedHref = String(href || '').replace(/[&<>"']/g, (character) => ({
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#39;',
-            })[character]);
-            return `<html><body data-is-cache-warmer="true" data-mnb-source-href="${escapedHref}"></body></html>`;
+            html = '<html><body></body></html>';
         }
         const responseTextLength = html.length;
-        const transformStartedAt = performanceNowMs();
         const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
         const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
-        html = injectBodyDatasetAttributes(html, {
-            'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
-            'data-mnb-source-href': href,
-            'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
-            'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
-        });
-        const transformElapsedMs = safeRound(performanceNowMs() - transformStartedAt, 1);
-        if (!isCacheWarmer) {
-            window.manabi_recordLiveProcessedSection?.(href);
+        const processTextElapsedMs = performanceNowMs() - replaceTextStartedAt;
+        if (!isCacheWarmer && processTextElapsedMs >= MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS) {
+            ebookLoadLog('processText.slow', {
+                requestID: processTextRequestID,
+                href,
+                elapsedMs: processTextElapsedMs,
+                requestBytes: text?.length ?? 0,
+                responseBytes: responseTextLength,
+                sentenceCount,
+                segmentCount,
+            });
         }
+        manabiTimelineMeasure('processText', replaceTextStartedAt, {
+            requestID: processTextRequestID,
+            href,
+            cacheWarmer: !!isCacheWarmer,
+            requestBytes: text?.length ?? 0,
+            responseBytes: responseTextLength,
+            sentenceCount,
+            segmentCount,
+        });
         rememberReplaceTextResult(cacheKey, html);
         return html
     } catch (error) {
+        ebookLoadLog('processText.errorFallbackOriginal', {
+            requestID: processTextRequestID,
+            href,
+            isCacheWarmer: !!isCacheWarmer,
+            elapsedMs: performanceNowMs() - replaceTextStartedAt,
+            error: error?.message || String(error),
+        });
         console.error("Error replacing text:", error)
         return text
     } finally {
@@ -461,7 +506,12 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const promise = run();
     replaceTextInFlightCache.set(cacheKey, promise);
     try {
-        return await promise;
+        const neutralHTML = await promise;
+        const html = adaptReplaceTextHTMLForMode(neutralHTML, { href, isCacheWarmer: !!isCacheWarmer });
+        if (!isCacheWarmer) {
+            window.manabi_recordLiveProcessedSection?.(href);
+        }
+        return html;
     } finally {
         replaceTextInFlightCache.delete(cacheKey);
     }
@@ -2223,6 +2273,43 @@ const performanceNowMs = () =>
 globalThis.__manabiPerformanceNowMs = performanceNowMs;
 globalThis.__manabiSafeRound = safeRound;
 
+const MANABI_TIMELINE_SLOW_THRESHOLD_MS = 1000;
+const manabiTimelineValue = value => {
+    if (value == null) return 'nil';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(safeRound(value, 1)) : String(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    return String(value).replace(/\s+/g, ' ').slice(0, 96);
+};
+const manabiTimelinePayload = payload => Object.entries(payload || {})
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${manabiTimelineValue(value)}`)
+    .join(' ');
+const manabiTimelineMark = (event, payload = {}) => {
+    const details = manabiTimelinePayload(payload);
+    const label = details.length > 0 ? `MANABI ${event} ${details}` : `MANABI ${event}`;
+    try {
+        performance?.mark?.(label);
+    } catch (_error) {}
+    try {
+        console?.timeStamp?.(label);
+    } catch (_error) {}
+    return label;
+};
+const manabiTimelineMeasure = (event, startedAt, payload = {}, thresholdMs = MANABI_TIMELINE_SLOW_THRESHOLD_MS) => {
+    const endedAt = performanceNowMs();
+    const elapsedMs = endedAt - startedAt;
+    if (elapsedMs < thresholdMs && globalThis.__manabiTimelineTraceAll !== true) {
+        return elapsedMs;
+    }
+    const label = manabiTimelineMark(event, { ...payload, elapsedMs });
+    try {
+        performance?.measure?.(label, { start: startedAt, end: endedAt });
+    } catch (_error) {}
+    return elapsedMs;
+};
+globalThis.__manabiTimelineMark = manabiTimelineMark;
+globalThis.__manabiTimelineMeasure = manabiTimelineMeasure;
+
 const summarizeRect = (rect) => {
     if (!rect) return null;
     return {
@@ -2305,54 +2392,264 @@ const parseEntryIDs = (rawValue) => {
 
 // Mirrors manabi_reader.js sidecar expansion. The HTML sidecar stores table-compressed
 // segment tuples so EPUB sections do not repeat large lookup attrs thousands of times.
-const segmentMetadataBootstrap = (doc) => {
-    if (!doc) {
-        return { byID: new Map(), idsByEntryID: new Map() };
-    }
-    const primarySidecar = typeof doc.getElementById === 'function'
+const emptySegmentMetadataBootstrap = () => ({
+    byID: new Map(),
+    idsByEntryID: new Map(),
+    segments: [],
+    aggregates: null,
+});
+
+const segmentMetadataSidecarSignature = (sidecarTexts) => (
+    sidecarTexts.map((text) => {
+        let hash = 2166136261;
+        for (let index = 0; index < text.length; index += 1) {
+            hash ^= text.charCodeAt(index);
+            hash = Math.imul(hash, 16777619);
+        }
+        return `${text.length}:${(hash >>> 0).toString(36)}`;
+    }).join('|')
+);
+
+const segmentMetadataSidecarNodesMatch = (sidecars, cachedSidecars) => (
+    Array.isArray(cachedSidecars)
+    && cachedSidecars.length === sidecars.length
+    && sidecars.every((sidecar, index) => sidecar === cachedSidecars[index])
+);
+
+const segmentMetadataSidecarSnapshot = (doc) => {
+    const startedAt = performanceNowMs();
+    const primarySidecar = typeof doc?.getElementById === 'function'
         ? doc.getElementById('mnb-segment-metadata')
         : null;
     const sidecars = primarySidecar
         ? [primarySidecar]
-        : Array.from(doc.getElementsByTagName?.('script') || [])
+        : Array.from(doc?.getElementsByTagName?.('script') || [])
             .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta'));
-    const sidecarSignature = sidecars
-        .map((sidecar) => String((sidecar.textContent || '').length))
-        .join('|');
-    if (doc.manabiSegmentMetadataByID && doc.manabiSegmentMetadataSidecarSignature === sidecarSignature) {
+    const cachedSnapshot = doc?.manabiSegmentMetadataSidecarSnapshot;
+    if (
+        cachedSnapshot
+        && segmentMetadataSidecarNodesMatch(sidecars, cachedSnapshot.sidecars)
+    ) {
+        cachedSnapshot.reusedCachedSidecars = true;
+        manabiTimelineMeasure('segmentMetadata.sidecarSnapshot.cached', startedAt, {
+            sidecarCount: sidecars.length,
+        }, 25);
+        return cachedSnapshot;
+    }
+    const sidecarTexts = sidecars.map((sidecar) => sidecar.textContent || '');
+    const sidecarSignature = segmentMetadataSidecarSignature(sidecarTexts);
+    const sidecarBytes = sidecarTexts.reduce((total, text) => total + text.length, 0);
+    manabiTimelineMeasure('segmentMetadata.sidecarSnapshot.fresh', startedAt, {
+        sidecarCount: sidecars.length,
+        sidecarBytes,
+        primarySidecar: !!primarySidecar,
+    }, 25);
+    return { sidecars, sidecarTexts, sidecarSignature, reusedCachedSidecars: false };
+};
+
+const segmentMetadataSidecarsMatchCache = (doc, snapshot) => {
+    if (snapshot?.reusedCachedSidecars === true) return true;
+    const cachedSidecars = doc.manabiSegmentMetadataSidecars || [];
+    const cachedSidecarTexts = doc.manabiSegmentMetadataSidecarTexts || [];
+    return (
+        cachedSidecars.length === snapshot.sidecars.length
+        && snapshot.sidecars.every((sidecar, index) => (
+            sidecar === cachedSidecars[index]
+            && snapshot.sidecarTexts[index] === cachedSidecarTexts[index]
+        ))
+    );
+};
+
+const cacheSegmentMetadataSidecarSnapshot = (doc, snapshot) => {
+    doc.manabiSegmentMetadataSidecars = snapshot.sidecars;
+    doc.manabiSegmentMetadataSidecarTexts = snapshot.sidecarTexts;
+    doc.manabiSegmentMetadataSidecarSignature = snapshot.sidecarSignature;
+    doc.manabiSegmentMetadataSidecarSnapshot = snapshot;
+};
+
+const segmentMetadataPayloadsForSnapshot = (doc, snapshot) => {
+    const startedAt = performanceNowMs();
+    const hasMatchingSidecars =
+        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot);
+    if (hasMatchingSidecars && Array.isArray(doc.manabiSegmentMetadataSidecarPayloads)) {
+        manabiTimelineMeasure('segmentMetadata.payloads.cached', startedAt, {
+            payloadCount: doc.manabiSegmentMetadataSidecarPayloads.length,
+            sidecarCount: snapshot.sidecars.length,
+        }, 25);
+        return doc.manabiSegmentMetadataSidecarPayloads;
+    }
+    const payloads = snapshot.sidecars.map((sidecar) => {
+        try {
+            return JSON.parse(sidecar.textContent || '{}');
+        } catch (_error) {
+            return null;
+        }
+    });
+    doc.manabiSegmentMetadataSidecarPayloads = payloads;
+    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
+    manabiTimelineMeasure('segmentMetadata.payloads.parsed', startedAt, {
+        payloadCount: payloads.length,
+        sidecarCount: snapshot.sidecars.length,
+        reusedCachedSidecars: snapshot.reusedCachedSidecars === true,
+    }, 25);
+    return payloads;
+};
+
+const resetSegmentMetadataCachesForSnapshot = (doc, snapshot) => {
+    doc.manabiSegmentMetadataByID = new Map();
+    doc.manabiSegmentIDsByEntryID = new Map();
+    doc.manabiSegmentMetadataSegments = [];
+    doc.manabiSegmentMetadataAggregates = null;
+    doc.manabiSegmentMetadataSidecarPayloads = null;
+    doc.manabiSegmentMetadataFullyBootstrapped = false;
+    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
+};
+
+const segmentMetadataTableValue = (table, index, fallback = null) => (
+    Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
+        ? table[index]
+        : fallback
+);
+
+const expandSegmentIDToken = (token, version) => {
+    if (typeof token !== 'string' || token.length === 0) return null;
+    if (version === 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
+    return token;
+};
+
+const segmentMetadataTableArray = (tables, shortKey, longKey) => (
+    Array.isArray(tables?.[shortKey])
+        ? tables[shortKey]
+        : (Array.isArray(tables?.[longKey]) ? tables[longKey] : [])
+);
+
+const compactSegmentMetadataTables = (compactTables) => ({
+    h: segmentMetadataTableArray(compactTables, 'h', 'segmentHashes'),
+    j: segmentMetadataTableArray(compactTables, 'j', 'jmdictEntryIDs'),
+    n: segmentMetadataTableArray(compactTables, 'n', 'jmnedictEntryIDs'),
+    s: segmentMetadataTableArray(compactTables, 's', 'jmdictSearchStrings'),
+    ns: segmentMetadataTableArray(compactTables, 'ns', 'jmnedictSearchStrings'),
+    p: segmentMetadataTableArray(compactTables, 'p', 'partsOfSpeech'),
+    x: segmentMetadataTableArray(compactTables, 'x', 'surfaceTexts'),
+    sid: segmentMetadataTableArray(compactTables, 'sid', 'sentenceIdentifiers'),
+});
+
+const segmentMetadataFromCompactTuple = (segment, tables, version) => {
+    const stableSegmentIdentifier = version === 3
+        ? segmentMetadataTableValue(tables.h, segment?.[1], null)
+        : segment?.[1];
+    return {
+        i: expandSegmentIDToken(segment?.[0], version), // segment element ID
+        h: stableSegmentIdentifier,
+        sid: stableSegmentIdentifier, // stable selection ID when available
+        j: segmentMetadataTableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
+        n: segmentMetadataTableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
+        s: segmentMetadataTableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
+        ns: segmentMetadataTableValue(tables.ns, segment?.[5], null), // JMNEDict lookup string from table index
+        p: segmentMetadataTableValue(tables.p, segment?.[6], null), // part-of-speech from table index
+        l: segment?.[7], // JLPT level, 1..5
+        x: segmentMetadataTableValue(tables.x, segment?.[8], null), // surface text from table index
+        sentenceID: segmentMetadataTableValue(tables.sid, segment?.[9], null), // sentence identifier from table index
+    };
+};
+
+const segmentMetadataFromLegacyEntry = (segment) => ({
+    i: typeof segment?.i === 'string' ? segment.i : null,
+    h: typeof segment?.h === 'string' ? segment.h : null,
+    sid: typeof segment?.h === 'string' ? segment.h : (typeof segment?.sid === 'string' ? segment.sid : null),
+    j: Array.isArray(segment?.j) ? segment.j : [],
+    n: Array.isArray(segment?.n) ? segment.n : [],
+    s: typeof segment?.s === 'string' ? segment.s : null,
+    ns: typeof segment?.ns === 'string' ? segment.ns : null,
+    p: typeof segment?.p === 'string' ? segment.p : null,
+    l: Number.isInteger(segment?.l) ? segment.l : null,
+    x: typeof segment?.x === 'string' ? segment.x : null,
+    sentenceID: typeof segment?.sentenceID === 'string' ? segment.sentenceID : null,
+});
+
+const expandSegmentMetadataPayload = (payload) => {
+    const version = payload?.v ?? payload?.version;
+    const compactTables = payload?.t ?? payload?.tables;
+    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
+    if ((version === 2 || version === 3) && compactTables && Array.isArray(compactSegments)) {
+        const tables = compactSegmentMetadataTables(compactTables);
+        return compactSegments.map((segment) => segmentMetadataFromCompactTuple(segment, tables, version));
+    }
+    if (Array.isArray(payload)) {
+        return payload.map(segmentMetadataFromLegacyEntry);
+    }
+    return [];
+};
+
+const findSegmentMetadataInPayload = (payload, segmentID) => {
+    const version = payload?.v ?? payload?.version;
+    const compactTables = payload?.t ?? payload?.tables;
+    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
+    if ((version === 2 || version === 3) && compactTables && Array.isArray(compactSegments)) {
+        const tables = compactSegmentMetadataTables(compactTables);
+        for (const segment of compactSegments) {
+            if (expandSegmentIDToken(segment?.[0], version) !== segmentID) continue;
+            return segmentMetadataFromCompactTuple(segment, tables, version);
+        }
+        return null;
+    }
+    if (Array.isArray(payload)) {
+        for (const segment of payload) {
+            if (segment?.i !== segmentID) continue;
+            return segmentMetadataFromLegacyEntry(segment);
+        }
+    }
+    return null;
+};
+
+const lazySegmentMetadataByID = (doc, snapshot) => {
+    const hasMatchingSidecars =
+        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot);
+    if (!hasMatchingSidecars) {
+        resetSegmentMetadataCachesForSnapshot(doc, snapshot);
+    } else if (!(doc.manabiSegmentMetadataByID instanceof Map)) {
+        doc.manabiSegmentMetadataByID = new Map();
+    }
+    return doc.manabiSegmentMetadataByID;
+};
+
+const segmentMetadataBootstrap = (doc) => {
+    const startedAt = performanceNowMs();
+    if (!doc) {
+        return emptySegmentMetadataBootstrap();
+    }
+    const snapshot = segmentMetadataSidecarSnapshot(doc);
+    const sidecarsMatchCache = segmentMetadataSidecarsMatchCache(doc, snapshot);
+    if (
+        doc.manabiSegmentMetadataFullyBootstrapped === true
+        && doc.manabiSegmentMetadataByID
+        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && sidecarsMatchCache
+    ) {
+        manabiTimelineMeasure('segmentMetadata.bootstrap.cached', startedAt, {
+            sidecarCount: snapshot.sidecars.length,
+            segmentCount: doc.manabiSegmentMetadataSegments?.length ?? 0,
+        }, 25);
         return {
             byID: doc.manabiSegmentMetadataByID,
             idsByEntryID: doc.manabiSegmentIDsByEntryID || new Map(),
+            segments: doc.manabiSegmentMetadataSegments || [],
+            aggregates: doc.manabiSegmentMetadataAggregates || null,
         };
     }
     const byID = new Map();
     const idsByEntryID = new Map();
-    const tableValue = (table, index, fallback = null) => (
-        Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
-            ? table[index]
-            : fallback
-    );
-    const expandSegmentIDToken = (token, version) => {
-        if (typeof token !== 'string' || token.length === 0) return null;
-        if (version === 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
-        return token;
-    };
-    const expandSegmentMetadataPayload = (payload) => {
-        const version = payload?.v ?? payload?.version;
-        if ((version === 2 || version === 3) && payload?.t && Array.isArray(payload.s)) {
-            const tables = payload.t;
-            return payload.s.map((segment) => ({
-                i: expandSegmentIDToken(segment?.[0], version), // segment element ID
-                sid: version === 3 ? tableValue(tables.h, segment?.[1], null) : segment?.[1], // stable selection ID when available
-                j: tableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
-                n: tableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
-                s: tableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
-                ns: tableValue(tables.ns, segment?.[5], null), // JMNEDict lookup string from table index
-                p: tableValue(tables.p, segment?.[6], null), // part-of-speech from table index
-                l: segment?.[7], // JLPT level, 1..5
-            }));
-        }
-        return [];
+    const segments = [];
+    const aggregateParts = {
+        hasExplicitAggregate: false,
+        segmentCount: 0,
+        expressions: new Set(),
+        primaryEntryIDs: new Set(),
+        jmnedictEntryIDs: new Set(),
+        kanji: new Set(),
+        sentenceIdentifiers: new Set(),
     };
     const indexEntryIDs = (segmentID, entryIDs) => {
         for (const entryID of entryIDs || []) {
@@ -2362,27 +2659,138 @@ const segmentMetadataBootstrap = (doc) => {
             idsByEntryID.get(key).add(segmentID);
         }
     };
-    for (const sidecar of sidecars) {
-        try {
-            const payload = JSON.parse(sidecar.textContent || '{}');
-            for (const segment of expandSegmentMetadataPayload(payload)) {
-                if (!segment?.i) continue;
-                byID.set(segment.i, segment);
-                indexEntryIDs(segment.i, segment.j);
-                indexEntryIDs(segment.i, segment.n);
+    const isKanjiCodePoint = (codePoint) => (
+        (codePoint >= 0x4E00 && codePoint <= 0x9FFF)
+        || (codePoint >= 0x3400 && codePoint <= 0x4DBF)
+        || (codePoint >= 0x20000 && codePoint <= 0x2A6DF)
+        || (codePoint >= 0x2A700 && codePoint <= 0x2B73F)
+        || (codePoint >= 0x2B740 && codePoint <= 0x2B81F)
+        || (codePoint >= 0x2B820 && codePoint <= 0x2CEAF)
+        || (codePoint >= 0xF900 && codePoint <= 0xFAFF)
+        || (codePoint >= 0x2F800 && codePoint <= 0x2FA1F)
+    );
+    const addValues = (target, values) => {
+        if (!Array.isArray(values)) return;
+        for (const value of values) {
+            if (typeof value === 'string' && value.length > 0) {
+                target.add(value);
+            } else if (typeof value === 'number' && Number.isFinite(value)) {
+                target.add(value);
             }
-        } catch (_error) {}
+        }
+    };
+    const addExplicitAggregate = (aggregate) => {
+        if (!aggregate || typeof aggregate !== 'object') return;
+        aggregateParts.hasExplicitAggregate = true;
+        const segmentCount = aggregate.c ?? aggregate.segmentCount;
+        if (Number.isFinite(segmentCount)) {
+            aggregateParts.segmentCount += segmentCount;
+        }
+        addValues(aggregateParts.expressions, aggregate.e ?? aggregate.expressions);
+        addValues(aggregateParts.primaryEntryIDs, aggregate.j ?? aggregate.primaryEntryIDs);
+        addValues(aggregateParts.jmnedictEntryIDs, aggregate.n ?? aggregate.jmnedictEntryIDs);
+        addValues(aggregateParts.kanji, aggregate.k ?? aggregate.kanji);
+        addValues(aggregateParts.sentenceIdentifiers, aggregate.sid ?? aggregate.sentenceIdentifiers);
+    };
+    const deriveAggregatesFromSegments = () => {
+        aggregateParts.segmentCount = segments.length;
+        for (const segment of segments) {
+            const expression = segment?.s || segment?.ns || null;
+            if (expression) aggregateParts.expressions.add(expression);
+            const primaryEntryID = Array.isArray(segment?.j) && segment.j.length > 0
+                ? segment.j[0]
+                : (Array.isArray(segment?.n) && segment.n.length > 0 ? segment.n[0] : null);
+            if (Number.isFinite(primaryEntryID)) aggregateParts.primaryEntryIDs.add(primaryEntryID);
+            addValues(aggregateParts.jmnedictEntryIDs, segment?.n);
+            const kanjiSource = typeof segment?.x === 'string'
+                ? segment.x
+                : (typeof expression === 'string' ? expression : null);
+            if (kanjiSource) {
+                for (const char of kanjiSource) {
+                    if (isKanjiCodePoint(char.codePointAt(0))) aggregateParts.kanji.add(char);
+                }
+            }
+            if (typeof segment?.sentenceID === 'string' && segment.sentenceID.length > 0) {
+                aggregateParts.sentenceIdentifiers.add(segment.sentenceID);
+            }
+        }
+    };
+    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
+        for (const segment of expandSegmentMetadataPayload(payload)) {
+            if (!segment?.i) continue;
+            byID.set(segment.i, segment);
+            segments.push(segment);
+            indexEntryIDs(segment.i, segment.j);
+            indexEntryIDs(segment.i, segment.n);
+        }
+        addExplicitAggregate(payload?.a ?? payload?.aggregates);
     }
+    if (!aggregateParts.hasExplicitAggregate) {
+        deriveAggregatesFromSegments();
+    }
+    const aggregates = {
+        segmentCount: aggregateParts.segmentCount,
+        expressions: Array.from(aggregateParts.expressions),
+        primaryEntryIDs: Array.from(aggregateParts.primaryEntryIDs),
+        jmnedictEntryIDs: Array.from(aggregateParts.jmnedictEntryIDs),
+        kanji: Array.from(aggregateParts.kanji),
+        sentenceIdentifiers: Array.from(aggregateParts.sentenceIdentifiers),
+    };
     doc.manabiSegmentMetadataByID = byID;
     doc.manabiSegmentIDsByEntryID = idsByEntryID;
-    doc.manabiSegmentMetadataSidecarSignature = sidecarSignature;
-    return { byID, idsByEntryID };
+    doc.manabiSegmentMetadataSegments = segments;
+    doc.manabiSegmentMetadataAggregates = aggregates;
+    doc.manabiSegmentMetadataFullyBootstrapped = true;
+    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
+    manabiTimelineMeasure('segmentMetadata.bootstrap.built', startedAt, {
+        sidecarCount: snapshot.sidecars.length,
+        segmentCount: segments.length,
+        entryIDKeyCount: idsByEntryID.size,
+        reusedCachedSidecars: snapshot.reusedCachedSidecars === true,
+    }, 25);
+    return { byID, idsByEntryID, segments, aggregates };
+};
+
+const prewarmSegmentMetadataBootstrap = (doc, reason = 'unknown') => {
+    if (!isDocumentLike(doc)) {
+        return;
+    }
+    const run = () => {
+        try {
+            segmentMetadataBootstrap(doc);
+        } catch (_error) {}
+    };
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(run, { timeout: 64 });
+        return;
+    }
+    setTimeout(run, 0);
 };
 
 const segmentMetadataForNode = (segmentNode) => {
     if (!segmentNode) return null;
     const doc = segmentNode.ownerDocument || document;
-    return segmentMetadataBootstrap(doc).byID.get(segmentNode.id) || null;
+    const segmentID = segmentNode.id;
+    if (typeof segmentID !== 'string' || segmentID.length === 0 || !doc) return null;
+    const snapshot = segmentMetadataSidecarSnapshot(doc);
+    const byID = lazySegmentMetadataByID(doc, snapshot);
+    if (byID.has(segmentID)) {
+        return byID.get(segmentID) || null;
+    }
+    if (
+        doc.manabiSegmentMetadataFullyBootstrapped === true
+        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot)
+    ) {
+        return null;
+    }
+    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
+        const metadata = findSegmentMetadataInPayload(payload, segmentID);
+        if (!metadata?.i) continue;
+        byID.set(segmentID, metadata);
+        return metadata;
+    }
+    return null;
 };
 
 const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
@@ -2692,7 +3100,9 @@ const collectSegmentNodesInVisibleRange = (visibleRange) => {
     return nodes.length > 0 ? nodes : null;
 };
 
-const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBounds) => {
+const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBounds, {
+    assumeInVisibleRange = false,
+} = {}) => {
     const visibleSegments = [];
     let hiddenTooltipCount = 0;
     let missingIdentifierCount = 0;
@@ -2717,15 +3127,18 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         const rect = rects[0] ?? null;
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
-        const rangeStartedAt = performance.now();
-        let isInVisibleRange = false;
-        try {
-            visibleRangeCheckCount += 1;
-            isInVisibleRange = visibleRange.intersectsNode(segmentNode);
-            rangeCheckElapsedMs += performance.now() - rangeStartedAt;
-        } catch (_error) {
-            visibleRangeErrorCount += 1;
-            rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+        let isInVisibleRange = true;
+        if (!assumeInVisibleRange) {
+            const rangeStartedAt = performance.now();
+            isInVisibleRange = false;
+            try {
+                visibleRangeCheckCount += 1;
+                isInVisibleRange = visibleRange.intersectsNode(segmentNode);
+                rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+            } catch (_error) {
+                visibleRangeErrorCount += 1;
+                rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+            }
         }
         if (!isInVisibleRange || !rect) {
             outOfViewportCount += 1;
@@ -2761,7 +3174,9 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds) => {
     const rangeSegmentNodes = collectSegmentNodesInVisibleRange(visibleRange);
     if (rangeSegmentNodes?.length > 0) {
         return {
-            ...measureVisibleSegmentsInWindow(rangeSegmentNodes, visibleRange, visibleBounds),
+            ...measureVisibleSegmentsInWindow(rangeSegmentNodes, visibleRange, visibleBounds, {
+                assumeInVisibleRange: true,
+            }),
             segmentNodes: rangeSegmentNodes,
             segmentCandidateSource: 'sentinel-range',
             orderedSegmentCount: rangeSegmentNodes.length,
@@ -2877,6 +3292,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     let rectMeasureCount = expandedRangeResult?.rectMeasureCount ?? 0;
     let rectMeasureElapsedMs = expandedRangeResult?.rectMeasureElapsedMs ?? 0;
     let rangeCheckElapsedMs = expandedRangeResult?.rangeCheckElapsedMs ?? 0;
+    let fallbackElapsedMs = 0;
+    let fallbackSegmentCount = 0;
     for (const segmentNode of expandedRangeResult ? [] : allSegmentNodes) {
         totalSegmentCount += 1;
         if (segmentNode.closest('.tippy-box')) {
@@ -2965,10 +3382,27 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             missingIdentifierCount = fallbackMissingIdentifierCount;
             outOfViewportCount = fallbackOutOfViewportCount;
         }
+        fallbackSegmentCount = fallbackSegments.length;
+        fallbackElapsedMs = performance.now() - fallbackStartedAt;
     }
     if (visibleRange?.collapsed === true) {
     }
     const completedAt = performance.now();
+    manabiTimelineMeasure('visibleSegments.collect', startedAt, {
+        source: segmentCandidateSource,
+        useVisibleRange,
+        totalSegmentCount,
+        visibleSegmentCount: visibleSegments.length,
+        rectMeasureCount,
+        hiddenTooltipCount,
+        missingIdentifierCount,
+        outOfViewportCount,
+        queryElapsedMs: queryCompletedAt - startedAt,
+        rectMeasureElapsedMs,
+        rangeCheckElapsedMs,
+        fallbackSegmentCount,
+        fallbackElapsedMs,
+    }, 100);
     return {
         visibleSegments,
         viewportWidth,
@@ -2986,6 +3420,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
 };
 
 const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
+    const startedAt = performanceNowMs();
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
     const nativeLookupFrameKey = doc?.location?.href || doc?.URL || null;
@@ -3026,6 +3461,12 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             viewportLeft,
             viewportTop,
         });
+        manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
+            reason,
+            builder: false,
+            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+            targetCount: 0,
+        }, 100);
         return;
     }
     view?.manabi_resetNativeLookupHitTargets?.();
@@ -3060,6 +3501,14 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         viewportLeft,
         viewportTop,
     });
+    manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
+        reason,
+        builder: true,
+        visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+        targetCount: targets.length,
+        frameLeft,
+        frameTop,
+    }, 100);
 };
 
 const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visibleRange = null, visibleSegmentsResult = null) => {
@@ -3269,7 +3718,8 @@ const fetchNativeEntries = async (sourceURL) => {
     if (!response.ok) {
         throw new Error(`Failed to load native EPUB entries: ${response.status}`)
     }
-    return response.json()
+    const json = await response.json()
+    return json
 }
 
 const fetchNativeEntryResponse = async (sourceURL, subpath) => {
@@ -3634,9 +4084,16 @@ const getCSSForBookContent = ({
         -webkit-column-break-inside: avoid !important;
     }
     html.vrtl body,
+    body[data-mnb-foliate-writing-direction="vertical"],
     body.reader-vertical-writing {
         --mnb-highlight-gradient-direction: to right;
     }
+    html.vrtl body [data-mnb-horizontal-writing-island="true"],
+    html.vrtl body mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
+    html.vrtl body mnb-sur[data-mnb-horizontal-writing-island="true"],
+    body[data-mnb-foliate-writing-direction="vertical"] [data-mnb-horizontal-writing-island="true"],
+    body[data-mnb-foliate-writing-direction="vertical"] mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
+    body[data-mnb-foliate-writing-direction="vertical"] mnb-sur[data-mnb-horizontal-writing-island="true"],
     body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
     body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
     body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
@@ -4726,8 +5183,18 @@ class Reader {
         requestAnimationFrame(() => {
             logHighlightGradientDiagnostic(`page-tracking:${reason}:raf`, doc);
         });
-        if (syncElapsedMs >= 12 || String(reason || '').includes('display') || String(reason || '').includes('document-load') || String(reason || '').includes('nav-buttons')) {
-        }
+        manabiTimelineMeasure('pageTracking.sync', syncStartedAt, {
+            reason,
+            retryCount,
+            visibleRangeElapsedMs,
+            visibleSegmentsElapsedMs,
+            buildStatesElapsedMs,
+            renderElapsedMs,
+            stateCount: diagnostics.stateCount,
+            visibleSegmentCount: diagnostics.visibleSegmentCount,
+            totalSegmentCount: diagnostics.totalSegmentCount,
+            clusterCount: diagnostics.clusterCount,
+        }, 100);
         const diagnosticsKey = JSON.stringify({
             reason,
             documentURL: diagnostics.documentURL,
@@ -5634,9 +6101,6 @@ class Reader {
     }
     async open(file) {
         this.setLoadingIndicator(true);
-        const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
-            ? performance.now()
-            : Date.now();
 
         this.hasLoadedLastPosition = false
         this.lastCFIPersistenceObservation = null;
@@ -6281,9 +6745,14 @@ class Reader {
         });
         if (!this.view?.renderer) return;
         const r = this.view.renderer;
+        const pageMetrics = typeof r.pageMetrics === "function" ? await r.pageMetrics() : null;
         // Use new section start/end helpers if available
-        const atSectionStart = typeof r.isAtSectionStart === "function" ? await r.isAtSectionStart() : false;
-        const atSectionEnd = typeof r.isAtSectionEnd === "function" ? await r.isAtSectionEnd() : false;
+        const atSectionStart = pageMetrics
+            ? pageMetrics.page <= 1
+            : (typeof r.isAtSectionStart === "function" ? await r.isAtSectionStart() : false);
+        const atSectionEnd = pageMetrics
+            ? pageMetrics.page >= pageMetrics.pages - 2
+            : (typeof r.isAtSectionEnd === "function" ? await r.isAtSectionEnd() : false);
         // Use public helpers to detect prev/next section
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
@@ -6959,6 +7428,7 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
+        prewarmSegmentMetadataBootstrap(doc, 'reader-document-load');
         this.#schedulePageTrackingSync('document-load', doc, 2, isCacheWarmerDocument(doc) ? 0 : 128);
         if (!isCacheWarmerDocument(doc)) {
             this.#scheduleNativeLookupHitTargetRefreshSettle('document-load', doc);
@@ -7315,62 +7785,66 @@ class CacheWarmer {
         return this.#nextUnsettledSectionIndex(this.#mergeSettledSectionHrefs(settledSectionHrefs), minimumIndex)
     }
     async #openFirstUnsettledSection() {
+        const startedAt = performanceNowMs()
         const settledSectionHrefs = this.#mergeSettledSectionHrefs()
         const precedingTargetIndex = cacheWarmerPrecedingTargetIndex()
         const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeForegroundSectionIndex()
         const firstUnsettledIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
-        const settled = new Set(settledSectionHrefs)
-        const activeHref = activeForegroundSectionHref()
-        if (activeHref) settled.add(activeHref)
-        const sectionSample = (this.view?.book?.sections ?? []).slice(0, 12).map((section, index) => {
-            const href = this.#normalizeSectionHref(section?.href ?? section?.id ?? null)
-            let skipReason = null
-            if (section?.linear === 'no') skipReason = 'non-linear'
-            else if (!href) skipReason = 'missing-href'
-            else if (href === activeHref) skipReason = 'active-foreground'
-            else if (settled.has(href)) skipReason = 'warmed'
-            return {
-                index,
-                href,
-                linear: section?.linear ?? null,
-                skipReason,
-            }
+        manabiTimelineMark('cacheWarmer.openFirstUnsettledSection.start', {
+            targetIndex: firstUnsettledIndex,
+            minimumIndex,
+            precedingTargetIndex,
+            settledCount: settledSectionHrefs.length,
         })
-        if (!Number.isInteger(firstUnsettledIndex)) {
-            globalThis.__manabiCacheWarmerFinished = true
-            resolveCacheWarmerPrecedingSectionWaiters()
-            return
+        try {
+            if (!Number.isInteger(firstUnsettledIndex)) {
+                globalThis.__manabiCacheWarmerFinished = true
+                resolveCacheWarmerPrecedingSectionWaiters()
+                return
+            }
+            await this.view.renderer.goTo({ index: firstUnsettledIndex })
+        } finally {
+            manabiTimelineMeasure('cacheWarmer.openFirstUnsettledSection', startedAt, {
+                targetIndex: firstUnsettledIndex,
+                minimumIndex,
+                precedingTargetIndex,
+                settledCount: settledSectionHrefs.length,
+            })
         }
-        const skippedSettledSectionHrefs = this.view?.book?.sections
-            ?.slice(0, firstUnsettledIndex)
-            ?.map((section) => this.#normalizeSectionHref(section?.href ?? section?.id ?? null))
-            ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
-        if (firstUnsettledIndex > 0) {
-            const targetSection = this.view?.book?.sections?.[firstUnsettledIndex] ?? null
-            void targetSection
-            void skippedSettledSectionHrefs
-        }
-        await this.view.renderer.goTo({ index: firstUnsettledIndex })
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
+        const startedAt = performanceNowMs()
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
-        if (!Number.isInteger(targetIndex)) {
-            globalThis.__manabiCacheWarmerFinished = true
-            resolveCacheWarmerPrecedingSectionWaiters()
-            return
+        manabiTimelineMark('cacheWarmer.loadNextSection.start', {
+            targetIndex,
+            minimumIndex,
+            lastLoadedSectionIndex: this.lastLoadedSectionIndex,
+            settledCount: settledSectionHrefs.length,
+        })
+        let path = 'goTo'
+        try {
+            if (!Number.isInteger(targetIndex)) {
+                path = 'none'
+                globalThis.__manabiCacheWarmerFinished = true
+                resolveCacheWarmerPrecedingSectionWaiters()
+                return
+            }
+            if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
+                path = 'nextSection'
+                await this.view.renderer.nextSection()
+                return
+            }
+            await this.view.renderer.goTo({ index: targetIndex })
+        } finally {
+            manabiTimelineMeasure('cacheWarmer.loadNextSection', startedAt, {
+                path,
+                targetIndex,
+                minimumIndex,
+                lastLoadedSectionIndex: this.lastLoadedSectionIndex,
+                settledCount: settledSectionHrefs.length,
+            })
         }
-        if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
-            await this.view.renderer.nextSection()
-            return
-        }
-        const sectionSliceStart = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex + 1 : 0
-        const skippedSettledSectionHrefs = this.view?.book?.sections
-            ?.slice(sectionSliceStart, targetIndex)
-            ?.map((section) => this.#normalizeSectionHref(section?.href ?? section?.id ?? null))
-            ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
-        void skippedSettledSectionHrefs
-        await this.view.renderer.goTo({ index: targetIndex })
     }
     destroy() {
         if (this.view) {
@@ -7390,6 +7864,10 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerAdvanceInFlight = false;
     }
     async open(file) {
+        const startedAt = performanceNowMs()
+        manabiTimelineMark('cacheWarmer.open.start', {
+            hadView: !!this.view,
+        })
         this.destroy()
         globalThis.__manabiCacheWarmerOpenInFlight = true;
         globalThis.__manabiCacheWarmerReady = false;
@@ -7408,9 +7886,17 @@ class CacheWarmer {
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
         } catch (error) {
+            ebookLoadLog('cacheWarmer.open.error', {
+                error: error?.message || error,
+            });
             throw error;
         } finally {
             globalThis.__manabiCacheWarmerOpenInFlight = false;
+            manabiTimelineMeasure('cacheWarmer.open', startedAt, {
+                ready: !!globalThis.__manabiCacheWarmerReady,
+                finished: !!globalThis.__manabiCacheWarmerFinished,
+                highestSectionIndex: globalThis.__manabiCacheWarmerHighestSectionIndex ?? null,
+            })
         }
     }
 
@@ -7439,14 +7925,19 @@ class CacheWarmer {
             index,
         }
     }) {
+        const startedAt = performanceNowMs()
         const sentenceNodes = Array.from(doc?.querySelectorAll?.('mnb-sen') || []);
-        const segmentNodes = Array.from(doc?.querySelectorAll?.('mnb-seg') || []);
         const indexedSectionHref =
             Number.isInteger(index)
             ? this.view?.book?.sections?.[index]?.href || null
             : null;
         const sourceHref = doc?.body?.dataset?.mnbSourceHref || indexedSectionHref || null;
         const sectionHref = indexedSectionHref || sourceHref || null;
+        manabiTimelineMark('cacheWarmer.onLoad.start', {
+            sectionIndex: Number.isInteger(index) ? index : null,
+            sectionHref,
+            location,
+        })
         this.lastLoadedSectionIndex = Number.isInteger(index) ? index : null;
         this.lastLoadedSectionHref = sectionHref || location || null;
         const normalizedLoadedSectionHref = this.#normalizeSectionHref(sectionHref || location || null);
@@ -7482,14 +7973,25 @@ class CacheWarmer {
             frameURL: location,
         })
 
-        const atEnd = await this.view.renderer.atEnd();
-        const sectionAdvance = {
-            sectionIndex: Number.isInteger(index) ? index : null,
-            sectionHref,
-            atEnd,
-            location,
-        };
-        this.#finalizeSectionAdvance(sectionAdvance, 'load');
+        let atEnd = null;
+        try {
+            atEnd = await this.view.renderer.atEnd();
+            const sectionAdvance = {
+                sectionIndex: Number.isInteger(index) ? index : null,
+                sectionHref,
+                atEnd,
+                location,
+            };
+            this.#finalizeSectionAdvance(sectionAdvance, 'load');
+        } finally {
+            manabiTimelineMeasure('cacheWarmer.onLoad', startedAt, {
+                sectionIndex: Number.isInteger(index) ? index : null,
+                sectionHref,
+                sentenceCount: sentenceNodes.length,
+                uniqueSentenceCount: this.uniqueSentenceIdentifiers.size,
+                atEnd,
+            })
+        }
     }
 
     //    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
@@ -7607,6 +8109,17 @@ window.loadEBook = ({
     const loadWatchdogTimers = [1000, 3000, 8000, 20000, 45000].map(delayMs =>
         setTimeout(() => {
             if (loadSettled) return;
+            ebookLoadLog('loadEBook.watchdog', {
+                loadToken,
+                delayMs,
+                lastState: globalThis.manabiLoadEBookLastState || null,
+                inFlight: globalThis.manabiLoadEBookInFlight === true,
+                ready: globalThis.manabiLoadEBookReady === true,
+                hasRenderer: !!globalThis.reader?.view?.renderer,
+                inflightReplaceText: globalThis.__manabiInflightReplaceTextCount ?? 0,
+                inflightLiveReplaceText: globalThis.__manabiInflightLiveReplaceTextCount ?? 0,
+                inflightCacheWarmerReplaceText: globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0,
+            });
         }, delayMs)
     );
     const finishLoadWatchdogs = () => {
@@ -7635,13 +8148,17 @@ window.loadEBook = ({
     if (url) {
         globalThis.manabiLoadEBookLastState = 'source-start';
         const sourcePromise = window.ebookSource
-            ? Promise.resolve(window.ebookSource)
+            ? Promise.resolve(window.ebookSource).then((source) => {
+                return source;
+            })
             : fetch(url, {
                 headers: {
                     "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
                 },
             })
-                .then(res => res.blob())
+                .then(res => {
+                    return res.blob();
+                })
                 .then((blob) => {
                     window.blob = blob
                     return makeFileSource(new File([blob], new URL(url).pathname))
@@ -7684,6 +8201,12 @@ window.loadEBook = ({
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = false;
             globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
+            ebookLoadLog('loadEBook.error', {
+                loadToken,
+                requestedURL,
+                error: error?.message || String(error),
+                lastState: globalThis.manabiLoadEBookLastState,
+            });
             if (globalThis.reader === reader || !globalThis.reader?.view?.renderer) {
                 globalThis.reader = previousReader ?? null;
             }

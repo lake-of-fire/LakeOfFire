@@ -132,21 +132,9 @@ public class ReaderFileManager: ObservableObject {
     
     private var hasInitializedUbiquityContainerIdentifier = false
     
-    /*@MainActor*/ public var cloudDrive: CloudDrive? {
-        didSet {
-            Task { @MainActor in
-                objectWillChange.send()
-            }
-        }
-    }
+    /*@MainActor*/ public var cloudDrive: CloudDrive?
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
-    /*@MainActor*/ public var localDrive: CloudDrive? {
-        didSet {
-            Task { @MainActor in
-                objectWillChange.send()
-            }
-        }
-    }
+    /*@MainActor*/ public var localDrive: CloudDrive?
     
     public var ubiquityContainerIdentifier: String? = nil {
         didSet {
@@ -539,7 +527,6 @@ public class ReaderFileManager: ObservableObject {
                         try Task.checkCancellation()
                         return $0.freeze()
                     }
-                    objectWillChange.send()
                     let discoveredURLs = try files.map {
                         try Task.checkCancellation()
                         return $0.url

@@ -183,7 +183,24 @@ func applyAdaptiveReaderWidth(
     let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
     do {
         try await evaluateJavaScript(
-            "document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');",
+            """
+            (() => {
+                const mark = (event, payload = '') => {
+                    const label = `MANABI swiftSettings.adaptiveWidth.${event}${payload ? ' ' + payload : ''}`;
+                    try { performance.mark(label); } catch (_) {}
+                    try { console.timeStamp?.(label); } catch (_) {}
+                };
+                mark('start', 'reason=\(reason) maxWidth=\(maxWidthOverride)');
+                const value = '\(maxWidthOverride)';
+                const style = document.body?.style;
+                let changed = false;
+                if (style && style.getPropertyValue('--mnb-reader-max-width-override') !== value) {
+                    style.setProperty('--mnb-reader-max-width-override', value);
+                    changed = true;
+                }
+                mark('finish', `reason=\(reason) maxWidth=\(maxWidthOverride) changed=${changed}`);
+            })();
+            """,
             true
         )
         if requestGeometryBake {
@@ -275,11 +292,17 @@ func applyReaderFontSize(
         try await evaluateJavaScript(
             """
             (function() {
+                const mark = (event, payload = '') => {
+                    const label = `MANABI swiftSettings.fontSize.${event}${payload ? ' ' + payload : ''}`;
+                    try { performance.mark(label); } catch (_) {}
+                    try { console.timeStamp?.(label); } catch (_) {}
+                };
+                mark('start', 'reason=\(reason) size=\(size)');
                 const fontSize = '\(size)px';
                 const applyFontSize = (doc) => {
                     const body = doc?.body;
                     if (!body) { return false; }
-                    body.style.fontSize;
+                    if (body.style.fontSize === fontSize) { return false; }
                     body.style.fontSize = fontSize;
                     return true;
                 };
@@ -304,6 +327,7 @@ func applyReaderFontSize(
                 try {
                     appliedCount += globalThis.manabiApplyReaderFontSizeToEbookDocuments?.('lake-reader-font-size')?.appliedCount ?? 0;
                 } catch (_) {}
+                mark('finish', `reason=\(reason) size=\(size) appliedCount=${appliedCount}`);
                 return { appliedCount, fontSize };
             })();
             """,
@@ -345,12 +369,28 @@ func applyReaderTheme(
                 const applyTheme = (doc) => {
                     const body = doc?.body;
                     if (!body) { return false; }
-                    body.dataset.mnbColorScheme = colorScheme;
-                    body.dataset.mnbLightTheme = lightModeTheme;
-                    body.dataset.mnbDarkTheme = darkModeTheme;
-                    doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
-                    body.style?.setProperty?.('color-scheme', colorScheme);
-                    return true;
+                    let changed = false;
+                    if (body.dataset.mnbColorScheme !== colorScheme) {
+                        body.dataset.mnbColorScheme = colorScheme;
+                        changed = true;
+                    }
+                    if (body.dataset.mnbLightTheme !== lightModeTheme) {
+                        body.dataset.mnbLightTheme = lightModeTheme;
+                        changed = true;
+                    }
+                    if (body.dataset.mnbDarkTheme !== darkModeTheme) {
+                        body.dataset.mnbDarkTheme = darkModeTheme;
+                        changed = true;
+                    }
+                    if (doc.documentElement?.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
+                        doc.documentElement?.style?.setProperty?.('color-scheme', colorScheme);
+                        changed = true;
+                    }
+                    if (body.style?.getPropertyValue?.('color-scheme') !== colorScheme) {
+                        body.style?.setProperty?.('color-scheme', colorScheme);
+                        changed = true;
+                    }
+                    return changed;
                 };
                 globalThis.manabiReaderColorScheme = colorScheme;
                 globalThis.manabiReaderLightModeTheme = lightModeTheme;
@@ -900,10 +940,27 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
         let loadStartedAt = CFAbsoluteTimeGetCurrent()
+        ReaderLoadSignposts.event(
+            .navigatorContentBegin,
+            [
+                "attached": "\(hasAttachedWebView)",
+                "contentURL": content.url.absoluteString,
+                "ready": "\(isReadyForDirectLoad)"
+            ]
+        )
         lakeReaderLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
         lakeReaderModeLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad) hasReaderModeViewModel=\(readerModeViewModel != nil)")
         let beginSnapshot = debugLoadSnapshot
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            ReaderLoadSignposts.event(
+                .navigatorContentResolved,
+                [
+                    "attached": "\(hasAttachedWebView)",
+                    "contentURL": content.url.absoluteString,
+                    "ready": "\(isReadyForDirectLoad)",
+                    "targetURL": url.absoluteString
+                ]
+            )
             lakeReaderLoadDebugLog("navigator.content.resolved contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             let loadSnapshot = debugLoadSnapshot
             let resolvedAt = CFAbsoluteTimeGetCurrent()
@@ -947,6 +1004,15 @@ public extension WebViewNavigator {
                 return
             }
             lakeReaderLoadDebugLog("navigator.content.dispatch targetURL=\(url.absoluteString)")
+            ReaderLoadSignposts.event(
+                .navigatorContentDispatch,
+                [
+                    "attached": "\(hasAttachedWebView)",
+                    "elapsedSinceResolved": readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt),
+                    "ready": "\(isReadyForDirectLoad)",
+                    "targetURL": url.absoluteString
+                ]
+            )
             lakeReaderModeLoadDebugLog("navigator.content.dispatch.begin targetURL=\(url.absoluteString) elapsedSinceResolved=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt)) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             load(URLRequest(url: url))
             let afterDispatchSnapshot = debugLoadSnapshot

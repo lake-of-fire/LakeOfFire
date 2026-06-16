@@ -324,13 +324,28 @@ public class ReaderViewModel: NSObject, ObservableObject {
             guard let self else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
             try await self.scriptCaller.evaluateJavaScript("""
-                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
-                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
-                }
-                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
-                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
-                }
-                document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
+                (() => {
+                    const mark = (event, payload = '') => {
+                        const label = `MANABI swiftSettings.refreshSettingsInWebView.${event}${payload ? ' ' + payload : ''}`;
+                        try { performance.mark(label); } catch (_) {}
+                        try { console.timeStamp?.(label); } catch (_) {}
+                    };
+                    mark('start', 'maxWidth=\(maxWidthOverride)');
+                    let changedCount = 0;
+                    if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
+                        document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
+                        document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.style?.getPropertyValue('--mnb-reader-max-width-override') !== '\(maxWidthOverride)') {
+                        document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
+                        changedCount += 1;
+                    }
+                    mark('finish', `maxWidth=\(maxWidthOverride) changedCount=${changedCount}`);
+                })();
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }
