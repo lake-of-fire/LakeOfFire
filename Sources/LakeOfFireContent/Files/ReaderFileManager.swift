@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import LakeOfFireCore
 import AVFoundation
 import SwiftCloudDrive
@@ -25,6 +26,8 @@ public enum ReaderFileManagerError: Swift.Error {
 
 @MainActor
 public class CloudDriveSyncStatusModel: ObservableObject {
+    public let objectWillChange = ObservableObjectPublisher()
+    
     @Published public var status: CloudDriveSyncStatus = .loadingStatus
     private var refreshTask: Task<Void, Never>? = nil
 
@@ -79,6 +82,8 @@ public enum CloudDriveSyncStatus {
 }
 
 public class ReaderFileManager: ObservableObject {
+    public let objectWillChange = ObservableObjectPublisher()
+    
     public static let readerBackingStatusRefreshRequestedNotification = Notification.Name("ReaderFileManager.readerBackingStatusRefreshRequested")
 
     private enum ReaderBackingStorageLocation: String {

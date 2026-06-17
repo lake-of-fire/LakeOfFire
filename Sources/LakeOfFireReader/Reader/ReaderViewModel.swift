@@ -238,7 +238,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
-            refreshSettingsInWebView(content: content, newState: newState)
+            refreshSettingsInWebView(content: content, newState: newState, reason: "navigation-finished")
             
             completion?(newState)
         }
@@ -320,17 +320,25 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
+        refreshSettingsInWebView(content: content, newState: newState, reason: "unspecified")
+    }
+
+    @MainActor
+    public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil, reason: String) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
+            let reasonJSON = (try? JSONEncoder().encode(reason))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "\"unspecified\""
             try await self.scriptCaller.evaluateJavaScript("""
                 (() => {
+                    const settingsTraceReason = \(reasonJSON);
                     const mark = (event, payload = '') => {
                         const label = `MANABI swiftSettings.refreshSettingsInWebView.${event}${payload ? ' ' + payload : ''}`;
                         try { performance.mark(label); } catch (_) {}
                         try { console.timeStamp?.(label); } catch (_) {}
                     };
-                    mark('start', 'maxWidth=\(maxWidthOverride)');
+                    mark('start', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
                     let changedCount = 0;
                     if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
                         document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
@@ -344,7 +352,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
                         changedCount += 1;
                     }
-                    mark('finish', `maxWidth=\(maxWidthOverride) changedCount=${changedCount}`);
+                    mark('finish', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride) changedCount=${changedCount}`);
                 })();
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)

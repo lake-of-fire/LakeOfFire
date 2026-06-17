@@ -93,9 +93,31 @@ fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any?]
     if ebookLoadVerboseLoggingEnabled { return true }
     if event.localizedCaseInsensitiveContains("error") { return true }
     if (payload["isCacheWarmer"] ?? nil) as? Bool == true { return false }
+    let subpath = (payload["entrySubpath"] ?? payload["subpath"] ?? nil) as? String
+    let isCSSAsset = subpath.map { ($0 as NSString).pathExtension.lowercased() == "css" } == true
+        || ((payload["mimeType"] ?? nil) as? String)?.lowercased().contains("css") == true
+    if isCSSAsset,
+       event == "scheme.start"
+        || event == "entry.sourceCache.start"
+        || event == "entry.sourceCache.finish"
+        || event == "entry.read.start"
+        || event == "entry.responseReady"
+        || event == "scheme.didReceiveResponse.entry"
+        || event == "scheme.didReceiveData.entry"
+        || event == "scheme.finish.entry" {
+        return true
+    }
     if event == "processText.responseReady",
        let elapsedMs = (payload["responseReadyElapsedMs"] ?? nil) as? Int,
        elapsedMs >= 5_000 {
+        return true
+    }
+    if (event == "entry.responseReady"
+        || event == "scheme.finish.entry"
+        || event == "entries.responseReady"
+        || event == "scheme.finish.entries"),
+       let elapsedMs = (payload["elapsedMs"] ?? nil) as? Int,
+       elapsedMs >= 1_000 {
         return true
     }
     return false
@@ -868,10 +890,19 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         "mainDocumentURL": mainDocumentURL.absoluteString,
                         "subpath": subpath
                     ])
+                    let sourceCacheStartedAt = Date()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    ebookLoadLog("entry.sourceCache.finish", [
+                        "requestID": requestID,
+                        "mainDocumentURL": mainDocumentURL.absoluteString,
+                        "subpath": subpath,
+                        "entryCount": cachedSource.entries.count,
+                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                        "sourceCacheElapsedMs": Int(Date().timeIntervalSince(sourceCacheStartedAt) * 1000)
+                    ])
                     ebookLoadLog("entry.read.start", [
                         "requestID": requestID,
                         "subpath": subpath
@@ -897,8 +928,27 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            let sendStartedAt = Date()
                             urlSchemeTask.didReceive(response)
+                            ebookLoadLog("scheme.didReceiveResponse.entry", [
+                                "requestID": requestID,
+                                "subpath": subpath,
+                                "mimeType": metadata.mimeType,
+                                "bytes": data.count,
+                                "active": true,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                "sendElapsedMs": Int(Date().timeIntervalSince(sendStartedAt) * 1000)
+                            ])
                             urlSchemeTask.didReceive(data)
+                            ebookLoadLog("scheme.didReceiveData.entry", [
+                                "requestID": requestID,
+                                "subpath": subpath,
+                                "mimeType": metadata.mimeType,
+                                "bytes": data.count,
+                                "active": true,
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                "sendElapsedMs": Int(Date().timeIntervalSince(sendStartedAt) * 1000)
+                            ])
                             urlSchemeTask.didFinish()
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                             ebookLoadLog("scheme.finish.entry", [
@@ -907,7 +957,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 "mimeType": metadata.mimeType,
                                 "bytes": data.count,
                                 "active": true,
-                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                "sendElapsedMs": Int(Date().timeIntervalSince(sendStartedAt) * 1000)
                             ])
                         } else {
                             ebookLoadLog("scheme.skipFinish.entry", [

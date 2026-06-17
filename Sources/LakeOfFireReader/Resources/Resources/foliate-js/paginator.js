@@ -83,6 +83,13 @@ const manabiTimelineMeasure = (event, startedAt, payload = {}) => {
     } catch (_error) {}
     return elapsedMs;
 };
+const manabiBlobResourceInfo = url => {
+    try {
+        return globalThis.__manabiBlobResourceMap?.get?.(url) ?? null;
+    } catch (_error) {
+        return null;
+    }
+};
 export const manabiPageSummaryIsVisiblyBlank = summary =>
     !!summary
     && (summary.textCharCount ?? 0) === 0
@@ -182,6 +189,7 @@ const {
  * @returns {Promise<{cs: CSSStyleDeclaration, doc: Document}>} - Computed style and iframe document.
  */
 async function getBodylessComputedStyle(sourceDoc) {
+    const startedAt = manabiPerfNow();
     // 1. Clone a minimal document
     const cloneDoc = document.implementation.createHTMLDocument();
 
@@ -192,14 +200,34 @@ async function getBodylessComputedStyle(sourceDoc) {
         if (el) el.remove();
     });
     // Refresh blob-based CSS
-    for (const link of clonedHead.querySelectorAll('link[rel="stylesheet"][href^="blob:"]')) {
+    const stylesheetLinks = Array.from(clonedHead.querySelectorAll('link[rel="stylesheet"][href^="blob:"]'));
+    for (const link of stylesheetLinks) {
+        const cssFetchStartedAt = manabiPerfNow();
+        const originalHref = link.href;
+        const originalInfo = manabiBlobResourceInfo(originalHref);
         try {
             const css = await fetch(link.href).then(r => r.text());
             const blobUrl = URL.createObjectURL(new Blob([css], {
                 type: 'text/css'
             }));
+            try {
+                globalThis.__manabiBlobResourceMap?.set?.(blobUrl, {
+                    href: originalInfo?.href ?? originalHref,
+                    type: 'text/css',
+                    parent: originalInfo?.parent ?? null,
+                    bytes: css.length,
+                    source: 'bodyless-computed-style',
+                });
+            } catch (_error) {}
+            manabiTimelineMeasure('bodylessStyle.cssFetch', cssFetchStartedAt, {
+                href: originalInfo?.href ?? originalHref,
+                bytes: css.length,
+            }, 25);
             link.href = blobUrl;
         } catch {
+            manabiTimelineMeasure('bodylessStyle.cssFetch.error', cssFetchStartedAt, {
+                href: originalInfo?.href ?? originalHref,
+            }, 25);
             link.remove();
         }
     }
@@ -230,10 +258,14 @@ async function getBodylessComputedStyle(sourceDoc) {
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;contain:strict;';
     document.documentElement.appendChild(iframe);
+    const iframeLoadStartedAt = manabiPerfNow();
     await new Promise(resolve => {
         iframe.onload = resolve;
         iframe.src = blobUrl;
     });
+    manabiTimelineMeasure('bodylessStyle.iframeLoad', iframeLoadStartedAt, {
+        stylesheetCount: stylesheetLinks.length,
+    }, 25);
 
     // wait a frame for CSS to apply before measuring
     await new Promise(r => requestAnimationFrame(r));
@@ -246,6 +278,9 @@ async function getBodylessComputedStyle(sourceDoc) {
     URL.revokeObjectURL(blobUrl);
     iframe.remove();
 
+    manabiTimelineMeasure('bodylessStyle.total', startedAt, {
+        stylesheetCount: stylesheetLinks.length,
+    }, 25);
     return { bodylessStyle, bodylessDoc };
 }
 
@@ -280,22 +315,36 @@ function getDirectionFromDocument(doc) {
     const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
     const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
     let writingMode = writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    let direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    let source = writingMode ? 'inline' : null;
     if (!writingMode && (explicitDirection === 'vertical' || body.classList?.contains?.('reader-vertical-writing'))) {
         writingMode = 'vertical-rl';
+        source = 'attribute';
     }
     if (!writingMode && explicitDirection === 'horizontal') {
         writingMode = 'horizontal-tb';
+        source = 'attribute';
+    }
+    if (!writingMode) {
+        try {
+            const computedStyle = doc.defaultView?.getComputedStyle?.(body);
+            const computedWritingMode = computedStyle?.writingMode?.trim?.().toLowerCase?.() ?? null;
+            if (computedWritingMode) {
+                writingMode = computedWritingMode;
+                direction = computedStyle?.direction?.trim?.().toLowerCase?.() ?? direction;
+                source = 'computed';
+            }
+        } catch (_error) {}
     }
     if (!writingMode) return null;
 
-    const direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
     const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
     const verticalRTL = writingMode === 'vertical-rl';
     const rtl =
         body.dir === 'rtl' ||
         documentElement.dir === 'rtl' ||
         direction === 'rtl';
-    return { vertical, verticalRTL, rtl, writingMode, direction };
+    return { vertical, verticalRTL, rtl, writingMode, direction, source };
 }
 
 const makeMarginals = (length, part) => Array.from({
@@ -464,11 +513,21 @@ class View {
                             const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
                             direction = await getDirection({ bodylessStyle, bodylessDoc });
                             directionSource = 'bodyless-iframe';
+                        } else {
+                            directionSource = direction.source ?? directionSource;
                         }
                         this.#vertical = direction.vertical;
                         this.#verticalRTL = direction.verticalRTL;
                         this.#rtl = direction.rtl;
                         this.#directionReadyResolve?.();
+                        manabiTimelineMark('paginator.direction', {
+                            source: directionSource,
+                            writingMode: direction.writingMode,
+                            direction: direction.direction,
+                            vertical: this.#vertical,
+                            rtl: this.#rtl,
+                            cacheWarmer: this.#isCacheWarmer,
+                        });
 
                         this.#contentRange.selectNodeContents(doc.body)
 

@@ -577,6 +577,15 @@ class Loader {
         const url = URL.createObjectURL(new Blob([data], {
             type
         }))
+        try {
+            globalThis.__manabiBlobResourceMap ??= new Map()
+            globalThis.__manabiBlobResourceMap.set(url, {
+                href,
+                type,
+                parent: parent ?? null,
+                bytes: data?.byteLength ?? data?.length ?? null,
+            })
+        } catch (_error) {}
         this.#cache.set(href, url)
         this.#refCount.set(href, 1)
         if (parent) {
@@ -606,7 +615,11 @@ class Loader {
         //console.log(`unreferencing ${href}, now ${count}`)
         if (count < 1) {
             //console.log(`unloading ${href}`)
-            URL.revokeObjectURL(this.#cache.get(href))
+            const url = this.#cache.get(href)
+            try {
+                globalThis.__manabiBlobResourceMap?.delete?.(url)
+            } catch (_error) {}
+            URL.revokeObjectURL(url)
             this.#cache.delete(href)
             this.#refCount.delete(href)
             // unref children

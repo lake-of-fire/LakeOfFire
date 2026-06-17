@@ -11,6 +11,28 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 
+private enum ReaderPrintDeduper {
+    private static let lock = NSLock()
+    private static var recentMessages: [String: Date] = [:]
+    private static let window: TimeInterval = 0.5
+
+    static func shouldSuppress(_ message: String) -> Bool {
+        guard message.hasPrefix("# EBOOKLOAD") || message.hasPrefix("# READERLOAD") || message.hasPrefix("MANABI") else {
+            return false
+        }
+        let now = Date()
+        lock.lock()
+        defer { lock.unlock() }
+        recentMessages = recentMessages.filter { now.timeIntervalSince($0.value) <= window }
+        if let previous = recentMessages[message],
+           now.timeIntervalSince(previous) <= window {
+            return true
+        }
+        recentMessages[message] = now
+        return false
+    }
+}
+
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -527,7 +549,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
-                    if logMessage.hasPrefix("# EBOOKLOAD") {
+                    if ReaderPrintDeduper.shouldSuppress(logMessage) {
+                        return
+                    }
+                    if logMessage.hasPrefix("# EBOOKLOAD") || logMessage.hasPrefix("# READERLOAD") {
                         print(logMessage)
                     } else if logMessage.hasPrefix("# CAROUSEL")
                         || logMessage.hasPrefix("# HIGHLIGHT") {
@@ -802,7 +827,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard !windowURL.isNativeReaderView,
                       let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing") else { return }
                 if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
-                    readerViewModel.refreshSettingsInWebView(content: content)
+                    readerViewModel.refreshSettingsInWebView(content: content, reason: "readability-frame-ping")
                 }
             }),
             ("readabilityModeUnavailable", { @MainActor [weak self] message in
