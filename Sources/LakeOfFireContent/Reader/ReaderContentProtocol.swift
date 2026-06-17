@@ -28,6 +28,17 @@ public actor ReaderContentReadingProgressLoader {
     /// Float is progress, Bool is whether article is "finished".
     nonisolated(unsafe) public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
     nonisolated(unsafe) public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
+    nonisolated(unsafe) public static var ebookInitialRestoreLoader: ((URL) async throws -> ReaderContentEbookInitialRestore?)?
+}
+
+public struct ReaderContentEbookInitialRestore: Sendable {
+    public let cfi: String
+    public let fractionalCompletion: Float?
+
+    public init(cfi: String, fractionalCompletion: Float?) {
+        self.cfi = cfi
+        self.fractionalCompletion = fractionalCompletion
+    }
 }
 
 @globalActor

@@ -1082,16 +1082,25 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                     Task { @MainActor [weak self] in
                         guard let self else { return }
+                        let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+                        var loadArguments: [String: Any] = [
+                            "url": loaderURL.absoluteString,
+                            "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
+                        ]
+                        if let initialRestore {
+                            var restoreArguments: [String: Any] = ["cfi": initialRestore.cfi]
+                            if let fractionalCompletion = initialRestore.fractionalCompletion {
+                                restoreArguments["fractionalCompletion"] = fractionalCompletion
+                            }
+                            loadArguments["initialRestore"] = restoreArguments
+                        }
                         try await scriptCaller.evaluateJavaScript(
                             """
                             const fallbackURL = url;
                             const fallbackLayoutMode = layoutMode;
-                            window.loadEBook({ url, layoutMode });
+                            window.loadEBook({ url, layoutMode, initialRestore });
                             """,
-                            arguments: [
-                                "url": loaderURL.absoluteString,
-                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
-                            ],
+                            arguments: loadArguments,
                             in: message.frameInfo
                         )
                     }
