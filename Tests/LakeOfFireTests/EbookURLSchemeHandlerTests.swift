@@ -3,6 +3,52 @@ import XCTest
 @testable import LakeOfFireReader
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testNativeSectionPrewarmReadsEntryAndRunsCacheWarmerProcessor() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("item/xhtml", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter.xhtml")
+        let chapterHTML = "<html><body>native prewarm</body></html>"
+
+        try FileManager.default.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try Data(chapterHTML.utf8).write(to: chapterURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
+        let actor = EBookProcessingActor(
+            ebookTextProcessorCacheHits: nil,
+            ebookTextProcessor: { receivedContentURL, sectionHref, text, isCacheWarmer, _, _, _ in
+                XCTAssertEqual(receivedContentURL, contentURL)
+                XCTAssertEqual(sectionHref, "item/xhtml/chapter.xhtml")
+                XCTAssertEqual(text, chapterHTML)
+                XCTAssertTrue(isCacheWarmer)
+                return "<html><body>processed</body></html>"
+            },
+            processReadabilityContent: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.prewarm(
+            contentURL: contentURL,
+            sectionHref: "item/xhtml/chapter.xhtml",
+            source: source
+        )
+
+        XCTAssertEqual(result.sectionHref, "item/xhtml/chapter.xhtml")
+        XCTAssertEqual(result.requestBytes, chapterHTML.utf8.count)
+        XCTAssertEqual(result.responseBytes, "<html><body>processed</body></html>".utf8.count)
+        XCTAssertTrue(result.pageStatsRequested)
+        XCTAssertFalse(result.pageStatsProduced)
+    }
+
     func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

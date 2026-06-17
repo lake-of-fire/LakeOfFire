@@ -56,6 +56,21 @@ fileprivate actor ReaderContentCellActor {
     static var shared = ReaderContentCellActor()
 }
 
+fileprivate struct ReaderContentCellDisplayState: Equatable {
+    var readingProgress: Float?
+    var isFullArticleFinished: Bool?
+    var latestHistoryRecordLastVisitedAt: Date?
+    var title = ""
+    var author: String?
+    var humanReadablePublicationDate: String?
+    var imageURL: URL?
+    var sourceIconURL: URL?
+    var sourceTitle: String?
+    var totalWordCount: Int?
+    var remainingTime: TimeInterval?
+    var hasLoadedDisplayState = false
+}
+
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
     guard let url, !url.isNativeReaderView else { return nil }
     return url
@@ -63,25 +78,31 @@ private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
 
 @MainActor
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
-    @Published var readingProgress: Float? = nil
-    @Published var isFullArticleFinished: Bool? = nil
-    @Published var latestHistoryRecordLastVisitedAt: Date? = nil
     @Published var forceShowBookmark = false
-    @Published var title = ""
-    @Published var author: String?
-    @Published var humanReadablePublicationDate: String?
-    @Published var imageURL: URL?
-    @Published var sourceIconURL: URL?
-    @Published var sourceTitle: String?
-    @Published var totalWordCount: Int?
-    @Published var remainingTime: TimeInterval?
-    @Published var hasLoadedDisplayState = false
+    @Published private var displayState = ReaderContentCellDisplayState()
+
+    var readingProgress: Float? { displayState.readingProgress }
+    var isFullArticleFinished: Bool? { displayState.isFullArticleFinished }
+    var latestHistoryRecordLastVisitedAt: Date? { displayState.latestHistoryRecordLastVisitedAt }
+    var title: String { displayState.title }
+    var author: String? { displayState.author }
+    var humanReadablePublicationDate: String? { displayState.humanReadablePublicationDate }
+    var imageURL: URL? { displayState.imageURL }
+    var sourceIconURL: URL? { displayState.sourceIconURL }
+    var sourceTitle: String? { displayState.sourceTitle }
+    var totalWordCount: Int? { displayState.totalWordCount }
+    var remainingTime: TimeInterval? { displayState.remainingTime }
+    var hasLoadedDisplayState: Bool { displayState.hasLoadedDisplayState }
 
     init() { }
 
     @MainActor
     func load(item: C, includeSource: Bool) async throws {
-        hasLoadedDisplayState = false
+        if displayState.hasLoadedDisplayState {
+            var nextState = displayState
+            nextState.hasLoadedDisplayState = false
+            displayState = nextState
+        }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let imageURL = try await item.imageURLToDisplay()
@@ -121,27 +142,30 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
 
             try await { @MainActor in
                 try Task.checkCancellation()
-                self.title = title
-                self.author = author.isEmpty ? nil : author
-                self.imageURL = imageURL
-                self.humanReadablePublicationDate = humanReadablePublicationDate
-                self.sourceIconURL = sourceIconURL
-                self.sourceTitle = sourceTitle
-                if let (progress, finished) = progressResult {
-                    self.readingProgress = progress
-                    self.isFullArticleFinished = finished
-                } else {
-                    self.readingProgress = nil
-                    self.isFullArticleFinished = nil
-                }
-                self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
-                self.totalWordCount = metadataResult?.totalWordCount
-                self.remainingTime = metadataResult?.remainingTime
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    self.hasLoadedDisplayState = true
-                }
+                self.displayState = ReaderContentCellDisplayState(
+                    readingProgress: progressResult?.0,
+                    isFullArticleFinished: progressResult?.1,
+                    latestHistoryRecordLastVisitedAt: latestHistoryRecordLastVisitedAt,
+                    title: title,
+                    author: author.isEmpty ? nil : author,
+                    humanReadablePublicationDate: humanReadablePublicationDate,
+                    imageURL: imageURL,
+                    sourceIconURL: sourceIconURL,
+                    sourceTitle: sourceTitle,
+                    totalWordCount: metadataResult?.totalWordCount,
+                    remainingTime: metadataResult?.remainingTime,
+                    hasLoadedDisplayState: true
+                )
             }()
         }()
+    }
+
+    @MainActor
+    func updateImageURL(_ imageURL: URL?) {
+        guard imageURL != displayState.imageURL else { return }
+        var nextState = displayState
+        nextState.imageURL = imageURL
+        displayState = nextState
     }
 }
 
@@ -1061,12 +1085,12 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             maxHeight: usesCompactControlSize ? compactCellHeight : (readerContentCellStyle == .card ? effectiveCardCellHeight : nil)
         )
         .onHover { hovered in
+            guard viewModel.forceShowBookmark != hovered else { return }
             viewModel.forceShowBookmark = hovered
         }
         .onAppear {
             Task { @MainActor in
                 try? await viewModel.load(item: item, includeSource: appearance.includeSource)
-                annotationStatus = await readerContentCellAnnotationStatusLoader(item.url, item.compoundKey)
             }
         }
         .task(id: item.compoundKey) {
@@ -1075,7 +1099,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         .onChange(of: item.imageUrl) { newImageURL in
             guard newImageURL != viewModel.imageURL else { return }
             Task { @MainActor in
-                viewModel.imageURL = try await item.imageURLToDisplay()
+                viewModel.updateImageURL(try await item.imageURLToDisplay())
             }
         }
     }

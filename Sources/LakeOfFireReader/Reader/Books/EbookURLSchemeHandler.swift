@@ -318,19 +318,41 @@ fileprivate actor EBookProcessTextRequestDeduper {
     }
 }
 
-actor EBookProcessingActor {
-    let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
-    let ebookTextProcessor: EbookTextProcessor?
-    let processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
-    let processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?
-    let processHTML: ((String, Bool) async -> String)?
+public struct EBookNativeSectionPrewarmResult: Equatable {
+    public let sectionHref: String
+    public let requestBytes: Int
+    public let responseBytes: Int
+    public let pageStatsRequested: Bool
+    public let pageStatsProduced: Bool
+
+    public init(
+        sectionHref: String,
+        requestBytes: Int,
+        responseBytes: Int,
+        pageStatsRequested: Bool = true,
+        pageStatsProduced: Bool = false
+    ) {
+        self.sectionHref = sectionHref
+        self.requestBytes = requestBytes
+        self.responseBytes = responseBytes
+        self.pageStatsRequested = pageStatsRequested
+        self.pageStatsProduced = pageStatsProduced
+    }
+}
+
+public actor EBookProcessingActor {
+    private let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    private let ebookTextProcessor: EbookTextProcessor?
+    private let processReadabilityContent: EbookReadabilityContentProcessor?
+    private let processHTMLBytes: EbookHTMLBytesProcessor?
+    private let processHTML: EbookHTMLProcessor?
     
-    init(
-        ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?,
+    public init(
+        ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
         ebookTextProcessor: EbookTextProcessor?,
-        processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
-        processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
-        processHTML: ((String, Bool) async -> String)?
+        processReadabilityContent: EbookReadabilityContentProcessor?,
+        processHTMLBytes: EbookHTMLBytesProcessor?,
+        processHTML: EbookHTMLProcessor?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookTextProcessor = ebookTextProcessor
@@ -338,8 +360,28 @@ actor EBookProcessingActor {
         self.processHTMLBytes = processHTMLBytes
         self.processHTML = processHTML
     }
+
+    public func prewarm(
+        contentURL: URL,
+        sectionHref: String,
+        source: ReaderPackageEntrySource
+    ) async throws -> EBookNativeSectionPrewarmResult {
+        let entryData = try source.readEntry(subpath: sectionHref)
+        let entryText = String(decoding: entryData, as: UTF8.self)
+        let processedText = try await process(
+            contentURL: contentURL,
+            location: sectionHref,
+            text: entryText,
+            isCacheWarmer: true
+        )
+        return EBookNativeSectionPrewarmResult(
+            sectionHref: sectionHref,
+            requestBytes: entryData.count,
+            responseBytes: processedText.utf8.count
+        )
+    }
     
-    func process(
+    public func process(
         contentURL: URL,
         location: String,
         text: String,
@@ -468,13 +510,13 @@ public actor EbookURLSchemeActor {
     public init() { }
 }
 
-typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
-typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
-typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
-typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
-typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
-typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
+public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
+public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
+public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
+public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
+public typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
+public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
+public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 private func ebookReaderLoadDebugLog(_ message: String) {
     guard ProcessInfo.processInfo.environment["MANABI_READER_LOAD_DEBUG"] == "1" else { return }

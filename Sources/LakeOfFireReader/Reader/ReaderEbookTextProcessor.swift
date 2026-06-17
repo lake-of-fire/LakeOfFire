@@ -9,6 +9,7 @@ import SwiftSoup
 private let ebookTextProcessorReplaceTextDetailedLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
 private let ebookTextProcessorBypassReaderModeProcessor = false
+private let ebookTextProcessorSlowLogThresholdMs = 1000
 
 @inline(__always)
 private func ebookProcessorElapsedMilliseconds(since startedAt: Date?) -> Int {
@@ -72,7 +73,7 @@ public enum EbookHTMLProcessingContext {
     @TaskLocal public static var isEbookHTML: Bool = false
 }
 
-internal func ebookTextProcessor(
+public func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
@@ -82,7 +83,7 @@ internal func ebookTextProcessor(
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
-    let collectTiming = ebookTextProcessorReplaceTextDetailedLoggingEnabled
+    let collectTiming = !isCacheWarmer || ebookTextProcessorReplaceTextDetailedLoggingEnabled
     let totalStartedAt = collectTiming ? Date() : nil
     var readabilityProcessElapsedMs = 0
     var fallbackParseElapsedMs = 0
@@ -181,8 +182,26 @@ internal func ebookTextProcessor(
         let responseDecodeStartedAt = collectTiming ? Date() : nil
         let response = String(decoding: htmlBytes, as: UTF8.self)
         responseDecodeElapsedMs = ebookProcessorElapsedMilliseconds(since: responseDecodeStartedAt)
-        if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
-            let elapsedMs = ebookProcessorElapsedMilliseconds(since: totalStartedAt)
+        let elapsedMs = ebookProcessorElapsedMilliseconds(since: totalStartedAt)
+        if ebookTextProcessorReplaceTextDetailedLoggingEnabled
+            || (!isCacheWarmer && elapsedMs >= ebookTextProcessorSlowLogThresholdMs) {
+            debugPrint(
+                "# READERLOAD stage=ebookTextProcessor.slow",
+                "contentURL=\(contentURL.absoluteString)",
+                "sectionLocation=\(sectionLocation)",
+                "isCacheWarmer=\(isCacheWarmer)",
+                "requestBytes=\(content.utf8.count)",
+                "responseBytes=\(htmlBytes.count)",
+                "elapsedMs=\(elapsedMs)",
+                "readabilityProcessElapsedMs=\(readabilityProcessElapsedMs)",
+                "fallbackParseElapsedMs=\(fallbackParseElapsedMs)",
+                "readerModeProcessElapsedMs=\(readerModeProcessElapsedMs)",
+                "preprocessEbookElapsedMs=\(preprocessEbookElapsedMs)",
+                "serializeElapsedMs=\(serializeElapsedMs)",
+                "processHTMLBytesElapsedMs=\(processHTMLBytesElapsedMs)",
+                "processHTMLElapsedMs=\(processHTMLElapsedMs)",
+                "responseDecodeElapsedMs=\(responseDecodeElapsedMs)"
+            )
         }
         return response
     } catch {

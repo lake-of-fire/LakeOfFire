@@ -74,6 +74,24 @@ const resolveURL = (url, relativeTo) => {
 
 const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
 
+const manabiEpubReaderLoadLog = (stage, payload = {}) => {
+    try {
+        if (typeof globalThis.__manabiReaderLoadLog !== 'function') return
+        if (!String(globalThis.__manabiNavigationIntent?.source || '').startsWith('restore')) return
+        globalThis.__manabiReaderLoadLog(stage, payload)
+    } catch (_error) {}
+}
+
+const manabiPerfNow = () => {
+    try {
+        return performance?.now?.() ?? Date.now()
+    } catch (_error) {
+        return Date.now()
+    }
+}
+
+const manabiRoundMs = value => Number.isFinite(value) ? Math.round(value) : null
+
 // like `path.relative()` in Node.js
 const pathRelative = (from, to) => {
     if (!from) return to
@@ -663,8 +681,21 @@ class Loader {
             href,
             mediaType
         } = item
+        const loadStartedAt = manabiPerfNow()
+        manabiEpubReaderLoadLog('epub.loadReplaced.start', {
+            href,
+            mediaType,
+            parent: parents.at(-1) ?? null,
+            parentCount: parents.length,
+        })
         const parent = parents.at(-1)
         const str = await this.loadText(href)
+        manabiEpubReaderLoadLog('epub.loadReplaced.text', {
+            href,
+            mediaType,
+            chars: str?.length ?? 0,
+            elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+        })
         if (!str) return null
 
         // note that one can also just use `replaceString` for everything:
@@ -680,6 +711,12 @@ class Loader {
         let replacedStr = str
         if (this.replaceText) {
             replacedStr = await this.replaceText(href, str, mediaType)
+            manabiEpubReaderLoadLog('epub.loadReplaced.replaceText', {
+                href,
+                mediaType,
+                chars: replacedStr?.length ?? 0,
+                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+            })
         }
 
         if (!replacedStr) {
@@ -716,7 +753,17 @@ class Loader {
             const replace = async (el, attr) => el.setAttribute(attr,
                 await this.loadHref(el.getAttribute(attr), href, parents))
             for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
+            manabiEpubReaderLoadLog('epub.loadReplaced.links', {
+                href,
+                mediaType,
+                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+            })
             for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
+            manabiEpubReaderLoadLog('epub.loadReplaced.srcs', {
+                href,
+                mediaType,
+                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+            })
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
             for (const el of Array.from(doc.getElementsByTagName('*'))
@@ -732,12 +779,24 @@ class Loader {
                     await this.replaceCSS(el.getAttribute('style'), href, parents))
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
+            manabiEpubReaderLoadLog('epub.loadReplaced.finish', {
+                href,
+                mediaType: item.mediaType,
+                chars: textResult.length,
+                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+            })
             return this.createURL(href, textResult, item.mediaType, parent)
         }
 
         const result = mediaType === MIME.CSS ?
             await this.replaceCSS(replacedStr, href, parents) :
             await this.replaceString(replacedStr, href, parents)
+        manabiEpubReaderLoadLog('epub.loadReplaced.finish', {
+            href,
+            mediaType,
+            chars: result?.length ?? 0,
+            elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+        })
         return this.createURL(href, result, mediaType, parent)
     }
     async replaceCSS(str, href, parents = []) {

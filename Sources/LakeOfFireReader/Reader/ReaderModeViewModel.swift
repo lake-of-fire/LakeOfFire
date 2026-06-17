@@ -729,6 +729,7 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
+    @Published public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
     @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
     @Published public var processHTML: ((String, Bool) async -> String)? = nil
