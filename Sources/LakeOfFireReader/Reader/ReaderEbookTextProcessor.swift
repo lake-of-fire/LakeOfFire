@@ -68,7 +68,7 @@ public enum EbookHTMLProcessingContext {
     @TaskLocal public static var isEbookHTML: Bool = false
 }
 
-internal func ebookTextProcessor(
+public func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,

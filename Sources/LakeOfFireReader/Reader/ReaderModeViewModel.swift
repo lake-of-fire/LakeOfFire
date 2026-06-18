@@ -1217,6 +1217,7 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler? = nil
+    @Published public var nativeEbookSectionPrewarmer: (@Sendable (URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: EbookReadabilityContentProcessor? = nil
     @Published public var processHTMLBytes: EbookHTMLBytesProcessor? = nil
     @Published public var processHTML: EbookHTMLProcessor? = nil

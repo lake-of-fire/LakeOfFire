@@ -837,6 +837,7 @@ export class Paginator extends HTMLElement {
 
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
+        this.#sizesPromise = null
         //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
         this.#invalidateVisibleRangeCache()
@@ -882,6 +883,8 @@ export class Paginator extends HTMLElement {
 
     #cachedSizes = null
     #cachedStart = null
+    #sizesPromise = null
+    #viewSizePromise = null
     #lastRenderContainerSize = null
     #lastTypographyRenderSignature = null
     #visibleRangeCache = null
@@ -1082,16 +1085,8 @@ export class Paginator extends HTMLElement {
             if (this.#view.isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
                 const index = this.#index;
-                let fraction = 0;
-                if (this.scrolled) {
-                    fraction = (await this.start()) / (await this.viewSize());
-                } else if ((await this.pages()) > 0) {
-                    const {
-                        page,
-                        pages
-                    } = this;
-                    fraction = (page - 1) / (pages - 2);
-                }
+                const metrics = await this.pageMetrics();
+                const fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0;
                 // Don't include all details, just enough for the slider
                 this.dispatchEvent(new CustomEvent('relocate', {
                     detail: {
@@ -1243,8 +1238,7 @@ export class Paginator extends HTMLElement {
     async #isWithinNeighborPrefetchWindow() {
         if (!this.#view || this.#isCacheWarmer) return false
         try {
-            const page = await this.page()
-            const pages = await this.pages()
+            const { page, pages } = await this.pageMetrics()
             const lastReadablePage = Math.max(1, pages - 2)
             const remainingPages = Math.max(0, lastReadablePage - page)
             return remainingPages <= MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD
@@ -1297,6 +1291,7 @@ export class Paginator extends HTMLElement {
 //        console.log("#onBeforeExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
+        this.#viewSizePromise = null;
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
     }
@@ -1304,6 +1299,7 @@ export class Paginator extends HTMLElement {
 //        console.log("#onExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
+        this.#viewSizePromise = null;
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
         if (!this.#suspendOnExpandAnchor) {
@@ -1629,15 +1625,16 @@ export class Paginator extends HTMLElement {
         ) {
             return page;
         }
-        const pages = await this.pages();
+        const metrics = await this.pageMetrics();
+        const pages = metrics.pages;
         const minPage = 1;
         const maxPage = Math.max(minPage, pages - 2);
         if (page < minPage || page > maxPage) {
             return page;
         }
 
-        const size = await this.size();
-        const rectMapper = await this.#getRectMapper();
+        const size = metrics.size;
+        const rectMapper = await this.#getRectMapper(metrics);
         const summariesByPage = new Map();
         let target = page;
 
@@ -1693,7 +1690,9 @@ export class Paginator extends HTMLElement {
             return { rendered: false, reason: 'unchanged', signature };
         }
         this.#cachedSizes = null;
+        this.#sizesPromise = null;
         this.#cachedStart = null;
+        this.#viewSizePromise = null;
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#invalidateVisibleRangeCache();
@@ -1917,7 +1916,9 @@ export class Paginator extends HTMLElement {
             return { rendered: false, reason: 'unchanged', previousSize, currentSize }
         }
         this.#cachedSizes = null
+        this.#sizesPromise = null
         this.#cachedStart = null
+        this.#viewSizePromise = null
         this.#view.cachedViewSize = null
         this.#view.cachedSizes = null
         this.#invalidateVisibleRangeCache()
@@ -1947,7 +1948,10 @@ export class Paginator extends HTMLElement {
         //        await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
         if (/*true || */this.#cachedSizes === null) {
-            return new Promise(resolve => {
+            if (this.#sizesPromise) {
+                return this.#sizesPromise
+            }
+            this.#sizesPromise = new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#container.getBoundingClientRect()
                     //                    this.#cachedSizes = {
@@ -1961,9 +1965,11 @@ export class Paginator extends HTMLElement {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
                     }
+                    this.#sizesPromise = null
                     resolve(this.#cachedSizes)
                 })
             })
+            return this.#sizesPromise
             //        } else {
             //                                const r = this.#container.getBoundingClientRect()
             //            console.log("sizes() cached/real", this.#cachedSizes, r)
@@ -1976,12 +1982,26 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
-        return (await this.sizes())[await this.sideProp()]
+        const sideProp = await this.sideProp()
+        return await this.#sizeForSide(sideProp)
     }
     async viewSize() {
+        return await this.#viewSizeForSide(await this.sideProp())
+    }
+    async #sizeForSide(sideProp) {
+        const sizes = await this.sizes()
+        return sizes?.[sideProp] ?? 0
+    }
+    async #viewSizeForSide(sideProp) {
         if (this.#isCacheWarmer) return 0
+        if (!this.#view) return 0
         if (/*true ||*/ this.#view.cachedViewSize === null) {
-            return new Promise(resolve => {
+            if (this.#viewSizePromise) {
+                const cachedViewSize = await this.#viewSizePromise
+                return cachedViewSize?.[sideProp] ?? 0
+            }
+            const view = this.#view
+            this.#viewSizePromise = new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#view.element.getBoundingClientRect()
                     //                    this.#view.cachedViewSize = {
@@ -1990,27 +2010,36 @@ export class Paginator extends HTMLElement {
                     //                    }
                     //                    resolve(this.#view.cachedViewSize[await this.sideProp()])
                     //                    return ;
-                    const v = this.#view.element
-                    this.#view.cachedViewSize = {
+                    const v = view?.element
+                    const cachedViewSize = {
                         width: v.clientWidth,
                         height: v.clientHeight,
                     }
+                    if (this.#view === view) {
+                        this.#view.cachedViewSize = cachedViewSize
+                    }
+                    this.#viewSizePromise = null
                     //                                        console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
                     //                                        console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
                     //                                        console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
                     //                                        console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
-                    resolve(this.#view.cachedViewSize[await this.sideProp()])
+                    resolve(cachedViewSize)
                 })
             })
+            const cachedViewSize = await this.#viewSizePromise
+            return cachedViewSize?.[sideProp] ?? 0
         }
-        return this.#view.cachedViewSize[await this.sideProp()]
+        return this.#view.cachedViewSize[sideProp] ?? 0
     }
     async start() {
+        return await this.#startForScrollProp(await this.scrollProp())
+    }
+    async #startForScrollProp(scrollProp) {
         if (this.#cachedStart === null) {
             //        return new Promise(resolve => {
             //            requestAnimationFrame(async () => {
             //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
-            const start = Math.abs(this.#container[await this.scrollProp()])
+            const start = Math.abs(this.#container[scrollProp])
             this.#cachedStart = start
             //        return start
             //                resolve(start)
@@ -2024,13 +2053,14 @@ export class Paginator extends HTMLElement {
         return (await this.start()) + (await this.size())
     }
     async page() {
-        //        await this.#awaitDirection();
-        return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
+        const metrics = await this.pageMetrics()
+        return metrics.page
     }
     async pages() {
-        //        await this.#awaitDirection();
-        //        console.log("pages() view size & size:", (await this.viewSize()), (await this.size()))
-        const rawPages = Math.round((await this.viewSize()) / (await this.size()))
+        const metrics = await this.pageMetrics()
+        return metrics.pages
+    }
+    #normalizePages(rawPages) {
         if (
             MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
             && rawPages > 3
@@ -2039,6 +2069,33 @@ export class Paginator extends HTMLElement {
             return 3
         }
         return rawPages
+    }
+    async pageMetrics() {
+        await this.#awaitDirection()
+        const sideProp = await this.sideProp()
+        const scrollProp = await this.scrollProp()
+        const [size, viewSize, start] = await Promise.all([
+            this.#sizeForSide(sideProp),
+            this.#viewSizeForSide(sideProp),
+            this.#startForScrollProp(scrollProp),
+        ])
+        const end = start + size
+        const rawPages = size > 0 ? Math.round(viewSize / size) : 0
+        const pages = this.#normalizePages(rawPages)
+        const page = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
+        return {
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            sideProp,
+            scrollProp,
+            size,
+            viewSize,
+            start,
+            end,
+            page,
+            pages,
+        }
     }
     async scrollBy(dx, dy) {
         //        await this.#awaitDirection()
@@ -2062,10 +2119,11 @@ export class Paginator extends HTMLElement {
         //        await this.#awaitDirection();
         const velocity = this.#vertical ? vy : vx
         const [offset, a, b] = this.#scrollBounds
-        const start = await this.start()
-        const end = await this.end()
-        const pages = await this.pages()
-        const size = await this.size()
+        const metrics = await this.pageMetrics()
+        const start = metrics.start
+        const end = metrics.end
+        const pages = metrics.pages
+        const size = metrics.size
         const min = Math.abs(offset) - a
         const max = Math.abs(offset) + b
         const d = velocity * (this.#rtl ? -size : size)
@@ -2073,7 +2131,7 @@ export class Paginator extends HTMLElement {
             Math.max(min, Math.min(max, (start + end) / 2 +
                 (isNaN(d) ? 0 : d))) / size)
 
-        await this.#scrollToPage(page, 'snap').then(async () => {
+        await this.#scrollToPage(page, 'snap', undefined, metrics).then(async () => {
             const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
             if (dir) return await this.#goTo({
                 index: this.#adjacentIndex(dir),
@@ -2178,10 +2236,11 @@ export class Paginator extends HTMLElement {
         }))
     }
     // allows one to process rects as if they were LTR and horizontal
-    async #getRectMapper() {
+    async #getRectMapper(knownMetrics = null) {
         await this.#awaitDirection();
+        const metrics = knownMetrics || await this.pageMetrics()
         if (this.scrolled) {
-            const size = await this.viewSize()
+            const size = metrics.viewSize
             const topMargin = this.#topMargin
             const bottomMargin = this.#bottomMargin
             return this.#vertical ?
@@ -2201,7 +2260,7 @@ export class Paginator extends HTMLElement {
                     right: bottom + bottomMargin
                 })
         }
-        const pxSize = (await this.pages()) * (await this.size())
+        const pxSize = metrics.pages * metrics.size
         return this.#rtl ?
             ({
                 left,
@@ -2282,24 +2341,26 @@ export class Paginator extends HTMLElement {
         this.#lastWheelDeltaX = e.deltaX;
     }
     async #scrollToRect(rect, reason) {
+        const metrics = await this.pageMetrics()
         if (this.scrolled) {
-            const rectMapper = await this.#getRectMapper();
+            const rectMapper = await this.#getRectMapper(metrics);
             const offset = rectMapper(rect).left - this.#topMargin
-            return await this.#scrollTo(offset, reason)
+            return await this.#scrollTo(offset, reason, undefined, metrics)
         }
-        const rectMapper = await this.#getRectMapper();
+        const rectMapper = await this.#getRectMapper(metrics);
         const offset = rectMapper(rect).left
-        return await this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
+        return await this.#scrollToPage(Math.floor(offset / metrics.size) + (this.#rtl ? -1 : 1), reason, undefined, metrics)
     }
-    async #scrollTo(offset, reason, smooth) {
+    async #scrollTo(offset, reason, smooth, knownMetrics = null) {
         await this.#awaitDirection();
         const scroll = async () => {
             this.#cachedStart = null;
             const element = this.#container
             const scrollProp = await this.scrollProp()
-            const size = await this.size()
-            const atStart = await this.atStart()
-            const atEnd = await this.atEnd()
+            const metrics = knownMetrics || await this.pageMetrics()
+            const size = metrics.size
+            const atStart = this.#adjacentIndex(-1) == null && metrics.page <= 1
+            const atEnd = this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2
             if (element[scrollProp] === offset) {
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
                 await this.#afterScroll(reason)
@@ -2390,10 +2451,10 @@ export class Paginator extends HTMLElement {
         //                    }
         //                }
     }
-    async #scrollToPage(page, reason, smooth) {
-        const size = await this.size()
-        const offset = size * (this.#rtl ? -page : page)
-        return await this.#scrollTo(offset, reason, smooth)
+    async #scrollToPage(page, reason, smooth, knownMetrics = null) {
+        const metrics = knownMetrics || await this.pageMetrics()
+        const offset = metrics.size * (this.#rtl ? -page : page)
+        return await this.#scrollTo(offset, reason, smooth, metrics)
     }
     async scrollToAnchor(anchor, select) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
@@ -2415,15 +2476,15 @@ export class Paginator extends HTMLElement {
             return
         }
         // if anchor is a fraction
+        const metrics = await this.pageMetrics()
         if (this.scrolled) {
-            await this.#scrollTo(anchor * (await this.viewSize()), reason)
+            await this.#scrollTo(anchor * metrics.viewSize, reason, undefined, metrics)
             return
         }
-        const { pages } = this
-        if (!pages) return
-        const textPages = await this.pages() - 2
+        if (!metrics.pages) return
+        const textPages = metrics.pages - 2
         const newPage = Math.round(anchor * (textPages - 1))
-        await this.#scrollToPage(newPage + 1, reason)
+        await this.#scrollToPage(newPage + 1, reason, undefined, metrics)
     }
     async #NscrollToAnchor(anchor, reason = 'anchor') {
         //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
@@ -2643,11 +2704,12 @@ export class Paginator extends HTMLElement {
             detail.pageTurnDirection = this.#pendingPageTurnDirection;
         }
 
+        const metrics = await this.pageMetrics()
         if (this.scrolled) {
-            detail.fraction = (await this.start()) / (await this.viewSize())
-        } else if ((await this.pages()) > 0) {
-            const page = await this.page()
-            const pages = await this.pages()
+            detail.fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0
+        } else if (metrics.pages > 0) {
+            const page = metrics.page
+            const pages = metrics.pages
             this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
             detail.fraction = (page - 1) / (pages - 2)
             detail.size = 1 / (pages - 2)
@@ -2782,6 +2844,8 @@ export class Paginator extends HTMLElement {
                 this.#suspendOnExpandAnchor = true
 
                 this.#cachedSizes = null
+                this.#sizesPromise = null
+                this.#viewSizePromise = null
                 this.#cachedStart = null
                 this.#invalidateVisibleRangeCache()
 
@@ -2823,8 +2887,9 @@ export class Paginator extends HTMLElement {
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
         if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
-            const pageCurrent = await this.page().catch(() => null)
-            const pageTotal = await this.pages().catch(() => null)
+            const metrics = await this.pageMetrics().catch(() => null)
+            const pageCurrent = metrics?.page ?? null
+            const pageTotal = metrics?.pages ?? null
             const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
             const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
             const landedPastContent = frameRect && rootRect && frameRect.bottom <= rootRect.top + 1
@@ -2835,7 +2900,7 @@ export class Paginator extends HTMLElement {
                 && (pageCurrent >= pageTotal - 1 || landedPastContent)
             ) {
                 const correctedPage = Math.max(1, pageTotal - 2)
-                await this.#scrollToPage(correctedPage, 'navigation')
+                await this.#scrollToPage(correctedPage, 'navigation', undefined, metrics)
             }
         }
         this.#suspendOnExpandAnchor = false
@@ -2963,44 +3028,47 @@ export class Paginator extends HTMLElement {
     }
     async #scrollPrev(distance) {
         if (!this.#view) return true
+        const metrics = await this.pageMetrics()
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
             const lineAdvance = this.#vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
-            const scrollDistance = distance ?? (this.size - lineAdvance);
-            if ((await this.start()) > 0) {
-                return await this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+            const scrollDistance = distance ?? (metrics.size - lineAdvance);
+            if (metrics.start > 0) {
+                return await this.#scrollTo(Math.max(0, metrics.start - scrollDistance), null, true, metrics);
             }
             return true;
         }
-        if (await this.atStart()) return
-        const page = await this.#resolveBlankPageTarget((await this.page()) - 1, -1, 'page-turn.prev')
-        return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
+        if (this.#adjacentIndex(-1) == null && metrics.page <= 1) return
+        const page = await this.#resolveBlankPageTarget(metrics.page - 1, -1, 'page-turn.prev')
+        return await this.#scrollToPage(page, 'page', true, metrics).then(() => page <= 0)
     }
     async #scrollNext(distance) {
         if (!this.#view) return true
+        const metrics = await this.pageMetrics()
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
             const lineAdvance = this.#vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
-            const scrollDistance = distance ?? (this.size - lineAdvance);
-            if ((await this.viewSize()) - (await this.end()) > 2) {
-                return await this.#scrollTo(Math.min(await this.viewSize(), (await this.start()) + scrollDistance), null, true);
+            const scrollDistance = distance ?? (metrics.size - lineAdvance);
+            if (metrics.viewSize - metrics.end > 2) {
+                return await this.#scrollTo(Math.min(metrics.viewSize, metrics.start + scrollDistance), null, true, metrics);
             }
             return true;
         }
-        if (await this.atEnd()) return
-        const page = await this.#resolveBlankPageTarget((await this.page()) + 1, 1, 'page-turn.next')
-        const pages = await this.pages()
-        return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
+        if (this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2) return
+        const page = await this.#resolveBlankPageTarget(metrics.page + 1, 1, 'page-turn.next')
+        return await this.#scrollToPage(page, 'page', true, metrics).then(() => page >= metrics.pages - 1)
     }
     async atStart() {
-        return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
+        const metrics = await this.pageMetrics()
+        return this.#adjacentIndex(-1) == null && metrics.page <= 1
     }
     async atEnd() {
-        return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
+        const metrics = await this.pageMetrics()
+        return this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2
     }
     #adjacentIndex(dir) {
         for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
@@ -3102,20 +3170,22 @@ export class Paginator extends HTMLElement {
     // Public navigation edge detection methods
     async canTurnPrev() {
         if (!this.#view) return false;
+        const metrics = await this.pageMetrics();
         if (this.scrolled) {
-            return this.start > 0;
+            return metrics.start > 0;
         }
         // If at the start page and no previous section, cannot turn
-        if ((await this.page()) <= 1 && this.#adjacentIndex(-1) == null) return false;
+        if (metrics.page <= 1 && this.#adjacentIndex(-1) == null) return false;
         return true;
     }
     async canTurnNext() {
         if (!this.#view) return false;
+        const metrics = await this.pageMetrics();
         if (this.scrolled) {
-            return this.viewSize - this.end > 2;
+            return metrics.viewSize - metrics.end > 2;
         }
         // If at the end page and no next section, cannot turn
-        if ((await this.page()) >= (await this.pages()) - 2 && this.#adjacentIndex(1) == null) return false;
+        if (metrics.page >= metrics.pages - 2 && this.#adjacentIndex(1) == null) return false;
         return true;
     }
 
@@ -3129,11 +3199,12 @@ export class Paginator extends HTMLElement {
 
     // Public: At first page of current section
     async isAtSectionStart() {
-        return (await this.page()) <= 1;
+        return (await this.pageMetrics()).page <= 1;
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
-        return (await this.page()) >= (await this.pages()) - 2;
+        const metrics = await this.pageMetrics();
+        return metrics.page >= metrics.pages - 2;
     }
 }
 

@@ -62,6 +62,20 @@ function forwardShadowErrors(root) {
     });
 }
 
+const markReaderRenderReady = (reason = 'unspecified') => {
+    try {
+        const html = document.documentElement;
+        const body = document.body;
+        if (html?.dataset) {
+            html.dataset.manabiReaderRenderReady = '1';
+        }
+        if (body?.dataset) {
+            body.dataset.manabiReaderRenderReady = '1';
+        }
+        globalThis.__manabiPostReaderDocStateEvent?.(`renderReady.${reason}`);
+    } catch (_error) {}
+};
+
 const roundedDisplayPercent = value => {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
         return null;
@@ -699,6 +713,14 @@ const markCacheWarmerForegroundActivity = (reason = 'unspecified', cooldownMs = 
     const previousPausedUntil = Number(globalThis.__manabiCacheWarmerPausedUntilMs || 0);
     const nextPausedUntil = Math.max(previousPausedUntil, now + Math.max(0, Number(cooldownMs) || 0));
     globalThis.__manabiCacheWarmerPausedUntilMs = nextPausedUntil;
+    globalThis.__manabiCacheWarmerWorkGeneration = (globalThis.__manabiCacheWarmerWorkGeneration || 0) + 1;
+};
+
+const cacheWarmerWorkGeneration = () => globalThis.__manabiCacheWarmerWorkGeneration || 0;
+
+const invalidateCacheWarmerWork = () => {
+    globalThis.__manabiCacheWarmerWorkGeneration = (globalThis.__manabiCacheWarmerWorkGeneration || 0) + 1;
+    return globalThis.__manabiCacheWarmerWorkGeneration;
 };
 
 const cacheWarmerForegroundBusyState = () => {
@@ -2213,21 +2235,226 @@ const parseEntryIDs = (rawValue) => {
 
 // Mirrors manabi_reader.js sidecar expansion. The HTML sidecar stores table-compressed
 // segment tuples so EPUB sections do not repeat large lookup attrs thousands of times.
-const segmentMetadataBootstrap = (doc) => {
-    if (!doc) {
-        return { byID: new Map(), idsByEntryID: new Map() };
-    }
-    const primarySidecar = typeof doc.getElementById === 'function'
+const segmentMetadataSidecarSnapshot = (doc) => {
+    const primarySidecar = typeof doc?.getElementById === 'function'
         ? doc.getElementById('mnb-segment-metadata')
         : null;
     const sidecars = primarySidecar
         ? [primarySidecar]
-        : Array.from(doc.getElementsByTagName?.('script') || [])
+        : Array.from(doc?.getElementsByTagName?.('script') || [])
             .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta'));
-    const sidecarSignature = sidecars
-        .map((sidecar) => String((sidecar.textContent || '').length))
-        .join('|');
-    if (doc.manabiSegmentMetadataByID && doc.manabiSegmentMetadataSidecarSignature === sidecarSignature) {
+    const sidecarTexts = sidecars.map((sidecar) => sidecar.textContent || '');
+    const sidecarSignature = sidecarTexts.map((text) => String(text.length)).join('|');
+    return { sidecars, sidecarTexts, sidecarSignature };
+};
+
+const segmentMetadataSidecarsMatchCache = (doc, snapshot) => (
+    Array.isArray(doc?.manabiSegmentMetadataSidecars)
+    && Array.isArray(doc?.manabiSegmentMetadataSidecarTexts)
+    && doc.manabiSegmentMetadataSidecars.length === snapshot.sidecars.length
+    && doc.manabiSegmentMetadataSidecarTexts.length === snapshot.sidecarTexts.length
+    && doc.manabiSegmentMetadataSidecarTexts.every((text, index) => text === snapshot.sidecarTexts[index])
+);
+
+const cacheSegmentMetadataSidecarSnapshot = (doc, snapshot) => {
+    doc.manabiSegmentMetadataSidecars = snapshot.sidecars;
+    doc.manabiSegmentMetadataSidecarTexts = snapshot.sidecarTexts;
+    doc.manabiSegmentMetadataSidecarSignature = snapshot.sidecarSignature;
+};
+
+const segmentMetadataPayloadsForSnapshot = (doc, snapshot) => {
+    const hasMatchingSidecars =
+        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot);
+    if (hasMatchingSidecars && Array.isArray(doc.manabiSegmentMetadataSidecarPayloads)) {
+        return doc.manabiSegmentMetadataSidecarPayloads;
+    }
+    const payloads = snapshot.sidecars.map((sidecar) => {
+        try {
+            return JSON.parse(sidecar.textContent || '{}');
+        } catch (_error) {
+            return null;
+        }
+    });
+    doc.manabiSegmentMetadataSidecarPayloads = payloads;
+    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
+    return payloads;
+};
+
+const resetSegmentMetadataCachesForSnapshot = (doc, snapshot) => {
+    doc.manabiSegmentMetadataByID = new Map();
+    doc.manabiSegmentIDsByEntryID = new Map();
+    doc.manabiSegmentMetadataSidecarPayloads = null;
+    doc.manabiSegmentMetadataFullyBootstrapped = false;
+    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
+};
+
+const segmentMetadataTableValue = (table, index, fallback = null) => (
+    Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
+        ? table[index]
+        : fallback
+);
+
+const expandSegmentIDToken = (token, version) => {
+    if (typeof token !== 'string' || token.length === 0) return null;
+    if (version === 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
+    return token;
+};
+
+const segmentMetadataTableArray = (tables, shortKey, longKey) => (
+    Array.isArray(tables?.[shortKey])
+        ? tables[shortKey]
+        : (Array.isArray(tables?.[longKey]) ? tables[longKey] : [])
+);
+
+const compactSegmentMetadataTables = (compactTables) => ({
+    h: segmentMetadataTableArray(compactTables, 'h', 'segmentHashes'),
+    j: segmentMetadataTableArray(compactTables, 'j', 'jmdictEntryIDs'),
+    n: segmentMetadataTableArray(compactTables, 'n', 'jmnedictEntryIDs'),
+    s: segmentMetadataTableArray(compactTables, 's', 'jmdictSearchStrings'),
+    ns: segmentMetadataTableArray(compactTables, 'ns', 'jmnedictSearchStrings'),
+    p: segmentMetadataTableArray(compactTables, 'p', 'partsOfSpeech'),
+});
+
+const segmentMetadataFromCompactTuple = (segment, tables, version) => {
+    const stableSegmentIdentifier = version === 3
+        ? segmentMetadataTableValue(tables.h, segment?.[1], null)
+        : segment?.[1];
+    return {
+        i: expandSegmentIDToken(segment?.[0], version),
+        h: stableSegmentIdentifier,
+        sid: stableSegmentIdentifier,
+        j: segmentMetadataTableValue(tables.j, segment?.[2], []),
+        n: segmentMetadataTableValue(tables.n, segment?.[3], []),
+        s: segmentMetadataTableValue(tables.s, segment?.[4], null),
+        ns: segmentMetadataTableValue(tables.ns, segment?.[5], null),
+        p: segmentMetadataTableValue(tables.p, segment?.[6], null),
+        l: segment?.[7],
+    };
+};
+
+const segmentMetadataFromLegacyEntry = (segment) => ({
+    i: typeof segment?.i === 'string' ? segment.i : null,
+    h: typeof segment?.h === 'string' ? segment.h : null,
+    sid: typeof segment?.h === 'string' ? segment.h : (typeof segment?.sid === 'string' ? segment.sid : null),
+    j: Array.isArray(segment?.j) ? segment.j : [],
+    n: Array.isArray(segment?.n) ? segment.n : [],
+    s: typeof segment?.s === 'string' ? segment.s : null,
+    ns: typeof segment?.ns === 'string' ? segment.ns : null,
+    p: typeof segment?.p === 'string' ? segment.p : null,
+    l: Number.isInteger(segment?.l) ? segment.l : null,
+});
+
+const expandSegmentMetadataPayload = (payload) => {
+    const version = payload?.v ?? payload?.version;
+    const compactTables = payload?.t ?? payload?.tables;
+    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
+    if ((version === 2 || version === 3) && compactTables && Array.isArray(compactSegments)) {
+        const tables = compactSegmentMetadataTables(compactTables);
+        return compactSegments.map((segment) => segmentMetadataFromCompactTuple(segment, tables, version));
+    }
+    if (Array.isArray(payload)) {
+        return payload.map(segmentMetadataFromLegacyEntry);
+    }
+    return [];
+};
+
+const segmentMetadataPayloadLookupState = (payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+    if (payload.__manabiSegmentMetadataLookupState) {
+        return payload.__manabiSegmentMetadataLookupState;
+    }
+    const state = {
+        byID: new Map(),
+        scannedThrough: -1,
+        complete: false,
+    };
+    try {
+        Object.defineProperty(payload, '__manabiSegmentMetadataLookupState', {
+            value: state,
+            configurable: true,
+        });
+    } catch (_error) {
+        payload.__manabiSegmentMetadataLookupState = state;
+    }
+    return state;
+};
+
+const findSegmentMetadataInPayload = (payload, segmentID) => {
+    const version = payload?.v ?? payload?.version;
+    const compactTables = payload?.t ?? payload?.tables;
+    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
+    if ((version === 2 || version === 3) && compactTables && Array.isArray(compactSegments)) {
+        const tables = compactSegmentMetadataTables(compactTables);
+        const state = segmentMetadataPayloadLookupState(payload);
+        if (state?.byID?.has(segmentID)) {
+            const cachedIndex = state.byID.get(segmentID);
+            const cachedSegment = compactSegments[cachedIndex];
+            return cachedSegment ? segmentMetadataFromCompactTuple(cachedSegment, tables, version) : null;
+        }
+        if (state?.complete === true) {
+            return null;
+        }
+        for (let index = (state?.scannedThrough ?? -1) + 1; index < compactSegments.length; index += 1) {
+            const segment = compactSegments[index];
+            const expandedID = expandSegmentIDToken(segment?.[0], version);
+            if (expandedID && state?.byID && !state.byID.has(expandedID)) {
+                state.byID.set(expandedID, index);
+            }
+            if (state) state.scannedThrough = index;
+            if (expandedID !== segmentID) continue;
+            return segmentMetadataFromCompactTuple(segment, tables, version);
+        }
+        if (state) state.complete = true;
+        return null;
+    }
+    if (Array.isArray(payload)) {
+        const state = segmentMetadataPayloadLookupState(payload);
+        if (state?.byID?.has(segmentID)) {
+            const cachedIndex = state.byID.get(segmentID);
+            const cachedSegment = payload[cachedIndex];
+            return cachedSegment ? segmentMetadataFromLegacyEntry(cachedSegment) : null;
+        }
+        if (state?.complete === true) {
+            return null;
+        }
+        for (let index = (state?.scannedThrough ?? -1) + 1; index < payload.length; index += 1) {
+            const segment = payload[index];
+            if (segment?.i && state?.byID && !state.byID.has(segment.i)) {
+                state.byID.set(segment.i, index);
+            }
+            if (state) state.scannedThrough = index;
+            if (segment?.i !== segmentID) continue;
+            return segmentMetadataFromLegacyEntry(segment);
+        }
+        if (state) state.complete = true;
+    }
+    return null;
+};
+
+const lazySegmentMetadataByID = (doc, snapshot) => {
+    const hasMatchingSidecars =
+        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot);
+    if (!hasMatchingSidecars) {
+        resetSegmentMetadataCachesForSnapshot(doc, snapshot);
+    } else if (!(doc.manabiSegmentMetadataByID instanceof Map)) {
+        doc.manabiSegmentMetadataByID = new Map();
+    }
+    return doc.manabiSegmentMetadataByID;
+};
+
+const segmentMetadataBootstrap = (doc) => {
+    if (!doc) {
+        return { byID: new Map(), idsByEntryID: new Map() };
+    }
+    const snapshot = segmentMetadataSidecarSnapshot(doc);
+    if (
+        doc.manabiSegmentMetadataFullyBootstrapped === true
+        && doc.manabiSegmentMetadataByID
+        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot)
+    ) {
         return {
             byID: doc.manabiSegmentMetadataByID,
             idsByEntryID: doc.manabiSegmentIDsByEntryID || new Map(),
@@ -2235,33 +2462,6 @@ const segmentMetadataBootstrap = (doc) => {
     }
     const byID = new Map();
     const idsByEntryID = new Map();
-    const tableValue = (table, index, fallback = null) => (
-        Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
-            ? table[index]
-            : fallback
-    );
-    const expandSegmentIDToken = (token, version) => {
-        if (typeof token !== 'string' || token.length === 0) return null;
-        if (version === 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
-        return token;
-    };
-    const expandSegmentMetadataPayload = (payload) => {
-        const version = payload?.v ?? payload?.version;
-        if ((version === 2 || version === 3) && payload?.t && Array.isArray(payload.s)) {
-            const tables = payload.t;
-            return payload.s.map((segment) => ({
-                i: expandSegmentIDToken(segment?.[0], version), // segment element ID
-                sid: version === 3 ? tableValue(tables.h, segment?.[1], null) : segment?.[1], // stable selection ID when available
-                j: tableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
-                n: tableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
-                s: tableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
-                ns: tableValue(tables.ns, segment?.[5], null), // JMNEDict lookup string from table index
-                p: tableValue(tables.p, segment?.[6], null), // part-of-speech from table index
-                l: segment?.[7], // JLPT level, 1..5
-            }));
-        }
-        return [];
-    };
     const indexEntryIDs = (segmentID, entryIDs) => {
         for (const entryID of entryIDs || []) {
             if (typeof entryID !== 'number' || !Number.isFinite(entryID)) continue;
@@ -2270,27 +2470,45 @@ const segmentMetadataBootstrap = (doc) => {
             idsByEntryID.get(key).add(segmentID);
         }
     };
-    for (const sidecar of sidecars) {
-        try {
-            const payload = JSON.parse(sidecar.textContent || '{}');
-            for (const segment of expandSegmentMetadataPayload(payload)) {
-                if (!segment?.i) continue;
-                byID.set(segment.i, segment);
-                indexEntryIDs(segment.i, segment.j);
-                indexEntryIDs(segment.i, segment.n);
-            }
-        } catch (_error) {}
+    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
+        for (const segment of expandSegmentMetadataPayload(payload)) {
+            if (!segment?.i) continue;
+            byID.set(segment.i, segment);
+            indexEntryIDs(segment.i, segment.j);
+            indexEntryIDs(segment.i, segment.n);
+        }
     }
     doc.manabiSegmentMetadataByID = byID;
     doc.manabiSegmentIDsByEntryID = idsByEntryID;
-    doc.manabiSegmentMetadataSidecarSignature = sidecarSignature;
+    doc.manabiSegmentMetadataFullyBootstrapped = true;
+    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
     return { byID, idsByEntryID };
 };
 
 const segmentMetadataForNode = (segmentNode) => {
     if (!segmentNode) return null;
     const doc = segmentNode.ownerDocument || document;
-    return segmentMetadataBootstrap(doc).byID.get(segmentNode.id) || null;
+    const segmentID = segmentNode.id;
+    if (typeof segmentID !== 'string' || segmentID.length === 0 || !doc) return null;
+    const snapshot = segmentMetadataSidecarSnapshot(doc);
+    const byID = lazySegmentMetadataByID(doc, snapshot);
+    if (byID.has(segmentID)) {
+        return byID.get(segmentID) || null;
+    }
+    if (
+        doc.manabiSegmentMetadataFullyBootstrapped === true
+        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
+        && segmentMetadataSidecarsMatchCache(doc, snapshot)
+    ) {
+        return null;
+    }
+    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
+        const metadata = findSegmentMetadataInPayload(payload, segmentID);
+        if (!metadata?.i) continue;
+        byID.set(segmentID, metadata);
+        return metadata;
+    }
+    return null;
 };
 
 const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
@@ -2840,6 +3058,79 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     };
 };
 
+const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspecified') => {
+    const view = doc?.defaultView ?? null;
+    const byElementID = new Map();
+    const bySegmentIdentifier = new Map();
+    const idsByEntryID = new Map();
+    const addEntryIDs = (elementID, entryIDs) => {
+        if (!elementID || !Array.isArray(entryIDs)) { return; }
+        for (const entryID of entryIDs) {
+            if (entryID === null || entryID === undefined) { continue; }
+            const key = String(entryID);
+            let ids = idsByEntryID.get(key);
+            if (!ids) {
+                ids = new Set();
+                idsByEntryID.set(key, ids);
+            }
+            ids.add(elementID);
+        }
+    };
+    const addSegmentNode = (node) => {
+        const elementID = node?.getAttribute?.('id') ?? null;
+        if (!elementID || byElementID.has(elementID)) { return; }
+        const metadata = segmentMetadataForNode(node);
+        const segmentIdentifier = segmentIdentifierForNode(node);
+        const sentenceNode = node.closest?.('mnb-sen') ?? null;
+        const item = {
+            node,
+            metadata,
+            segmentIdentifier,
+            sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
+        };
+        byElementID.set(elementID, item);
+        if (segmentIdentifier) {
+            bySegmentIdentifier.set(segmentIdentifier, item);
+        }
+        for (const alias of segmentIdentifierAliasesForNode(node)) {
+            bySegmentIdentifier.set(alias, item);
+        }
+        addEntryIDs(elementID, metadata?.j);
+        addEntryIDs(elementID, metadata?.n);
+    };
+    const visibleSegments = Array.isArray(visibleSegmentsResult?.visibleSegments)
+        ? visibleSegmentsResult.visibleSegments
+        : [];
+    for (const visibleSegment of visibleSegments) {
+        const node = visibleSegment?.node ?? null;
+        addSegmentNode(node);
+        const sentenceNode = node?.closest?.('mnb-sen') ?? null;
+        if (!sentenceNode?.querySelectorAll) { continue; }
+        for (const sibling of sentenceNode.querySelectorAll('mnb-seg')) {
+            addSegmentNode(sibling);
+        }
+    }
+    const index = {
+        byElementID,
+        bySegmentIdentifier,
+        idsByEntryID,
+        lookupPayloadByElementID: new Map(),
+        lookupPayloadPrepared: false,
+        reason,
+        createdAtMs: performance.now(),
+        visibleSegmentCount: visibleSegments.length,
+        indexedSegmentCount: byElementID.size,
+    };
+    doc.manabiVisiblePageLookupIndex = index;
+    if (view) {
+        view.__manabiVisiblePageLookupIndex = index;
+        try {
+            view.manabi_prepareVisiblePageLookupIndex?.(index);
+        } catch (_error) {}
+    }
+    return index;
+};
+
 const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
@@ -2886,6 +3177,11 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         return;
     }
     view?.manabi_resetNativeLookupHitTargets?.();
+    const lookupIndex = visibleSegmentsResult?.lookupIndex
+        || buildVisiblePageLookupIndex(doc, visibleSegmentsResult, reason);
+    if (lookupIndex && !visibleSegmentsResult.lookupIndex) {
+        visibleSegmentsResult.lookupIndex = lookupIndex;
+    }
     const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
     const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const targets = [];
@@ -6628,6 +6924,7 @@ class Reader {
         try {
             globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
         } catch (_error) {}
+        markReaderRenderReady('didDisplay.loading-cleared');
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             this.navHUD?.setHideNavigationDueToScroll?.(true, 'mark-read.didDisplay.preserve-hidden', {
                 stage: 'before-raf',
@@ -7119,6 +7416,10 @@ class Reader {
     }
 }
 
+const canUseNativeCacheWarmerPrewarm = () => {
+    return !!window.webkit?.messageHandlers?.ebookNativeCacheWarmerPrewarmSection;
+};
+
 class CacheWarmer {
     constructor() {
         this.view
@@ -7128,8 +7429,20 @@ class CacheWarmer {
         this.lastLoadedSectionHref = null
         this.settledSectionHrefs = new Set()
     }
+    #isCurrentGeneration(generation) {
+        return generation === cacheWarmerWorkGeneration()
+    }
     #normalizeSectionHref(href) {
         return normalizeSpineHref(href)
+    }
+    #bookSections() {
+        if (Array.isArray(this.view?.book?.sections)) {
+            return this.view.book.sections;
+        }
+        if (Array.isArray(globalThis.reader?.view?.book?.sections)) {
+            return globalThis.reader.view.book.sections;
+        }
+        return [];
     }
     #mergeSettledSectionHrefs(settledSectionHrefs = []) {
         const foregroundHrefs = foregroundWarmedSectionHrefSet()
@@ -7144,7 +7457,7 @@ class CacheWarmer {
         return Array.from(this.settledSectionHrefs).sort()
     }
     #nextUnsettledSectionIndex(settledSectionHrefs = [], minimumIndex = 0) {
-        const sections = Array.isArray(this.view?.book?.sections) ? this.view.book.sections : []
+        const sections = this.#bookSections()
         const settled = new Set(
             Array.isArray(settledSectionHrefs)
                 ? settledSectionHrefs.map((href) => this.#normalizeSectionHref(href)).filter(Boolean)
@@ -7166,7 +7479,29 @@ class CacheWarmer {
     nextUnsettledSectionIndexSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
         return this.#nextUnsettledSectionIndex(this.#mergeSettledSectionHrefs(settledSectionHrefs), minimumIndex)
     }
+    async #prewarmNativeSection(targetIndex, settledSectionHrefs, minimumIndex) {
+        const sections = this.#bookSections();
+        const section = Number.isInteger(targetIndex) ? sections[targetIndex] : null;
+        const sectionHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null);
+        if (!sectionHref) {
+            globalThis.__manabiCacheWarmerFinished = true;
+            resolveCacheWarmerPrecedingSectionWaiters();
+            return;
+        }
+        this.lastLoadedSectionIndex = targetIndex;
+        this.lastLoadedSectionHref = sectionHref;
+        globalThis.__manabiNativeCacheWarmerInFlightSectionHref = sectionHref;
+        window.webkit.messageHandlers.ebookNativeCacheWarmerPrewarmSection.postMessage({
+            topWindowURL: window.top.location.href,
+            sectionHref,
+            sectionIndex: targetIndex,
+            minimumIndex,
+            activeSectionIndex: activeForegroundSectionIndex(),
+            requiredPrecedingTargetIndex: cacheWarmerPrecedingTargetIndex(),
+        });
+    }
     async #openFirstUnsettledSection() {
+        const generation = cacheWarmerWorkGeneration()
         const settledSectionHrefs = this.#mergeSettledSectionHrefs()
         const precedingTargetIndex = cacheWarmerPrecedingTargetIndex()
         const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeForegroundSectionIndex()
@@ -7202,9 +7537,16 @@ class CacheWarmer {
             void targetSection
             void skippedSettledSectionHrefs
         }
+        if (canUseNativeCacheWarmerPrewarm()) {
+            if (!this.#isCurrentGeneration(generation)) return
+            await this.#prewarmNativeSection(firstUnsettledIndex, settledSectionHrefs, minimumIndex)
+            return
+        }
         await this.view.renderer.goTo({ index: firstUnsettledIndex })
+        if (!this.#isCurrentGeneration(generation)) return
     }
     async loadNextSectionSkippingSettled(settledSectionHrefs = [], minimumIndex = 0) {
+        const generation = cacheWarmerWorkGeneration()
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         if (!Number.isInteger(targetIndex)) {
@@ -7212,8 +7554,14 @@ class CacheWarmer {
             resolveCacheWarmerPrecedingSectionWaiters()
             return
         }
+        if (canUseNativeCacheWarmerPrewarm()) {
+            if (!this.#isCurrentGeneration(generation)) return
+            await this.#prewarmNativeSection(targetIndex, settledSectionHrefs, minimumIndex)
+            return
+        }
         if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
             await this.view.renderer.nextSection()
+            if (!this.#isCurrentGeneration(generation)) return
             return
         }
         const sectionSliceStart = Number.isInteger(this.lastLoadedSectionIndex) ? this.lastLoadedSectionIndex + 1 : 0
@@ -7223,8 +7571,10 @@ class CacheWarmer {
             ?.filter((href) => href && settledSectionHrefs.includes(href)) ?? []
         void skippedSettledSectionHrefs
         await this.view.renderer.goTo({ index: targetIndex })
+        if (!this.#isCurrentGeneration(generation)) return
     }
     destroy() {
+        invalidateCacheWarmerWork()
         if (this.view) {
             try {
                 this.view.close?.()
@@ -7243,6 +7593,7 @@ class CacheWarmer {
     }
     async open(file) {
         this.destroy()
+        const generation = invalidateCacheWarmerWork()
         globalThis.__manabiCacheWarmerOpenInFlight = true;
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
@@ -7257,6 +7608,7 @@ class CacheWarmer {
             } = this.view
             this.view.renderer.setAttribute('flow', 'paginated')
             await this.#openFirstUnsettledSection()
+            if (!this.#isCurrentGeneration(generation)) return
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
         } catch (error) {
@@ -7371,6 +7723,7 @@ class CacheWarmer {
 
 
 window.setEbookViewerLayout = (layoutMode) => {
+    invalidateCacheWarmerWork()
     // TODO: Add scrolled mode back...
 //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
     applyStoredChromeInsets('setEbookViewerLayout');
@@ -7381,6 +7734,7 @@ window.setEbookViewerLayout = (layoutMode) => {
 }
 
 window.setEbookViewerWritingDirection = (writingDirection) => {
+    invalidateCacheWarmerWork()
     const renderer = globalThis.reader?.view?.renderer ?? null;
     const contents = renderer?.getContents?.() || [];
     const applyWritingDirectionToDocument = (doc) => {
@@ -7678,17 +8032,12 @@ window.loadLastPosition = async ({
     };
     try {
         if (syntheticRestoreLocator) {
-            await runWithNavigationIntent({
-                source: 'restore.synthetic-locator',
-                target: 'renderer.goTo',
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                anchor: syntheticRestoreLocator.fractionInSection,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-            }, () => globalThis.reader.view.renderer.goTo({
-                index: syntheticRestoreLocator.sectionIndex,
-                anchor: syntheticRestoreLocator.fractionInSection,
-            }));
+            if (typeof globalThis.reader?.displayInitialSection === 'function') {
+                await globalThis.reader.displayInitialSection('loadLastPosition.synthetic-locator', {
+                    cfi,
+                    fractionalCompletion,
+                });
+            }
             await waitForFrames(2);
             const syntheticState = captureRestoreState('after-synthetic-locator', {
                 sectionIndex: syntheticRestoreLocator.sectionIndex,
@@ -7749,6 +8098,7 @@ window.loadLastPosition = async ({
         globalThis.reader.refreshNativeLookupHitTargets?.('load-last-position-done');
         const doneState = captureRestoreState('done');
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
+        markReaderRenderReady('loadLastPosition.done');
         postLandscapeInsetRestoreProbe('done', doneState, {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
             requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
