@@ -47,6 +47,23 @@ const readerLoadLog = (stage, payload = {}) => {
 };
 globalThis.__manabiReaderLoadLog = readerLoadLog;
 
+const highlightStatusLog = (stage, payload = {}) => {
+    try {
+        const details = Object.entries(payload)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
+            .join(' ');
+        const line = details.length > 0
+            ? `# HIGHLIGHT stage=${stage} ${details}`
+            : `# HIGHLIGHT stage=${stage}`;
+        if (globalThis.__manabiLastHighlightStatusViewerLog === line) {
+            return;
+        }
+        globalThis.__manabiLastHighlightStatusViewerLog = line;
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_error) {}
+};
+
 const markReaderRenderReady = (reason = 'unspecified') => {
     const html = document.documentElement;
     const body = document.body;
@@ -406,12 +423,12 @@ const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
 };
 
 // Factory for replaceText with isCacheWarmer support
-const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
+const makeReplaceText = (isCacheWarmer, { allowForegroundHTML = true } = {}) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
         return text;
     }
-    if (!isCacheWarmer) {
-        requestCacheWarmerPrecedingSectionsForHref(href, 'live-replaceText');
+    if (!isCacheWarmer && !allowForegroundHTML) {
+        throw new Error(`Foreground native EPUB section must load through processed-section direct URL: ${href || 'nil'}`);
     }
     const cacheKey = makeReplaceTextCacheKey({
         href,
@@ -438,11 +455,15 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const run = async () => {
     const replaceTextStartedAt = performanceNowMs();
     const processTextRequestID = nextEbookLoadRequestID('process-text');
+    const sourceURL = globalThis.reader.view.ownerDocument.defaultView.top.location.href;
+    const requestBytes = isCacheWarmer ? (text?.length ?? 0) : 0;
+    const transport = isCacheWarmer ? 'process-text-post' : 'processed-section-get';
     manabiTimelineMark('processText.start', {
         requestID: processTextRequestID,
         href,
         cacheWarmer: !!isCacheWarmer,
-        requestBytes: text?.length ?? 0,
+        requestBytes,
+        transport,
     });
     globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
     if (!isCacheWarmer) {
@@ -456,25 +477,38 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         globalThis.__manabiInflightCacheWarmerReplaceTextCount = (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
     }
     const headers = {
-        "Content-Type": mediaType,
         "X-Replaced-Text-Location": href,
-        "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
+        "X-Content-Location": sourceURL,
+        "X-Ebook-Source-URL": sourceURL,
     };
     if (isCacheWarmer) {
+        headers["Content-Type"] = mediaType;
         headers['X-Is-Cache-Warmer'] = 'true';
     }
+    const requestURL = isCacheWarmer
+        ? 'ebook://ebook/process-text'
+        : `ebook://ebook/processed-section?sourceURL=${encodeURIComponent(sourceURL)}&subpath=${encodeURIComponent(href)}`;
+    const requestOptions = isCacheWarmer
+        ? {
+            method: "POST",
+            mode: "cors",
+            cache: "no-cache",
+            headers: headers,
+            body: text,
+        }
+        : {
+            method: "GET",
+            mode: "cors",
+            cache: "no-cache",
+            headers: headers,
+        };
     const fetchStartedAt = performanceNowMs();
-    const response = await fetch('ebook://ebook/process-text', {
-        method: "POST",
-        mode: "cors",
-        cache: "no-cache",
-        headers: headers,
-        body: text
-    }).catch((error) => {
+    const response = await fetch(requestURL, requestOptions).catch((error) => {
         ebookLoadLog('processText.fetch.error', {
             requestID: processTextRequestID,
             href,
             isCacheWarmer: !!isCacheWarmer,
+            transport,
             elapsedMs: performanceNowMs() - replaceTextStartedAt,
             error: error?.message || String(error),
         });
@@ -487,6 +521,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             href,
             cacheWarmer: false,
             status: response?.status ?? null,
+            transport,
         }, 50);
     }
     try {
@@ -513,9 +548,10 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 requestID: processTextRequestID,
                 href,
                 elapsedMs: processTextElapsedMs,
-                requestBytes: text?.length ?? 0,
+                requestBytes,
                 responseBytes: responseTextLength,
                 nativeCache: nativeCacheOutcome,
+                transport,
                 fetchHeadersElapsedMs: responseHeadersElapsedMs,
                 responseTextElapsedMs,
                 nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
@@ -529,6 +565,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 href,
                 responseBytes: responseTextLength,
                 nativeCache: nativeCacheOutcome,
+                transport,
                 nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
                 nativeResponseEncodeElapsedMs: Number.isFinite(nativeResponseEncodeElapsedMs) ? nativeResponseEncodeElapsedMs : null,
                 nativeDidCoalesce,
@@ -538,9 +575,10 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             requestID: processTextRequestID,
             href,
             cacheWarmer: !!isCacheWarmer,
-            requestBytes: text?.length ?? 0,
+            requestBytes,
             responseBytes: responseTextLength,
             nativeCache: nativeCacheOutcome,
+            transport,
             fetchHeadersElapsedMs: responseHeadersElapsedMs,
             responseTextElapsedMs,
             nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
@@ -588,6 +626,32 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     } finally {
         replaceTextInFlightCache.delete(cacheKey);
     }
+}
+
+const processedSectionURLForHref = (sourceURL, href) =>
+    `ebook://ebook/processed-section?sourceURL=${encodeURIComponent(sourceURL)}&subpath=${encodeURIComponent(href)}&direct=1`;
+
+function makeReplaceURL(sourceURL, isCacheWarmer) {
+    if (isCacheWarmer) {
+        return null;
+    }
+    return async (href, mediaType) => {
+        if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html') {
+            return null;
+        }
+        if (!href) {
+            throw new Error('Direct processed section URL requires a spine href');
+        }
+        const directURL = processedSectionURLForHref(sourceURL, href);
+        window.manabi_recordLiveProcessedSection?.(href);
+        manabiTimelineMark('processText.directURL', {
+            href,
+            mediaType,
+            transport: 'processed-section-url',
+            requestBytes: 0,
+        });
+        return directURL;
+    };
 }
 
 const debounce = (fn, delay) => {
@@ -3735,6 +3799,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
     }
     const startedAt = performanceNowMs();
     const candidateSegments = [];
+    const candidateLimit = sampleDensity === 'sparse' ? 96 : 160;
     const seenSegments = new Set();
     const seenRoots = new Set();
     const left = Math.max(0, Math.floor(visibleBounds.left || 0));
@@ -3747,6 +3812,9 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
         return null;
     }
     const appendSegment = (segment) => {
+        if (candidateSegments.length >= candidateLimit) {
+            return;
+        }
         if (segment?.tagName?.toLowerCase?.() !== 'mnb-seg' || seenSegments.has(segment)) {
             return;
         }
@@ -3767,6 +3835,9 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
         }
         for (const segment of root.querySelectorAll?.('mnb-seg') ?? []) {
             appendSegment(segment);
+            if (candidateSegments.length >= candidateLimit) {
+                break;
+            }
         }
     };
     const useSparseSampling = sampleDensity === 'sparse';
@@ -3782,6 +3853,9 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
                 appendSegment(element);
                 appendSegment(element?.closest?.('mnb-seg'));
                 appendRootSegments(element?.closest?.('mnb-sen, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure'));
+                if (candidateSegments.length >= candidateLimit) {
+                    break;
+                }
             }
         }
     }
@@ -4009,7 +4083,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         viewportSample = sparseNodes?.length > 0
             ? { nodes: sparseNodes, source: 'viewport-sample-sparse' }
             : null;
-        if (!viewportSample) {
+        if (!viewportSample && !isEbookDoc) {
             const expandedNodes = collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: 'normal' });
             viewportSample = expandedNodes?.length > 0
                 ? { nodes: expandedNodes, source: 'viewport-sample-expanded' }
@@ -4145,7 +4219,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         ? visibleSegmentsResult.visibleSegments
         : [];
     const indexedNodes = new Set();
-    const visibleSentenceNodes = new Set();
     const sentenceIdentifiers = new Set();
     let rubyPresenceMarkedCount = 0;
     const addMetadataAlias = (metadata, alias) => {
@@ -4170,7 +4243,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         const elementID = node.id || node.getAttribute?.('id') || null;
         const sourceMetadata = segmentMetadataForNode(node) || {};
         const sentenceNode = node.closest?.('mnb-sen') || null;
-        if (sentenceNode) visibleSentenceNodes.add(sentenceNode);
         const sentenceIdentifier = item?.sentenceIdentifier
             || sentenceIdentifierForNode(sentenceNode)
             || sourceMetadata.sentenceID
@@ -4218,12 +4290,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             visibleElementIDs.push(elementID);
         }
         indexSegmentNode(node, item, 'visible');
-    }
-    for (const sentenceNode of visibleSentenceNodes) {
-        const siblingSegments = sentenceNode?.querySelectorAll?.('mnb-seg') ?? [];
-        for (const sibling of siblingSegments) {
-            indexSegmentNode(sibling, null, 'sentence-sibling');
-        }
     }
     const index = {
         byElementID,
@@ -4424,6 +4490,21 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
                 skipped: coverage?.skipped ?? null,
                 mutatedCount: coverage?.mutatedCount ?? null,
                 wouldMutateCount: coverage?.wouldMutateCount ?? null,
+            });
+        }
+        if (
+            (coverage?.mutatedCount ?? 0) > 0
+            || coverage?.didEnableTracking === true
+            || globalThis.__manabiTimelineTraceAll === true
+        ) {
+            highlightStatusLog('visibleStatusHydration.finish', {
+                reason,
+                elapsedMs: safeRound(elapsedMs, 1),
+                visibleSegmentCount: visibleSegments.length,
+                skipped: coverage?.skipped ?? null,
+                mutatedCount: coverage?.mutatedCount ?? null,
+                wouldMutateCount: coverage?.wouldMutateCount ?? null,
+                didEnableTracking: coverage?.didEnableTracking === true,
             });
         }
     } catch (error) {
@@ -4828,7 +4909,8 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
     })
     const sizeMap = new Map(entries.map(function(entry) { return [entry.filename, entry.uncompressedSize]; }))
     const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
-    const replaceText = makeReplaceText(isCacheWarmer)
+    const replaceText = makeReplaceText(isCacheWarmer, { allowForegroundHTML: false })
+    const replaceURL = makeReplaceURL(url, isCacheWarmer)
     return {
         entries,
         loadText: async (name) => {
@@ -4847,6 +4929,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
         },
         getSize: name => sizeMap.get(name) ?? 0,
         replaceText,
+        replaceURL,
         sourceURL: url,
     }
 }
@@ -5442,7 +5525,6 @@ const percentFormat = new Intl.NumberFormat(locales, {
 })
 
 const loadingVisualDelayMs = 200;
-const loadingVisualMaximumMs = 3500;
 const navSpinnerMaximumMs = 1200;
 
 class Reader {
@@ -5480,23 +5562,16 @@ class Reader {
         if (nextVisible) {
             loadingIndicator?.removeAttribute?.('hidden');
             clearTimeout(this.loadingVisualTimer);
-            clearTimeout(this.loadingVisualMaximumTimer);
             this.loadingVisualTimer = setTimeout(() => {
                 if (document.body?.classList?.contains?.('loading')) {
                     document.body.classList.add('loading-visual');
                 }
             }, loadingVisualDelayMs);
-            this.loadingVisualMaximumTimer = setTimeout(() => {
-                loadingIndicator?.setAttribute?.('hidden', '');
-                document.body?.classList?.remove?.('loading-visual');
-            }, loadingVisualMaximumMs);
         }
         body.classList.toggle('loading', nextVisible);
         if (previousVisible && !nextVisible) {
             clearTimeout(this.loadingVisualTimer);
-            clearTimeout(this.loadingVisualMaximumTimer);
             this.loadingVisualTimer = null;
-            this.loadingVisualMaximumTimer = null;
             body.classList.remove('loading-visual');
             loadingIndicator?.setAttribute?.('hidden', '');
         }
@@ -6188,6 +6263,10 @@ class Reader {
         window.manabiInvalidateVisiblePageSegmentSnapshot = (reason = 'manual') => {
             this.#invalidateVisiblePageSegmentSnapshot(reason);
         };
+        window.manabiRefreshVisibleTrackingStatuses = (reason = 'manual') => {
+            this.visiblePageSegmentSnapshot = null;
+            this.#scheduleNativeLookupHitTargetRefreshSettle(`visible-status:${reason}`);
+        };
         screen.orientation?.addEventListener?.('change', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
         });
@@ -6223,8 +6302,17 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
-        if (this.hasLoadedLastPosition === true) {
+        const transientPageTurnInvalidation =
+            sourceReason === 'page-turn-start'
+            || sourceReason === 'lookup-navigation-page-turn-start'
+            || sourceReason === 'page-turn-swipe-intent';
+        if (this.hasLoadedLastPosition === true && !transientPageTurnInvalidation) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
+        } else if (transientPageTurnInvalidation && globalThis.__manabiTimelineTraceAll === true) {
+            readerLoadLog('viewer.nativeLookup.invalidationRefresh.skip', {
+                sourceReason,
+                reason: 'transient-page-turn',
+            });
         }
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
@@ -8854,6 +8942,34 @@ class Reader {
             });
             console.error(error);
         }
+        try {
+            const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+            if (isDocumentLike(doc)) {
+                const visibleRange = this.#visibleRangeForDocument(doc);
+                const visibleSegmentsResult = this.#visiblePageSegmentResult(
+                    doc,
+                    visibleRange,
+                    'didDisplay.pre-render-ready',
+                    {
+                        postIfCached: true,
+                        includeClientRects: true,
+                        postLookupTargets: true,
+                        hydrateStatuses: true,
+                        finishInitialCritical: true,
+                    }
+                );
+                highlightStatusLog('didDisplay.pre-render-ready', {
+                    visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+                    totalSegmentCount: visibleSegmentsResult?.totalSegmentCount ?? 0,
+                    source: visibleSegmentsResult?.segmentCandidateSource ?? null,
+                    bodyTrackingEnabled: doc.body?.dataset?.mnbTrackingEnabled ?? null,
+                });
+            }
+        } catch (error) {
+            highlightStatusLog('didDisplay.pre-render-ready.error', {
+                error: error?.message || String(error),
+            });
+        }
         this.setLoadingIndicator(false, 'didDisplay');
         readerLoadLog('viewer.didDisplay.loadingCleared', {
             elapsedMs: performanceNowMs() - didDisplayStartedAt,
@@ -9669,38 +9785,21 @@ class CacheWarmer {
                 resolveCacheWarmerPrecedingSectionWaiters()
                 return
             }
-            if (canUseNativeCacheWarmerPrewarm()) {
-                const busyState = cacheWarmerForegroundBusyState()
-                if (busyState.busy) {
-                    path = `busy:${busyState.reason || 'foreground'}`
-                    scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `loadNextSection.${path}`)
-                    return
-                }
-                path = 'native'
-                await this.#prewarmNativeSection(targetIndex, settledSectionHrefs, minimumIndex)
+            if (!canUseNativeCacheWarmerPrewarm()) {
+                path = 'native-unavailable'
+                globalThis.__manabiCacheWarmerFinished = true
+                resolveCacheWarmerPrecedingSectionWaiters()
                 return
             }
-            if (Number.isInteger(this.lastLoadedSectionIndex) && targetIndex === this.lastLoadedSectionIndex + 1) {
-                path = 'nextSection'
-                await this.view.renderer.nextSection()
-                if (!this.#isCurrentGeneration(generation)) {
-                    this.#markCancelled(startedAt, 'loadNextSection', generation, {
-                        path,
-                        targetIndex,
-                        minimumIndex,
-                    })
-                }
+            const busyState = cacheWarmerForegroundBusyState()
+            if (busyState.busy) {
+                path = `busy:${busyState.reason || 'foreground'}`
+                scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `loadNextSection.${path}`)
                 return
             }
-            await this.view.renderer.goTo({ index: targetIndex })
-            if (!this.#isCurrentGeneration(generation)) {
-                this.#markCancelled(startedAt, 'loadNextSection', generation, {
-                    path,
-                    targetIndex,
-                    minimumIndex,
-                })
-                return
-            }
+            path = 'native'
+            await this.#prewarmNativeSection(targetIndex, settledSectionHrefs, minimumIndex)
+            return
         } finally {
             manabiTimelineMeasure('cacheWarmer.loadNextSection', startedAt, {
                 path,
@@ -9744,36 +9843,18 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
         globalThis.__manabiDeferredCacheWarmerLogged = false;
         try {
-            if (canUseNativeCacheWarmerPrewarm()) {
-                globalThis.__manabiCacheWarmerOpenInFlight = false;
-                globalThis.__manabiCacheWarmerReady = true;
-                const precedingTargetIndex = cacheWarmerPrecedingTargetIndex()
-                const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeForegroundSectionIndex()
-                await this.loadNextSectionSkippingSettled([], minimumIndex)
-                return
-            }
-            this.view = await getView(file, true)
-            if (!this.#isCurrentGeneration(generation)) {
-                this.#markCancelled(startedAt, 'open', generation, {
-                    stage: 'after-getView',
-                })
-                return
-            }
-            this.view.addEventListener('load', this.#onLoad.bind(this))
-
-            const {
-                book
-            } = this.view
-            this.view.renderer.setAttribute('flow', 'paginated')
-            await this.#openFirstUnsettledSection()
-            if (!this.#isCurrentGeneration(generation)) {
-                this.#markCancelled(startedAt, 'open', generation, {
-                    stage: 'after-open-first',
-                })
+            if (!canUseNativeCacheWarmerPrewarm()) {
+                globalThis.__manabiCacheWarmerFinished = true;
+                globalThis.__manabiCacheWarmerReady = false;
+                resolveCacheWarmerPrecedingSectionWaiters();
                 return
             }
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
+            const precedingTargetIndex = cacheWarmerPrecedingTargetIndex()
+            const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeForegroundSectionIndex()
+            await this.loadNextSectionSkippingSettled([], minimumIndex)
+            return
         } catch (error) {
             ebookLoadLog('cacheWarmer.open.error', {
                 error: error?.message || error,
@@ -9931,44 +10012,26 @@ window.setEbookViewerLayout = (layoutMode) => {
 
 window.setEbookViewerWritingDirection = (writingDirection) => {
     invalidateCacheWarmerWork('writing-direction-change')
-    const normalizedWritingDirection = String(writingDirection || '').toLowerCase();
-    globalThis.__manabiEbookViewerWritingDirection = normalizedWritingDirection;
     const renderer = globalThis.reader?.view?.renderer ?? null;
     const contents = renderer?.getContents?.() || [];
-    const applyWritingDirectionToDocument = (doc) => {
+    const clearForcedWritingDirection = (doc) => {
         const body = doc?.body;
         if (!body) return false;
-        if (normalizedWritingDirection === 'vertical') {
-            body.dataset.mnbWritingDirection = 'vertical';
-            body.dataset.mnbFoliateWritingDirection = 'vertical';
-            body.dataset.mnbFoliateWritingMode = 'vertical-rl';
-            body.dataset.mnbForcedWritingDirection = 'vertical';
-            body.classList?.add?.('reader-vertical-writing');
-            doc.documentElement?.classList?.add?.('vrtl');
-        } else if (normalizedWritingDirection === 'horizontal') {
-            body.dataset.mnbWritingDirection = 'horizontal';
-            body.dataset.mnbFoliateWritingDirection = 'horizontal';
-            body.dataset.mnbFoliateWritingMode = 'horizontal-tb';
-            body.dataset.mnbForcedWritingDirection = 'horizontal';
+        if (body.dataset.mnbForcedWritingDirection) {
             body.classList?.remove?.('reader-vertical-writing');
             doc.documentElement?.classList?.remove?.('vrtl');
-        } else {
-            if (body.dataset.mnbForcedWritingDirection) {
-                body.classList?.remove?.('reader-vertical-writing');
-                doc.documentElement?.classList?.remove?.('vrtl');
-            }
-            body.removeAttribute('data-mnb-forced-writing-direction');
             body.removeAttribute('data-mnb-writing-direction');
             body.removeAttribute('data-mnb-foliate-writing-direction');
             body.removeAttribute('data-mnb-foliate-writing-mode');
         }
+        body.removeAttribute('data-mnb-forced-writing-direction');
         try {
             doc.defaultView?.manabiApplyVerticalWritingCheck?.();
         } catch (_error) {}
         return true;
     };
     for (const content of contents) {
-        applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
+        clearForcedWritingDirection(content?.doc ?? content?.document ?? null);
     }
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
 }

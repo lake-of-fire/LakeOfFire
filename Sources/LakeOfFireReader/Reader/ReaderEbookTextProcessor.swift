@@ -77,8 +77,9 @@ public func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
+    contentFingerprint: String?,
     isCacheWarmer: Bool,
-    processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+    processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
     processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
@@ -93,7 +94,12 @@ public func ebookTextProcessor(
     var processHTMLBytesElapsedMs = 0
     var processHTMLElapsedMs = 0
     var responseDecodeElapsedMs = 0
-    let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
+    var sectionLocationComponents = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
+    var sectionLocationQueryItems = sectionLocationComponents?.queryItems ?? []
+    sectionLocationQueryItems.removeAll { $0.name == "subpath" }
+    sectionLocationQueryItems.append(URLQueryItem(name: "subpath", value: sectionLocation))
+    sectionLocationComponents?.queryItems = sectionLocationQueryItems
+    let sectionLocationURL = sectionLocationComponents?.url ?? contentURL
     
     do {
         var doc: SwiftSoup.Document?
@@ -106,6 +112,7 @@ public func ebookTextProcessor(
                 sectionLocationURL,
                 isCacheWarmer,
                 true,
+                contentFingerprint,
                 { $0 }
             )
             readabilityProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readabilityProcessStartedAt)

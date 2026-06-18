@@ -25,7 +25,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
         let actor = EBookProcessingActor(
             ebookTextProcessorCacheHits: nil,
-            ebookTextProcessor: { receivedContentURL, sectionHref, text, isCacheWarmer, _, _, _ in
+            ebookTextProcessor: { receivedContentURL, sectionHref, text, _, isCacheWarmer, _, _, _ in
                 XCTAssertEqual(receivedContentURL, contentURL)
                 XCTAssertEqual(sectionHref, "item/xhtml/chapter.xhtml")
                 XCTAssertEqual(text, chapterHTML)
@@ -103,7 +103,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
             ebookTextProcessorCacheHits: { _, _ in true },
-            ebookTextProcessor: { _, _, _, _, _, _, _ in expectedHTML },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _ in expectedHTML },
             processReadabilityContent: nil,
             processHTMLBytes: nil,
             processHTML: nil

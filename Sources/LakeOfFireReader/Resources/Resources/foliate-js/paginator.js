@@ -1558,21 +1558,64 @@ export class Paginator extends HTMLElement {
     setSideNavWidth(widthPx) {
         this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
-    #createView() {
-        if (this.#view) {
+    #createView({ preserveCurrent = false } = {}) {
+        if (this.#view && !preserveCurrent) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
         }
         this.#invalidateVisibleRangeCache()
-        this.#view = new View({
+        const view = new View({
             container: this,
             onBeforeExpand: this.#onBeforeExpand.bind(this),
             onExpand: this.#onExpand.bind(this),
             isCacheWarmer: this.#isCacheWarmer,
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
-        this.#container.append(this.#view.element)
-        return this.#view
+        if (preserveCurrent) {
+            Object.assign(view.element.style, {
+                position: 'absolute',
+                inset: '0',
+                visibility: 'hidden',
+                zIndex: '1',
+            })
+        } else {
+            this.#view = view
+        }
+        this.#container.append(view.element)
+        return view
+    }
+    #commitView(view, previousView = null) {
+        if (!view) return
+        Object.assign(view.element.style, {
+            position: 'relative',
+            inset: '',
+            visibility: '',
+            zIndex: '',
+        })
+        this.#view = view
+        if (previousView && previousView !== view) {
+            Object.assign(previousView.element.style, {
+                position: 'absolute',
+                inset: '0',
+                visibility: 'hidden',
+                pointerEvents: 'none',
+                zIndex: '0',
+            })
+            const removePreviousView = () => {
+                previousView.destroy()
+                previousView.element.remove()
+            }
+            if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(removePreviousView, { timeout: 10000 })
+            } else {
+                setTimeout(removePreviousView, 5000)
+            }
+        }
+    }
+    #discardView(view) {
+        if (!view || view === this.#view) return
+        view.destroy()
+        view.element.remove()
     }
     #installStyleElementsForDocument(doc) {
         if (!doc?.head) return
@@ -2909,6 +2952,7 @@ export class Paginator extends HTMLElement {
         const startedAt = manabiPerfNow();
         await this.#awaitDirection();
         let scrollMode = 'raf';
+        const effectiveSmooth = false;
         try {
             const scroll = async () => {
                 const element = this.#container
@@ -2929,7 +2973,7 @@ export class Paginator extends HTMLElement {
                 const rememberScrolledMetrics = () => {
                     this.#rememberPageMetrics(scrolledMetrics)
                 }
-                if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
+                if ((reason === 'snap' || effectiveSmooth) && this.hasAttribute('animated')) return animate(
                     element[scrollProp], offset, 300, easeOutQuad,
                     x => element[scrollProp] = x,
                 ).then(async () => {
@@ -2958,10 +3002,13 @@ export class Paginator extends HTMLElement {
             //                typeof document.startViewTransition !== 'function'
             //                ) {
             const shouldUseDirectInitialNavigation =
-                (reason === 'navigation' || reason === 'anchor')
-                && !smooth
-                && !this.hasAttribute('animated')
-                && knownMetrics
+                (reason === 'navigation'
+                    || reason === 'anchor'
+                    || reason === 'page'
+                    || reason === 'selection'
+                    || reason === 'snap'
+                    || effectiveSmooth !== smooth)
+                && !effectiveSmooth
             if (shouldUseDirectInitialNavigation) {
                 scrollMode = 'direct'
                 await scroll()
@@ -2990,7 +3037,7 @@ export class Paginator extends HTMLElement {
                 index: this.#index,
                 reason,
                 mode: scrollMode,
-                smooth: !!smooth,
+                smooth: !!effectiveSmooth,
                 scrolled: this.scrolled,
             });
         }
@@ -3564,7 +3611,8 @@ export class Paginator extends HTMLElement {
                 this.#invalidateVisibleRangeCache()
 
                 //                console.log("#display... await load")
-                const view = this.#createView()
+                const previousView = this.#view
+                const view = this.#createView({ preserveCurrent: !!previousView })
                 const beforeRender = this.#beforeRender.bind(this)
 
                 if (!this.#isCacheWarmer) {
@@ -3575,8 +3623,13 @@ export class Paginator extends HTMLElement {
                         src,
                     });
                 }
-                await view.load(src, afterLoad, beforeRender)
-                this.#view = view
+                try {
+                    await view.load(src, afterLoad, beforeRender)
+                    this.#commitView(view, previousView)
+                } catch (error) {
+                    this.#discardView(view)
+                    throw error
+                }
                 if (shouldLogReaderLoad) {
                     manabiPaginatorReaderLoadLog('paginator.display.viewLoad.finish', {
                         index,
@@ -3746,14 +3799,8 @@ export class Paginator extends HTMLElement {
                     )
                 }
 
-                // hide visually while preserving layout metrics
-                if (!this.#isCacheWarmer) {
-                    this.style.visibility = 'hidden'
-                }
                 const oldIndex = this.#index
                 const onLoad = async (detail) => {
-                    this.sections[oldIndex]?.unload?.()
-
                     if (!this.#isCacheWarmer) {
                         this.setStyles(this.#styles)
                     }
@@ -3822,6 +3869,7 @@ export class Paginator extends HTMLElement {
                         .catch(error => {
                             throw error
                         }));
+                    this.sections[oldIndex]?.unload?.()
                 } catch (error) {
                     throw error;
                 } finally {
@@ -3877,7 +3925,7 @@ export class Paginator extends HTMLElement {
         const metrics = await this.pageMetrics()
         if (this.#adjacentIndex(-1) == null && metrics.page <= 1) return
         const page = await this.#resolveBlankPageTarget(metrics.page - 1, -1, 'page-turn.prev')
-        return await this.#scrollToPage(page, 'page', true, metrics).then(() => page <= 0)
+        return await this.#scrollToPage(page, 'page', false, metrics).then(() => page <= 0)
     }
     async #scrollNext(distance) {
         if (!this.#view) return true
@@ -3897,7 +3945,7 @@ export class Paginator extends HTMLElement {
         if (this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2) return
         const page = await this.#resolveBlankPageTarget(metrics.page + 1, 1, 'page-turn.next')
         const pages = metrics.pages
-        return await this.#scrollToPage(page, 'page', true, metrics).then(() => page >= pages - 1)
+        return await this.#scrollToPage(page, 'page', false, metrics).then(() => page >= pages - 1)
     }
     async atStart() {
         const metrics = await this.pageMetrics()

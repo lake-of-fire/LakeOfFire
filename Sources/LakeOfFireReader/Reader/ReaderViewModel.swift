@@ -370,6 +370,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     }
                 })();
                 //# sourceURL=lake-reader-view-model-settings-sync.js
+
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }

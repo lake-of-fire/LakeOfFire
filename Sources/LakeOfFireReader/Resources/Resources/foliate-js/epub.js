@@ -580,13 +580,15 @@ class Loader {
         loadText,
         loadBlob,
         resources,
-        replaceText
+        replaceText,
+        replaceURL
     }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.manifest = resources.manifest
         this.assets = resources.manifest
         this.replaceText = replaceText
+        this.replaceURL = replaceURL
         // needed only when replacing in (X)HTML w/o parsing (see below)
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
     }
@@ -604,6 +606,17 @@ class Loader {
                 bytes: data?.byteLength ?? data?.length ?? null,
             })
         } catch (_error) {}
+        this.#cache.set(href, url)
+        this.#refCount.set(href, 1)
+        if (parent) {
+            const childList = this.#children.get(parent)
+            if (childList) childList.push(href)
+            else this.#children.set(parent, [href])
+        }
+        return url
+    }
+    createDirectURL(href, url, parent) {
+        if (!url) return ''
         this.#cache.set(href, url)
         this.#refCount.set(href, 1)
         if (parent) {
@@ -637,7 +650,7 @@ class Loader {
             try {
                 globalThis.__manabiBlobResourceMap?.delete?.(url)
             } catch (_error) {}
-            URL.revokeObjectURL(url)
+            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
             this.#cache.delete(href)
             this.#refCount.delete(href)
             // unref children
@@ -689,6 +702,25 @@ class Loader {
             parentCount: parents.length,
         })
         const parent = parents.at(-1)
+        if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
+            const directURL = await this.replaceURL(href, mediaType)
+            if (!directURL) {
+                const error = new Error(`Direct processed section URL required for ${href}`)
+                manabiEpubReaderLoadLog('epub.loadReplaced.directURL.error', {
+                    href,
+                    mediaType,
+                    elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+                    error: error.message,
+                })
+                throw error
+            }
+            manabiEpubReaderLoadLog('epub.loadReplaced.directURL', {
+                href,
+                mediaType,
+                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
+            })
+            return this.createDirectURL(href, directURL, parent)
+        }
         const str = await this.loadText(href)
         manabiEpubReaderLoadLog('epub.loadReplaced.text', {
             href,
@@ -846,7 +878,9 @@ class Loader {
         this.unref(item?.href)
     }
     destroy() {
-        for (const url of this.#cache.values()) URL.revokeObjectURL(url)
+        for (const url of this.#cache.values()) {
+            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
+        }
     }
 }
 
@@ -872,12 +906,14 @@ export class EPUB {
         loadBlob,
         getSize,
         replaceText,
+        replaceURL,
         sha1
     }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.getSize = getSize
         this.replaceText = replaceText
+        this.replaceURL = replaceURL
         this.#encryption = new Encryption(deobfuscators(sha1))
     }
     async #loadXML(uri) {
@@ -916,6 +952,7 @@ ${doc.querySelector('parsererror').innerText}`)
                 .then(this.#encryption.getDecoder(uri)),
             resources: this.resources,
             replaceText: this.replaceText,
+            replaceURL: this.replaceURL,
         })
         this.sections = this.resources.spine.map((spineItem, index) => {
             const {

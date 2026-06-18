@@ -776,10 +776,10 @@ public final class ReaderModeLoadingState {
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
-    @Published public var ebookProcessedTextCacheReader: ((URL, String, String) async throws -> String?)? = nil
-    @Published public var ebookProcessedTextCacheWriter: ((URL, String, String, String) async -> Void)? = nil
+    @Published public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil
+    @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
     @Published public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
-    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
+    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
     @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
     @Published public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
@@ -2217,6 +2217,7 @@ public class ReaderModeViewModel: ObservableObject {
                     nil,
                     false,
                     tracksReadingProgress,
+                    nil,
                     { doc in
                         do {
                             return try await preprocessWebContentForReaderMode(
@@ -3043,7 +3044,8 @@ nonisolated public func processForReaderMode(
     let processStartedAt = Date()
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
-    if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {
+    if try doc.getElementById("reader-content") == nil,
+       let oldElement = try doc.getElementsByClass("reader-content").first() {
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")
     }
@@ -3094,18 +3096,19 @@ nonisolated public func processForReaderMode(
             } catch { }
         }
         
-        let readerContentAlreadyHasMedia = hasReaderContentMedia(in: doc)
-        let documentHasImages = try !(doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true)
-        let shouldInjectHeaderImage = (injectEntryImageIntoHeader && !readerContentAlreadyHasMedia)
-            || !documentHasImages
-        if shouldInjectHeaderImage,
-           let imageURL = imageURL,
-           let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"),
-           existing.isEmpty() {
-            let headerImageStartedAt = Date()
-            do {
-                try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
-            } catch { }
+        if let imageURL {
+            let readerContentAlreadyHasMedia = hasReaderContentMedia(in: doc)
+            let documentHasImages = try !(doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true)
+            let shouldInjectHeaderImage = (injectEntryImageIntoHeader && !readerContentAlreadyHasMedia)
+                || !documentHasImages
+            if shouldInjectHeaderImage,
+               let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"),
+               existing.isEmpty() {
+                let headerImageStartedAt = Date()
+                do {
+                    try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
+                } catch { }
+            }
         }
     }
 }
