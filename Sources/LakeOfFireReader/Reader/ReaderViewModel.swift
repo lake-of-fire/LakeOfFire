@@ -333,11 +333,21 @@ public class ReaderViewModel: NSObject, ObservableObject {
             try await self.scriptCaller.evaluateJavaScript("""
                 (() => {
                     const settingsTraceReason = \(reasonJSON);
-                    const mark = (event, payload = '') => {
+                    const traceAll = globalThis.__manabiTimelineTraceAll === true;
+                    const mark = (event, payload = '', force = false) => {
+                        if (!traceAll && !force) { return; }
                         const label = `MANABI swiftSettings.refreshSettingsInWebView.${event}${payload ? ' ' + payload : ''}`;
                         try { performance.mark(label); } catch (_) {}
-                        try { console.timeStamp?.(label); } catch (_) {}
                     };
+                    const signature = [
+                        'light=\(lightModeTheme)',
+                        'dark=\(darkModeTheme)',
+                        'maxWidth=\(maxWidthOverride)'
+                    ].join('|');
+                    if (document.body?.dataset?.mnbReaderViewModelSettingsSignature === signature) {
+                        mark('skipSameSignature', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
+                        return;
+                    }
                     mark('start', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
                     let changedCount = 0;
                     if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
@@ -352,8 +362,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
                         changedCount += 1;
                     }
-                    mark('finish', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride) changedCount=${changedCount}`);
+                    if (document.body?.dataset) {
+                        document.body.dataset.mnbReaderViewModelSettingsSignature = signature;
+                    }
+                    if (changedCount > 0 || traceAll) {
+                        mark('finish', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride) changedCount=${changedCount}`, changedCount > 0);
+                    }
                 })();
+                //# sourceURL=lake-reader-view-model-settings-sync.js
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }

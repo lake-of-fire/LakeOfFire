@@ -14,6 +14,7 @@ import RealmSwiftGaps
 import LakeKit
 import WebKit
 import SwiftUtilities
+import Perception
 
 private func stripTemplateTagsForSanitize(_ html: String) -> String {
     guard html.range(of: "<template", options: .caseInsensitive) != nil else {
@@ -726,6 +727,52 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 }
 
 @MainActor
+@Perceptible
+public final class ReaderModeLoadingState {
+    public struct Snapshot: Equatable {
+        public var isReaderModeLoading: Bool
+        public var lastRenderedURL: URL?
+        public var expectedSyntheticReaderLoaderURL: URL?
+        public var pendingReaderModeURL: URL?
+
+        public static let empty = Snapshot(
+            isReaderModeLoading: false,
+            lastRenderedURL: nil,
+            expectedSyntheticReaderLoaderURL: nil,
+            pendingReaderModeURL: nil
+        )
+
+        public var hasRenderedReadabilityContent: Bool {
+            lastRenderedURL != nil
+        }
+    }
+
+    public private(set) var snapshot: Snapshot = .empty
+
+    public init() {}
+
+    public var isReaderModeLoading: Bool { snapshot.isReaderModeLoading }
+    public var lastRenderedURL: URL? { snapshot.lastRenderedURL }
+    public var expectedSyntheticReaderLoaderURL: URL? { snapshot.expectedSyntheticReaderLoaderURL }
+    public var pendingReaderModeURL: URL? { snapshot.pendingReaderModeURL }
+    public var hasRenderedReadabilityContent: Bool { snapshot.hasRenderedReadabilityContent }
+
+    fileprivate func set(
+        isReaderModeLoading: Bool,
+        lastRenderedURL: URL?,
+        expectedSyntheticReaderLoaderURL: URL?,
+        pendingReaderModeURL: URL?
+    ) {
+        snapshot = Snapshot(
+            isReaderModeLoading: isReaderModeLoading,
+            lastRenderedURL: lastRenderedURL,
+            expectedSyntheticReaderLoaderURL: expectedSyntheticReaderLoaderURL,
+            pendingReaderModeURL: pendingReaderModeURL
+        )
+    }
+}
+
+@MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
@@ -741,16 +788,34 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     
     @Published public var isReaderMode = false
-    @Published public var isReaderModeLoading = false
-    @Published public private(set) var lastRenderedURL: URL?
-    @Published public private(set) var expectedSyntheticReaderLoaderURL: URL?
-    @Published public private(set) var pendingReaderModeURL: URL?
+    public let loadingState = ReaderModeLoadingState()
+    @Published public var isReaderModeLoading = false {
+        didSet { updateLoadingStateSnapshot() }
+    }
+    @Published public private(set) var lastRenderedURL: URL? {
+        didSet { updateLoadingStateSnapshot() }
+    }
+    @Published public private(set) var expectedSyntheticReaderLoaderURL: URL? {
+        didSet { updateLoadingStateSnapshot() }
+    }
+    @Published public private(set) var pendingReaderModeURL: URL? {
+        didSet { updateLoadingStateSnapshot() }
+    }
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
     @Published var readabilityFrames = Set<WKFrameInfo>()
 
     public var hasRenderedReadabilityContent: Bool { lastRenderedURL != nil }
+
+    private func updateLoadingStateSnapshot() {
+        loadingState.set(
+            isReaderModeLoading: isReaderModeLoading,
+            lastRenderedURL: lastRenderedURL,
+            expectedSyntheticReaderLoaderURL: expectedSyntheticReaderLoaderURL,
+            pendingReaderModeURL: pendingReaderModeURL
+        )
+    }
 
     public func shouldIgnoreHideNavigationDueToScrollForNativeWebChrome(
         pageURL: URL,

@@ -358,7 +358,7 @@ public class BookLibraryViewModel: ObservableObject {
         }
         if !downloads.isEmpty {
             await DownloadController.shared.ensureDownloaded(downloads)
-            try? await readerFileManager.refreshAllFilesMetadata()
+            try? await readerFileManager.refreshAllFilesMetadata(force: true)
         }
     }
 

@@ -1,4 +1,5 @@
 import XCTest
+import ZIPFoundation
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
@@ -69,6 +70,33 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let entries = try source.enumerateEntries()
 
         XCTAssertEqual(entries.map(\.path), ["OPS/chapter1.xhtml"])
+    }
+
+    func testReaderPackageArchiveSourceEnumeratesAndReadsEntriesWithoutExpansion() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let chapterPath = "OPS/chapter1.xhtml"
+        let chapterHTML = "<html><body>chapter</body></html>"
+
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected archive to be created")
+            return
+        }
+        try archive.addEntry(with: chapterPath, type: .file, uncompressedSize: Int64(chapterHTML.utf8.count)) { position, size in
+            let bytes = Array(chapterHTML.utf8)
+            return Data(bytes[Int(position)..<Int(position) + size])
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: archiveURL)
+        let entries = try source.enumerateEntries()
+
+        XCTAssertEqual(entries.map(\.path), [chapterPath])
+        XCTAssertEqual(String(decoding: try source.readEntry(subpath: chapterPath), as: UTF8.self), chapterHTML)
     }
 
     func testCacheWarmerCacheHitStillReturnsProcessedContent() async throws {

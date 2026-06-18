@@ -1145,6 +1145,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             }
                             loadArguments["initialRestore"] = restoreArguments
                         }
+                        let hasInitialRestore = initialRestore != nil
+                        let hasRestoreCFI = !(initialRestore?.cfi.isEmpty ?? true)
+                        let restoreFraction = initialRestore?.fractionalCompletion.map { String($0) } ?? "nil"
+                        print(
+                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction) url=\(url.absoluteString)"
+                        )
                         try await scriptCaller.evaluateJavaScript(
                             "window.loadEBook({ url, layoutMode, initialRestore })",
                             arguments: loadArguments,

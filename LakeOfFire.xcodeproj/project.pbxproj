@@ -203,6 +203,7 @@
 		EF20CA2CC9598023B1EBB38F /* YoutubeAdSkipUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A1BD7B47F1692DFE646B77 /* YoutubeAdSkipUserScript.swift */; };
 		EF3F4D73B963AE26D93BC7ED /* NavigationTaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 878E05D9D239C170DFDE2C3A /* NavigationTaskManager.swift */; };
 		F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31ED82BC038DAB511FEE78AE /* LRUCache.framework */; };
+		F191CD711612C8230ABB5810 /* Perception.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 785222CBF21E3DEE5FE9CF51 /* Perception.framework */; };
 		F20D070F298129461504D5FD /* InternalURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C45893AA23B27EB6A020D51 /* InternalURLSchemeHandler.swift */; };
 		F38E441C562EC57A31CA2AFD /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		F4F9B4AF34EE7401B91A9B47 /* ReaderMessageHandlersViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */; };
@@ -828,6 +829,7 @@
 		71055BD9BD930E5A8E35AABC /* OPDS2Parser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPDS2Parser.swift; sourceTree = "<group>"; };
 		71FBF0C1DA553663DD278EAD /* CSS */ = {isa = PBXFileReference; path = CSS; sourceTree = "<group>"; };
 		72660A52642E1A0CEF58E180 /* URL+ReaderFileURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderFileURL.swift"; sourceTree = "<group>"; };
+		785222CBF21E3DEE5FE9CF51 /* Perception.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Perception.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		7864C63653918DC62961A70B /* String+StrippingHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+StrippingHTML.swift"; sourceTree = "<group>"; };
 		78DABA7382E9FF65F3A8C918 /* libLakeOfFireContentUI.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLakeOfFireContentUI.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalReaderProtocol.swift; sourceTree = "<group>"; };
@@ -1015,6 +1017,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */,
+				F191CD711612C8230ABB5810 /* Perception.framework in Frameworks */,
 				598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */,
 				BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */,
 				5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */,
@@ -1252,6 +1255,7 @@
 				0DBF1743F0462956A696C598 /* OpenGraph.framework */,
 				20D77CA7B347A9568C453FE8 /* OPML.framework */,
 				F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */,
+				785222CBF21E3DEE5FE9CF51 /* Perception.framework */,
 				2154619EDFF879ACF202EE95 /* PersistedLRUCacheHybrid.framework */,
 				0ACFBB587A7997D2F15BBE19 /* Pow.framework */,
 				0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */,

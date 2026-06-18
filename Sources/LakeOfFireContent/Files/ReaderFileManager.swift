@@ -152,6 +152,9 @@ public class ReaderFileManager: ObservableObject {
     }
     
     private var refreshAllFilesMetadataTask: Task<Void, Never>?
+    @MainActor private var lastRefreshAllFilesMetadataStartedAt: Date?
+    @MainActor private var refreshAllFilesMetadataNeedsFollowUp = false
+    private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
 
     private static let internalStorageRootPrefixes: Set<String> = [
         "manabi-caches",
@@ -292,7 +295,7 @@ public class ReaderFileManager: ObservableObject {
             try await markDeleted(contentURL: contentURL)
             await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
             Task { @MainActor [weak self] in
-                try await self?.refreshAllFilesMetadata()
+                try await self?.refreshAllFilesMetadata(force: true)
             }
             return
         }
@@ -316,7 +319,7 @@ public class ReaderFileManager: ObservableObject {
         try await markDeleted(contentURL: contentURL)
         await removeDeletedFileFromPublishedFiles(matching: readerBackingURL)
         Task { @MainActor [weak self] in
-            try await self?.refreshAllFilesMetadata()
+            try await self?.refreshAllFilesMetadata(force: true)
         }
     }
     
@@ -496,7 +499,7 @@ public class ReaderFileManager: ObservableObject {
                 return nil
             }
             Task { @MainActor [weak self] in
-                try await self?.refreshAllFilesMetadata()
+                try await self?.refreshAllFilesMetadata(force: true)
             }
             return content.url
         } catch {
@@ -506,9 +509,29 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor
-    public func refreshAllFilesMetadata() async throws {
-        refreshAllFilesMetadataTask?.cancel()
+    public func refreshAllFilesMetadata(force: Bool = false) async throws {
+        if let refreshAllFilesMetadataTask {
+            if force {
+                refreshAllFilesMetadataNeedsFollowUp = true
+            }
+            await refreshAllFilesMetadataTask.value
+            if force, refreshAllFilesMetadataNeedsFollowUp {
+                try await refreshAllFilesMetadata(force: true)
+            }
+            return
+        }
+        if !force,
+           files != nil,
+           let lastRefreshAllFilesMetadataStartedAt,
+           Date().timeIntervalSince(lastRefreshAllFilesMetadataStartedAt) < Self.refreshAllFilesMetadataDebounceInterval {
+            return
+        }
+        refreshAllFilesMetadataNeedsFollowUp = false
+        lastRefreshAllFilesMetadataStartedAt = Date()
         refreshAllFilesMetadataTask = Task { @MainActor in
+            defer {
+                refreshAllFilesMetadataTask = nil
+            }
             do {
                 guard localDrive != nil || cloudDrive != nil else { return }
                 var files = [ThreadSafeReference<ContentFile>]()

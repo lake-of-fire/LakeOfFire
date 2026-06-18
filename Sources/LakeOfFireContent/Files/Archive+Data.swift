@@ -266,6 +266,9 @@ public actor ReaderPackageEntrySourceCache {
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
         let cacheKey = diagnosticLocalURL.map { "diagnosticLocalFilePath:\($0.standardizedFileURL.path)" }
             ?? canonicalReaderBackingURL.absoluteString
+        if let cached = freshCachedSource(forKey: cacheKey) {
+            return cached
+        }
         let localURL: URL
         if let diagnosticLocalURL {
             localURL = diagnosticLocalURL
@@ -283,7 +286,7 @@ public actor ReaderPackageEntrySourceCache {
             return CachedSource(source: cached.source, entries: cached.entries)
         }
 
-        let source = try Self.preparedSource(for: localURL, freshnessToken: freshnessToken)
+        let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
         cachedSources[cacheKey] = CacheRecord(
             source: source,
@@ -292,6 +295,15 @@ public actor ReaderPackageEntrySourceCache {
             freshnessToken: freshnessToken
         )
         return CachedSource(source: source, entries: entries)
+    }
+
+    private func freshCachedSource(forKey cacheKey: String) -> CachedSource? {
+        guard let cached = cachedSources[cacheKey],
+              let freshnessToken = try? Self.freshnessToken(for: cached.localURL),
+              cached.freshnessToken == freshnessToken else {
+            return nil
+        }
+        return CachedSource(source: cached.source, entries: cached.entries)
     }
 
     private static func resolvedLocalURL(
@@ -324,15 +336,14 @@ public actor ReaderPackageEntrySourceCache {
 #endif
     }
 
-    private static func preparedSource(for localURL: URL, freshnessToken: String) throws -> ReaderPackageEntrySource {
+    private static func preparedSource(for localURL: URL) throws -> ReaderPackageEntrySource {
         var isDirectory = ObjCBool(false)
         if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
            isDirectory.boolValue {
             return try ReaderPackageEntrySource(localURL: localURL)
         }
 
-        let extractedRootURL = try expandedArchiveDirectory(for: localURL, freshnessToken: freshnessToken)
-        return try ReaderPackageEntrySource(localURL: extractedRootURL)
+        return try ReaderPackageEntrySource(localURL: localURL)
     }
 
     private static func expandedArchiveDirectory(for localURL: URL, freshnessToken: String) throws -> URL {

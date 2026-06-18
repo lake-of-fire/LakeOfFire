@@ -54,6 +54,7 @@ let package = Package(
         .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
         .package(url: "https://github.com/lake-of-fire/PersistedLRUCache.git", branch: "main"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
+        .package(url: "https://github.com/pointfreeco/swift-perception", exact: "2.0.9"),
     ],
     targets: [
         .target(
@@ -177,6 +178,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
                 .product(name: "PersistedLRUCache", package: "PersistedLRUCache"),
+                .product(name: "Perception", package: "swift-perception"),
                 .product(name: "Pow", package: "Pow"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
@@ -224,6 +226,7 @@ let package = Package(
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
                 .product(name: "SwiftReadability", package: "swift-readability"),
+                .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ],
             path: "Tests/LakeOfFireTests",
             resources: [

@@ -66,9 +66,6 @@ const manabiTimelineMark = (event, payload = {}) => {
     try {
         performance?.mark?.(label);
     } catch (_error) {}
-    try {
-        console?.timeStamp?.(label);
-    } catch (_error) {}
     return label;
 };
 const manabiTimelineMeasure = (event, startedAt, payload = {}) => {
@@ -90,6 +87,11 @@ const manabiShouldLogPaginatorReaderLoad = (cacheWarmer = false) => {
         || source.startsWith('reader.open')
         || source.includes('initialRestore')
         || globalThis.__manabiTracePaginatorLoadBoundaries === true;
+};
+const manabiApplyPreferredWritingDirectionToDocument = doc => {
+    const body = doc?.body;
+    if (!body?.dataset) return false;
+    return false;
 };
 const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
     try {
@@ -358,6 +360,7 @@ function getDirectionFromDocument(doc) {
     if (!body || !documentElement) return null;
 
     const explicitDirection = body.getAttribute('data-mnb-writing-direction')?.trim?.().toLowerCase?.() ?? null;
+    const foliateDirection = body.getAttribute('data-mnb-foliate-writing-direction')?.trim?.().toLowerCase?.() ?? null;
     const styleText = [
         body.getAttribute('style') ?? '',
         documentElement.getAttribute('style') ?? '',
@@ -368,11 +371,16 @@ function getDirectionFromDocument(doc) {
     let writingMode = writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
     let direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
     let source = writingMode ? 'inline' : null;
-    if (!writingMode && (explicitDirection === 'vertical' || body.classList?.contains?.('reader-vertical-writing'))) {
+    if (!writingMode && (
+        explicitDirection === 'vertical'
+        || foliateDirection === 'vertical'
+        || body.classList?.contains?.('reader-vertical-writing')
+        || documentElement.classList?.contains?.('vrtl')
+    )) {
         writingMode = 'vertical-rl';
-        source = 'attribute';
+        source = explicitDirection === 'vertical' || foliateDirection === 'vertical' ? 'attribute' : 'class';
     }
-    if (!writingMode && explicitDirection === 'horizontal') {
+    if (!writingMode && (explicitDirection === 'horizontal' || foliateDirection === 'horizontal')) {
         writingMode = 'horizontal-tb';
         source = 'attribute';
     }
@@ -495,6 +503,9 @@ class View {
     #directionReady = new Promise(r => (this.#directionReadyResolve = r));
     #column = true
     #size
+    #lastRenderSignature = null
+    #renderInFlightSignature = null
+    #renderInFlightPromise = null
     layout = {}
     #isCacheWarmer
     constructor({
@@ -583,7 +594,11 @@ class View {
 
                         let direction = await manabiRunPaginatorBoundary(
                             'paginator.view.direction.document',
-                            { ...basePayload, href: doc?.location?.href ?? null },
+                            {
+                                ...basePayload,
+                                href: doc?.location?.href ?? null,
+                                appliedPreferredDirection: manabiApplyPreferredWritingDirectionToDocument(doc),
+                            },
                             () => getDirectionFromDocument(doc),
                             { logReaderLoad }
                         );
@@ -648,14 +663,22 @@ class View {
                         )
 
                         this.#resizeObserver.observe(doc.body)
-                        doc.fonts?.ready?.then?.(() => {
-                            void manabiRunPaginatorBoundary(
-                                'paginator.view.fontsReadyExpand',
-                                { ...basePayload, href: doc?.location?.href ?? null },
-                                () => this.expand(),
-                                { logReaderLoad }
-                            )
-                        })
+                        if (doc.fonts?.ready && doc.fonts.status !== 'loaded') {
+                            doc.fonts.ready.then(() => {
+                                void manabiRunPaginatorBoundary(
+                                    'paginator.view.fontsReadyExpand',
+                                    { ...basePayload, href: doc?.location?.href ?? null },
+                                    () => this.expand(),
+                                    { logReaderLoad }
+                                )
+                            })
+                        } else {
+                            manabiTimelineMark('paginator.view.fontsReadyExpand.skipLoaded', {
+                                ...basePayload,
+                                href: doc?.location?.href ?? null,
+                                fontsStatus: doc.fonts?.status ?? null,
+                            });
+                        }
                         const finishPayload = {
                             ...basePayload,
                             href: doc?.location?.href ?? null,
@@ -725,24 +748,50 @@ class View {
         doc.body.dataset.mnbFoliateWritingDirection = this.#vertical ? 'vertical' : 'horizontal'
         doc.body.classList.toggle('reader-vertical-writing', this.#vertical)
 
-        if (this.#column) {
-            //            console.log("render(layout)... await columnize(layout)")
-            await manabiRunPaginatorBoundary(
+        const renderSignature = JSON.stringify({
+            flow: layout.flow ?? null,
+            width: Math.round(Number(layout.width) || 0),
+            height: Math.round(Number(layout.height) || 0),
+            gap: manabiRound(Number(layout.gap) || 0, 2),
+            columnWidth: manabiRound(Number(layout.columnWidth) || 0, 2),
+            divisor: Number(layout.divisor) || 0,
+            vertical: !!this.#vertical,
+            rtl: !!this.#rtl,
+            typography: layout.typographySignature ?? null,
+        })
+        if (this.#lastRenderSignature === renderSignature) {
+            manabiTimelineMark('paginator.view.render.skipSameSignature', renderPayload)
+            return
+        }
+        if (this.#renderInFlightSignature === renderSignature && this.#renderInFlightPromise) {
+            manabiTimelineMark('paginator.view.render.awaitSameSignature', renderPayload)
+            await this.#renderInFlightPromise
+            return
+        }
+
+        const renderWork = this.#column
+            ? manabiRunPaginatorBoundary(
                 'paginator.view.render.columnize',
                 renderPayload,
                 () => this.columnize(layout),
                 { logReaderLoad }
             )
-            //            console.log("render(layout)... await'd columnize(layout)")
-        } else {
-            //            console.log("render(layout)... await scrolled")
-            await manabiRunPaginatorBoundary(
+            : manabiRunPaginatorBoundary(
                 'paginator.view.render.scrolled',
                 renderPayload,
                 () => this.scrolled(layout),
                 { logReaderLoad }
             )
-            //            console.log("render(layout)... await'd scrolled")
+        this.#renderInFlightSignature = renderSignature
+        this.#renderInFlightPromise = renderWork
+        try {
+            await renderWork
+            this.#lastRenderSignature = renderSignature
+        } finally {
+            if (this.#renderInFlightPromise === renderWork) {
+                this.#renderInFlightPromise = null
+                this.#renderInFlightSignature = null
+            }
         }
     }
     async scrolled({
@@ -873,8 +922,14 @@ class View {
         const horizontalMaxHeight = Math.max(1, numericHeight - topMargin - bottomMargin - margin * 2);
         let imageCount = 0;
         const parentMediaCounts = new WeakMap();
+        const mediaOnlyCache = new WeakMap();
         const textNodeType = doc?.defaultView?.Node?.TEXT_NODE ?? 3;
+        const nodeFilter = doc?.defaultView?.NodeFilter ?? globalThis.NodeFilter ?? null;
+        const showText = nodeFilter?.SHOW_TEXT ?? 4;
+        const filterAccept = nodeFilter?.FILTER_ACCEPT ?? 1;
+        const filterReject = nodeFilter?.FILTER_REJECT ?? 2;
         const mediaSelector = 'img, svg, image, picture, video, object, iframe, canvas, embed';
+        const ignoredTextContainerSelector = `${mediaSelector}, script, style, noscript`;
         const hasSubstantiveDirectText = parent => {
             for (const node of parent?.childNodes || []) {
                 if (node.nodeType === textNodeType && /\S/.test(node.textContent || '')) {
@@ -884,11 +939,24 @@ class View {
             return false;
         };
         const hasSubstantiveTextExcludingMedia = element => {
-            const clone = element?.cloneNode?.(true);
-            for (const media of clone?.querySelectorAll?.(mediaSelector) || []) {
-                media.remove();
+            if (!element) return false;
+            if (mediaOnlyCache.has(element)) {
+                return !mediaOnlyCache.get(element);
             }
-            return /\S/.test(clone?.textContent || '');
+            const walker = doc.createTreeWalker?.(element, showText, {
+                acceptNode: node => {
+                    const parent = node?.parentElement;
+                    if (!parent || parent.closest?.(ignoredTextContainerSelector)) {
+                        return filterReject;
+                    }
+                    return /\S/.test(node.textContent || '')
+                        ? filterAccept
+                        : filterReject;
+                },
+            });
+            const hasText = !!walker?.nextNode?.();
+            mediaOnlyCache.set(element, !hasText);
+            return hasText;
         };
         const applyVerticalMediaWrapperSizing = element => {
             if (!vertical || !element || element === doc.body || element === doc.documentElement) return;
@@ -935,7 +1003,11 @@ class View {
             let ancestor = parent;
             while (vertical && ancestor && ancestor !== doc.body && ancestor !== doc.documentElement) {
                 if (ancestor.matches?.('p, figure, div')) {
-                    const ancestorMediaCount = ancestor.querySelectorAll?.(mediaSelector)?.length ?? 0;
+                    let ancestorMediaCount = parentMediaCounts.get(ancestor);
+                    if (ancestorMediaCount == null) {
+                        ancestorMediaCount = ancestor.querySelectorAll?.(mediaSelector)?.length ?? 0;
+                        parentMediaCounts.set(ancestor, ancestorMediaCount);
+                    }
                     if (ancestorMediaCount === 1 && !hasSubstantiveTextExcludingMedia(ancestor)) {
                         applyVerticalMediaWrapperSizing(ancestor);
                     }
@@ -962,6 +1034,7 @@ class View {
                     }
                     const side = this.#vertical ? 'height' : 'width'
                     const otherSide = side === 'width' ? 'height' : 'width'
+                    let expandedMetrics = null
                     if (this.#column) {
                         const contentRect = this.#contentRange.getBoundingClientRect()
                         // offset caused by column break at the start of the page
@@ -973,6 +1046,15 @@ class View {
                         const contentSize = contentStart + contentRect[side]
                         const pageCount = Math.ceil(contentSize / this.#size)
                         const expandedSize = pageCount * this.#size
+                        expandedMetrics = {
+                            column: true,
+                            side,
+                            otherSide,
+                            contentSize,
+                            expandedSize,
+                            pageCount,
+                            size: this.#size,
+                        }
                         this.#element.style.padding = '0'
                         this.#iframe.style[side] = `${expandedSize}px`
                         this.#element.style[side] = `${expandedSize + this.#size * 2}px`
@@ -991,6 +1073,15 @@ class View {
                     } else {
                         const contentSize = documentElement.getBoundingClientRect()[side]
                         const expandedSize = contentSize
+                        expandedMetrics = {
+                            column: false,
+                            side,
+                            otherSide,
+                            contentSize,
+                            expandedSize,
+                            pageCount: this.#size > 0 ? Math.max(1, Math.ceil(expandedSize / this.#size)) : 0,
+                            size: this.#size,
+                        }
                         const {
                             topMargin,
                             bottomMargin
@@ -1033,7 +1124,7 @@ class View {
                         }
                     }
                     //                console.log("expand... call onexpand")
-                    await this.onExpand()
+                    await this.onExpand(expandedMetrics)
                     //                console.log("expand... call'd onexpand")
                     resolve()
                 } catch (error) {
@@ -1106,6 +1197,10 @@ export class Paginator extends HTMLElement {
         this.#cachedStart = null
         this.#invalidateVisibleRangeCache()
 
+        if (this.#isLoading) {
+            return
+        }
+
         //        this.render()
         //        requestAnimationFrame(() => {
         this.#debouncedRender();
@@ -1154,6 +1249,7 @@ export class Paginator extends HTMLElement {
     #visibleRangeCache = null
     #visibleRangeInFlight = null
     #visibleRangeCacheVersion = 0
+    #pageMetricsCache = null
     #elementVisibilityObserver = null
     #elementMutationObserver = null
 
@@ -1342,7 +1438,21 @@ export class Paginator extends HTMLElement {
 
         this.#resizeObserver.observe(this.#container)
 
-        this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
+        this.#container.addEventListener('scroll', () => {
+            const cached = this.#pageMetricsCache
+            const currentStart = cached?.scrollProp
+                ? Math.abs(this.#container[cached.scrollProp] ?? NaN)
+                : NaN
+            const preservesProgrammaticMetrics = cached
+                && Number.isFinite(cached.start)
+                && Number.isFinite(currentStart)
+                && Math.abs(currentStart - cached.start) < 1
+            if (!preservesProgrammaticMetrics) {
+                this.#cachedStart = null
+                this.#invalidatePageMetricsCache()
+            }
+            this.dispatchEvent(new Event('scroll'))
+        })
 
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', debounce(async () => {
@@ -1565,13 +1675,14 @@ export class Paginator extends HTMLElement {
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
     }
-    async #onExpand() {
+    async #onExpand(expandedMetrics = null) {
 //        console.log("#onExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#viewSizePromise = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
         this.#invalidateVisibleRangeCache()
+        await this.#rememberExpandedPageMetrics(expandedMetrics)
         if (!this.#suspendOnExpandAnchor) {
             await this.#scrollToAnchor(this.#anchor)
         }
@@ -1588,6 +1699,55 @@ export class Paginator extends HTMLElement {
         this.#visibleRangeCache = null
         this.#visibleRangeInFlight = null
         this.#visibleRangeCacheVersion += 1
+        this.#invalidatePageMetricsCache()
+    }
+    #invalidatePageMetricsCache() {
+        this.#pageMetricsCache = null
+    }
+    #metricsWithStart(metrics, start) {
+        if (!metrics || !Number.isFinite(start)) return metrics
+        const size = metrics.size
+        const end = start + size
+        return {
+            ...metrics,
+            start,
+            end,
+            page: size > 0 ? Math.floor(((start + end) / 2) / size) : 0,
+        }
+    }
+    #rememberPageMetrics(metrics) {
+        if (!metrics) return
+        this.#cachedStart = metrics.start
+        this.#pageMetricsCache = metrics
+    }
+    async #rememberExpandedPageMetrics(expandedMetrics) {
+        if (!expandedMetrics || !Number.isFinite(expandedMetrics.size) || expandedMetrics.size <= 0) {
+            return
+        }
+        await this.#awaitDirection()
+        const sideProp = await this.sideProp()
+        const scrollProp = await this.scrollProp()
+        const size = expandedMetrics.size
+        const viewSize = expandedMetrics.column
+            ? expandedMetrics.expandedSize + size * 2
+            : expandedMetrics.expandedSize
+        const rawPages = size > 0 ? Math.round(viewSize / size) : 0
+        const pages = this.#normalizePages(rawPages)
+        this.#rememberPageMetrics({
+            index: this.#index,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            sideProp,
+            scrollProp,
+            size,
+            viewSize,
+            start: 0,
+            end: size,
+            page: 0,
+            pages,
+            source: 'expand',
+        })
     }
     async #visibleRangeCacheKey() {
         await this.#awaitDirection()
@@ -1721,14 +1881,30 @@ export class Paginator extends HTMLElement {
     }
     #typographyMetrics() {
         const doc = this.#view?.document;
-        const bodyStyle = doc?.body ? getComputedStyle(doc.body) : null;
-        const containerStyle = this.#container ? getComputedStyle(this.#container) : null;
+        const inlineBodyStyle = doc?.body?.style ?? null;
+        const inlineContainerStyle = this.#container?.style ?? null;
+        const cheapBodyFontSize =
+            parseFloat(inlineBodyStyle?.fontSize)
+            || parseFloat(inlineBodyStyle?.getPropertyValue?.('--mnb-reader-content-font-size'));
+        const cheapLineHeight =
+            parseFloat(inlineBodyStyle?.lineHeight)
+            || parseFloat(inlineBodyStyle?.getPropertyValue?.('--mnb-reader-line-height'));
+        const bodyStyle = Number.isFinite(cheapBodyFontSize) && Number.isFinite(cheapLineHeight)
+            ? null
+            : (doc?.body ? getComputedStyle(doc.body) : null);
+        const containerStyle = Number.isFinite(cheapBodyFontSize) && Number.isFinite(cheapLineHeight)
+            ? null
+            : (this.#container ? getComputedStyle(this.#container) : null);
         const fontSize =
-            parseFloat(bodyStyle?.fontSize)
+            cheapBodyFontSize
+            || parseFloat(bodyStyle?.fontSize)
+            || parseFloat(inlineContainerStyle?.fontSize)
             || parseFloat(containerStyle?.fontSize)
             || 20;
         const parsedLineHeight =
-            parseFloat(bodyStyle?.lineHeight)
+            cheapLineHeight
+            || parseFloat(bodyStyle?.lineHeight)
+            || parseFloat(inlineContainerStyle?.lineHeight)
             || parseFloat(containerStyle?.lineHeight);
         const lineHeight = Number.isFinite(parsedLineHeight)
             ? parsedLineHeight
@@ -1931,6 +2107,7 @@ export class Paginator extends HTMLElement {
         height,
         flow = this.getAttribute('flow'),
         vertical = this.#vertical,
+        rtl = this.#rtl,
         fontSize,
         lineHeight,
         inlineCharacterAdvance,
@@ -1941,6 +2118,7 @@ export class Paginator extends HTMLElement {
         return [
             flow ?? '',
             vertical ? 'vertical' : 'horizontal',
+            rtl ? 'rtl' : 'ltr',
             Math.round(width ?? this.#container?.clientWidth ?? 0),
             Math.round(height ?? this.#container?.clientHeight ?? 0),
             manabiRound(metrics.fontSize, 2),
@@ -1981,7 +2159,6 @@ export class Paginator extends HTMLElement {
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
-        this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
 
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
@@ -2095,6 +2272,7 @@ export class Paginator extends HTMLElement {
                 bottomMargin,
                 gap,
                 columnWidth,
+                typographySignature: this.#lastTypographyRenderSignature,
             }
         }
 
@@ -2149,10 +2327,25 @@ export class Paginator extends HTMLElement {
             gap,
             columnWidth,
             divisor,
+            typographySignature: this.#lastTypographyRenderSignature,
         }
     }
     async render() {
         if (!this.#view) {
+            return
+        }
+        const { width, height } = await this.sizes()
+        const signature = this.#typographyRenderSignature({
+            width,
+            height,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+        })
+        if (this.#lastTypographyRenderSignature === signature && this.#view.layout) {
+            manabiTimelineMark('paginator.render.skipSameSignature', {
+                index: this.#index,
+                signature,
+            })
             return
         }
         this.#invalidateVisibleRangeCache()
@@ -2307,6 +2500,17 @@ export class Paginator extends HTMLElement {
     }
     async #startForScrollProp(scrollProp) {
         if (this.#cachedStart === null) {
+            const cached = this.#pageMetricsCache
+            if (cached
+                && cached.index === this.#index
+                && cached.scrolled === this.scrolled
+                && cached.vertical === this.#vertical
+                && cached.rtl === this.#rtl
+                && cached.scrollProp === scrollProp
+                && Number.isFinite(cached.start)) {
+                this.#cachedStart = cached.start
+                return this.#cachedStart
+            }
             //        return new Promise(resolve => {
             //            requestAnimationFrame(async () => {
             //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
@@ -2344,6 +2548,25 @@ export class Paginator extends HTMLElement {
     async pageMetrics() {
         const startedAt = manabiPerfNow();
         let metrics = null;
+        const cached = this.#pageMetricsCache;
+        if (cached
+            && cached.index === this.#index
+            && cached.scrolled === this.scrolled
+            && cached.vertical === this.#vertical
+            && cached.rtl === this.#rtl) {
+            manabiTimelineMeasure('paginator.pageMetrics', startedAt, {
+                cacheHit: true,
+                cacheWarmer: this.#isCacheWarmer,
+                index: cached.index,
+                scrolled: cached.scrolled,
+                vertical: cached.vertical,
+                page: cached.page,
+                pages: cached.pages,
+                size: cached.size,
+                viewSize: cached.viewSize,
+            }, 50);
+            return cached;
+        }
         try {
             await this.#awaitDirection()
             const sideProp = await this.sideProp()
@@ -2358,6 +2581,7 @@ export class Paginator extends HTMLElement {
             const pages = this.#normalizePages(rawPages)
             const page = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
             metrics = {
+                index: this.#index,
                 scrolled: this.scrolled,
                 vertical: this.#vertical,
                 rtl: this.#rtl,
@@ -2370,9 +2594,11 @@ export class Paginator extends HTMLElement {
                 page,
                 pages,
             }
+            this.#pageMetricsCache = metrics
             return metrics
         } finally {
             manabiTimelineMeasure('paginator.pageMetrics', startedAt, {
+                cacheHit: false,
                 cacheWarmer: this.#isCacheWarmer,
                 index: this.#index,
                 scrolled: metrics?.scrolled ?? this.scrolled,
@@ -2398,6 +2624,7 @@ export class Paginator extends HTMLElement {
                 element[scrollProp] = Math.max(min, Math.min(max,
                     element[scrollProp] + delta))
                 this.#cachedStart = null; // TODO: Needed here?
+                this.#invalidatePageMetricsCache()
                 resolve()
             })
         })
@@ -2641,33 +2868,40 @@ export class Paginator extends HTMLElement {
     async #scrollTo(offset, reason, smooth, knownMetrics = null) {
         const startedAt = manabiPerfNow();
         await this.#awaitDirection();
+        let scrollMode = 'raf';
         try {
             const scroll = async () => {
-                this.#cachedStart = null;
                 const element = this.#container
                 const scrollProp = await this.scrollProp()
                 const metrics = knownMetrics || await this.pageMetrics()
                 const size = metrics.size
                 const atStart = this.#adjacentIndex(-1) == null && metrics.page <= 1
                 const atEnd = this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2
+                const scrolledMetrics = this.#metricsWithStart(metrics, Math.abs(offset))
                 if (element[scrollProp] === offset) {
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    await this.#afterScroll(reason)
+                    this.#rememberPageMetrics(scrolledMetrics)
+                    await this.#afterScroll(reason, scrolledMetrics)
                     return
                 }
                 // FIXME: vertical-rl only, not -lr
                 if (this.scrolled && this.#vertical) offset = -offset
+                const rememberScrolledMetrics = () => {
+                    this.#rememberPageMetrics(scrolledMetrics)
+                }
                 if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
                     element[scrollProp], offset, 300, easeOutQuad,
                     x => element[scrollProp] = x,
                 ).then(async () => {
+                    rememberScrolledMetrics()
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    await this.#afterScroll(reason)
+                    await this.#afterScroll(reason, scrolledMetrics)
                 })
                 else {
                     element[scrollProp] = offset
+                    rememberScrolledMetrics()
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    await this.#afterScroll(reason)
+                    await this.#afterScroll(reason, scrolledMetrics)
                 }
             }
 
@@ -2683,6 +2917,16 @@ export class Paginator extends HTMLElement {
             //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
             //                typeof document.startViewTransition !== 'function'
             //                ) {
+            const shouldUseDirectInitialNavigation =
+                (reason === 'navigation' || reason === 'anchor')
+                && !smooth
+                && !this.hasAttribute('animated')
+                && knownMetrics
+            if (shouldUseDirectInitialNavigation) {
+                scrollMode = 'direct'
+                await scroll()
+                return
+            }
             return await new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     const shouldFade = !(reason === 'page' || reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation');
@@ -2705,6 +2949,7 @@ export class Paginator extends HTMLElement {
                 cacheWarmer: this.#isCacheWarmer,
                 index: this.#index,
                 reason,
+                mode: scrollMode,
                 smooth: !!smooth,
                 scrolled: this.scrolled,
             });
@@ -2759,19 +3004,88 @@ export class Paginator extends HTMLElement {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
         await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
-    // TODO: Fix newer way and stop using this one that calculates getClientRects
+    #schedulePastContentCorrection({
+        index,
+        anchor,
+        anchorKind,
+        logReaderLoad,
+    }) {
+        if (this.#isCacheWarmer || typeof anchor !== 'number' || this.scrolled) {
+            return
+        }
+        const scheduledView = this.#view
+        const scheduledIndex = this.#index
+        const run = async () => {
+            if (this.#view !== scheduledView || this.#index !== scheduledIndex || this.#index !== index) {
+                return
+            }
+            const metrics = await manabiRunPaginatorBoundary(
+                'paginator.display.pageMetrics.deferred',
+                { index, anchorKind },
+                () => this.pageMetrics().catch(() => null),
+                { logReaderLoad }
+            )
+            if (this.#view !== scheduledView || this.#index !== scheduledIndex || this.#index !== index) {
+                return
+            }
+            const pageCurrent = metrics?.page ?? null
+            const pageTotal = metrics?.pages ?? null
+            const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
+            const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
+            const landedPastContent = frameRect && rootRect && frameRect.bottom <= rootRect.top + 1
+            if (
+                typeof pageCurrent === 'number'
+                && typeof pageTotal === 'number'
+                && pageTotal > 2
+                && (pageCurrent >= pageTotal - 1 || landedPastContent)
+            ) {
+                const correctedPage = Math.max(1, pageTotal - 2)
+                await manabiRunPaginatorBoundary(
+                    'paginator.display.correctPastContentPage.deferred',
+                    { index, correctedPage, pageCurrent, pageTotal, landedPastContent },
+                    () => this.#scrollToPage(correctedPage, 'navigation', undefined, metrics),
+                    { logReaderLoad }
+                )
+            }
+        }
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => requestAnimationFrame(() => void run()))
+        } else {
+            setTimeout(() => void run(), 0)
+        }
+    }
+    #rectForAnchorNode(anchorNode, reason = 'anchor') {
+        if (!anchorNode) return { rect: null, source: 'none' }
+        if (anchorNode.nodeType === 1) {
+            const rect = anchorNode.getBoundingClientRect?.()
+            if (rect && rect.width > 0 && rect.height > 0) {
+                return { rect, source: 'element-bounding' }
+            }
+        }
+        if (reason !== 'selection' && typeof anchorNode.getBoundingClientRect === 'function') {
+            const rect = anchorNode.getBoundingClientRect()
+            if (rect && rect.width > 0 && rect.height > 0) {
+                return { rect, source: 'range-bounding' }
+            }
+        }
+        const rects = anchorNode.getClientRects?.()
+        if (!rects) return { rect: null, source: 'none' }
+        const rect = Array.from(rects)
+            .find(r => r.width > 0 && r.height > 0) || rects[0] || null
+        return { rect, source: rect ? 'client-rects' : 'none' }
+    }
     async #scrollToAnchor(anchor, reason = 'anchor') {
         const startedAt = manabiPerfNow();
+        let rectSource = null;
         //        console.log('#scrollToAnchor0...', anchor)
         try {
             this.#anchor = anchor
-            const rects = uncollapse(anchor)?.getClientRects?.()
+            const anchorNode = uncollapse(anchor)
             // if anchor is an element or a range
-            if (rects) {
-                // when the start of the range is immediately after a hyphen in the
-                // previous column, there is an extra zero width rect in that column
-                const rect = Array.from(rects)
-                    .find(r => r.width > 0 && r.height > 0) || rects[0]
+            if (anchorNode?.getBoundingClientRect || anchorNode?.getClientRects) {
+                const anchorRect = this.#rectForAnchorNode(anchorNode, reason)
+                const rect = anchorRect.rect
+                rectSource = anchorRect.source
                 if (!rect) return
                 await this.#scrollToRect(rect, reason)
                 return
@@ -2792,6 +3106,7 @@ export class Paginator extends HTMLElement {
                 index: this.#index,
                 reason,
                 anchorType: anchor instanceof Range ? 'range' : typeof anchor,
+                rectSource,
                 scrolled: this.scrolled,
             });
         }
@@ -2991,14 +3306,17 @@ export class Paginator extends HTMLElement {
             }
         }
     }
-    async #afterScroll(reason) {
+    async #afterScroll(reason, knownMetrics = null) {
         if (this.#isCacheWarmer) {
             return;
         }
         //            console.log("#afterScroll...")
 
-        this.#cachedStart = null;
-        const range = await this.#getVisibleRange()
+        const canUseMetricsOnlyRelocate =
+            knownMetrics
+            && this.#isLoading
+            && (reason === 'navigation' || reason === 'anchor')
+        const range = canUseMetricsOnlyRelocate ? null : await this.#getVisibleRange()
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
@@ -3015,10 +3333,10 @@ export class Paginator extends HTMLElement {
         }
 
         if (this.scrolled) {
-            const metrics = await this.pageMetrics()
+            const metrics = knownMetrics || await this.pageMetrics()
             detail.fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0
         } else {
-            const { page, pages } = await this.pageMetrics()
+            const { page, pages } = knownMetrics || await this.pageMetrics()
             if (pages <= 0) {
                 this.dispatchEvent(new CustomEvent('relocate', {
                     detail
@@ -3257,41 +3575,15 @@ export class Paginator extends HTMLElement {
                 anchorKind: displayAnchorKind,
             });
         }
-        await this.scrollToAnchor((typeof anchor === 'function' ?
-            anchor(this.#view.document) : anchor) ?? 0, select)
+        const resolvedAnchor = (typeof anchor === 'function' ?
+            anchor(this.#view.document) : anchor) ?? 0
+        await this.scrollToAnchor(resolvedAnchor, select)
         if (shouldLogReaderLoad) {
             manabiPaginatorReaderLoadLog('paginator.display.scrollToAnchor.finish', {
                 index,
                 anchorKind: displayAnchorKind,
                 elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
             });
-        }
-        if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
-            const metrics = await manabiRunPaginatorBoundary(
-                'paginator.display.pageMetrics',
-                { index, anchorKind: displayAnchorKind },
-                () => this.pageMetrics().catch(() => null),
-                { logReaderLoad: shouldLogReaderLoad }
-            )
-            const pageCurrent = metrics?.page ?? null
-            const pageTotal = metrics?.pages ?? null
-            const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
-            const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
-            const landedPastContent = frameRect && rootRect && frameRect.bottom <= rootRect.top + 1
-            if (
-                typeof pageCurrent === 'number'
-                && typeof pageTotal === 'number'
-                && pageTotal > 2
-                && (pageCurrent >= pageTotal - 1 || landedPastContent)
-            ) {
-                const correctedPage = Math.max(1, pageTotal - 2)
-                await manabiRunPaginatorBoundary(
-                    'paginator.display.correctPastContentPage',
-                    { index, correctedPage, pageCurrent, pageTotal, landedPastContent },
-                    () => this.#scrollToPage(correctedPage, 'navigation', undefined, metrics),
-                    { logReaderLoad: shouldLogReaderLoad }
-                )
-            }
         }
         this.#suspendOnExpandAnchor = false
         if (hasFocus) this.focusView()
@@ -3308,6 +3600,12 @@ export class Paginator extends HTMLElement {
             cacheWarmer: this.#isCacheWarmer,
         });
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
+        this.#schedulePastContentCorrection({
+            index,
+            anchor: resolvedAnchor,
+            anchorKind: displayAnchorKind,
+            logReaderLoad: shouldLogReaderLoad,
+        })
         if (shouldLogReaderLoad) {
             manabiPaginatorReaderLoadLog('paginator.display.didDisplay.dispatched', {
                 index,

@@ -200,6 +200,7 @@ func applyAdaptiveReaderWidth(
                 }
                 mark('finish', `reason=\(reason) maxWidth=\(maxWidthOverride) changed=${changed}`);
             })();
+            //# sourceURL=lake-reader-adaptive-width-sync.js
             """,
             true
         )
@@ -267,6 +268,7 @@ func requestReaderTypographyPaginationRefresh(
                 }
                 return { rendered: false, reason: 'missing-renderer' };
             })();
+            //# sourceURL=lake-reader-typography-refresh.js
             """,
             true
         )
@@ -330,6 +332,7 @@ func applyReaderFontSize(
                 mark('finish', `reason=\(reason) size=\(size) appliedCount=${appliedCount}`);
                 return { appliedCount, fontSize };
             })();
+            //# sourceURL=lake-reader-font-size-sync.js
             """,
             true
         )
@@ -415,6 +418,7 @@ func applyReaderTheme(
                 appliedCount += globalThis.manabiApplyReaderThemeToEbookDocuments('\(reason)')?.appliedCount ?? 0;
                 return { appliedCount, colorScheme, lightModeTheme, darkModeTheme };
             })();
+            //# sourceURL=lake-reader-theme-sync.js
             """,
             true
         )
@@ -543,6 +547,7 @@ func syncEbookViewerChromeInsets(
               }
               postMay8('after.fallbackStyle', { appliedInsets });
             })();
+            //# sourceURL=lake-reader-chrome-insets-sync.js
             """,
             true
         )

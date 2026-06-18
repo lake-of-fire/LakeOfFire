@@ -210,7 +210,16 @@ fileprivate actor EBookProcessTextRequestDeduper {
         case failure(String)
     }
 
+    private struct CompletedResponse {
+        let responseText: String
+        let byteCount: Int
+    }
+
+    private let completedResponseByteLimit = 48 * 1024 * 1024
     private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
+    private var completedResponsesByKey: [EBookProcessTextRequestKey: CompletedResponse] = [:]
+    private var completedResponseKeysInAccessOrder: [EBookProcessTextRequestKey] = []
+    private var completedResponseByteCount = 0
 
     private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
         switch outcome {
@@ -229,6 +238,33 @@ fileprivate actor EBookProcessTextRequestDeduper {
     }
 #endif
 
+    private func rememberCompletedResponse(_ responseText: String, for key: EBookProcessTextRequestKey) {
+        guard !key.isCacheWarmer else { return }
+        let byteCount = responseText.utf8.count
+        guard byteCount > 0, byteCount <= completedResponseByteLimit else { return }
+        if let existing = completedResponsesByKey[key] {
+            completedResponseByteCount -= existing.byteCount
+            completedResponseKeysInAccessOrder.removeAll { $0 == key }
+        }
+        completedResponsesByKey[key] = CompletedResponse(responseText: responseText, byteCount: byteCount)
+        completedResponseKeysInAccessOrder.append(key)
+        completedResponseByteCount += byteCount
+        while completedResponseByteCount > completedResponseByteLimit,
+              let oldestKey = completedResponseKeysInAccessOrder.first {
+            completedResponseKeysInAccessOrder.removeFirst()
+            if let removed = completedResponsesByKey.removeValue(forKey: oldestKey) {
+                completedResponseByteCount -= removed.byteCount
+            }
+        }
+    }
+
+    private func completedResponse(for key: EBookProcessTextRequestKey) -> String? {
+        guard !key.isCacheWarmer, let completed = completedResponsesByKey[key] else { return nil }
+        completedResponseKeysInAccessOrder.removeAll { $0 == key }
+        completedResponseKeysInAccessOrder.append(key)
+        return completed.responseText
+    }
+
     func process(
         key: EBookProcessTextRequestKey,
         operation: @Sendable () async throws -> String
@@ -240,6 +276,15 @@ fileprivate actor EBookProcessTextRequestDeduper {
             "fingerprint": key.textFingerprint,
             "activeKeys": inFlightWaitersByKey.count
         ])
+        if let completedResponse = completedResponse(for: key) {
+            ebookLoadLog("processText.deduper.completedCache.hit", [
+                "location": key.location,
+                "isCacheWarmer": key.isCacheWarmer,
+                "fingerprint": key.textFingerprint,
+                "responseBytes": completedResponse.utf8.count
+            ])
+            return (completedResponse, true)
+        }
         if inFlightWaitersByKey[key] != nil {
             let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
             ebookLoadLog("processText.deduper.coalesce", [
@@ -314,7 +359,9 @@ fileprivate actor EBookProcessTextRequestDeduper {
         for waiter in waiters {
             waiter.resume(returning: response)
         }
-        return (try resolve(response), false)
+        let resolvedResponse = try resolve(response)
+        rememberCompletedResponse(resolvedResponse, for: key)
+        return (resolvedResponse, false)
     }
 }
 

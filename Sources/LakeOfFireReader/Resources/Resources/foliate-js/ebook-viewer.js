@@ -363,6 +363,7 @@ const isEventInsideElementCircle = (event, element, slop = 2) => {
 
 const REPLACE_TEXT_RESULT_CACHE_LIMIT = 64;
 const CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS = 1800;
+const CACHE_WARMER_FOREGROUND_LOOKUP_COOLDOWN_MS = 6000;
 const CACHE_WARMER_IDLE_RETRY_MS = 250;
 const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
 const CACHE_WARMER_MAX_SECTIONS_AHEAD = 2;
@@ -487,7 +488,10 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         }
         const responseTextLength = html.length;
         const processTextElapsedMs = performanceNowMs() - replaceTextStartedAt;
-        if (!isCacheWarmer && processTextElapsedMs >= MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS) {
+        const slowProcessTextLogThresholdMs = typeof MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS === 'number'
+            ? MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS
+            : 5000;
+        if (!isCacheWarmer && processTextElapsedMs >= slowProcessTextLogThresholdMs) {
             ebookLoadLog('processText.slow', {
                 requestID: processTextRequestID,
                 href,
@@ -937,6 +941,10 @@ const markCacheWarmerForegroundActivity = (reason = 'unspecified', cooldownMs = 
         reason,
         generation: globalThis.__manabiCacheWarmerWorkGeneration,
     });
+};
+
+window.manabi_pauseEbookCacheWarmerForLookup = (reason = 'lookup') => {
+    markCacheWarmerForegroundActivity(`lookup.${reason}`, CACHE_WARMER_FOREGROUND_LOOKUP_COOLDOWN_MS);
 };
 
 const cacheWarmerWorkGeneration = () => globalThis.__manabiCacheWarmerWorkGeneration || 0;
@@ -2561,7 +2569,7 @@ const manabiTimelinePayload = payload => Object.entries(payload || {})
 const manabiTimelineShouldEmitMark = (event, payload = {}) => {
     if (globalThis.__manabiTimelineTraceAll === true) return true;
     if (payload?.force === true || payload?.error) return true;
-    if (typeof payload?.elapsedMs === 'number') return true;
+    if (typeof payload?.elapsedMs === 'number') return payload.elapsedMs >= 50;
     const value = String(event || '');
     return value === 'longTask'
         || value.endsWith('.slow')
@@ -2580,10 +2588,23 @@ const manabiTimelineMark = (event, payload = {}) => {
         return label;
     }
     try {
+        const eventRecord = {
+            event,
+            payload,
+            label,
+            atMs: safeRound(performanceNowMs(), 1),
+        };
+        const events = globalThis.__manabiTimelineEvents ||= [];
+        events.push(eventRecord);
+        if (events.length > 200) {
+            events.splice(0, events.length - 200);
+        }
+    } catch (_error) {}
+    try {
         performance?.mark?.(label);
     } catch (_error) {}
     try {
-        console?.timeStamp?.(label);
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# MANABITRACE ${label}`);
     } catch (_error) {}
     return label;
 };
@@ -2972,13 +2993,16 @@ const compactSegmentMetadataTables = (compactTables) => ({
 });
 
 const segmentMetadataFromCompactTuple = (segment, tables, version) => {
-    const stableSegmentIdentifier = version === 3
+    const segmentHash = version === 3
         ? segmentMetadataTableValue(tables.h, segment?.[1], null)
         : segment?.[1];
+    const sentenceID = version === 3
+        ? segmentMetadataTableValue(tables.sid, segment?.[9], null)
+        : null;
     return {
         i: expandSegmentIDToken(segment?.[0], version), // segment element ID
-        h: stableSegmentIdentifier,
-        sid: stableSegmentIdentifier, // stable selection ID when available
+        h: segmentHash,
+        sid: typeof segmentHash === 'string' && segmentHash.length > 0 ? segmentHash : null, // stable segment hash
         j: segmentMetadataTableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
         n: segmentMetadataTableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
         s: segmentMetadataTableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
@@ -2986,7 +3010,7 @@ const segmentMetadataFromCompactTuple = (segment, tables, version) => {
         p: segmentMetadataTableValue(tables.p, segment?.[6], null), // part-of-speech from table index
         l: segment?.[7], // JLPT level, 1..5
         x: segmentMetadataTableValue(tables.x, segment?.[8], null), // surface text from table index
-        sentenceID: segmentMetadataTableValue(tables.sid, segment?.[9], null), // sentence identifier from table index
+        sentenceID, // sentence identifier from table index
     };
 };
 
@@ -3299,6 +3323,10 @@ const segmentIdentifierForNode = (segmentNode) => {
     if (metadata?.sid) {
         return metadata.sid;
     }
+    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
+    if (sentenceIdentifier && typeof metadata?.h === 'string' && metadata.h.length > 0) {
+        return `${sentenceIdentifier}-${metadata.h}`;
+    }
     return segmentNode?.id || null;
 };
 
@@ -3311,6 +3339,9 @@ const segmentIdentifierAliasesForNode = (segmentNode) => {
     };
     addAlias(metadata?.sid);
     const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
+    if (sentenceIdentifier && typeof metadata?.h === 'string' && metadata.h.length > 0) {
+        addAlias(`${sentenceIdentifier}-${metadata.h}`);
+    }
     if (sentenceIdentifier && typeof metadata?.sid === 'string' && !metadata.sid.includes('-')) {
         addAlias(`${sentenceIdentifier}-${metadata.sid}`);
     }
@@ -3592,7 +3623,65 @@ const isBroadEbookRangeRoot = (root, doc) => {
     return tagName === 'body' || tagName === 'html';
 };
 
-const collectViewportSampleSegmentNodes = (doc, visibleBounds) => {
+let visibleSegmentCollectionNodeID = 1;
+const visibleSegmentCollectionNodeIDs = new WeakMap();
+const visibleSegmentCollectionNodeKey = (node) => {
+    if (!node || (typeof node !== 'object' && typeof node !== 'function')) {
+        return 'nil';
+    }
+    let key = visibleSegmentCollectionNodeIDs.get(node);
+    if (!key) {
+        key = visibleSegmentCollectionNodeID++;
+        visibleSegmentCollectionNodeIDs.set(node, key);
+    }
+    return key;
+};
+const visibleRangeCollectionSignature = (visibleRange) => {
+    if (!visibleRange || visibleRange.collapsed === true) {
+        return visibleRange?.collapsed === true ? 'collapsed' : 'none';
+    }
+    return [
+        visibleSegmentCollectionNodeKey(visibleRange.startContainer),
+        visibleRange.startOffset ?? 0,
+        visibleSegmentCollectionNodeKey(visibleRange.endContainer),
+        visibleRange.endOffset ?? 0,
+        visibleSegmentCollectionNodeKey(visibleRange.commonAncestorContainer),
+    ].join(':');
+};
+const visibleBoundsCollectionSignature = (visibleBounds) => {
+    if (!visibleBounds) return 'none';
+    return [
+        visibleBounds.left,
+        visibleBounds.top,
+        visibleBounds.right,
+        visibleBounds.bottom,
+        visibleBounds.width,
+        visibleBounds.height,
+    ].map((value) => Number.isFinite(value) ? Math.round(value) : 'nil').join(':');
+};
+const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, { includeClientRects = true } = {}) => {
+    const view = doc?.defaultView ?? null;
+    return [
+        view?.__manabiVisibleSegmentCollectionGeneration ?? 0,
+        view?.__manabiReaderRenderToken ?? '',
+        includeClientRects ? 'rects' : 'bounds',
+        visibleRangeCollectionSignature(visibleRange),
+        visibleBoundsCollectionSignature(visibleBounds),
+    ].join('|');
+};
+const cachedVisibleSegmentCollection = (doc, key) => {
+    if (!key || !doc?.__manabiVisibleSegmentCollectionCache) return null;
+    const cache = doc.__manabiVisibleSegmentCollectionCache;
+    return cache.key === key ? cache.result : null;
+};
+const cacheVisibleSegmentCollection = (doc, key, result) => {
+    if (!key || !isDocumentLike(doc)) return;
+    doc.__manabiVisibleSegmentCollectionCache = { key, result };
+};
+
+const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
+    sampleDensity = 'normal',
+} = {}) => {
     if (!isDocumentLike(doc) || !visibleBounds || typeof doc.elementsFromPoint !== 'function') {
         return null;
     }
@@ -3632,8 +3721,9 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds) => {
             appendSegment(segment);
         }
     };
-    const xFractions = [0.12, 0.3, 0.5, 0.7, 0.88];
-    const yFractions = [0.12, 0.3, 0.5, 0.7, 0.88];
+    const useSparseSampling = sampleDensity === 'sparse';
+    const xFractions = useSparseSampling ? [0.5] : [0.12, 0.3, 0.5, 0.7, 0.88];
+    const yFractions = useSparseSampling ? [0.2, 0.5, 0.8] : [0.12, 0.3, 0.5, 0.7, 0.88];
     let sampledPointCount = 0;
     for (const yFraction of yFractions) {
         const y = Math.min(bottom - 1, Math.max(top, Math.round(top + height * yFraction)));
@@ -3655,6 +3745,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds) => {
         return 0;
     });
     manabiTimelineMeasure('visibleSegments.viewportSample', startedAt, {
+        sampleDensity,
         sampledPointCount,
         rootCount: seenRoots.size,
         candidateCount: candidateSegments.length,
@@ -3845,20 +3936,47 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     const isEbookDoc = isEbookContentDocument(doc);
     const useVisibleRange = !!visibleRange && visibleRange.collapsed !== true;
     const useViewportFallback = !useVisibleRange;
-    if (visibleRange?.collapsed === true) {
-    }
     const rangeCommonAncestor = visibleRange?.commonAncestorContainer ?? null;
     const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
         ? rangeCommonAncestor
         : (rangeCommonAncestor?.parentElement || null);
+    const isBroadEbookRangeAncestor = isEbookDoc && useVisibleRange && isBroadEbookRangeRoot(rangeCommonAncestorElement, doc);
+    const collectionCacheKey = visibleSegmentCollectionCacheKey(doc, visibleRange, visibleBounds, { includeClientRects });
+    const cachedCollection = cachedVisibleSegmentCollection(doc, collectionCacheKey);
+    if (cachedCollection) {
+        manabiTimelineMeasure('visibleSegments.collect.cache', startedAt, {
+            source: cachedCollection?.segmentCandidateSource ?? null,
+            reason,
+            includeClientRects,
+            visibleSegmentCount: cachedCollection?.visibleSegments?.length ?? 0,
+        }, 50);
+        return cachedCollection;
+    }
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects })
         : null;
-    const viewportSampleSegmentNodes = (!useVisibleRange || (isEbookDoc && !expandedRangeResult)) && visibleBounds
-        ? collectViewportSampleSegmentNodes(doc, visibleBounds)
-        : null;
+    let viewportSample = null;
+    if ((!useVisibleRange || (isEbookDoc && !expandedRangeResult)) && visibleBounds) {
+        const sparseNodes = collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: 'sparse' });
+        viewportSample = sparseNodes?.length > 0
+            ? { nodes: sparseNodes, source: 'viewport-sample-sparse' }
+            : null;
+        if (!viewportSample) {
+            const expandedNodes = collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: 'normal' });
+            viewportSample = expandedNodes?.length > 0
+                ? { nodes: expandedNodes, source: 'viewport-sample-expanded' }
+                : null;
+        }
+    }
+    const viewportSampleSegmentNodes = viewportSample?.nodes ?? null;
     const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? viewportSampleSegmentNodes ?? null;
-    const segmentSearchRoot = useVisibleRange && !expandedRangeResult && rangeCommonAncestorElement?.querySelectorAll
+    const shouldUseRangeAncestorFallback = !isEbookDoc
+        && useVisibleRange
+        && !expandedRangeResult
+        && !viewportSampleSegmentNodes
+        && rangeCommonAncestorElement?.querySelectorAll
+        && !isBroadEbookRangeAncestor;
+    const segmentSearchRoot = shouldUseRangeAncestorFallback
         ? rangeCommonAncestorElement
         : doc;
     const allSegmentNodes = boundedSegmentNodes || (isEbookDoc && segmentSearchRoot === doc ? [] : [
@@ -3870,7 +3988,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         ? allSegmentNodes.length
         : null;
     const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
-        || (viewportSampleSegmentNodes ? 'viewport-sample' : null)
+        || viewportSample?.source
+        || (isBroadEbookRangeAncestor ? 'ebook-broad-range-empty' : null)
         || (isEbookDoc && segmentSearchRoot === doc ? 'ebook-bounded-empty' : null)
         || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
     const visibleSegments = expandedRangeResult?.visibleSegments ? [...expandedRangeResult.visibleSegments] : [];
@@ -3883,8 +4002,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     let rectMeasureCount = expandedRangeResult?.rectMeasureCount ?? 0;
     let rectMeasureElapsedMs = expandedRangeResult?.rectMeasureElapsedMs ?? 0;
     let rangeCheckElapsedMs = expandedRangeResult?.rangeCheckElapsedMs ?? 0;
-    let fallbackElapsedMs = 0;
-    let fallbackSegmentCount = 0;
     for (const segmentNode of expandedRangeResult ? [] : allSegmentNodes) {
         totalSegmentCount += 1;
         if (segmentNode.closest('.tippy-box')) {
@@ -3934,58 +4051,6 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
-    if (useVisibleRange && visibleSegments.length === 0 && totalSegmentCount > 0) {
-        const fallbackStartedAt = performance.now();
-        const fallbackSegments = [];
-        let fallbackHiddenTooltipCount = 0;
-        let fallbackMissingIdentifierCount = 0;
-        let fallbackOutOfViewportCount = 0;
-        let fallbackRectMeasureCount = 0;
-        let fallbackRectMeasureElapsedMs = 0;
-        for (const segmentNode of allSegmentNodes) {
-            if (segmentNode.closest('.tippy-box')) {
-                fallbackHiddenTooltipCount += 1;
-                continue;
-            }
-            const segmentIdentifier = segmentIdentifierForNode(segmentNode);
-            if (!segmentIdentifier) {
-                fallbackMissingIdentifierCount += 1;
-                continue;
-            }
-            const rectStartedAt = performance.now();
-            const boundingRect = positiveBoundingClientRectForNode(segmentNode);
-            const boundingIntersects = !!boundingRect && rectIntersectsBounds(boundingRect, visibleBounds);
-            const rects = includeClientRects && boundingIntersects
-                ? visibleClientRectsForNode(segmentNode, visibleBounds)
-                : [];
-            const rect = rects[0] ?? (boundingIntersects ? boundingRect : null);
-            fallbackRectMeasureCount += 1;
-            fallbackRectMeasureElapsedMs += performance.now() - rectStartedAt;
-            if (!rect) {
-                fallbackOutOfViewportCount += 1;
-                continue;
-            }
-            const sentenceNode = segmentNode.closest('mnb-sen');
-            fallbackSegments.push({
-                node: segmentNode,
-                rect,
-                rects,
-                segmentIdentifier,
-                segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
-                sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
-            });
-        }
-        if (fallbackSegments.length > 0) {
-            visibleSegments.push(...fallbackSegments);
-            hiddenTooltipCount = fallbackHiddenTooltipCount;
-            missingIdentifierCount = fallbackMissingIdentifierCount;
-            outOfViewportCount = fallbackOutOfViewportCount;
-        }
-        fallbackSegmentCount = fallbackSegments.length;
-        fallbackElapsedMs = performance.now() - fallbackStartedAt;
-    }
-    if (visibleRange?.collapsed === true) {
-    }
     const completedAt = performance.now();
     manabiTimelineMeasure('visibleSegments.collect', startedAt, {
         source: segmentCandidateSource,
@@ -4001,10 +4066,9 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         queryElapsedMs: queryCompletedAt - startedAt,
         rectMeasureElapsedMs,
         rangeCheckElapsedMs,
-        fallbackSegmentCount,
-        fallbackElapsedMs,
+        broadEbookRangeAncestor: isBroadEbookRangeAncestor,
     }, 100);
-    return {
+    const result = {
         visibleSegments,
         viewportWidth,
         viewportHeight,
@@ -4019,6 +4083,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         outOfViewportCount,
         includeClientRects,
     };
+    cacheVisibleSegmentCollection(doc, collectionCacheKey, result);
+    return result;
 };
 
 const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspecified') => {
@@ -4026,12 +4092,14 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
     const byElementID = new Map();
     const bySegmentIdentifier = new Map();
     const idsByEntryID = new Map();
+    const visibleElementIDs = [];
     const visibleSegments = Array.isArray(visibleSegmentsResult?.visibleSegments)
         ? visibleSegmentsResult.visibleSegments
         : [];
     const indexedNodes = new Set();
     const visibleSentenceNodes = new Set();
     const sentenceIdentifiers = new Set();
+    let rubyPresenceMarkedCount = 0;
     const addMetadataAlias = (metadata, alias) => {
         if (typeof alias !== 'string' || alias.length === 0) return;
         bySegmentIdentifier.set(alias, metadata);
@@ -4048,6 +4116,9 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
     const indexSegmentNode = (node, item = null, source = 'visible') => {
         if (!node || indexedNodes.has(node)) return;
         indexedNodes.add(node);
+        if (doc?.defaultView?.manabi_markSegmentRubyPresence?.(node) === true) {
+            rubyPresenceMarkedCount += 1;
+        }
         const elementID = node.id || node.getAttribute?.('id') || null;
         const sourceMetadata = segmentMetadataForNode(node) || {};
         const sentenceNode = node.closest?.('mnb-sen') || null;
@@ -4059,9 +4130,9 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         if (typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0) {
             sentenceIdentifiers.add(sentenceIdentifier);
         }
-        const stableSegmentIdentifier = sourceMetadata.h
-            || sourceMetadata.sid
+        const stableSegmentIdentifier = sourceMetadata.sid
             || item?.segmentIdentifier
+            || sourceMetadata.h
             || null;
         const segmentIdentifier = item?.segmentIdentifier
             || segmentIdentifierForNode(node)
@@ -4071,8 +4142,8 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         const metadata = {
             ...sourceMetadata,
             i: sourceMetadata.i || elementID,
-            h: stableSegmentIdentifier,
-            sid: sourceMetadata.sentenceID || sentenceIdentifier,
+            h: sourceMetadata.h || null,
+            sid: sourceMetadata.sid || stableSegmentIdentifier,
             sentenceID: sourceMetadata.sentenceID || sentenceIdentifier,
             sentenceIdentifier,
             segmentIdentifier,
@@ -4093,7 +4164,12 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         addEntryIDs(entryIndexID, metadata.n);
     };
     for (const item of visibleSegments) {
-        indexSegmentNode(item?.node ?? null, item, 'visible');
+        const node = item?.node ?? null;
+        const elementID = node?.id || node?.getAttribute?.('id') || null;
+        if (elementID) {
+            visibleElementIDs.push(elementID);
+        }
+        indexSegmentNode(node, item, 'visible');
     }
     for (const sentenceNode of visibleSentenceNodes) {
         const siblingSegments = sentenceNode?.querySelectorAll?.('mnb-seg') ?? [];
@@ -4109,6 +4185,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         visibleSegmentCount: visibleSegments.length,
         indexedSegmentCount: byElementID.size,
         sentenceIdentifierCount: sentenceIdentifiers.size,
+        visibleElementIDs,
         builtAt: Date.now(),
     };
     if (doc) {
@@ -4133,6 +4210,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         sentenceIdentifierCount: sentenceIdentifiers.size,
         entryIDKeyCount: idsByEntryID.size,
         payloadPrepared: index.lookupPayloadPrepared === true,
+        rubyPresenceMarkedCount,
     });
     manabiTimelineMeasure('visibleLookup.index.built', startedAt, {
         reason,
@@ -4142,8 +4220,41 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         elementIDCount: byElementID.size,
         aliasCount: bySegmentIdentifier.size,
         entryIDKeyCount: idsByEntryID.size,
+        rubyPresenceMarkedCount,
     }, 25);
     return index;
+};
+
+const nativeLookupSharedStylePayloadForDocument = (doc) => {
+    const view = doc?.defaultView ?? null;
+    const body = doc?.body ?? null;
+    const root = doc?.documentElement ?? null;
+    const target = body || root;
+    if (!view || !target) {
+        return null;
+    }
+    try {
+        const targetStyle = view.getComputedStyle?.(target);
+        const bodyStyle = body ? view.getComputedStyle?.(body) : targetStyle;
+        const rootStyle = root ? view.getComputedStyle?.(root) : targetStyle;
+        return {
+            targetWritingMode: targetStyle?.writingMode ?? null,
+            targetDirection: targetStyle?.direction ?? null,
+            bodyWritingMode: bodyStyle?.writingMode ?? null,
+            bodyDirection: bodyStyle?.direction ?? null,
+            rootWritingMode: rootStyle?.writingMode ?? null,
+            rootDirection: rootStyle?.direction ?? null,
+            isVerticalWriting: (
+                body?.classList?.contains?.('reader-vertical-writing') === true
+                || body?.dataset?.mnbFoliateWritingDirection === 'vertical'
+                || root?.classList?.contains?.('vrtl') === true
+                || targetStyle?.writingMode?.startsWith?.('vertical') === true
+                || bodyStyle?.writingMode?.startsWith?.('vertical') === true
+            ),
+        };
+    } catch (_error) {
+        return null;
+    }
 };
 
 const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
@@ -4172,6 +4283,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         scale: visualViewportScale,
         pageLeft: Number.isFinite(window.visualViewport?.pageLeft) ? window.visualViewport.pageLeft : null,
         pageTop: Number.isFinite(window.visualViewport?.pageTop) ? window.visualViewport.pageTop : null,
+        stylePayload: nativeLookupSharedStylePayloadForDocument(doc),
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     if (globalThis.manabiVerboseLookupPositionTargets === true) {
@@ -4246,21 +4358,26 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
         return null;
     }
     const visibleSegments = visibleSegmentsResult?.visibleSegments ?? [];
-    readerLoadLog('viewer.visibleStatusHydration.start', {
-        reason,
-        visibleSegmentCount: visibleSegments.length,
-    });
+    if (globalThis.__manabiTimelineTraceAll === true) {
+        readerLoadLog('viewer.visibleStatusHydration.start', {
+            reason,
+            visibleSegmentCount: visibleSegments.length,
+        });
+    }
     let coverage = null;
     try {
         coverage = hydrator(visibleSegments, reason) ?? null;
-        readerLoadLog('viewer.visibleStatusHydration.finish', {
-            reason,
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            visibleSegmentCount: visibleSegments.length,
-            skipped: coverage?.skipped ?? null,
-            mutatedCount: coverage?.mutatedCount ?? null,
-            wouldMutateCount: coverage?.wouldMutateCount ?? null,
-        });
+        const elapsedMs = performanceNowMs() - startedAt;
+        if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50 || (coverage?.mutatedCount ?? 0) > 0) {
+            readerLoadLog('viewer.visibleStatusHydration.finish', {
+                reason,
+                elapsedMs: safeRound(elapsedMs, 1),
+                visibleSegmentCount: visibleSegments.length,
+                skipped: coverage?.skipped ?? null,
+                mutatedCount: coverage?.mutatedCount ?? null,
+                wouldMutateCount: coverage?.wouldMutateCount ?? null,
+            });
+        }
     } catch (error) {
         readerLoadLog('viewer.visibleStatusHydration.error', {
             reason,
@@ -5095,7 +5212,7 @@ const getCSSForBookContent = ({
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
     }
-    body.reader-vertical-writing:not([data-is-ebook="true"]) mnb-seg:not(:has(rt)) {
+    body.reader-vertical-writing:not([data-is-ebook="true"]) mnb-seg.mnb-no-ruby {
         /*
            In vertical WebKit layout, line-height fixes the paragraph grid, but
            an inline no-ruby segment's own rect still only covers the base glyph.
@@ -5107,20 +5224,20 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known),
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known),
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
@@ -5130,35 +5247,35 @@ const getCSSForBookContent = ({
             --word-tracking-learning-highlight-nav-conditional 350ms ease,
             --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
         transition:
             --word-tracking-unknown-highlight-nav-conditional 350ms ease,
             --word-tracking-familiar-highlight-nav-conditional 350ms ease,
             --word-tracking-learning-highlight-nav-conditional 350ms ease,
             --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg.mnb-no-ruby:not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected {
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg.mnb-no-ruby.mnb-selected {
         background: transparent !important;
         background-color: transparent !important;
         background-image: none !important;
     }
-    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected > mnb-sur {
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg.mnb-no-ruby.mnb-selected > mnb-sur {
         background: var(--theme-selection-color) !important;
         background-color: var(--theme-selection-color) !important;
         background-image: none !important;
@@ -5987,6 +6104,15 @@ class Reader {
     #invalidateVisiblePageSegmentSnapshot(sourceReason = 'unspecified') {
         this.visiblePageCollectionGeneration += 1;
         this.visiblePageSegmentSnapshot = null;
+        const contents = this.view?.renderer?.getContents?.() || [];
+        for (const content of contents) {
+            const doc = content?.doc ?? content?.document ?? null;
+            if (!isDocumentLike(doc)) { continue; }
+            doc.__manabiVisibleSegmentCollectionCache = null;
+            if (doc.defaultView) {
+                doc.defaultView.__manabiVisibleSegmentCollectionGeneration = this.visiblePageCollectionGeneration;
+            }
+        }
         window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
             targets: [],
             reason: 'visible-page-segment-snapshot.invalidated',
@@ -6270,10 +6396,18 @@ class Reader {
                 optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
             };
         }
-        const segmentIdentifiers = Array.from(doc.querySelectorAll('mnb-seg'))
+        const snapshotVisibleSegments = this.visiblePageSegmentSnapshot?.doc === doc
+            ? (this.visiblePageSegmentSnapshot?.result?.visibleSegments ?? [])
+            : [];
+        const segmentNodes = snapshotVisibleSegments.length > 0
+            ? snapshotVisibleSegments
+                .map((item) => item?.node ?? null)
+                .filter((segmentNode) => segmentNode?.tagName?.toLowerCase?.() === 'mnb-seg')
+            : Array.from(doc.querySelectorAll('mnb-seg'));
+        const segmentIdentifiers = segmentNodes
             .map((segmentNode) => segmentIdentifierForNode(segmentNode))
             .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
-        const segmentIdentifierAliasSets = Array.from(doc.querySelectorAll('mnb-seg'))
+        const segmentIdentifierAliasSets = segmentNodes
             .map((segmentNode) => ({
                 aliases: segmentIdentifierAliasesForNode(segmentNode),
                 sentenceIdentifier: sentenceIdentifierForNode(segmentNode.closest?.('mnb-sen')),
@@ -6323,6 +6457,7 @@ class Reader {
             readSegmentCount: segmentIdentifiers.length - unreadSegmentCount,
             unreadSegmentCount,
             optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
+            segmentSource: snapshotVisibleSegments.length > 0 ? 'visible-snapshot' : 'document-scan',
         };
     }
     buildMarkAllSectionsAsReadPayload() {
@@ -6852,6 +6987,9 @@ class Reader {
         finishInitialCritical = true,
     } = {}) {
         const collectionStartedAt = performanceNowMs();
+        if (doc?.defaultView) {
+            doc.defaultView.__manabiVisibleSegmentCollectionGeneration = this.visiblePageCollectionGeneration;
+        }
         const snapshot = this.visiblePageSegmentSnapshot;
         if (snapshot
             && snapshot.generation === this.visiblePageCollectionGeneration
@@ -6864,7 +7002,7 @@ class Reader {
                 includeClientRects,
                 snapshotIncludesClientRects: snapshot.includeClientRects,
                 visibleSegmentCount: snapshot.result?.visibleSegments?.length ?? 0,
-            }, 0);
+            }, 50);
             if (postLookupTargets && postIfCached) {
                 postNativeLookupHitTargetsForVisibleSegments(doc, snapshot.result, reason);
             }
@@ -6876,7 +7014,7 @@ class Reader {
             } else {
                 snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:cached`);
             }
-            if (hydrateStatuses) {
+            if (hydrateStatuses && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
                 hydrateVisibleTrackingStatusesForVisibleSegments(doc, snapshot.result, `${reason}:cached`);
             }
             if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
@@ -6907,11 +7045,11 @@ class Reader {
             visibleSegmentCount: result?.visibleSegments?.length ?? 0,
             totalSegmentCount: result?.totalSegmentCount ?? 0,
             source: result?.segmentCandidateSource ?? null,
-        }, 0);
+        }, 50);
         if (postLookupTargets) {
             postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
         }
-        if (hydrateStatuses) {
+        if (hydrateStatuses && (result?.visibleSegments?.length ?? 0) > 0) {
             hydrateVisibleTrackingStatusesForVisibleSegments(doc, result, reason);
         }
         if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
@@ -6933,10 +7071,12 @@ class Reader {
             this.nativeLookupHitTargetRefreshHandle = null;
         }
         const scheduledAt = performanceNowMs();
-        readerLoadLog('viewer.nativeLookup.settle.schedule', {
-            reason,
-            explicitDoc: isDocumentLike(explicitDoc),
-        });
+        if (globalThis.__manabiTimelineTraceAll === true) {
+            readerLoadLog('viewer.nativeLookup.settle.schedule', {
+                reason,
+                explicitDoc: isDocumentLike(explicitDoc),
+            });
+        }
         this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
             const startedAt = performanceNowMs();
             this.nativeLookupHitTargetRefreshHandle = null;
@@ -6951,12 +7091,15 @@ class Reader {
                 const visibleRange = this.#visibleRangeForDocument(doc);
                 this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
             }
-            readerLoadLog('viewer.nativeLookup.settle.finish', {
-                reason,
-                scheduledDelayMs: safeRound(startedAt - scheduledAt, 1),
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                docCount: docs.length,
-            });
+            const elapsedMs = performanceNowMs() - startedAt;
+            if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
+                readerLoadLog('viewer.nativeLookup.settle.finish', {
+                    reason,
+                    scheduledDelayMs: safeRound(startedAt - scheduledAt, 1),
+                    elapsedMs: safeRound(elapsedMs, 1),
+                    docCount: docs.length,
+                });
+            }
         });
     }
     #shouldDeferNativeLookupHitTargetRefresh(reason = 'unspecified') {
@@ -7790,9 +7933,17 @@ class Reader {
     }
 
     async #runPostInitialOpenWork(book) {
-        Promise.resolve(book.getCover?.())?.then(blob => {
-            blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
-        })
+        this.waitForInitialDisplaySettled('postInitialOpenWork.cover')
+            .catch(() => null)
+            .then(() => Promise.resolve(book.getCover?.()))
+            .then(blob => {
+                blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
+            })
+            .catch(error => {
+                readerLoadLog('viewer.coverLoad.error', {
+                    error: error?.message || String(error),
+                });
+            });
 
         const toc = book.toc
         if (toc && !this.#tocView) {
@@ -9306,6 +9457,12 @@ class CacheWarmer {
                 return
             }
             if (canUseNativeCacheWarmerPrewarm()) {
+                const busyState = cacheWarmerForegroundBusyState()
+                if (busyState.busy) {
+                    path = `busy:${busyState.reason || 'foreground'}`
+                    scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `loadNextSection.${path}`)
+                    return
+                }
                 path = 'native'
                 await this.#prewarmNativeSection(targetIndex, settledSectionHrefs, minimumIndex)
                 return
@@ -9561,17 +9718,33 @@ window.setEbookViewerLayout = (layoutMode) => {
 
 window.setEbookViewerWritingDirection = (writingDirection) => {
     invalidateCacheWarmerWork('writing-direction-change')
+    const normalizedWritingDirection = String(writingDirection || '').toLowerCase();
+    globalThis.__manabiEbookViewerWritingDirection = normalizedWritingDirection;
     const renderer = globalThis.reader?.view?.renderer ?? null;
     const contents = renderer?.getContents?.() || [];
     const applyWritingDirectionToDocument = (doc) => {
         const body = doc?.body;
         if (!body) return false;
-        if (writingDirection === 'vertical') {
+        if (normalizedWritingDirection === 'vertical') {
             body.dataset.mnbWritingDirection = 'vertical';
-        } else if (writingDirection === 'horizontal') {
+            body.dataset.mnbFoliateWritingDirection = 'vertical';
+            body.dataset.mnbForcedWritingDirection = 'vertical';
+            body.classList?.add?.('reader-vertical-writing');
+            doc.documentElement?.classList?.add?.('vrtl');
+        } else if (normalizedWritingDirection === 'horizontal') {
             body.dataset.mnbWritingDirection = 'horizontal';
+            body.dataset.mnbFoliateWritingDirection = 'horizontal';
+            body.dataset.mnbForcedWritingDirection = 'horizontal';
+            body.classList?.remove?.('reader-vertical-writing');
+            doc.documentElement?.classList?.remove?.('vrtl');
         } else {
+            if (body.dataset.mnbForcedWritingDirection) {
+                body.classList?.remove?.('reader-vertical-writing');
+                doc.documentElement?.classList?.remove?.('vrtl');
+            }
+            body.removeAttribute('data-mnb-forced-writing-direction');
             body.removeAttribute('data-mnb-writing-direction');
+            body.removeAttribute('data-mnb-foliate-writing-direction');
         }
         try {
             doc.defaultView?.manabiApplyVerticalWritingCheck?.();
