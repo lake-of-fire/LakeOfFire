@@ -268,7 +268,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
     func process(
         key: EBookProcessTextRequestKey,
         operation: @Sendable () async throws -> String
-    ) async throws -> (responseText: String, didCoalesce: Bool) {
+    ) async throws -> (responseText: String, didCoalesce: Bool, cacheOutcome: String) {
         let startedAt = Date()
         ebookLoadLog("processText.deduper.enter", [
             "location": key.location,
@@ -283,7 +283,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
                 "fingerprint": key.textFingerprint,
                 "responseBytes": completedResponse.utf8.count
             ])
-            return (completedResponse, true)
+            return (completedResponse, true, "completed-hit")
         }
         if inFlightWaitersByKey[key] != nil {
             let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
@@ -307,7 +307,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
             ])
             if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: joinElapsedMs, didCoalesce: true) {
             }
-            return (try resolve(response), true)
+            return (try resolve(response), true, "coalesced")
         }
 
         inFlightWaitersByKey[key] = []
@@ -361,7 +361,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
         }
         let resolvedResponse = try resolve(response)
         rememberCompletedResponse(resolvedResponse, for: key)
-        return (resolvedResponse, false)
+        return (resolvedResponse, false, "processed")
     }
 }
 
@@ -594,7 +594,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
-    private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
+    private static let sharedProcessTextRequestDeduper = EBookProcessTextRequestDeduper()
+    private let processTextRequestDeduper = EbookURLSchemeHandler.sharedProcessTextRequestDeduper
     private var hasLoggedValidatedMainDocumentURL = false
     
     enum CustomSchemeHandlerError: Error {
@@ -703,8 +704,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }
                         let respText: String
                         let didCoalesce: Bool
+                        let processTextCacheOutcome: String
                         do {
-                            (respText, didCoalesce) = try await self.processTextRequestDeduper.process(
+                            (respText, didCoalesce, processTextCacheOutcome) = try await self.processTextRequestDeduper.process(
                                 key: processRequestKey
                             ) {
                                 let processingActor = EBookProcessingActor(
@@ -762,12 +764,22 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 "location": replacedTextLocation,
                                 "isCacheWarmer": isCacheWarmer,
                                 "didCoalesce": didCoalesce,
+                                "cacheOutcome": processTextCacheOutcome,
                                 "responseBytes": respData.count,
                                 "responseReadyElapsedMs": responseReadyElapsedMs,
                                 "responseEncodeElapsedMs": responseDataEncodeElapsedMs
                             ])
                             let httpResponseBuildStartedAt = Date()
                             let resp = HTTPURLResponse(
+                                url: url,
+                                statusCode: 200,
+                                httpVersion: nil,
+                                headerFields: [
+                                    "Content-Type": "text/plain; charset=utf-8",
+                                    "Content-Length": "\(respData.count)",
+                                    "X-Manabi-Process-Cache": processTextCacheOutcome
+                                ]
+                            ) ?? HTTPURLResponse(
                                 url: url,
                                 mimeType: nil,
                                 expectedContentLength: respData.count,

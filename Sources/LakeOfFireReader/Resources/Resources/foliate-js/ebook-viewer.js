@@ -487,6 +487,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             html = '<html><body></body></html>';
         }
         const responseTextLength = html.length;
+        const nativeCacheOutcome = response.headers?.get?.('x-manabi-process-cache') || null;
         const processTextElapsedMs = performanceNowMs() - replaceTextStartedAt;
         const slowProcessTextLogThresholdMs = typeof MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS === 'number'
             ? MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS
@@ -498,6 +499,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 elapsedMs: processTextElapsedMs,
                 requestBytes: text?.length ?? 0,
                 responseBytes: responseTextLength,
+                nativeCache: nativeCacheOutcome,
             });
         }
         manabiTimelineMeasure('processText', replaceTextStartedAt, {
@@ -506,6 +508,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             cacheWarmer: !!isCacheWarmer,
             requestBytes: text?.length ?? 0,
             responseBytes: responseTextLength,
+            nativeCache: nativeCacheOutcome,
         });
         rememberReplaceTextResult(cacheKey, html);
         return html
@@ -8852,6 +8855,7 @@ class Reader {
             const blankPointerMoveThreshold = 12;
             let pendingBlankPointerTap = null;
             let lastPostedBlankTouchTap = null;
+            let lastOpenedSegmentTouchTap = null;
             const syntheticMouseAfterTouchSuppressionMs = 900;
             const syntheticMouseAfterTouchDistanceThreshold = 24;
             const touchPointForBlankPointer = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
@@ -8882,16 +8886,78 @@ class Reader {
                 const dy = point.y - lastPostedBlankTouchTap.y;
                 return (dx * dx + dy * dy) <= (syntheticMouseAfterTouchDistanceThreshold * syntheticMouseAfterTouchDistanceThreshold);
             };
+            const shouldSuppressSyntheticMouseSegmentTap = (event, now) => {
+                if (event.type !== 'mousedown' || !lastOpenedSegmentTouchTap) {
+                    return false;
+                }
+                const ageMs = now - lastOpenedSegmentTouchTap.postedAtMs;
+                if (ageMs < 0 || ageMs > syntheticMouseAfterTouchSuppressionMs) {
+                    return false;
+                }
+                const point = blankPointerPoint(event);
+                if (!point || point.x === null || point.y === null) {
+                    return true;
+                }
+                const dx = point.x - lastOpenedSegmentTouchTap.x;
+                const dy = point.y - lastOpenedSegmentTouchTap.y;
+                return (dx * dx + dy * dy) <= (syntheticMouseAfterTouchDistanceThreshold * syntheticMouseAfterTouchDistanceThreshold);
+            };
             const blankPointerMovedPastTapThreshold = (event, pending) => {
                 const point = touchPointForBlankPointer(event);
                 const dx = (point?.screenX ?? point?.clientX ?? pending.startX) - pending.startX;
                 const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
                 return (dx * dx + dy * dy) > (blankPointerMoveThreshold * blankPointerMoveThreshold);
             };
+            const segmentTargetForBlankPointerEvent = event => {
+                const target = event.target;
+                const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
+                return targetElement?.closest?.('mnb-seg, .mnb-seg') ?? null;
+            };
+            const openSegmentLookupFromContentDocumentTap = (event, segmentTarget) => {
+                if (!segmentTarget) {
+                    return false;
+                }
+                const now = Date.now();
+                if (shouldSuppressSyntheticMouseSegmentTap(event, now)) {
+                    return true;
+                }
+                const point = touchPointForBlankPointer(event);
+                const clientX = point?.clientX ?? null;
+                const clientY = point?.clientY ?? null;
+                const openLookupFromSegmentTap = doc.defaultView?.manabi_openLookupFromSegmentTap;
+                if (typeof openLookupFromSegmentTap !== 'function') {
+                    return false;
+                }
+                const opened = openLookupFromSegmentTap(segmentTarget, {
+                    type: 'ebook-content-segment-tap',
+                    clientX,
+                    clientY,
+                    preventDefault() {},
+                }) !== false;
+                if (!opened) {
+                    return false;
+                }
+                if (event.type === 'touchend') {
+                    const screenPoint = blankPointerPoint(event);
+                    lastOpenedSegmentTouchTap = screenPoint && screenPoint.x !== null && screenPoint.y !== null
+                        ? {
+                            postedAtMs: now,
+                            x: screenPoint.x,
+                            y: screenPoint.y,
+                        }
+                        : null;
+                }
+                return true;
+            };
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
                 const target = event.target;
-                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
+                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-seg, mnb-sen, mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const segmentTarget = segmentTargetForBlankPointerEvent(event);
                 const now = Date.now();
+                if (openSegmentLookupFromContentDocumentTap(event, segmentTarget)) {
+                    return;
+                }
                 if (shouldSuppressSyntheticMouseBlankTap(event, now)) {
                     return;
                 }
@@ -8929,8 +8995,9 @@ class Reader {
             };
             const handleBlankPointerTouchStart = (event) => {
                 const target = event.target;
-                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
-                if (excludedTarget) {
+                const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
+                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-seg, mnb-sen, mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                if (excludedTarget && !segmentTargetForBlankPointerEvent(event)) {
                     clearPendingBlankPointerTap();
                     return;
                 }
@@ -9728,12 +9795,14 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
         if (normalizedWritingDirection === 'vertical') {
             body.dataset.mnbWritingDirection = 'vertical';
             body.dataset.mnbFoliateWritingDirection = 'vertical';
+            body.dataset.mnbFoliateWritingMode = 'vertical-rl';
             body.dataset.mnbForcedWritingDirection = 'vertical';
             body.classList?.add?.('reader-vertical-writing');
             doc.documentElement?.classList?.add?.('vrtl');
         } else if (normalizedWritingDirection === 'horizontal') {
             body.dataset.mnbWritingDirection = 'horizontal';
             body.dataset.mnbFoliateWritingDirection = 'horizontal';
+            body.dataset.mnbFoliateWritingMode = 'horizontal-tb';
             body.dataset.mnbForcedWritingDirection = 'horizontal';
             body.classList?.remove?.('reader-vertical-writing');
             doc.documentElement?.classList?.remove?.('vrtl');
@@ -9745,6 +9814,7 @@ window.setEbookViewerWritingDirection = (writingDirection) => {
             body.removeAttribute('data-mnb-forced-writing-direction');
             body.removeAttribute('data-mnb-writing-direction');
             body.removeAttribute('data-mnb-foliate-writing-direction');
+            body.removeAttribute('data-mnb-foliate-writing-mode');
         }
         try {
             doc.defaultView?.manabiApplyVerticalWritingCheck?.();

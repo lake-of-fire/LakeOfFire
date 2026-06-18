@@ -361,6 +361,7 @@ function getDirectionFromDocument(doc) {
 
     const explicitDirection = body.getAttribute('data-mnb-writing-direction')?.trim?.().toLowerCase?.() ?? null;
     const foliateDirection = body.getAttribute('data-mnb-foliate-writing-direction')?.trim?.().toLowerCase?.() ?? null;
+    const foliateWritingMode = body.getAttribute('data-mnb-foliate-writing-mode')?.trim?.().toLowerCase?.() ?? null;
     const styleText = [
         body.getAttribute('style') ?? '',
         documentElement.getAttribute('style') ?? '',
@@ -368,9 +369,9 @@ function getDirectionFromDocument(doc) {
     ].join(';');
     const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
     const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
-    let writingMode = writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    let writingMode = foliateWritingMode || writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
     let direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
-    let source = writingMode ? 'inline' : null;
+    let source = foliateWritingMode ? 'attribute-mode' : (writingMode ? 'inline' : null);
     if (!writingMode && (
         explicitDirection === 'vertical'
         || foliateDirection === 'vertical'
@@ -745,7 +746,11 @@ class View {
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
 
+        const foliateWritingMode = this.#vertical
+            ? (this.#verticalRTL ? 'vertical-rl' : 'vertical-lr')
+            : 'horizontal-tb'
         doc.body.dataset.mnbFoliateWritingDirection = this.#vertical ? 'vertical' : 'horizontal'
+        doc.body.dataset.mnbFoliateWritingMode = foliateWritingMode
         doc.body.classList.toggle('reader-vertical-writing', this.#vertical)
 
         const renderSignature = JSON.stringify({
