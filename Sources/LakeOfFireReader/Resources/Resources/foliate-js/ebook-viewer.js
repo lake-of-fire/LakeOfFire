@@ -9076,6 +9076,19 @@ class Reader {
                 if (openSegmentLookupFromContentDocumentTap(event, segmentTarget)) {
                     return;
                 }
+                const point = touchPointForBlankPointer(event);
+                const nativeHit = Number.isFinite(point?.clientX) && Number.isFinite(point?.clientY)
+                    ? doc.defaultView?.manabi_nativeLookupElementAtClientPointPayload?.(point.clientX, point.clientY)
+                    : null;
+                if (nativeHit?.elementId) {
+                    ebookLoadLog('nativeLookup.blankTap.suppressed', {
+                        source,
+                        eventType: event.type,
+                        elementID: nativeHit.elementId,
+                        hitKind: nativeHit.hitKind ?? null,
+                    });
+                    return;
+                }
                 if (shouldSuppressSyntheticMouseBlankTap(event, now)) {
                     return;
                 }
@@ -9089,6 +9102,12 @@ class Reader {
                         globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                         || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                         || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
+                    ebookLoadLog('nativeLookup.blankTap.postNoElement', {
+                        source,
+                        eventType: event.type,
+                        excludedTarget: excludedTarget?.tagName ?? null,
+                        segmentTarget: segmentTarget?.id ?? null,
+                    });
                     globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
                     if (event.type === 'touchend') {
                         const point = blankPointerPoint(event);
@@ -9592,6 +9611,7 @@ class CacheWarmer {
             minimumIndex,
             activeSectionIndex: activeForegroundSectionIndex(),
             requiredPrecedingTargetIndex: cacheWarmerPrecedingTargetIndex(),
+            generation: cacheWarmerWorkGeneration(),
         });
     }
     async #openFirstUnsettledSection() {

@@ -776,6 +776,8 @@ public final class ReaderModeLoadingState {
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
+    @Published public var ebookProcessedTextCacheReader: ((URL, String, String) async throws -> String?)? = nil
+    @Published public var ebookProcessedTextCacheWriter: ((URL, String, String, String) async -> Void)? = nil
     @Published public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
     @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil

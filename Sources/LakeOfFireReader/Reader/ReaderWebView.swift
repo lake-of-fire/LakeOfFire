@@ -257,6 +257,8 @@ public struct ReaderWebView: View {
             navigator.shouldLoadFallbackOnAttach = false
             navigator.attachFallbackDelayNanoseconds = 700_000_000
             ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
+            ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
+            ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
             ebookURLSchemeHandler.processHTMLBytes = readerModeViewModel.processHTMLBytes

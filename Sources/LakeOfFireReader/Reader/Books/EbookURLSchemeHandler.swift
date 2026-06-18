@@ -397,6 +397,8 @@ public struct EBookNativeSectionPrewarmResult: Equatable {
 
 public actor EBookProcessingActor {
     private let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    private let ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
+    private let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     private let ebookTextProcessor: EbookTextProcessor?
     private let processReadabilityContent: EbookReadabilityContentProcessor?
     private let processHTMLBytes: EbookHTMLBytesProcessor?
@@ -404,12 +406,16 @@ public actor EBookProcessingActor {
     
     public init(
         ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
+        ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil,
+        ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
         processReadabilityContent: EbookReadabilityContentProcessor?,
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
+        self.ebookProcessedTextCacheReader = ebookProcessedTextCacheReader
+        self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
         self.processHTMLBytes = processHTMLBytes
@@ -451,6 +457,18 @@ public actor EBookProcessingActor {
         ])
         if ebookReplaceTextVerboseLoggingEnabled {
         }
+        if !isCacheWarmer, let ebookProcessedTextCacheReader {
+            let cacheLookupStartedAt = Date()
+            if let cachedResult = try await ebookProcessedTextCacheReader(contentURL, location, text) {
+                ebookLoadLog("processText.actor.finalCache.hit", [
+                    "location": location,
+                    "contentURL": contentURL.absoluteString,
+                    "responseChars": cachedResult.count,
+                    "elapsedMs": Int(Date().timeIntervalSince(cacheLookupStartedAt) * 1000)
+                ])
+                return cachedResult
+            }
+        }
         guard let ebookTextProcessor else {
             ebookLoadLog("processText.actor.noProcessor", [
                 "location": location,
@@ -468,6 +486,11 @@ public actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
+        if !isCacheWarmer, let ebookProcessedTextCacheWriter {
+            Task(priority: .utility) {
+                await ebookProcessedTextCacheWriter(contentURL, location, text, result)
+            }
+        }
         let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
         ebookLoadLog("processText.actor.finish", [
             "location": location,
@@ -571,6 +594,8 @@ public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [U
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 public typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
 public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
+public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String) async throws -> String?
+public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String) async -> Void
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 private func ebookReaderLoadDebugLog(_ message: String) {
@@ -592,6 +617,8 @@ private func ebookReaderLoadDebugLog(_ message: String) {
 
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    nonisolated(unsafe) var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
+    nonisolated(unsafe) var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
     public var readerFileManager: ReaderFileManager?
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
@@ -680,6 +707,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
+        let ebookProcessedTextCacheReader = self.ebookProcessedTextCacheReader
+        let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
         let processReadabilityContent = self.processReadabilityContent
         let processHTMLBytes = self.processHTMLBytes
@@ -719,6 +748,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             ) {
                                 let processingActor = EBookProcessingActor(
                                     ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
+                                    ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
+                                    ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                     ebookTextProcessor: ebookTextProcessor,
                                     processReadabilityContent: processReadabilityContent,
                                     processHTMLBytes: processHTMLBytes,

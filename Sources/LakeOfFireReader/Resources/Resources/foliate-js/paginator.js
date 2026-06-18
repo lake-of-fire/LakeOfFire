@@ -1033,7 +1033,6 @@ class View {
     }
     async expand() {
         const expandStartedAt = manabiPerfNow();
-        await this.onBeforeExpand()
         //        console.log("expand...")
         return new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
@@ -1066,6 +1065,7 @@ class View {
                         resolve()
                         return
                     }
+                    await this.onBeforeExpand()
                     if (this.#column) {
                         const contentRect = this.#contentRange.getBoundingClientRect()
                         // offset caused by column break at the start of the page
