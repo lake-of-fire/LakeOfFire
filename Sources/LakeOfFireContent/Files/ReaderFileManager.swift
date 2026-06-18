@@ -124,6 +124,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         "manabi-dictionary-assets",
         "manabi-fonts",
     ]
+    private static let transientRootPrefixes: Set<String> = [
+        "ReaderFileDeletion.",
+    ]
     
     public init() { }
 
@@ -550,18 +553,31 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     Self.logContentFileDecision(
                         stage: "discovery.skipInternalRoot",
                         path: tryRelativePath.path,
-                        reason: "internalStorageRoot"
+                        reason: "managedRoot"
                     )
                     continue
                 }
                 let lastPathComponent = url.lastPathComponent.lowercased()
                 let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
-                let isDirectory = try await Self.isDiscoveredDirectory(
-                    url,
-                    absoluteFileURL: absoluteFileURL,
-                    drive: drive,
-                    relativePath: tryRelativePath
-                )
+                let isDirectory: Bool
+                do {
+                    isDirectory = try await Self.isDiscoveredDirectory(
+                        url,
+                        absoluteFileURL: absoluteFileURL,
+                        drive: drive,
+                        relativePath: tryRelativePath
+                    )
+                } catch {
+                    if Self.isMissingFileError(error) {
+                        Self.logContentFileDecision(
+                            stage: "discovery.skipMissing",
+                            path: tryRelativePath.path,
+                            reason: "disappearedDuringRefresh"
+                        )
+                        continue
+                    }
+                    throw error
+                }
                 if !url.isFilePackage(),
                    !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
                    isDirectory {
@@ -601,6 +617,14 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 }
             }
         } catch {
+            if Self.isMissingFileError(error) {
+                Self.logContentFileDecision(
+                    stage: "discovery.skipMissingDirectory",
+                    path: relativePath?.path ?? "",
+                    reason: "disappearedDuringRefresh"
+                )
+                return files
+            }
             if !(error is CancellationError) {
                 debugPrint("refreshFilesMetadata error:", error)
             }
@@ -1082,6 +1106,23 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return false
         }
         return internalStorageRootPrefixes.contains(rootComponent)
+            || transientRootPrefixes.contains(where: { rootComponent.hasPrefix($0) })
+    }
+
+    private static func isMissingFileError(_ error: any Swift.Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain && nsError.code == ENOENT {
+            return true
+        }
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlyingError.domain == NSPOSIXErrorDomain,
+           underlyingError.code == ENOENT {
+            return true
+        }
+        return false
     }
 
     public static func isInternalStorageReaderFileURL(_ fileURL: URL) -> Bool {
