@@ -112,6 +112,14 @@ fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any?]
        elapsedMs >= 5_000 {
         return true
     }
+    if (event == "scheme.deliver.processText.begin"
+        || event == "scheme.didReceiveResponse.processText"
+        || event == "scheme.didReceiveData.processText"
+        || event == "scheme.finish.processText"),
+       let elapsedMs = (payload["elapsedMs"] ?? nil) as? Int,
+       elapsedMs >= 1_000 {
+        return true
+    }
     if (event == "entry.responseReady"
         || event == "scheme.finish.entry"
         || event == "entries.responseReady"
@@ -777,7 +785,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 headerFields: [
                                     "Content-Type": "text/plain; charset=utf-8",
                                     "Content-Length": "\(respData.count)",
-                                    "X-Manabi-Process-Cache": processTextCacheOutcome
+                                    "X-Manabi-Process-Cache": processTextCacheOutcome,
+                                    "X-Manabi-Response-Ready-Elapsed-Ms": "\(responseReadyElapsedMs)",
+                                    "X-Manabi-Response-Encode-Elapsed-Ms": "\(responseDataEncodeElapsedMs)",
+                                    "X-Manabi-Did-Coalesce": didCoalesce ? "true" : "false"
                                 ]
                             ) ?? HTTPURLResponse(
                                 url: url,
@@ -790,11 +801,35 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                    let deliveryStartedAt = Date()
+                                    ebookLoadLog("scheme.deliver.processText.begin", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "bytes": respData.count,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                    ])
                                     //                                    if !isCacheWarmer {
                                     //                                        print("# ebook proc text endpoint", replacedTextLocation, "receive...", respText)
                                     //                                    }
                                     urlSchemeTask.didReceive(resp)
+                                    ebookLoadLog("scheme.didReceiveResponse.processText", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "bytes": respData.count,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                        "deliveryElapsedMs": Int(Date().timeIntervalSince(deliveryStartedAt) * 1000)
+                                    ])
                                     urlSchemeTask.didReceive(respData)
+                                    ebookLoadLog("scheme.didReceiveData.processText", [
+                                        "requestID": requestID,
+                                        "location": replacedTextLocation,
+                                        "isCacheWarmer": isCacheWarmer,
+                                        "bytes": respData.count,
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                        "deliveryElapsedMs": Int(Date().timeIntervalSince(deliveryStartedAt) * 1000)
+                                    ])
                                     urlSchemeTask.didFinish()
                                     self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                                     ebookLoadLog("scheme.finish.processText", [
@@ -803,7 +838,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                         "isCacheWarmer": isCacheWarmer,
                                         "bytes": respData.count,
                                         "active": true,
-                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
+                                        "elapsedMs": Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000),
+                                        "deliveryElapsedMs": Int(Date().timeIntervalSince(deliveryStartedAt) * 1000)
                                     ])
                                 } else {
                                     ebookLoadLog("scheme.skipFinish.processText", [

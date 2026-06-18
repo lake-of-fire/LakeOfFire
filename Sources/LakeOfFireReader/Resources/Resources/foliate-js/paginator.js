@@ -2,6 +2,7 @@
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
+const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
     ? {
         gapPct: 5,
@@ -369,7 +370,7 @@ function getDirectionFromDocument(doc) {
     ].join(';');
     const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
     const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
-    let writingMode = foliateWritingMode || writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    let writingMode = foliateWritingMode || (writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null);
     let direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
     let source = foliateWritingMode ? 'attribute-mode' : (writingMode ? 'inline' : null);
     if (!writingMode && (
@@ -507,6 +508,8 @@ class View {
     #lastRenderSignature = null
     #renderInFlightSignature = null
     #renderInFlightPromise = null
+    #lastExpandSignature = null
+    #lastExpandedMetrics = null
     layout = {}
     #isCacheWarmer
     constructor({
@@ -568,6 +571,11 @@ class View {
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+        this.#lastRenderSignature = null
+        this.#renderInFlightSignature = null
+        this.#renderInFlightPromise = null
+        this.#lastExpandSignature = null
+        this.#lastExpandedMetrics = null
         return new Promise((resolve, reject) => {
             if (this.#isCacheWarmer) {
                 console.log("Don't create View for cache warmers")
@@ -1040,6 +1048,24 @@ class View {
                     const side = this.#vertical ? 'height' : 'width'
                     const otherSide = side === 'width' ? 'height' : 'width'
                     let expandedMetrics = null
+                    const expandSignature = JSON.stringify({
+                        column: !!this.#column,
+                        vertical: !!this.#vertical,
+                        rtl: !!this.#rtl,
+                        size: manabiRound(Number(this.#size) || 0, 2),
+                        render: this.#lastRenderSignature,
+                        href: doc?.location?.href ?? null,
+                    })
+                    if (this.#lastExpandSignature === expandSignature && this.#lastExpandedMetrics) {
+                        await this.onExpand(this.#lastExpandedMetrics)
+                        manabiTimelineMark('paginator.expand.skipSameSignature', {
+                            cacheWarmer: this.#isCacheWarmer,
+                            column: this.#column,
+                            vertical: this.#vertical,
+                        })
+                        resolve()
+                        return
+                    }
                     if (this.#column) {
                         const contentRect = this.#contentRange.getBoundingClientRect()
                         // offset caused by column break at the start of the page
@@ -1129,6 +1155,8 @@ class View {
                         }
                     }
                     //                console.log("expand... call onexpand")
+                    this.#lastExpandSignature = expandSignature
+                    this.#lastExpandedMetrics = expandedMetrics
                     await this.onExpand(expandedMetrics)
                     //                console.log("expand... call'd onexpand")
                     resolve()
@@ -2185,6 +2213,7 @@ export class Paginator extends HTMLElement {
             height,
             flow,
             vertical,
+            rtl,
             fontSize: typographyMetrics.fontSize,
             lineHeight: typographyMetrics.lineHeight,
             inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
@@ -2340,11 +2369,17 @@ export class Paginator extends HTMLElement {
             return
         }
         const { width, height } = await this.sizes()
+        const flow = this.getAttribute('flow')
+        const typographyMetrics = this.#typographyMetrics()
         const signature = this.#typographyRenderSignature({
             width,
             height,
+            flow,
             vertical: this.#vertical,
             rtl: this.#rtl,
+            fontSize: typographyMetrics.fontSize,
+            lineHeight: typographyMetrics.lineHeight,
+            inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
         })
         if (this.#lastTypographyRenderSignature === signature && this.#view.layout) {
             manabiTimelineMark('paginator.render.skipSameSignature', {
@@ -3035,15 +3070,16 @@ export class Paginator extends HTMLElement {
             }
             const pageCurrent = metrics?.page ?? null
             const pageTotal = metrics?.pages ?? null
-            const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
-            const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
-            const landedPastContent = frameRect && rootRect && frameRect.bottom <= rootRect.top + 1
-            if (
-                typeof pageCurrent === 'number'
-                && typeof pageTotal === 'number'
-                && pageTotal > 2
-                && (pageCurrent >= pageTotal - 1 || landedPastContent)
-            ) {
+            if (typeof pageCurrent !== 'number' || typeof pageTotal !== 'number' || pageTotal <= 2) {
+                return
+            }
+            let landedPastContent = false
+            if (pageCurrent < pageTotal - 1) {
+                const frameRect = this.#view?.element?.querySelector?.('iframe')?.getBoundingClientRect?.() ?? null
+                const rootRect = this.#view?.document?.documentElement?.getBoundingClientRect?.() ?? null
+                landedPastContent = !!(frameRect && rootRect && frameRect.bottom <= rootRect.top + 1)
+            }
+            if (pageCurrent >= pageTotal - 1 || landedPastContent) {
                 const correctedPage = Math.max(1, pageTotal - 2)
                 await manabiRunPaginatorBoundary(
                     'paginator.display.correctPastContentPage.deferred',
@@ -3794,7 +3830,10 @@ export class Paginator extends HTMLElement {
                         else this.#releaseNeighborPrefetch(index, prefetchEntry)
                     }
                 }
-                this.#scheduleNeighborPrefetch('section-display')
+                this.#scheduleNeighborPrefetch(
+                    'section-display',
+                    MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS
+                )
             }
         } finally {
             if (shouldLogReaderLoad) {

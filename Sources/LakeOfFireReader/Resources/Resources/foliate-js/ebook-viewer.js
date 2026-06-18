@@ -367,6 +367,7 @@ const CACHE_WARMER_FOREGROUND_LOOKUP_COOLDOWN_MS = 6000;
 const CACHE_WARMER_IDLE_RETRY_MS = 250;
 const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
 const CACHE_WARMER_MAX_SECTIONS_AHEAD = 2;
+const CACHE_WARMER_INITIAL_RESTORE_DELAY_MS = 2500;
 const replaceTextResultCache = new Map();
 const replaceTextInFlightCache = new Map();
 
@@ -394,13 +395,13 @@ const rememberReplaceTextResult = (key, value) => {
 };
 
 const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
-    const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
-    const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
+    const hasSentences = typeof html === 'string' && /<mnb-sen\b/i.test(html);
+    const hasSegments = typeof html === 'string' && /<mnb-seg\b/i.test(html);
     return injectBodyDatasetAttributes(html, {
         'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
         'data-mnb-source-href': href,
-        'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
-        'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
+        'data-mnb-has-sentences': hasSentences ? 'true' : null,
+        'data-mnb-has-segments': hasSegments ? 'true' : null,
     });
 };
 
@@ -462,6 +463,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (isCacheWarmer) {
         headers['X-Is-Cache-Warmer'] = 'true';
     }
+    const fetchStartedAt = performanceNowMs();
     const response = await fetch('ebook://ebook/process-text', {
         method: "POST",
         mode: "cors",
@@ -478,16 +480,30 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         });
         throw error;
     })
+    const responseHeadersElapsedMs = performanceNowMs() - fetchStartedAt;
+    if (!isCacheWarmer) {
+        manabiTimelineMeasure('processText.fetchHeaders', fetchStartedAt, {
+            requestID: processTextRequestID,
+            href,
+            cacheWarmer: false,
+            status: response?.status ?? null,
+        }, 50);
+    }
     try {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
+        const textStartedAt = performanceNowMs();
         let html = await response.text()
+        const responseTextElapsedMs = performanceNowMs() - textStartedAt;
         if (isCacheWarmer && html.length === 0) {
             html = '<html><body></body></html>';
         }
         const responseTextLength = html.length;
         const nativeCacheOutcome = response.headers?.get?.('x-manabi-process-cache') || null;
+        const nativeResponseReadyElapsedMs = Number(response.headers?.get?.('x-manabi-response-ready-elapsed-ms'));
+        const nativeResponseEncodeElapsedMs = Number(response.headers?.get?.('x-manabi-response-encode-elapsed-ms'));
+        const nativeDidCoalesce = response.headers?.get?.('x-manabi-did-coalesce') || null;
         const processTextElapsedMs = performanceNowMs() - replaceTextStartedAt;
         const slowProcessTextLogThresholdMs = typeof MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS === 'number'
             ? MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS
@@ -500,7 +516,23 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
                 requestBytes: text?.length ?? 0,
                 responseBytes: responseTextLength,
                 nativeCache: nativeCacheOutcome,
+                fetchHeadersElapsedMs: responseHeadersElapsedMs,
+                responseTextElapsedMs,
+                nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
+                nativeResponseEncodeElapsedMs: Number.isFinite(nativeResponseEncodeElapsedMs) ? nativeResponseEncodeElapsedMs : null,
+                nativeDidCoalesce,
             });
+        }
+        if (!isCacheWarmer) {
+            manabiTimelineMeasure('processText.responseText', textStartedAt, {
+                requestID: processTextRequestID,
+                href,
+                responseBytes: responseTextLength,
+                nativeCache: nativeCacheOutcome,
+                nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
+                nativeResponseEncodeElapsedMs: Number.isFinite(nativeResponseEncodeElapsedMs) ? nativeResponseEncodeElapsedMs : null,
+                nativeDidCoalesce,
+            }, 50);
         }
         manabiTimelineMeasure('processText', replaceTextStartedAt, {
             requestID: processTextRequestID,
@@ -509,6 +541,11 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             requestBytes: text?.length ?? 0,
             responseBytes: responseTextLength,
             nativeCache: nativeCacheOutcome,
+            fetchHeadersElapsedMs: responseHeadersElapsedMs,
+            responseTextElapsedMs,
+            nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
+            nativeResponseEncodeElapsedMs: Number.isFinite(nativeResponseEncodeElapsedMs) ? nativeResponseEncodeElapsedMs : null,
+            nativeDidCoalesce,
         });
         rememberReplaceTextResult(cacheKey, html);
         return html
@@ -1792,7 +1829,15 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 0) => {
     }
     globalThis.__manabiDeferredCacheWarmerLogged = false;
     clearTimeout(globalThis.__manabiCacheWarmerOpenTimer);
-    const normalizedDelay = Math.max(0, Number(delayMs) || 0);
+    const reasonString = String(reason ?? '');
+    const shouldDelayAfterInitialDisplay =
+        reasonString.startsWith('loadEBook.initialRestoreHandled')
+        || reasonString.startsWith('load-last-position')
+        || reasonString.startsWith('loadLastPosition');
+    const normalizedDelay = Math.max(
+        shouldDelayAfterInitialDisplay ? CACHE_WARMER_INITIAL_RESTORE_DELAY_MS : 0,
+        Math.max(0, Number(delayMs) || 0)
+    );
     globalThis.__manabiCacheWarmerOpenTimer = setTimeout(async () => {
         globalThis.__manabiCacheWarmerOpenTimer = null;
         const busyState = cacheWarmerForegroundBusyState();
@@ -5462,6 +5507,9 @@ class Reader {
         }
     }
     #tocView
+    #bookForSidebarCover = null
+    #sidebarCoverLoadPromise = null
+    #sidebarCoverObjectURL = null
     #chevronFadeTimers = {
         l: null,
         r: null
@@ -5519,9 +5567,33 @@ class Reader {
         $('#side-bar').removeAttribute('hidden')
         $('#dimming-overlay').classList.add('show')
         $('#side-bar').classList.add('show')
+        void this.#ensureSidebarCoverLoaded()
         if (this.#tocView?.setCurrentHref && this.view?.renderer?.tocItem?.href) {
             this.#tocView.setCurrentHref(this.view.renderer.tocItem.href)
         }
+    }
+    #ensureSidebarCoverLoaded() {
+        if (this.#sidebarCoverLoadPromise) return this.#sidebarCoverLoadPromise
+        const coverElement = $('#side-bar-cover')
+        if (!coverElement) return Promise.resolve()
+        if (coverElement?.getAttribute?.('src')) return Promise.resolve()
+        const book = this.#bookForSidebarCover
+        if (typeof book?.getCover !== 'function') return Promise.resolve()
+        this.#sidebarCoverLoadPromise = Promise.resolve(book.getCover())
+            .then(blob => {
+                if (!blob) return
+                if (this.#sidebarCoverObjectURL) {
+                    URL.revokeObjectURL(this.#sidebarCoverObjectURL)
+                }
+                this.#sidebarCoverObjectURL = URL.createObjectURL(blob)
+                coverElement.src = this.#sidebarCoverObjectURL
+            })
+            .catch(error => {
+                readerLoadLog('viewer.coverLoad.error', {
+                    error: error?.message || String(error),
+                })
+            })
+        return this.#sidebarCoverLoadPromise
     }
     closeSideBar() {
         $('#dimming-overlay').classList.remove('show')
@@ -5768,14 +5840,30 @@ class Reader {
             return;
         }
         const hidden = !!shouldHide;
-        document.body?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
+        const mainBody = document.body;
+        if (mainBody?.classList?.contains?.('nav-hidden-due-to-scroll') !== hidden) {
+            mainBody?.classList?.toggle?.('nav-hidden-due-to-scroll', hidden);
+        }
+        const nextDatasetValue = hidden ? 'true' : 'false';
         const contents = this.view?.renderer?.getContents?.() || [];
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
-            body.classList.toggle('nav-hidden', hidden);
-            body.classList.toggle('nav-hidden-due-to-scroll', hidden);
-            body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+            const hasNavHidden = body.classList.contains('nav-hidden');
+            const hasScrollHidden = body.classList.contains('nav-hidden-due-to-scroll');
+            const hasDatasetValue = body.dataset.mnbNavigationHiddenDueToScroll === nextDatasetValue;
+            if (hasNavHidden === hidden && hasScrollHidden === hidden && hasDatasetValue) {
+                continue;
+            }
+            if (hasNavHidden !== hidden) {
+                body.classList.toggle('nav-hidden', hidden);
+            }
+            if (hasScrollHidden !== hidden) {
+                body.classList.toggle('nav-hidden-due-to-scroll', hidden);
+            }
+            if (!hasDatasetValue) {
+                body.dataset.mnbNavigationHiddenDueToScroll = nextDatasetValue;
+            }
         }
     }
     constructor() {
@@ -7919,6 +8007,13 @@ class Reader {
             'author': authorText,
             'url': window.top.location.href
         })
+        this.#bookForSidebarCover = book
+        this.#sidebarCoverLoadPromise = null
+        if (this.#sidebarCoverObjectURL) {
+            URL.revokeObjectURL(this.#sidebarCoverObjectURL)
+            this.#sidebarCoverObjectURL = null
+        }
+        $('#side-bar-cover')?.removeAttribute?.('src')
 
         await this.#displayInitialSection('reader.open', initialRestore);
         this.#schedulePostInitialOpenWork(book);
@@ -7936,18 +8031,6 @@ class Reader {
     }
 
     async #runPostInitialOpenWork(book) {
-        this.waitForInitialDisplaySettled('postInitialOpenWork.cover')
-            .catch(() => null)
-            .then(() => Promise.resolve(book.getCover?.()))
-            .then(blob => {
-                blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
-            })
-            .catch(error => {
-                readerLoadLog('viewer.coverLoad.error', {
-                    error: error?.message || String(error),
-                });
-            });
-
         const toc = book.toc
         if (toc && !this.#tocView) {
             this.#tocView = createTOCView(toc, async (href) => {
@@ -8854,6 +8937,7 @@ class Reader {
             doc.__manabiMay20BlankTapLoggingInstalled = true;
             const blankPointerMoveThreshold = 12;
             let pendingBlankPointerTap = null;
+            let lastBlankTouchEnd = null;
             let lastPostedBlankTouchTap = null;
             let lastOpenedSegmentTouchTap = null;
             const syntheticMouseAfterTouchSuppressionMs = 900;
@@ -8871,10 +8955,11 @@ class Reader {
                 pendingBlankPointerTap = null;
             };
             const shouldSuppressSyntheticMouseBlankTap = (event, now) => {
-                if (event.type !== 'mousedown' || !lastPostedBlankTouchTap) {
+                const lastTouchTap = lastPostedBlankTouchTap || lastBlankTouchEnd;
+                if (event.type !== 'mousedown' || !lastTouchTap) {
                     return false;
                 }
-                const ageMs = now - lastPostedBlankTouchTap.postedAtMs;
+                const ageMs = now - lastTouchTap.postedAtMs;
                 if (ageMs < 0 || ageMs > syntheticMouseAfterTouchSuppressionMs) {
                     return false;
                 }
@@ -8882,8 +8967,8 @@ class Reader {
                 if (!point || point.x === null || point.y === null) {
                     return true;
                 }
-                const dx = point.x - lastPostedBlankTouchTap.x;
-                const dy = point.y - lastPostedBlankTouchTap.y;
+                const dx = point.x - lastTouchTap.x;
+                const dy = point.y - lastTouchTap.y;
                 return (dx * dx + dy * dy) <= (syntheticMouseAfterTouchDistanceThreshold * syntheticMouseAfterTouchDistanceThreshold);
             };
             const shouldSuppressSyntheticMouseSegmentTap = (event, now) => {
@@ -8908,10 +8993,43 @@ class Reader {
                 const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
                 return (dx * dx + dy * dy) > (blankPointerMoveThreshold * blankPointerMoveThreshold);
             };
-            const segmentTargetForBlankPointerEvent = event => {
-                const target = event.target;
-                const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
+            const closestSegmentForElement = element => {
+                if (!element) return null;
+                const targetElement = element?.nodeType === 1 ? element : element?.parentElement;
                 return targetElement?.closest?.('mnb-seg, .mnb-seg') ?? null;
+            };
+            const caretSegmentForPoint = (clientX, clientY) => {
+                let node = null;
+                try {
+                    node = doc.caretPositionFromPoint?.(clientX, clientY)?.offsetNode ?? null;
+                } catch (_error) {}
+                if (!node) {
+                    try {
+                        node = doc.caretRangeFromPoint?.(clientX, clientY)?.startContainer ?? null;
+                    } catch (_error) {}
+                }
+                return closestSegmentForElement(node);
+            };
+            const segmentTargetForBlankPointerEvent = event => {
+                const directSegment = closestSegmentForElement(event.target);
+                if (directSegment) return directSegment;
+                for (const pathElement of event.composedPath?.() || []) {
+                    const pathSegment = closestSegmentForElement(pathElement);
+                    if (pathSegment) return pathSegment;
+                }
+                const point = touchPointForBlankPointer(event);
+                const clientX = point?.clientX ?? null;
+                const clientY = point?.clientY ?? null;
+                if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+                    return null;
+                }
+                const caretSegment = caretSegmentForPoint(clientX, clientY);
+                if (caretSegment) return caretSegment;
+                for (const pointElement of doc.elementsFromPoint?.(clientX, clientY) || []) {
+                    const pointSegment = closestSegmentForElement(pointElement);
+                    if (pointSegment) return pointSegment;
+                }
+                return closestSegmentForElement(doc.elementFromPoint?.(clientX, clientY));
             };
             const openSegmentLookupFromContentDocumentTap = (event, segmentTarget) => {
                 if (!segmentTarget) {
@@ -9026,6 +9144,14 @@ class Reader {
                 if (blankPointerMovedPastTapThreshold(event, pending)) {
                     return;
                 }
+                const point = blankPointerPoint(event);
+                lastBlankTouchEnd = point && point.x !== null && point.y !== null
+                    ? {
+                        postedAtMs: Date.now(),
+                        x: point.x,
+                        y: point.y,
+                    }
+                    : null;
                 postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
             };
             const handleBlankPointerMouseDown = (event) => {
