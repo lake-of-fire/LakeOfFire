@@ -780,6 +780,7 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
     @Published public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
+    @Published public var processHTMLDocument: ((SwiftSoup.Document, Bool) async throws -> [UInt8])? = nil
     @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
     @Published public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
@@ -2189,7 +2190,7 @@ public class ReaderModeViewModel: ObservableObject {
             isReaderMode = true
         }
 
-        if currentReaderFontNeedsDeferredSharedCSS() {
+        if !url.isEBookURL && currentReaderFontNeedsDeferredSharedCSS() {
             _ = await resolveSharedReaderFontCSSBase64()
         }
         
@@ -3044,7 +3045,8 @@ nonisolated public func processForReaderMode(
     let processStartedAt = Date()
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
-    if try doc.getElementById("reader-content") == nil,
+    if !isEBook,
+       try doc.getElementById("reader-content") == nil,
        let oldElement = try doc.getElementsByClass("reader-content").first() {
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")

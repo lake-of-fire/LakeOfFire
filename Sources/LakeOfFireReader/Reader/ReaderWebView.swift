@@ -174,6 +174,7 @@ public struct ReaderWebView: View {
         [
             readerModeViewModel.ebookTextProcessorCacheHits != nil ? "cacheHits=1" : "cacheHits=0",
             readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
+            readerModeViewModel.processHTMLDocument != nil ? "htmlDocument=1" : "htmlDocument=0",
             readerModeViewModel.processHTMLBytes != nil ? "htmlBytes=1" : "htmlBytes=0",
             readerModeViewModel.processHTML != nil ? "html=1" : "html=0",
             readerModeViewModel.sharedFontCSSBase64 == nil ? "fontCSS=0" : "fontCSS=1",
@@ -261,6 +262,7 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
+            ebookURLSchemeHandler.processHTMLDocument = readerModeViewModel.processHTMLDocument
             ebookURLSchemeHandler.processHTMLBytes = readerModeViewModel.processHTMLBytes
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
             ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64

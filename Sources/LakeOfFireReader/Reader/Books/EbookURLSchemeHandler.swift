@@ -478,6 +478,7 @@ public actor EBookProcessingActor {
     private let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     private let ebookTextProcessor: EbookTextProcessor?
     private let processReadabilityContent: EbookReadabilityContentProcessor?
+    private let processHTMLDocument: EbookHTMLDocumentProcessor?
     private let processHTMLBytes: EbookHTMLBytesProcessor?
     private let processHTML: EbookHTMLProcessor?
     
@@ -487,6 +488,7 @@ public actor EBookProcessingActor {
         ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
         processReadabilityContent: EbookReadabilityContentProcessor?,
+        processHTMLDocument: EbookHTMLDocumentProcessor?,
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
@@ -495,6 +497,7 @@ public actor EBookProcessingActor {
         self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
+        self.processHTMLDocument = processHTMLDocument
         self.processHTMLBytes = processHTMLBytes
         self.processHTML = processHTML
     }
@@ -575,6 +578,7 @@ public actor EBookProcessingActor {
             resolvedContentFingerprint,
             isCacheWarmer,
             processReadabilityContent,
+            processHTMLDocument,
             processHTMLBytes,
             processHTML
         )
@@ -608,17 +612,12 @@ fileprivate actor EBookLoadingActor {
     func loadViewerFile(
         at viewerHtmlPath: String,
         originalURL: URL,
-        sharedFontCSSBase64: String?,
-        sharedFontCSSBase64Provider: (() async -> String?)?
+        sharedFontCSSBase64 _: String?,
+        sharedFontCSSBase64Provider _: (() async -> String?)?
     ) async throws -> (HTTPURLResponse, Data) {
         var html = try String(contentsOfFile: viewerHtmlPath)
         let shouldEnablePageTurnInteractionDiagnostic =
             ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-
-        var base64 = sharedFontCSSBase64
-        if (base64 == nil || base64?.isEmpty == true), let sharedFontCSSBase64Provider {
-            base64 = await sharedFontCSSBase64Provider()
-        }
 
         if shouldEnablePageTurnInteractionDiagnostic {
             let diagnosticPayload = """
@@ -636,26 +635,6 @@ fileprivate actor EBookLoadingActor {
                 html.replaceSubrange(range, with: diagnosticPayload + "</body>")
             } else {
                 html.append(diagnosticPayload)
-            }
-        }
-
-        if let base64, !base64.isEmpty {
-            let payload = """
-            <script id="mnb-font-css-base64" type="application/json">\(base64)</script>
-            <script>
-            (function() {
-                try {
-                    globalThis.manabiFontCSSBase64 = "\(base64)";
-                } catch (err) {
-                    console.error('Failed to expose shared font css payload', err);
-                }
-            })();
-            </script>
-            """
-            if let range = html.range(of: "</body>", options: .caseInsensitive) {
-                html.replaceSubrange(range, with: payload + "</body>")
-            } else {
-                html.append(payload)
             }
         }
 
@@ -686,9 +665,10 @@ public actor EbookURLSchemeActor {
 
 public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
 public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, String?, EbookDocumentTransform) async throws -> SwiftSoup.Document
+public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> [UInt8]
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
+public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
 public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
 public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> String?
 public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, String) async -> Void
@@ -718,6 +698,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
     public var readerFileManager: ReaderFileManager?
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
+    nonisolated(unsafe) var processHTMLDocument: EbookHTMLDocumentProcessor?
     nonisolated(unsafe) var processHTMLBytes: EbookHTMLBytesProcessor?
     nonisolated(unsafe) var processHTML: EbookHTMLProcessor?
     nonisolated(unsafe) public var sharedFontCSSBase64: String?
@@ -807,6 +788,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
         let processReadabilityContent = self.processReadabilityContent
+        let processHTMLDocument = self.processHTMLDocument
         let processHTMLBytes = self.processHTMLBytes
         let processHTML = self.processHTML
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
@@ -887,6 +869,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                     ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                     ebookTextProcessor: ebookTextProcessor,
                                     processReadabilityContent: processReadabilityContent,
+                                    processHTMLDocument: processHTMLDocument,
                                     processHTMLBytes: processHTMLBytes,
                                     processHTML: processHTML
                                 )
@@ -1142,25 +1125,38 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: false,
                             text: sourceText
                         )
-                        (responseText, didCoalesce, cacheOutcome) = try await self.processTextRequestDeduper.process(
-                            key: processRequestKey
-                        ) {
-                            let processingActor = EBookProcessingActor(
-                                ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
-                                ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
-                                ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
-                                ebookTextProcessor: ebookTextProcessor,
-                                processReadabilityContent: processReadabilityContent,
-                                processHTMLBytes: processHTMLBytes,
-                                processHTML: processHTML
-                            )
-                            return try await processingActor.process(
-                                contentURL: mainDocumentURL,
-                                location: sectionHref,
-                                text: sourceText,
-                                contentFingerprint: processRequestKey.textFingerprint,
-                                isCacheWarmer: false
-                            )
+                        if let ebookProcessedTextCacheReader,
+                           let cachedText = try await ebookProcessedTextCacheReader(
+                            mainDocumentURL,
+                            sectionHref,
+                            sourceText,
+                            processRequestKey.textFingerprint
+                           ) {
+                            responseText = cachedText
+                            didCoalesce = false
+                            cacheOutcome = "processed-direct-hit"
+                        } else {
+                            (responseText, didCoalesce, cacheOutcome) = try await self.processTextRequestDeduper.process(
+                                key: processRequestKey
+                            ) {
+                                let processingActor = EBookProcessingActor(
+                                    ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
+                                    ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
+                                    ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
+                                    ebookTextProcessor: ebookTextProcessor,
+                                    processReadabilityContent: processReadabilityContent,
+                                    processHTMLDocument: processHTMLDocument,
+                                    processHTMLBytes: processHTMLBytes,
+                                    processHTML: processHTML
+                                )
+                                return try await processingActor.process(
+                                    contentURL: mainDocumentURL,
+                                    location: sectionHref,
+                                    text: sourceText,
+                                    contentFingerprint: processRequestKey.textFingerprint,
+                                    isCacheWarmer: false
+                                )
+                            }
                         }
                     } else {
                         ebookLoadLog("processedSection.missingProcessor", [

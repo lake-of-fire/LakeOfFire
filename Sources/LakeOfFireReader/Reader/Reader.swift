@@ -586,6 +586,10 @@ fileprivate struct ThemeModifier: ViewModifier {
         ].joined(separator: "|")
     }
 
+    private var isCurrentPageEBook: Bool {
+        readerViewModel.state.pageURL.scheme == "ebook"
+    }
+
     private func applyFontSize(_ size: Double, reason: String) async {
         await applyReaderFontSize(
             size,
@@ -687,6 +691,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                 }
             }
             .task(id: initialReaderPresentationSettingsTaskID) { @MainActor in
+                guard !isCurrentPageEBook else { return }
                 await applyInitialReaderPresentationSettings(
                     readerFontSize: resolvedReaderFontSize,
                     colorScheme: colorScheme,

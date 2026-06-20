@@ -150,6 +150,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var colorScheme: ColorScheme
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -1138,6 +1139,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "url": loaderURL.absoluteString,
                             "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
                         ]
+                        let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double ?? 16
+                        loadArguments["readerPresentationState"] = [
+                            "colorScheme": colorScheme == .dark ? "dark" : "light",
+                            "lightModeTheme": UserDefaults.standard.string(forKey: "lightModeTheme") ?? "white",
+                            "darkModeTheme": UserDefaults.standard.string(forKey: "darkModeTheme") ?? "black",
+                            "readerFontSize": readerFontSize,
+                            "readerContentRTSize": readerFontSize * 0.46,
+                            "readerBoldText": UserDefaults.standard.object(forKey: "readerBoldText") as? Bool ?? false,
+                            "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize),
+                            "writingDirection": "original",
+                        ]
                         if let initialRestore {
                             var restoreArguments: [String: Any] = ["cfi": initialRestore.cfi]
                             if let fractionalCompletion = initialRestore.fractionalCompletion {
@@ -1152,7 +1164,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction) url=\(url.absoluteString)"
                         )
                         try await scriptCaller.evaluateJavaScript(
-                            "window.loadEBook({ url, layoutMode, initialRestore })",
+                            "window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState })",
                             arguments: loadArguments,
                             in: message.frameInfo
                         )
@@ -1188,7 +1200,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         navigator: WebViewNavigator,
         hideNavigationDueToScroll: Binding<Bool>,
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
-        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        colorScheme: ColorScheme
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -1199,6 +1212,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.colorScheme = colorScheme
     }
     
     // MARK: Readability
@@ -1340,6 +1354,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
+    @Environment(\.colorScheme) internal var colorScheme
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
@@ -1360,7 +1375,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
                         showOriginalWillBeginHandler: showOriginalWillBeginHandler,
-                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler
+                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+                        colorScheme: colorScheme
                     )
                     if readerViewModel.state.pageURL.isEBookURL {
                         readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
@@ -1375,6 +1391,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                     readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
                     readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+                    readerMessageHandlers.colorScheme = colorScheme
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
@@ -1387,6 +1404,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)
+            }
+            .task(id: colorScheme) { @MainActor in
+                readerMessageHandlers?.colorScheme = colorScheme
             }
             .task(id: readerViewModel.state.pageURL) { @MainActor in
                 if !readerViewModel.state.pageURL.isEBookURL {

@@ -109,6 +109,12 @@ const safeRound = (value, digits = 1) =>
             ? Number(value.toFixed(digits))
             : null);
 
+const readerNavLoadLog = (stage, payload = {}) => {
+    try {
+        globalThis.__manabiReaderLoadLog?.(stage, payload);
+    } catch (_error) {}
+};
+
 export class NavigationHUD {
     constructor({ onJumpRequest, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
         this.onJumpRequest = onJumpRequest;
@@ -168,6 +174,7 @@ export class NavigationHUD {
             forward: null,
         };
         this.lastPrimaryLabelDiagnostics = null;
+        this.lastPercentDecisionSignature = null;
         this.fallbackTotalPageCount = null;
         this.lastTotalSource = null;
         this.lastTotalPagesSnapshot = null;
@@ -843,7 +850,7 @@ export class NavigationHUD {
 
     _updateCompactPercent(detail) {
         const overlay = this.navHiddenOverlay?.percent;
-        const fraction = this._fractionForPercent(detail);
+        const fraction = this._fractionForPercent(detail, 'compact-percent');
         const hasValue = typeof fraction === 'number' && Number.isFinite(fraction);
         const percentText = hasValue ? this.formatPercent(Math.max(0, Math.min(1, fraction))) : '';
         if (overlay) {
@@ -855,11 +862,52 @@ export class NavigationHUD {
         this._postNativeOverlayState('compact-percent');
     }
 
-    _fractionForPercent(detail) {
-        const snapshotFraction = this._fractionFromRendererSnapshot();
-        if (typeof snapshotFraction === 'number' && isFinite(snapshotFraction)) {
-            return Math.max(0, Math.min(1, snapshotFraction));
+    _logPercentDecision(context, diagnostics) {
+        const signature = JSON.stringify({
+            context,
+            selectedSource: diagnostics.selectedSource,
+            selectedFraction: diagnostics.selectedFraction,
+            detailFraction: diagnostics.detailFraction,
+            lastRelocateFraction: diagnostics.lastRelocateFraction,
+            currentLocationFraction: diagnostics.currentLocationFraction,
+            lastLocationFraction: diagnostics.lastLocationFraction,
+            requestedRestoreFraction: diagnostics.requestedRestoreFraction,
+            lastScrubberFraction: diagnostics.lastScrubberFraction,
+            snapshotCurrent: diagnostics.snapshotCurrent,
+            snapshotTotal: diagnostics.snapshotTotal,
+            snapshotScrolled: diagnostics.snapshotScrolled,
+            snapshotFraction: diagnostics.snapshotFraction,
+            descriptorCurrent: diagnostics.descriptorCurrent,
+            descriptorTotal: diagnostics.descriptorTotal,
+            derivedFraction: diagnostics.derivedFraction,
+        });
+        if (signature === this.lastPercentDecisionSignature) {
+            return;
         }
+        this.lastPercentDecisionSignature = signature;
+        readerNavLoadLog('viewer.percent.decision', {
+            context,
+            selectedSource: diagnostics.selectedSource,
+            selectedFraction: diagnostics.selectedFraction,
+            detailFraction: diagnostics.detailFraction,
+            lastRelocateFraction: diagnostics.lastRelocateFraction,
+            currentLocationFraction: diagnostics.currentLocationFraction,
+            lastLocationFraction: diagnostics.lastLocationFraction,
+            requestedRestoreFraction: diagnostics.requestedRestoreFraction,
+            lastScrubberFraction: diagnostics.lastScrubberFraction,
+            snapshotCurrent: diagnostics.snapshotCurrent,
+            snapshotTotal: diagnostics.snapshotTotal,
+            snapshotScrolled: diagnostics.snapshotScrolled,
+            snapshotFraction: diagnostics.snapshotFraction,
+            descriptorCurrent: diagnostics.descriptorCurrent,
+            descriptorTotal: diagnostics.descriptorTotal,
+            derivedFraction: diagnostics.derivedFraction,
+            oldSnapshotWouldWin: diagnostics.selectedSource !== 'rendererPageSnapshot'
+                && typeof diagnostics.snapshotFraction === 'number',
+        });
+    }
+
+    _fractionForPercent(detail, context = 'unknown') {
         const candidates = [
             { source: 'detail.fraction', value: detail?.fraction },
             { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
@@ -868,11 +916,8 @@ export class NavigationHUD {
             { source: '__manabiRequestedRestoreFraction', value: globalThis.__manabiRequestedRestoreFraction },
             { source: 'lastScrubberFraction', value: this.lastScrubberFraction },
         ];
-        for (const candidate of candidates) {
-            if (typeof candidate.value === 'number' && isFinite(candidate.value)) {
-                return Math.max(0, Math.min(1, candidate.value));
-            }
-        }
+        const snapshot = this.rendererPageSnapshot;
+        const snapshotFraction = this._fractionFromRendererSnapshot();
         const descriptor = this._makeLocationDescriptor(detail)
             ?? this._cloneDescriptor(this.currentLocationDescriptor)
             ?? this._makeLocationDescriptor(this.lastRelocateDetail);
@@ -885,9 +930,47 @@ export class NavigationHUD {
                 : null,
             fallbackFraction: null,
         });
-        if (typeof derived === 'number' && isFinite(derived)) {
-            return Math.max(0, Math.min(1, derived));
+        const diagnostics = {
+            selectedSource: 'none',
+            selectedFraction: null,
+            detailFraction: typeof detail?.fraction === 'number' ? safeRound(detail.fraction, 6) : null,
+            lastRelocateFraction: typeof this.lastRelocateDetail?.fraction === 'number' ? safeRound(this.lastRelocateDetail.fraction, 6) : null,
+            currentLocationFraction: typeof this.currentLocationDescriptor?.fraction === 'number' ? safeRound(this.currentLocationDescriptor.fraction, 6) : null,
+            lastLocationFraction: typeof globalThis.reader?.view?.lastLocation?.fraction === 'number' ? safeRound(globalThis.reader.view.lastLocation.fraction, 6) : null,
+            requestedRestoreFraction: typeof globalThis.__manabiRequestedRestoreFraction === 'number' ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6) : null,
+            lastScrubberFraction: typeof this.lastScrubberFraction === 'number' ? safeRound(this.lastScrubberFraction, 6) : null,
+            snapshotCurrent: typeof snapshot?.current === 'number' ? snapshot.current : null,
+            snapshotTotal: typeof snapshot?.total === 'number' ? snapshot.total : null,
+            snapshotScrolled: typeof snapshot?.scrolled === 'boolean' ? snapshot.scrolled : null,
+            snapshotFraction: typeof snapshotFraction === 'number' ? safeRound(snapshotFraction, 6) : null,
+            descriptorCurrent: typeof descriptor?.location?.current === 'number' ? descriptor.location.current : null,
+            descriptorTotal: typeof descriptor?.location?.total === 'number' ? descriptor.location.total : null,
+            derivedFraction: typeof derived === 'number' ? safeRound(derived, 6) : null,
+        };
+        for (const candidate of candidates) {
+            if (typeof candidate.value === 'number' && isFinite(candidate.value)) {
+                const selected = Math.max(0, Math.min(1, candidate.value));
+                diagnostics.selectedSource = candidate.source;
+                diagnostics.selectedFraction = safeRound(selected, 6);
+                this._logPercentDecision(context, diagnostics);
+                return selected;
+            }
         }
+        if (typeof snapshotFraction === 'number' && isFinite(snapshotFraction)) {
+            const selected = Math.max(0, Math.min(1, snapshotFraction));
+            diagnostics.selectedSource = 'rendererPageSnapshot';
+            diagnostics.selectedFraction = safeRound(selected, 6);
+            this._logPercentDecision(context, diagnostics);
+            return selected;
+        }
+        if (typeof derived === 'number' && isFinite(derived)) {
+            const selected = Math.max(0, Math.min(1, derived));
+            diagnostics.selectedSource = 'locationMetrics';
+            diagnostics.selectedFraction = safeRound(selected, 6);
+            this._logPercentDecision(context, diagnostics);
+            return selected;
+        }
+        this._logPercentDecision(context, diagnostics);
         return null;
     }
 
@@ -1029,7 +1112,7 @@ export class NavigationHUD {
             source: sectionIndexSource,
             resolvedHref: resolvedSectionHref,
         } = this._resolveSectionIndex(detail);
-        const fraction = this._fractionForPercent(detail);
+        const fraction = this._fractionForPercent(detail, 'primary-label');
         if (typeof fraction === 'number' && Number.isFinite(fraction)) {
             const clampedFraction = Math.max(0, Math.min(1, fraction));
             const currentPercent = safeRound(clampedFraction * 100, 1);

@@ -80,6 +80,7 @@ public func ebookTextProcessor(
     contentFingerprint: String?,
     isCacheWarmer: Bool,
     processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
+    processHTMLDocument: ((SwiftSoup.Document, Bool) async throws -> [UInt8])?,
     processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
@@ -158,12 +159,20 @@ public func ebookTextProcessor(
         preprocessEbookElapsedMs = ebookProcessorElapsedMilliseconds(since: preprocessEbookStartedAt)
         
         let serializeStartedAt = collectTiming ? Date() : nil
-        var htmlBytes = try doc.outerHtmlUTF8()
+        let usedDocumentPostprocessor = processHTMLDocument != nil
+        var htmlBytes: [UInt8]
+        if let processHTMLDocument {
+            htmlBytes = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                try await processHTMLDocument(doc, isCacheWarmer)
+            }
+        } else {
+            htmlBytes = try doc.outerHtmlUTF8FromCurrentTree()
+        }
         serializeElapsedMs = ebookProcessorElapsedMilliseconds(since: serializeStartedAt)
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
         }
 
-        if let processHTMLBytes {
+        if !usedDocumentPostprocessor, let processHTMLBytes {
             let processHTMLBytesStartedAt = collectTiming ? Date() : nil
             htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTMLBytes(

@@ -4,7 +4,7 @@
         <meta charset="utf-8" />
         <meta name="color-scheme" content="light dark" />
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
-            <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; font-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src blob: data:; object-src blob: data:; form-action 'none';" />
+            <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; font-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src ebook: blob: data:; object-src ebook: blob: data:; form-action 'none';" />
             <style>
                 :root {
                     --mnb-ui-font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -131,6 +131,25 @@
                         --theme-tracking-unread-active-color: lightgray;
                         --nav-accent-color: #d0d0d0;
                     }
+                }
+                body[data-mnb-light-theme="beige"][data-mnb-color-scheme="light"] {
+                    --theme-background-color: #f7f0d8;
+                }
+                body[data-mnb-dark-theme="gray"][data-mnb-color-scheme="dark"] {
+                    --secondary-color: #7f7f7f;
+                    --tertiary-color: #1e1e1e;
+                    --theme-background-color: #313234;
+                    --theme-tracking-unread-color: gray;
+                    --theme-tracking-unread-active-color: lightgray;
+                    --nav-accent-color: #d0d0d0;
+                }
+                body[data-mnb-dark-theme="black"][data-mnb-color-scheme="dark"] {
+                    --secondary-color: #7f7f7f;
+                    --tertiary-color: #1e1e1e;
+                    --theme-background-color: black;
+                    --theme-tracking-unread-color: gray;
+                    --theme-tracking-unread-active-color: lightgray;
+                    --nav-accent-color: #d0d0d0;
                 }
                 
                 button {
