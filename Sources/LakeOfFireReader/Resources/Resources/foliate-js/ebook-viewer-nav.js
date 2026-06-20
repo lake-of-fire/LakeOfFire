@@ -908,14 +908,6 @@ export class NavigationHUD {
     }
 
     _fractionForPercent(detail, context = 'unknown') {
-        const candidates = [
-            { source: 'detail.fraction', value: detail?.fraction },
-            { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
-            { source: 'currentLocationDescriptor.fraction', value: this.currentLocationDescriptor?.fraction },
-            { source: 'reader.view.lastLocation.fraction', value: globalThis.reader?.view?.lastLocation?.fraction },
-            { source: '__manabiRequestedRestoreFraction', value: globalThis.__manabiRequestedRestoreFraction },
-            { source: 'lastScrubberFraction', value: this.lastScrubberFraction },
-        ];
         const snapshot = this.rendererPageSnapshot;
         const snapshotFraction = this._fractionFromRendererSnapshot();
         const descriptor = this._makeLocationDescriptor(detail)
@@ -930,6 +922,16 @@ export class NavigationHUD {
                 : null,
             fallbackFraction: null,
         });
+        const candidates = [
+            { source: 'locationMetrics', value: derived },
+            { source: 'lastScrubberFraction', value: this.lastScrubberFraction },
+            { source: 'currentLocationDescriptor.fraction', value: this.currentLocationDescriptor?.fraction },
+            { source: 'reader.view.lastLocation.fraction', value: globalThis.reader?.view?.lastLocation?.fraction },
+            { source: 'detail.fraction', value: detail?.fraction },
+            { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
+            { source: '__manabiRequestedRestoreFraction', value: globalThis.__manabiRequestedRestoreFraction },
+            { source: 'rendererPageSnapshot', value: snapshotFraction },
+        ];
         const diagnostics = {
             selectedSource: 'none',
             selectedFraction: null,
@@ -955,20 +957,6 @@ export class NavigationHUD {
                 this._logPercentDecision(context, diagnostics);
                 return selected;
             }
-        }
-        if (typeof snapshotFraction === 'number' && isFinite(snapshotFraction)) {
-            const selected = Math.max(0, Math.min(1, snapshotFraction));
-            diagnostics.selectedSource = 'rendererPageSnapshot';
-            diagnostics.selectedFraction = safeRound(selected, 6);
-            this._logPercentDecision(context, diagnostics);
-            return selected;
-        }
-        if (typeof derived === 'number' && isFinite(derived)) {
-            const selected = Math.max(0, Math.min(1, derived));
-            diagnostics.selectedSource = 'locationMetrics';
-            diagnostics.selectedFraction = safeRound(selected, 6);
-            this._logPercentDecision(context, diagnostics);
-            return selected;
         }
         this._logPercentDecision(context, diagnostics);
         return null;
@@ -1567,17 +1555,13 @@ export class NavigationHUD {
             ? Math.max(1, Math.round(this.rendererPageSnapshot.total))
             : null;
         const localSectionIndex = rendererSnapshotCurrent != null ? rendererSnapshotCurrent - 1 : null;
-        const derivedLocCurrent = deriveLocationIndexFromFraction(fraction, locTotal);
+        const derivedLocCurrent = rawLocCurrent == null
+            ? deriveLocationIndexFromFraction(fraction, locTotal)
+            : null;
         let locCurrent = rawLocCurrent;
         if (derivedLocCurrent != null) {
             if (locCurrent == null) {
                 locCurrent = derivedLocCurrent;
-            } else {
-                const drift = Math.abs(locCurrent - derivedLocCurrent);
-                const staleAtStart = locCurrent === 0 && derivedLocCurrent > 0;
-                if (drift > 1 || staleAtStart) {
-                    locCurrent = derivedLocCurrent;
-                }
             }
         }
         const location = (locCurrent != null || locTotal != null)
@@ -1599,6 +1583,18 @@ export class NavigationHUD {
     }
 
     _rendererUsesRightToLeftPageOrder(renderer) {
+        const content = getPrimaryRendererContent(renderer);
+        const body = content?.doc?.body ?? content?.document?.body ?? null;
+        const foliateDirection = body?.dataset?.mnbFoliateWritingDirection ?? null;
+        const foliateWritingMode = body?.dataset?.mnbFoliateWritingMode ?? null;
+        const isVerticalWriting =
+            foliateDirection === 'vertical'
+            || foliateWritingMode === 'vertical-rl'
+            || foliateWritingMode === 'vertical-lr'
+            || body?.classList?.contains?.('reader-vertical-writing') === true;
+        if (isVerticalWriting) {
+            return false;
+        }
         return !!(
             renderer?.bookDir === 'rtl'
             || renderer?.isRTL === true

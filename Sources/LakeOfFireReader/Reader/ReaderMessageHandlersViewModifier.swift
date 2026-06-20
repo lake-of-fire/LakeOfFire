@@ -1161,7 +1161,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         let hasRestoreCFI = !(initialRestore?.cfi.isEmpty ?? true)
                         let restoreFraction = initialRestore?.fractionalCompletion.map { String($0) } ?? "nil"
                         print(
-                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction) url=\(url.absoluteString)"
+                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
                         )
                         try await scriptCaller.evaluateJavaScript(
                             "window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState })",
@@ -1446,7 +1446,9 @@ extension ReaderMessageHandlersViewModifier {
             && lastNativeLookupTapAtMs > 0
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
-            print("# POPOVER native.hideNavigation.bridge.skip reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
+                print("# POPOVER native.hideNavigation.bridge.skip reason=\(reason) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            }
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
@@ -1454,7 +1456,9 @@ extension ReaderMessageHandlersViewModifier {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
-            print("# POPOVER native.hideNavigation.bridge.push reason=\(reason) pageURL=\(pageURL.absoluteString) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
+                print("# POPOVER native.hideNavigation.bridge.push reason=\(reason) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+            }
         } catch {
             // Ignore boot timing races.
         }

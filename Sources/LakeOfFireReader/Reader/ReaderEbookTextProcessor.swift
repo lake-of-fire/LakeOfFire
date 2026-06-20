@@ -166,7 +166,7 @@ public func ebookTextProcessor(
                 try await processHTMLDocument(doc, isCacheWarmer)
             }
         } else {
-            htmlBytes = try doc.outerHtmlUTF8FromCurrentTree()
+            htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()
         }
         serializeElapsedMs = ebookProcessorElapsedMilliseconds(since: serializeStartedAt)
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {

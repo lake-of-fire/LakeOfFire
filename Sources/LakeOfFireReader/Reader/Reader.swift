@@ -1313,8 +1313,12 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                if attempt == retryDelaysInNanoseconds.startIndex || attempt == retryDelaysInNanoseconds.index(before: retryDelaysInNanoseconds.endIndex) {
-                    print("# POPOVER native.chromeInsets.attempt attempt=\(attempt) pageURL=\(pageURL.absoluteString) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
+                if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1",
+                   (
+                       attempt == retryDelaysInNanoseconds.startIndex
+                       || attempt == retryDelaysInNanoseconds.index(before: retryDelaysInNanoseconds.endIndex)
+                   ) {
+                    print("# POPOVER native.chromeInsets.attempt attempt=\(attempt) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
                 }
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
