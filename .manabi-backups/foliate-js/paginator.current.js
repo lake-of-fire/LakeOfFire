@@ -1441,7 +1441,6 @@ export class Paginator extends HTMLElement {
     #justAnchored = false
     #isLoading = false
     #locked = false // while true, prevent any further navigation
-    #lockedAt = null
     #styles
     #styleMap = new WeakMap()
     #scrollBounds
@@ -1455,7 +1454,6 @@ export class Paginator extends HTMLElement {
     #prefetchTimer = null
     #prefetchCache = new Map()
     #pendingPageTurnDirection = null
-    #pendingPageTurnStep = null
     #queuedPageTurn = null
 
     #cachedSizes = null
@@ -2368,87 +2366,62 @@ export class Paginator extends HTMLElement {
         }
         return placements;
     }
-    #scheduleBlankPageCorrection({
-        index,
-        direction,
-        metrics,
-    }) {
+    async #resolveBlankPageTarget(page, direction, reason = 'unknown') {
         if (
             this.#isCacheWarmer
             || this.scrolled
             || !this.#view?.document
+            || !Number.isFinite(page)
             || !Number.isFinite(direction)
             || direction === 0
-            || !metrics
         ) {
-            return;
+            return page;
         }
-        const scheduledView = this.#view;
-        const scheduledIndex = this.#index;
-        const scheduledPage = metrics.page;
-        const scheduledPages = metrics.pages;
+        const metrics = await this.pageMetrics();
+        const pages = metrics.pages;
         const minPage = 1;
-        const maxPage = Math.max(minPage, scheduledPages - 2);
-        if (!Number.isFinite(scheduledPage) || scheduledPage < minPage || scheduledPage > maxPage) {
-            return;
+        const maxPage = Math.max(minPage, pages - 2);
+        if (page < minPage || page > maxPage) {
+            return page;
         }
-        const run = async () => {
-            if (this.#view !== scheduledView || this.#index !== scheduledIndex || this.#index !== index) {
-                return;
-            }
-            const latestMetrics = await this.pageMetrics().catch(() => null);
-            if (this.#view !== scheduledView || this.#index !== scheduledIndex || this.#index !== index) {
-                return;
-            }
-            if (
-                !latestMetrics
-                || latestMetrics.page !== scheduledPage
-                || latestMetrics.pages !== scheduledPages
-            ) {
-                return;
-            }
-            const size = latestMetrics.size;
-            const rectMapper = await this.#getRectMapper(latestMetrics);
-            const summariesByPage = new Map();
-            let target = scheduledPage;
-            let scanCount = 0;
-            while (target >= minPage && target <= maxPage && scanCount < 4) {
-                summariesByPage.set(target, await this.#blankPageContentSummary(target, size, rectMapper));
-                const resolved = manabiResolveBlankPageTarget({
-                    page: target,
-                    pages: latestMetrics.pages,
-                    direction,
-                    summariesByPage,
-                });
-                scanCount += 1;
-                if (resolved === target) break;
-                target = resolved;
-            }
-            if (!this.#isCacheWarmer) {
-                const summaries = Array.from(summariesByPage.entries()).map(([summaryPage, summary]) => ({
-                    page: summaryPage,
-                    textNodeCount: summary?.textNodeCount ?? null,
-                    textCharCount: summary?.textCharCount ?? null,
-                    mediaCount: summary?.mediaCount ?? null,
-                    elementBoxCount: summary?.elementBoxCount ?? null,
-                    firstTextSample: summary?.textSamples?.[0] ?? null,
-                }));
-                manabiPaginatorReaderLoadLog('paginator.blankPageCorrection.decision', {
-                    index,
-                    requestedPage: scheduledPage,
-                    resolvedPage: target,
-                    direction,
-                    minPage,
-                    maxPage,
-                    scanCount,
-                    summaries: JSON.stringify(summaries),
-                });
-            }
-            if (target !== scheduledPage && target >= minPage && target <= maxPage) {
-                await this.#scrollToPage(target, 'blank-correction', false, latestMetrics);
-            }
-        };
-        requestAnimationFrame(() => requestAnimationFrame(() => void run()));
+
+        const size = metrics.size;
+        const rectMapper = await this.#getRectMapper(metrics);
+        const summariesByPage = new Map();
+        let target = page;
+
+        while (target >= minPage && target <= maxPage) {
+            summariesByPage.set(target, await this.#blankPageContentSummary(target, size, rectMapper));
+            const resolved = manabiResolveBlankPageTarget({
+                page: target,
+                pages,
+                direction,
+                summariesByPage,
+            });
+            if (resolved === target) break;
+            target = resolved;
+        }
+
+        if (!this.#isCacheWarmer) {
+            const summaries = Array.from(summariesByPage.entries()).map(([summaryPage, summary]) => ({
+                page: summaryPage,
+                textNodeCount: summary?.textNodeCount ?? null,
+                textCharCount: summary?.textCharCount ?? null,
+                mediaCount: summary?.mediaCount ?? null,
+                elementBoxCount: summary?.elementBoxCount ?? null,
+                firstTextSample: summary?.textSamples?.[0] ?? null,
+            }))
+            manabiPaginatorReaderLoadLog('paginator.blankPageTarget.decision', this.#layoutMetricDiagnostics(metrics, {
+                reason,
+                requestedPage: page,
+                resolvedPage: target,
+                direction,
+                minPage,
+                maxPage,
+                summaries: JSON.stringify(summaries),
+            }))
+        }
+        return target;
     }
     #typographyRenderSignature({
         width,
@@ -3817,7 +3790,7 @@ export class Paginator extends HTMLElement {
 
         const canUseMetricsOnlyRelocate =
             knownMetrics
-            && (reason === 'navigation' || reason === 'anchor' || reason === 'page' || reason === 'blank-correction')
+            && (reason === 'navigation' || reason === 'anchor')
         const range = canUseMetricsOnlyRelocate ? null : await this.#getVisibleRange()
         const visibleRangeRect = range?.getBoundingClientRect?.() ?? null
         const visibleRangeDiagnostics = {
@@ -3843,14 +3816,12 @@ export class Paginator extends HTMLElement {
             range,
             index
         }
-        let relocationMetrics = null
         if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
             detail.pageTurnDirection = this.#pendingPageTurnDirection;
         }
 
         if (this.scrolled) {
             const metrics = knownMetrics || await this.pageMetrics()
-            relocationMetrics = metrics
             detail.fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0
             logProgressInputs(this.#layoutMetricDiagnostics(metrics, {
                 reason,
@@ -3860,7 +3831,6 @@ export class Paginator extends HTMLElement {
             }));
         } else {
             const metrics = knownMetrics || await this.pageMetrics()
-            relocationMetrics = metrics
             const { page, pages } = metrics
             if (pages <= 2) {
                 detail.fraction = 0;
@@ -3910,19 +3880,6 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
-        if (
-            reason === 'page'
-            && knownMetrics
-            && !this.scrolled
-            && relocationMetrics
-            && Number.isFinite(this.#pendingPageTurnStep)
-        ) {
-            this.#scheduleBlankPageCorrection({
-                index,
-                direction: this.#pendingPageTurnStep,
-                metrics: relocationMetrics,
-            })
-        }
 
     }
     #logicalDirectionForSwipeDelta(dx, input = 'touch') {
@@ -4453,7 +4410,7 @@ export class Paginator extends HTMLElement {
             }))
         }
         if (blockedAtBookStart) return
-        const page = metrics.page - 1
+        const page = await this.#resolveBlankPageTarget(metrics.page - 1, -1, 'page-turn.prev')
         const textPageCount = Math.max(1, metrics.pages - 2)
         const textPage = Math.max(1, Math.min(textPageCount, metrics.page))
         if (!this.#isCacheWarmer) {
@@ -4496,7 +4453,7 @@ export class Paginator extends HTMLElement {
             }))
         }
         if (blockedAtBookEnd) return
-        const page = metrics.page + 1
+        const page = await this.#resolveBlankPageTarget(metrics.page + 1, 1, 'page-turn.next')
         const pages = metrics.pages
         const textPageCount = Math.max(1, metrics.pages - 2)
         const textPage = Math.max(1, Math.min(textPageCount, metrics.page))
@@ -4539,29 +4496,12 @@ export class Paginator extends HTMLElement {
     }
     async #turnPage(dir, distance) {
         if (this.#locked) {
-            const previousQueuedPageTurn = this.#queuedPageTurn
-            previousQueuedPageTurn?.resolve?.({ superseded: true })
-            const queuedPromise = new Promise((resolve, reject) => {
-                this.#queuedPageTurn = { dir, distance, resolve, reject }
-            })
-            if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.queued', {
-                    index: this.#index,
-                    direction: dir,
-                    distance: distance ?? null,
-                    replacedQueuedTurn: !!previousQueuedPageTurn,
-                    pendingPageTurnDirection: this.#pendingPageTurnDirection,
-                    isLoading: this.#isLoading,
-                    lockedElapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
-                })
-            }
-            return await queuedPromise
+            this.#queuedPageTurn = { dir, distance }
+            return
         }
 
         this.#locked = true
-        this.#lockedAt = manabiPerfNow()
         this.#pendingPageTurnDirection = dir > 0 ? 'forward' : 'backward'
-        this.#pendingPageTurnStep = dir
         try {
             const prev = dir === -1
             const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
@@ -4583,16 +4523,12 @@ export class Paginator extends HTMLElement {
             if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
             this.#pendingPageTurnDirection = null
-            this.#pendingPageTurnStep = null
             this.#locked = false
-            this.#lockedAt = null
             const queuedPageTurn = this.#queuedPageTurn
             this.#queuedPageTurn = null
             if (queuedPageTurn) {
                 queueMicrotask(() => {
                     this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance)
-                        .then(value => queuedPageTurn.resolve?.(value))
-                        .catch(error => queuedPageTurn.reject?.(error))
                 })
             }
         }

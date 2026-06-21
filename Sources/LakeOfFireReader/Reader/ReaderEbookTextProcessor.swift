@@ -203,8 +203,7 @@ public func ebookTextProcessor(
             || (!isCacheWarmer && elapsedMs >= ebookTextProcessorSlowLogThresholdMs) {
             debugPrint(
                 "# READERLOAD stage=ebookTextProcessor.slow",
-                "contentURL=\(contentURL.absoluteString)",
-                "sectionLocation=\(sectionLocation)",
+                "hasSection=\(!sectionLocation.isEmpty)",
                 "isCacheWarmer=\(isCacheWarmer)",
                 "requestBytes=\(content.utf8.count)",
                 "responseBytes=\(htmlBytes.count)",

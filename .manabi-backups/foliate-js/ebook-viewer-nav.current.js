@@ -330,9 +330,7 @@ export class NavigationHUD {
         this._updateRelocateButtons(`setHide:${source}`);
         this.syncPageTrackingButtonsNavigationDisabled();
         this.refreshTitleLocationVisibility(`setHide:${source}`);
-        if (!this.hideNavigationDueToScroll) {
-            void this._updateSectionProgress({ refreshSnapshot: false, source: `setHide:${source}` });
-        }
+        void this._updateSectionProgress({ refreshSnapshot: false, source: `setHide:${source}` });
         this._postNativeOverlayState(`setHide:${source}`);
         this._requestAuxiliaryInsetsUpdate();
     }
@@ -2047,9 +2045,7 @@ export class NavigationHUD {
         const backLabel = showBack ? this._labelForDescriptor(backLabelDescriptor) : '';
         const forwardLabel = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
         this._postNativeOverlayState(`relocate-buttons:${source}`);
-        if (!this.hideNavigationDueToScroll) {
-            this._updateSectionProgress({ source: 'relocate-buttons' });
-        }
+        this._updateSectionProgress({ source: 'relocate-buttons' });
         if (this.previousRelocateVisibility.back !== showBack) {
             this.previousRelocateVisibility.back = showBack;
         }
