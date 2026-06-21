@@ -818,7 +818,7 @@ class View {
                                 void manabiRunPaginatorBoundary(
                                     'paginator.view.fontsReadyExpand',
                                     { ...basePayload, href: doc?.location?.href ?? null },
-                                    () => this.expand(),
+                                    () => this.expand({ skipIfSignatureUnchanged: true }),
                                     { logReaderLoad }
                                 )
                             })
@@ -1178,7 +1178,18 @@ class View {
         if (globalThis.manabiVerboseImageLayout === true) {
         }
     }
-    async expand() {
+    #makeExpandSignature() {
+        const doc = this.document
+        return JSON.stringify({
+            column: !!this._column,
+            vertical: !!this.#vertical,
+            rtl: !!this.#rtl,
+            size: manabiRound(Number(this._size) || 0, 2),
+            render: this.#renderInFlightSignature || this.#lastRenderSignature,
+            href: doc?.location?.href ?? null,
+        })
+    }
+    async expand({ skipIfSignatureUnchanged = false } = {}) {
         const expandStartedAt = manabiPerfNow();
         //        console.log("expand...")
         return new Promise((resolve, reject) => {
@@ -1195,14 +1206,18 @@ class View {
                     const defaultSide = this.#vertical ? 'height' : 'width'
                     const defaultOtherSide = defaultSide === 'width' ? 'height' : 'width'
                     let expandedMetrics = null
-                    expandSignature = JSON.stringify({
-                        column: !!this._column,
-                        vertical: !!this.#vertical,
-                        rtl: !!this.#rtl,
-                        size: manabiRound(Number(this._size) || 0, 2),
-                        render: this.#renderInFlightSignature || this.#lastRenderSignature,
-                        href: doc?.location?.href ?? null,
-                    })
+                    expandSignature = this.#makeExpandSignature()
+                    if (skipIfSignatureUnchanged
+                        && this.#lastExpandSignature === expandSignature
+                        && this.#lastExpandedMetrics?.loadingSettled === true) {
+                        manabiTimelineMark('paginator.expand.skipSameSignature', {
+                            cacheWarmer: this.#isCacheWarmer,
+                            column: this._column,
+                            vertical: this.#vertical,
+                        });
+                        resolve()
+                        return
+                    }
                     await this.onBeforeExpand()
                     if (this._column) {
                         const contentRect = this.#contentRange.getBoundingClientRect()
@@ -2003,6 +2018,9 @@ export class Paginator extends HTMLElement {
         const documentElement = doc?.documentElement ?? null
         const body = doc?.body ?? null
         const expanded = this.#view?.expandedMetrics ?? null
+        const includeLiveLayoutMetrics =
+            globalThis.__manabiPaginatorVerboseLayoutMetrics === true
+            || globalThis.__manabiTimelineTraceAll === true
         const size = metrics?.size ?? expanded?.size ?? this._size ?? null
         const viewSize = metrics?.viewSize ?? (
             expanded
@@ -2037,21 +2055,23 @@ export class Paginator extends HTMLElement {
             expandedContentSize: expanded?.contentSize ?? null,
             expandedSize: expanded?.expandedSize ?? null,
             expandedPageCount: expanded?.pageCount ?? null,
-            containerClientWidth: container?.clientWidth ?? null,
-            containerClientHeight: container?.clientHeight ?? null,
-            containerScrollWidth: container?.scrollWidth ?? null,
-            containerScrollHeight: container?.scrollHeight ?? null,
-            viewClientWidth: viewElement?.clientWidth ?? null,
-            viewClientHeight: viewElement?.clientHeight ?? null,
-            docClientWidth: documentElement?.clientWidth ?? null,
-            docClientHeight: documentElement?.clientHeight ?? null,
-            docScrollWidth: documentElement?.scrollWidth ?? null,
-            docScrollHeight: documentElement?.scrollHeight ?? null,
-            bodyClientWidth: body?.clientWidth ?? null,
-            bodyClientHeight: body?.clientHeight ?? null,
-            bodyScrollWidth: body?.scrollWidth ?? null,
-            bodyScrollHeight: body?.scrollHeight ?? null,
-            bodyTextLength: body?.textContent?.trim?.().length ?? null,
+            ...(includeLiveLayoutMetrics ? {
+                containerClientWidth: container?.clientWidth ?? null,
+                containerClientHeight: container?.clientHeight ?? null,
+                containerScrollWidth: container?.scrollWidth ?? null,
+                containerScrollHeight: container?.scrollHeight ?? null,
+                viewClientWidth: viewElement?.clientWidth ?? null,
+                viewClientHeight: viewElement?.clientHeight ?? null,
+                docClientWidth: documentElement?.clientWidth ?? null,
+                docClientHeight: documentElement?.clientHeight ?? null,
+                docScrollWidth: documentElement?.scrollWidth ?? null,
+                docScrollHeight: documentElement?.scrollHeight ?? null,
+                bodyClientWidth: body?.clientWidth ?? null,
+                bodyClientHeight: body?.clientHeight ?? null,
+                bodyScrollWidth: body?.scrollWidth ?? null,
+                bodyScrollHeight: body?.scrollHeight ?? null,
+                bodyTextLength: body?.textContent?.trim?.().length ?? null,
+            } : null),
         }
     }
     async #visibleRangeCacheKey() {

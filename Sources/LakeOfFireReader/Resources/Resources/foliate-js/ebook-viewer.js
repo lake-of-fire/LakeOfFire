@@ -8,7 +8,7 @@ import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
-const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
+const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = true;
 const MANABI_ENABLE_DID_DISPLAY_POST_FRAME_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
@@ -848,6 +848,9 @@ const computeRawSectionWritingDirectionFromText = async (href, text, loadText) =
             || ''
         );
         const direction = bodyStyle?.direction?.trim?.().toLowerCase?.() || rootStyle?.direction?.trim?.().toLowerCase?.() || null;
+        const hasVerticalWritingClass =
+            probeDoc?.body?.classList?.contains?.('reader-vertical-writing') === true
+            || probeDoc?.documentElement?.classList?.contains?.('vrtl') === true;
         readerLoadLog('processText.directionProbe.rawComputed', {
             href,
             stylesheetCount: stylesheetLinks.length,
@@ -855,9 +858,13 @@ const computeRawSectionWritingDirectionFromText = async (href, text, loadText) =
             rootClass: probeDoc?.documentElement?.className ?? null,
             writingMode: writingMode || null,
             direction,
+            hasVerticalWritingClass,
         });
         if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
             return { direction: 'vertical', writingMode };
+        }
+        if (hasVerticalWritingClass) {
+            return { direction: 'vertical', writingMode: 'vertical-rl' };
         }
         return null;
     } finally {
@@ -1468,7 +1475,8 @@ const cacheWarmerForegroundBusyState = () => {
     const waitsForInitialVisibleWork = globalThis.__manabiCacheWarmerWaitsForInitialVisibleWork === true && !initialVisibleWorkReadyState.ready;
     const reader = globalThis.reader ?? null;
     const foregroundVisibleRefreshPending =
-        !!reader?.nativeLookupHitTargetRefreshHandle
+        !!reader?.nativeLookupHitTargetRefreshTimeout
+        || !!reader?.nativeLookupHitTargetRefreshHandle
         || !!reader?.nativeLookupHitTargetSettleHandle
         || !!reader?.nativeMarkReadStateRefreshHandle
         || !!reader?.pageTrackingDeferredHandle
@@ -1964,20 +1972,43 @@ const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unk
         targetFontStyle.id = 'mnb-custom-fonts-inline';
         (doc.head || doc.documentElement).appendChild(targetFontStyle);
     }
+    let changed = false;
     if (desiredTag === 'link') {
-        targetFontStyle.rel = sourceFontStyle.rel || 'stylesheet';
-        targetFontStyle.href = sourceFontStyle.href;
+        const nextRel = sourceFontStyle.rel || 'stylesheet';
+        const nextHref = sourceFontStyle.href;
+        if (targetFontStyle.rel !== nextRel) {
+            targetFontStyle.rel = nextRel;
+            changed = true;
+        }
+        if (targetFontStyle.href !== nextHref) {
+            targetFontStyle.href = nextHref;
+            changed = true;
+        }
     } else {
-        targetFontStyle.textContent = sourceFontStyle.textContent || '';
+        const nextText = sourceFontStyle.textContent || '';
+        if (targetFontStyle.textContent !== nextText) {
+            targetFontStyle.textContent = nextText;
+            changed = true;
+        }
     }
     for (const [key, value] of Object.entries(sourceFontStyle.dataset || {})) {
-        targetFontStyle.dataset[key] = value;
+        if (targetFontStyle.dataset[key] !== value) {
+            targetFontStyle.dataset[key] = value;
+            changed = true;
+        }
     }
     if (doc.documentElement && sourceFontStyle.dataset?.mnbInjectedFontFamily) {
-        doc.documentElement.dataset.mnbInjectedFontFamily = sourceFontStyle.dataset.mnbInjectedFontFamily;
-        doc.documentElement.dataset.mnbFontInjected = '1';
+        const nextFamily = sourceFontStyle.dataset.mnbInjectedFontFamily;
+        if (doc.documentElement.dataset.mnbInjectedFontFamily !== nextFamily) {
+            doc.documentElement.dataset.mnbInjectedFontFamily = nextFamily;
+            changed = true;
+        }
+        if (doc.documentElement.dataset.mnbFontInjected !== '1') {
+            doc.documentElement.dataset.mnbFontInjected = '1';
+            changed = true;
+        }
     }
-    return true;
+    return changed;
 };
 
 window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
@@ -4845,7 +4876,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }, 50);
         return cachedCollection;
     }
-    const expandedRangeResult = useVisibleRange
+    const expandedRangeResult = useVisibleRange && !isEbookDoc
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects })
         : null;
     let viewportSample = null;
@@ -6603,6 +6634,7 @@ class Reader {
     unstableCFIs = new Set();
     visiblePageCollectionGeneration = 0;
     visiblePageSegmentSnapshot = null;
+    nativeLookupHitTargetRefreshTimeout = null;
     nativeLookupHitTargetRefreshHandle = null;
     pendingNativeLookupHitTargetRefresh = null;
     appliedBookContentHideNavigationDueToScroll = null;
@@ -7335,6 +7367,10 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
+        if (this.nativeLookupHitTargetRefreshTimeout) {
+            clearTimeout(this.nativeLookupHitTargetRefreshTimeout);
+            this.nativeLookupHitTargetRefreshTimeout = null;
+        }
         if (this.hasLoadedLastPosition === true && !shouldResetNativeLookupTargets) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         } else if (shouldResetNativeLookupTargets && globalThis.__manabiTimelineTraceAll === true) {
@@ -7396,7 +7432,11 @@ class Reader {
             return;
         }
         const visibleSegmentsStartedAt = performanceNowMs();
-        const visibleSegmentsResult = this.#visiblePageSegmentResult(doc, visibleRange, `page-tracking:${reason}`);
+        const visibleSegmentsResult = this.#visiblePageSegmentResult(doc, visibleRange, `page-tracking:${reason}`, {
+            includeClientRects: false,
+            postLookupTargets: false,
+            prepareLookupIndex: false,
+        });
         const visibleSegmentsElapsedMs = performanceNowMs() - visibleSegmentsStartedAt;
         if (syncGeneration !== this.visiblePageCollectionGeneration) {
             return;
@@ -8298,6 +8338,8 @@ class Reader {
         const collectionStartedAt = performanceNowMs();
         const effectivePostLookupTargets = postLookupTargets;
         const effectiveIncludeClientRects = includeClientRects && effectivePostLookupTargets;
+        const isEbookDoc = isEbookContentDocument(doc);
+        const collectionVisibleRange = isEbookDoc ? null : visibleRange;
         if (doc?.defaultView) {
             doc.defaultView.__manabiVisibleSegmentCollectionGeneration = this.visiblePageCollectionGeneration;
         }
@@ -8305,7 +8347,7 @@ class Reader {
         if (snapshot
             && snapshot.generation === this.visiblePageCollectionGeneration
             && snapshot.doc === doc
-            && snapshot.visibleRange === visibleRange
+            && snapshot.visibleRange === collectionVisibleRange
             && (snapshot.includeClientRects === effectiveIncludeClientRects || (snapshot.includeClientRects === true && effectiveIncludeClientRects === false))) {
             manabiTimelineMeasure('visibleSegments.snapshot', collectionStartedAt, {
                 reason,
@@ -8348,7 +8390,7 @@ class Reader {
             }
             return snapshot.result;
         }
-        const result = collectVisibleSegmentNodesFromRange(doc, visibleRange, {
+        const result = collectVisibleSegmentNodesFromRange(doc, collectionVisibleRange, {
             includeClientRects: effectiveIncludeClientRects,
             reason,
         });
@@ -8395,7 +8437,7 @@ class Reader {
         this.visiblePageSegmentSnapshot = {
             generation: this.visiblePageCollectionGeneration,
             doc,
-            visibleRange,
+            visibleRange: collectionVisibleRange,
             includeClientRects: effectiveIncludeClientRects,
             result,
             lookupIndex: prepareLookupIndex ? buildVisiblePageLookupIndex(doc, result, reason) : null,
@@ -8447,39 +8489,48 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
+        if (this.nativeLookupHitTargetRefreshTimeout) {
+            clearTimeout(this.nativeLookupHitTargetRefreshTimeout);
+            this.nativeLookupHitTargetRefreshTimeout = null;
+        }
         const scheduledAt = performanceNowMs();
+        const settleDelayMs = reason === 'manual' ? 0 : 180;
         if (globalThis.__manabiTimelineTraceAll === true) {
             readerLoadLog('viewer.nativeLookup.settle.schedule', {
                 reason,
                 explicitDoc: isDocumentLike(explicitDoc),
+                settleDelayMs,
             });
         }
-        this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
+        this.nativeLookupHitTargetRefreshTimeout = setTimeout(() => {
+            this.nativeLookupHitTargetRefreshTimeout = null;
             this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
-                const startedAt = performanceNowMs();
-                this.nativeLookupHitTargetRefreshHandle = null;
-                if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
-                    this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
-                    return;
-                }
-                const docs = isDocumentLike(explicitDoc)
-                    ? [explicitDoc]
-                    : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-                for (const doc of docs) {
-                    const visibleRange = this.#visibleRangeForDocument(doc);
-                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
-                }
-                const elapsedMs = performanceNowMs() - startedAt;
-                if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
-                    readerLoadLog('viewer.nativeLookup.settle.finish', {
-                        reason,
-                        scheduledDelayMs: safeRound(startedAt - scheduledAt, 1),
-                        elapsedMs: safeRound(elapsedMs, 1),
-                        docCount: docs.length,
-                    });
-                }
+                this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
+                    const startedAt = performanceNowMs();
+                    this.nativeLookupHitTargetRefreshHandle = null;
+                    if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
+                        this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
+                        return;
+                    }
+                    const docs = isDocumentLike(explicitDoc)
+                        ? [explicitDoc]
+                        : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+                    for (const doc of docs) {
+                        const visibleRange = this.#visibleRangeForDocument(doc);
+                        this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+                    }
+                    const elapsedMs = performanceNowMs() - startedAt;
+                    if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
+                        readerLoadLog('viewer.nativeLookup.settle.finish', {
+                            reason,
+                            scheduledDelayMs: safeRound(startedAt - scheduledAt, 1),
+                            elapsedMs: safeRound(elapsedMs, 1),
+                            docCount: docs.length,
+                        });
+                    }
+                });
             });
-        });
+        }, settleDelayMs);
     }
     #shouldDeferNativeLookupHitTargetRefresh(reason = 'unspecified') {
         if (reason === 'manual') {
