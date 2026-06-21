@@ -8,7 +8,8 @@ import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
-const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = true;
+// Required for EPUB page clipping after iframe/chrome layout settles.
+const MANABI_DISABLE_INITIAL_PAGINATOR_SETTLE = false;
 const MANABI_ENABLE_DID_DISPLAY_POST_FRAME_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
