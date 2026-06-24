@@ -33,6 +33,40 @@ private enum ReaderPrintDeduper {
     }
 }
 
+private var readerRestoreDebugLoggingEnabled: Bool {
+#if DEBUG
+    true
+#else
+    false
+#endif
+}
+
+private func readerIsSpineOnlyEpubCFI(_ cfi: String) -> Bool {
+    let trimmed = cfi.trimmingCharacters(in: .whitespacesAndNewlines)
+    let pattern = #"^epubcfi\(\s*/6/(\d+)(?:\[[^\]]*\])?\s*\)$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+          match.numberOfRanges > 1,
+          let spineStepRange = Range(match.range(at: 1), in: trimmed),
+          let spineStep = Int(trimmed[spineStepRange]) else {
+        return false
+    }
+    return spineStep > 0 && spineStep.isMultiple(of: 2)
+}
+
+private func readerRestoreCFIKind(_ cfi: String) -> String {
+    if cfi.isEmpty { return "none" }
+    if cfi.hasPrefix("mnb-loc-v1:") { return "synthetic" }
+    if readerIsSpineOnlyEpubCFI(cfi) { return "spine-cfi" }
+    if cfi.hasPrefix("epubcfi(") { return "epub-cfi" }
+    return "other"
+}
+
+private func readerJavaScriptObjectLiteral(_ object: Any) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object)
+    return String(decoding: data, as: UTF8.self)
+}
+
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -1135,7 +1169,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
-                        var loadArguments: [String: Any] = [
+                        var loadArguments: [String: any Sendable] = [
                             "url": loaderURL.absoluteString,
                             "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
                         ]
@@ -1150,50 +1184,22 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize),
                             "writingDirection": "original",
                         ]
-                        if let initialRestore {
-                            var restoreArguments: [String: Any] = ["cfi": initialRestore.cfi]
-                            if let fractionalCompletion = initialRestore.fractionalCompletion {
-                                let restoreFraction = Double(fractionalCompletion)
-                                restoreArguments["fractionalCompletion"] = restoreFraction
-                            }
-                            loadArguments["initialRestore"] = restoreArguments
-                        }
                         let hasInitialRestore = initialRestore != nil
                         let hasRestoreCFI = !(initialRestore?.cfi.isEmpty ?? true)
                         let restoreFraction = initialRestore?.fractionalCompletion.map { String($0) } ?? "nil"
                         let restoreCFI = initialRestore?.cfi ?? ""
-                        let restoreCFIKind: String = {
-                            if restoreCFI.isEmpty { return "none" }
-                            if restoreCFI.hasPrefix("mnb-loc-v1:") { return "synthetic" }
-                            if restoreCFI.hasPrefix("epubcfi(") { return "epub-cfi" }
-                            return "other"
-                        }()
+                        let restoreFractionValue = initialRestore?.fractionalCompletion.map { Double($0) }
+                        let restoreFractionArgument = restoreFractionValue.map { String($0) } ?? ""
+                        let sentInitialRestore = hasInitialRestore
+                        loadArguments["hasInitialRestore"] = hasInitialRestore
+                        loadArguments["initialRestoreCFI"] = restoreCFI
+                        loadArguments["hasInitialRestoreFraction"] = restoreFractionValue != nil
+                        loadArguments["initialRestoreFractionalCompletion"] = restoreFractionArgument
+                        let restoreCFIKind = readerRestoreCFIKind(restoreCFI)
                         let restoreCFIPrefix = restoreCFI.isEmpty ? "nil" : String(restoreCFI.prefix(48))
-                        print(
-                            "# JUN22 stage=swift.ebookInitialRestore.dispatch",
-                            "hasInitialRestore=\(hasInitialRestore)",
-                            "hasCFI=\(hasRestoreCFI)",
-                            "cfiKind=\(restoreCFIKind)",
-                            "cfiLength=\(initialRestore?.cfi.count ?? 0)",
-                            "cfiPrefix=\(restoreCFIPrefix)",
-                            "fractionalCompletion=\(restoreFraction)",
-                            "contentURL=\(url.absoluteString)"
-                        )
-                        print(
-                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
-                        )
-                        do {
-                            let loadArgumentsData = try JSONSerialization.data(withJSONObject: loadArguments)
-                            let loadArgumentsJSON = String(decoding: loadArgumentsData, as: UTF8.self)
-                            _ = try await scriptCaller.evaluateJavaScript(
-                                "window.loadEBook(JSON.parse(loadArgumentsJSON))",
-                                arguments: [
-                                    "loadArgumentsJSON": loadArgumentsJSON,
-                                ],
-                                in: message.frameInfo
-                            )
+                        if readerRestoreDebugLoggingEnabled {
                             print(
-                                "# JUN22 stage=swift.ebookInitialRestore.evaluate.finished",
+                                "# RESTOREDEBUG stage=swift.ebookInitialRestore.dispatch",
                                 "hasInitialRestore=\(hasInitialRestore)",
                                 "hasCFI=\(hasRestoreCFI)",
                                 "cfiKind=\(restoreCFIKind)",
@@ -1202,18 +1208,83 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 "fractionalCompletion=\(restoreFraction)",
                                 "contentURL=\(url.absoluteString)"
                             )
-                        } catch {
-                            print(
-                                "# JUN22 stage=swift.ebookInitialRestore.evaluate.error",
-                                "hasInitialRestore=\(hasInitialRestore)",
-                                "hasCFI=\(hasRestoreCFI)",
-                                "cfiKind=\(restoreCFIKind)",
-                                "cfiLength=\(initialRestore?.cfi.count ?? 0)",
-                                "cfiPrefix=\(restoreCFIPrefix)",
-                                "fractionalCompletion=\(restoreFraction)",
-                                "contentURL=\(url.absoluteString)",
-                                "error=\(error.localizedDescription)"
+                        }
+                        print(
+                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) sentInitialRestore=\(sentInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
+                        )
+                        if readerRestoreDebugLoggingEnabled {
+                            do {
+                                let loadArgumentsJSON = try readerJavaScriptObjectLiteral(loadArguments)
+                                print(
+                                    "# RESTOREDEBUG stage=swift.ebookInitialRestore.loadArguments",
+                                    "hasInitialRestore=\(hasInitialRestore)",
+                                    "sentInitialRestore=\(sentInitialRestore)",
+                                    "usesFlatBridge=true",
+                                    "serializedFraction=\(restoreFractionValue.map { String($0) } ?? "nil")",
+                                    "fractionArgumentType=String",
+                                    "fractionArgumentLength=\(restoreFractionArgument.count)",
+                                    "serializedFractionArgument=\(restoreFractionArgument.isEmpty ? "nil" : restoreFractionArgument)",
+                                    "json=\(loadArgumentsJSON)"
+                                )
+                            } catch {
+                                print(
+                                    "# RESTOREDEBUG stage=swift.ebookInitialRestore.loadArguments.error",
+                                    "hasInitialRestore=\(hasInitialRestore)",
+                                    "error=\(error.localizedDescription)"
+                                )
+                            }
+                        }
+                        do {
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                """
+                                const initialRestore = hasInitialRestore
+                                    ? { cfi: initialRestoreCFI }
+                                    : null;
+                                if (initialRestore && hasInitialRestoreFraction) {
+                                    initialRestore.fractionalCompletion = initialRestoreFractionalCompletion;
+                                }
+                                globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.swiftBridge.beforeCall', {
+                                    hasInitialRestore,
+                                    hasInitialRestoreFraction,
+                                    cfiLength: typeof initialRestoreCFI === 'string' ? initialRestoreCFI.length : 0,
+                                    fractionArgumentType: typeof initialRestoreFractionalCompletion,
+                                    fractionArgumentValue: initialRestoreFractionalCompletion,
+                                    initialRestoreFractionType: typeof initialRestore?.fractionalCompletion,
+                                    initialRestoreFractionValue: initialRestore?.fractionalCompletion ?? null,
+                                });
+                                window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState });
+                                """,
+                                arguments: loadArguments,
+                                in: message.frameInfo
                             )
+                            if readerRestoreDebugLoggingEnabled {
+                                print(
+                                    "# RESTOREDEBUG stage=swift.ebookInitialRestore.evaluate.finished",
+                                    "hasInitialRestore=\(hasInitialRestore)",
+                                    "sentInitialRestore=\(sentInitialRestore)",
+                                    "hasCFI=\(hasRestoreCFI)",
+                                    "cfiKind=\(restoreCFIKind)",
+                                    "cfiLength=\(initialRestore?.cfi.count ?? 0)",
+                                    "cfiPrefix=\(restoreCFIPrefix)",
+                                    "fractionalCompletion=\(restoreFraction)",
+                                    "contentURL=\(url.absoluteString)"
+                                )
+                            }
+                        } catch {
+                            if readerRestoreDebugLoggingEnabled {
+                                print(
+                                    "# RESTOREDEBUG stage=swift.ebookInitialRestore.evaluate.error",
+                                    "hasInitialRestore=\(hasInitialRestore)",
+                                    "sentInitialRestore=\(sentInitialRestore)",
+                                    "hasCFI=\(hasRestoreCFI)",
+                                    "cfiKind=\(restoreCFIKind)",
+                                    "cfiLength=\(initialRestore?.cfi.count ?? 0)",
+                                    "cfiPrefix=\(restoreCFIPrefix)",
+                                    "fractionalCompletion=\(restoreFraction)",
+                                    "contentURL=\(url.absoluteString)",
+                                    "error=\(error.localizedDescription)"
+                                )
+                            }
                         }
                     }
                 }
@@ -1221,16 +1292,18 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("updateReadingProgress", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
-                print(
-                    "# JUN22 stage=swift.updateReadingProgress.received",
-                    "reason=\(result.reason)",
-                    "fractionalCompletion=\(result.fractionalCompletion)",
-                    "cfiLength=\(result.cfi.count)",
-                    "sectionIndex=\(result.sectionIndex.map(String.init) ?? "nil")",
-                    "currentPage=\(result.currentPageNumber.map(String.init) ?? "nil")",
-                    "totalPages=\(result.totalPages.map(String.init) ?? "nil")",
-                    "hasVisibleJapaneseText=\(result.hasVisibleJapaneseText.map(String.init) ?? "nil")"
-                )
+                if readerRestoreDebugLoggingEnabled {
+                    print(
+                        "# RESTOREDEBUG stage=swift.updateReadingProgress.received",
+                        "reason=\(result.reason)",
+                        "fractionalCompletion=\(result.fractionalCompletion)",
+                        "cfiLength=\(result.cfi.count)",
+                        "sectionIndex=\(result.sectionIndex.map(String.init) ?? "nil")",
+                        "currentPage=\(result.currentPageNumber.map(String.init) ?? "nil")",
+                        "totalPages=\(result.totalPages.map(String.init) ?? "nil")",
+                        "hasVisibleJapaneseText=\(result.hasVisibleJapaneseText.map(String.init) ?? "nil")"
+                    )
+                }
                 handleNavigationVisibility(for: result)
             }),
             ("videoStatus", { @RealmBackgroundActor [weak self] message in

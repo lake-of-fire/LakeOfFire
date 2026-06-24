@@ -340,9 +340,40 @@ export class View extends HTMLElement {
         //        return resolved
     }
     async goToFraction(frac) {
+        const now = typeof globalThis.__manabiPerformanceNowMs === 'function'
+            ? globalThis.__manabiPerformanceNowMs
+            : () => Date.now();
+        const round = globalThis.__manabiSafeRound ?? ((value) => value);
+        const startedAt = now();
         const [index, anchor] = this.#sectionProgress.getSection(frac)
-        await this.renderer.goTo({ index, anchor })
-        this.history.pushState({ fraction: frac })
+        globalThis.__manabiReaderLoadLog?.('view.goToFraction.resolved', {
+            fraction: typeof frac === 'number' ? round(frac, 6) : null,
+            index,
+            anchorType: typeof anchor,
+            anchor: typeof anchor === 'number' ? round(anchor, 6) : null,
+            hasRenderer: !!this.renderer,
+        });
+        try {
+            await this.renderer.goTo({ index, anchor })
+            this.history.pushState({ fraction: frac })
+            globalThis.__manabiReaderLoadLog?.('view.goToFraction.finish', {
+                fraction: typeof frac === 'number' ? round(frac, 6) : null,
+                index,
+                anchorType: typeof anchor,
+                anchor: typeof anchor === 'number' ? round(anchor, 6) : null,
+                elapsedMs: round(now() - startedAt, 1),
+            });
+        } catch (error) {
+            globalThis.__manabiReaderLoadLog?.('view.goToFraction.error', {
+                fraction: typeof frac === 'number' ? round(frac, 6) : null,
+                index,
+                anchorType: typeof anchor,
+                anchor: typeof anchor === 'number' ? round(anchor, 6) : null,
+                elapsedMs: round(now() - startedAt, 1),
+                error: error?.message || String(error),
+            });
+            throw error;
+        }
     }
     async select(target) {
         try {
