@@ -279,9 +279,10 @@ const nodeToParts = (node, offset) => {
     }
     const tagName = node.nodeType === 1 ? node.localName?.toLowerCase() : ''
     const part = { id, index, offset }
-    // Generated mnb-* IDs are per-render implementation details; do not persist them in CFI.
+    // Generated reader IDs are per-render implementation details; do not persist them in CFI.
     if (
         part.id?.startsWith('mnb-') ||
+        /^_m[0-9A-Za-z]+x[0-9A-Za-z]+$/.test(part.id || '') ||
         tagName?.startsWith('mnb-') ||
         tagName === 'reader-sentinel'
         ) {

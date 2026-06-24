@@ -542,9 +542,9 @@ const isJapaneseLanguageTag = value => {
 
 const getJapaneseLayoutFlags = doc => {
     const hasManabiSentences = !!doc?.body?.matches?.('[data-mnb-has-sentences="true"]')
-        || !!doc?.querySelector?.('mnb-sen')
+        || !!doc?.querySelector?.('m-s')
     const hasManabiSegments = !!doc?.body?.matches?.('[data-mnb-has-segments="true"]')
-        || !!doc?.querySelector?.('mnb-seg')
+        || !!doc?.querySelector?.('m-m')
     const lang =
         doc?.documentElement?.getAttribute?.('lang')
         || doc?.documentElement?.getAttribute?.('xml:lang')

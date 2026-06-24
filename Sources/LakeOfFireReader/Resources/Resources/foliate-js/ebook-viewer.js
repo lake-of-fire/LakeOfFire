@@ -48,6 +48,30 @@ const readerLoadLog = (stage, payload = {}) => {
 };
 globalThis.__manabiReaderLoadLog = readerLoadLog;
 
+const jun22Log = (stage, payload = {}) => {
+    try {
+        const details = Object.entries(payload)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
+            .join(' ');
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            details.length > 0 ? `# JUN22 stage=${stage} ${details}` : `# JUN22 stage=${stage}`
+        );
+    } catch (_error) {}
+};
+globalThis.__manabiJun22Log = jun22Log;
+
+const manabiReaderSegmentSelector = 'm-m';
+const manabiReaderSurfaceSelector = 'm-t';
+const manabiReaderSentenceSelector = 'm-s';
+const manabiReaderSegmentTagNames = new Set(['m-m']);
+const manabiReaderSurfaceTagNames = new Set(['m-t']);
+const manabiReaderSentenceTagNames = new Set(['m-s']);
+const manabiReaderTagName = element => element?.tagName?.toLowerCase?.() || '';
+const manabiIsReaderSegmentElement = element => manabiReaderSegmentTagNames.has(manabiReaderTagName(element));
+const manabiIsReaderSurfaceElement = element => manabiReaderSurfaceTagNames.has(manabiReaderTagName(element));
+const manabiIsReaderSentenceElement = element => manabiReaderSentenceTagNames.has(manabiReaderTagName(element));
+
 const MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS = false;
 globalThis.__manabiEbookNativeLookupHitTargetsDisabled = MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS;
 
@@ -191,7 +215,7 @@ const describeMarkReadNode = (node) => {
             ? element.className.split(/\s+/).filter(Boolean).slice(0, 4)
             : [],
         segmentIdentifier: segmentIdentifierForNode(element),
-        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('mnb-sen') || null),
+        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.(manabiReaderSentenceSelector) || null),
     };
 };
 
@@ -234,9 +258,9 @@ const logHighlightGradientDiagnostic = (reason = 'unspecified', explicitDoc = nu
         if (!isDocumentLike(doc)) return;
         const body = doc.body;
         const root = doc.documentElement;
-        const learningSurface = doc.querySelector?.('mnb-seg.mnb-learning > mnb-sur');
-        const learningSegment = learningSurface?.closest?.('mnb-seg') ?? doc.querySelector?.('mnb-seg.mnb-learning');
-        const surface = learningSurface ?? learningSegment?.querySelector?.('mnb-sur') ?? null;
+        const learningSurface = doc.querySelector?.('m-m.mnb-learning > m-t');
+        const learningSegment = learningSurface?.closest?.(manabiReaderSegmentSelector) ?? doc.querySelector?.('m-m.mnb-learning');
+        const surface = learningSurface ?? learningSegment?.querySelector?.('m-t') ?? null;
         if (!body || !learningSegment) return;
         const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
         const rootStyle = doc.defaultView?.getComputedStyle?.(root);
@@ -351,6 +375,27 @@ const parseSyntheticRestoreLocator = (value) => {
         rendererTotal,
         fractionInSection,
     };
+};
+
+const parseSpineOnlyEpubCFI = (value) => {
+    if (typeof value !== 'string') return null;
+    const match = value.trim().match(/^epubcfi\(\s*\/6\/(\d+)(?:\[[^\]]*\])?\s*\)$/);
+    if (!match) return null;
+    const spineStep = Number(match[1]);
+    if (!Number.isInteger(spineStep) || spineStep <= 0 || spineStep % 2 !== 0) return null;
+    return (spineStep / 2) - 1;
+};
+
+const coerceRestoreFraction = (...values) => {
+    const numbers = values
+        .map((value) => {
+            if (typeof value === 'number') return value;
+            if (typeof value === 'string' && value.trim().length > 0) return Number(value);
+            return NaN;
+        })
+        .filter((value) => Number.isFinite(value))
+        .map((value) => Math.max(0, Math.min(1, value)));
+    return numbers.find((value) => value > 0) ?? numbers[0] ?? null;
 };
 
 const visiblePrimeSignatureForIndex = (index) => {
@@ -555,8 +600,8 @@ const rememberReplaceTextResult = (key, value) => {
 };
 
 const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
-    const hasSentences = typeof html === 'string' && /<mnb-sen\b/i.test(html);
-    const hasSegments = typeof html === 'string' && /<mnb-seg\b/i.test(html);
+    const hasSentences = typeof html === 'string' && /<m-s\b/i.test(html);
+    const hasSegments = typeof html === 'string' && /<m-m\b/i.test(html);
     return injectBodyDatasetAttributes(html, {
         'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
         'data-mnb-source-href': href,
@@ -1381,8 +1426,8 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
         readerWritingMode: readerBodyStyle?.writingMode || null,
         readerDirection: readerBodyStyle?.direction || null,
         readerBodyClass: readerBody?.className || null,
-        readerBodySegmentCount: readerDoc?.querySelectorAll?.('mnb-seg')?.length ?? null,
-        readerBodySentenceCount: readerDoc?.querySelectorAll?.('mnb-sen')?.length ?? null,
+        readerBodySegmentCount: readerDoc?.querySelectorAll?.('m-m')?.length ?? null,
+        readerBodySentenceCount: readerDoc?.querySelectorAll?.('m-s')?.length ?? null,
         readerDocumentClientWidth: readerRoot?.clientWidth ?? null,
         readerDocumentClientHeight: readerRoot?.clientHeight ?? null,
         ...extra,
@@ -1741,7 +1786,7 @@ const classifySingleMediaDocumentForInitialLayout = (doc, reason = 'unknown') =>
         .filter((element) => {
             if (element?.nodeType !== 1) return false;
             if (element.matches(mediaSelector)) return false;
-            if (element.closest('mnb-seg, .mnb-tracking-container')) return false;
+            if (element.closest('m-m, .mnb-tracking-container')) return false;
             if (element.matches('.h-valign-width, .v-valign-height, .inline-width, .inline-height')) return false;
             const tagName = element.tagName?.toLowerCase?.() ?? '';
             if (tagName === 'br' || tagName === 'script' || tagName === 'style') return false;
@@ -3709,6 +3754,7 @@ const segmentMetadataTableValue = (table, index, fallback = null) => (
 
 const expandSegmentIDToken = (token, version) => {
     if (typeof token !== 'string' || token.length === 0) return null;
+    if (version >= 5 && token.startsWith('~')) return `_m${token.slice(1)}`;
     if (version >= 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
     return token;
 };
@@ -4150,7 +4196,7 @@ const segmentIdentifierForNode = (segmentNode) => {
     if (metadata?.sid) {
         return metadata.sid;
     }
-    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
+    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
     if (sentenceIdentifier && typeof metadata?.h === 'string' && metadata.h.length > 0) {
         return `${sentenceIdentifier}-${metadata.h}`;
     }
@@ -4165,7 +4211,7 @@ const segmentIdentifierAliasesForNode = (segmentNode) => {
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
     addAlias(metadata?.sid);
-    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
+    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
     if (sentenceIdentifier && typeof metadata?.h === 'string' && metadata.h.length > 0) {
         addAlias(`${sentenceIdentifier}-${metadata.h}`);
     }
@@ -4180,7 +4226,7 @@ const segmentIdentifierAliasesForNode = (segmentNode) => {
 const buildExampleSentenceForSegment = (segmentNode) => {
     const doc = segmentNode?.ownerDocument || document;
     const metadata = segmentMetadataForNode(segmentNode);
-    const sentenceID = metadata?.sentenceID || sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen')) || null;
+    const sentenceID = metadata?.sentenceID || sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector)) || null;
     const sidecarSentence = sentenceID
         ? segmentMetadataBootstrap(doc).sentenceArchive?.get?.(sentenceID)
         : null;
@@ -4190,7 +4236,7 @@ const buildExampleSentenceForSegment = (segmentNode) => {
             sentenceJMDictIDs: sidecarSentence.sentenceJMDictIDs ?? null,
         };
     }
-    const sentenceNode = segmentNode?.closest?.('mnb-sen');
+    const sentenceNode = segmentNode?.closest?.(manabiReaderSentenceSelector);
     if (!(sentenceNode instanceof Element)) {
         return {
             sentenceHTML: null,
@@ -4198,7 +4244,7 @@ const buildExampleSentenceForSegment = (segmentNode) => {
         };
     }
     const sentenceJMDictIDs = new Set();
-    for (const nestedSegment of sentenceNode.querySelectorAll('mnb-seg')) {
+    for (const nestedSegment of sentenceNode.querySelectorAll(manabiReaderSegmentSelector)) {
         for (const entryID of segmentEntryIDsForNode(nestedSegment, 'jmdict')) {
             sentenceJMDictIDs.add(entryID);
         }
@@ -4370,7 +4416,7 @@ const orderedSegmentNodesForDocument = (doc) => {
     if (cached?.root === doc.body) {
         return cached;
     }
-    const nodes = Array.from(doc.querySelectorAll?.('mnb-seg') ?? []);
+    const nodes = Array.from(doc.querySelectorAll?.('m-m') ?? []);
     const indexByNode = new Map();
     nodes.forEach((node, index) => {
         indexByNode.set(node, index);
@@ -4392,13 +4438,13 @@ const rangeBoundarySegmentIndex = (visibleRange, boundary, orderedSegments) => {
         ? visibleRange.endContainer
         : visibleRange.endContainer?.parentElement;
     const element = boundary === 'end' ? endElement : startElement;
-    const directSegment = element?.closest?.('mnb-seg');
+    const directSegment = element?.closest?.(manabiReaderSegmentSelector);
     if (directSegment && orderedSegments.indexByNode.has(directSegment)) {
         return orderedSegments.indexByNode.get(directSegment);
     }
-    const sentence = element?.closest?.('mnb-sen');
+    const sentence = element?.closest?.(manabiReaderSentenceSelector);
     if (sentence?.nodeType === Node.ELEMENT_NODE) {
-        const sentenceSegments = Array.from(sentence.querySelectorAll?.('mnb-seg') ?? []);
+        const sentenceSegments = Array.from(sentence.querySelectorAll?.('m-m') ?? []);
         const segment = boundary === 'end'
             ? sentenceSegments[sentenceSegments.length - 1]
             : sentenceSegments[0];
@@ -4426,7 +4472,7 @@ const collectSegmentNodesInVisibleRange = (visibleRange) => {
     const nodes = [];
     const appendSegment = (node) => {
         if (node?.nodeType !== Node.ELEMENT_NODE) return;
-        if (node.matches?.('mnb-seg')) {
+        if (node.matches?.(manabiReaderSegmentSelector)) {
             nodes.push(node);
         }
     };
@@ -4561,7 +4607,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
         if (candidateSegments.length >= candidateLimit) {
             return;
         }
-        if (segment?.tagName?.toLowerCase?.() !== 'mnb-seg' || seenSegments.has(segment)) {
+        if (segment?.tagName?.toLowerCase?.() !== 'm-m' || seenSegments.has(segment)) {
             return;
         }
         seenSegments.add(segment);
@@ -4572,14 +4618,14 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
             return;
         }
         seenRoots.add(root);
-        if (root.matches?.('mnb-seg')) {
+        if (root.matches?.(manabiReaderSegmentSelector)) {
             appendSegment(root);
             return;
         }
-        if (!root.matches?.('mnb-sen, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure')) {
+        if (!root.matches?.('m-s, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure')) {
             return;
         }
-        for (const segment of root.querySelectorAll?.('mnb-seg') ?? []) {
+        for (const segment of root.querySelectorAll?.('m-m') ?? []) {
             appendSegment(segment);
             if (candidateSegments.length >= candidateLimit) {
                 break;
@@ -4600,8 +4646,8 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
             ? node
             : node?.parentElement;
         appendSegment(element);
-        appendSegment(element?.closest?.('mnb-seg'));
-        appendRootSegments(element?.closest?.('mnb-sen, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure'));
+        appendSegment(element?.closest?.(manabiReaderSegmentSelector));
+        appendRootSegments(element?.closest?.('m-s, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure'));
     };
     const useSparseSampling = sampleDensity === 'sparse';
     const xFractions = useSparseSampling
@@ -4621,8 +4667,8 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
             caretSampleCount += 1;
             for (const element of doc.elementsFromPoint(x, y) || []) {
                 appendSegment(element);
-                appendSegment(element?.closest?.('mnb-seg'));
-                appendRootSegments(element?.closest?.('mnb-sen, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure'));
+                appendSegment(element?.closest?.(manabiReaderSegmentSelector));
+                appendRootSegments(element?.closest?.('m-s, p, li, h1, h2, h3, h4, h5, h6, blockquote, figure'));
                 if (candidateSegments.length >= candidateLimit) {
                     break;
                 }
@@ -4695,7 +4741,7 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             outOfViewportCount += 1;
             continue;
         }
-        const sentenceNode = segmentNode.closest('mnb-sen');
+        const sentenceNode = segmentNode.closest(manabiReaderSentenceSelector);
         visibleSegments.push({
             node: segmentNode,
             rect,
@@ -4911,8 +4957,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         ? rangeCommonAncestorElement
         : doc;
     const allSegmentNodes = boundedSegmentNodes || (isEbookDoc && segmentSearchRoot === doc ? [] : [
-            ...(segmentSearchRoot.matches?.('mnb-seg') ? [segmentSearchRoot] : []),
-            ...Array.from(segmentSearchRoot.querySelectorAll?.('mnb-seg') ?? []),
+            ...(segmentSearchRoot.matches?.(manabiReaderSegmentSelector) ? [segmentSearchRoot] : []),
+            ...Array.from(segmentSearchRoot.querySelectorAll?.('m-m') ?? []),
         ]);
     const shouldTrustEbookViewportSample = isEbookDoc && !!viewportSampleSegmentNodes && boundedSegmentNodes === viewportSampleSegmentNodes;
     const queryCompletedAt = performance.now();
@@ -4997,7 +5043,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             outOfViewportCount += 1;
             continue;
         }
-        const sentenceNode = segmentNode.closest('mnb-sen');
+        const sentenceNode = segmentNode.closest(manabiReaderSentenceSelector);
         visibleSegments.push({
             node: segmentNode,
             rect,
@@ -5068,6 +5114,12 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
     const indexedNodes = new Set();
     const sentenceIdentifiers = new Set();
     let rubyPresenceMarkedCount = 0;
+    const surfaceTextForLookupSegment = (node) => {
+        const surfaceText = Array.from(node?.querySelectorAll?.(manabiReaderSurfaceSelector) ?? [])
+            .map(surfaceElement => surfaceElement.textContent || '')
+            .join('');
+        return surfaceText || null;
+    };
     const addMetadataAlias = (metadata, alias) => {
         if (typeof alias !== 'string' || alias.length === 0) return;
         bySegmentIdentifier.set(alias, metadata);
@@ -5089,7 +5141,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         if (sourceMetadata.r === true) {
             rubyPresenceMarkedCount += 1;
         }
-        const sentenceNode = node.closest?.('mnb-sen') || null;
+        const sentenceNode = node.closest?.(manabiReaderSentenceSelector) || null;
         const sentenceIdentifier = item?.sentenceIdentifier
             || sentenceIdentifierForNode(sentenceNode)
             || sourceMetadata.sentenceID
@@ -5115,7 +5167,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             sentenceIdentifier,
             segmentIdentifier,
             visibleIndexSource: source,
-            x: sourceMetadata.x || node.textContent?.trim?.() || null,
+            x: sourceMetadata.x || surfaceTextForLookupSegment(node),
         };
         if (elementID) {
             byElementID.set(elementID, metadata);
@@ -5254,13 +5306,14 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
     const visualViewportScale = Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1;
-    const cssInsets = (() => {
+    const shouldIncludeTargetDiagnostics = globalThis.manabiVerboseLookupPositionTargets === true;
+    const cssInsets = shouldIncludeTargetDiagnostics ? (() => {
         try {
             return view?.manabiCSSInsetDiagnostics?.() ?? globalThis.manabiCSSInsetDiagnostics?.() ?? {};
         } catch (_error) {
             return {};
         }
-    })();
+    })() : {};
     const viewportPayload = {
         visualViewportWidth: viewportWidth,
         visualViewportHeight: viewportHeight,
@@ -5304,7 +5357,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
     const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const targets = [];
-    const sampleTargets = [];
+    const sampleTargets = shouldIncludeTargetDiagnostics ? [] : null;
     let minTargetLeft = Infinity;
     let minTargetTop = Infinity;
     let maxTargetRight = -Infinity;
@@ -5323,11 +5376,11 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         })), viewportPayload);
         if (target) {
             targets.push(target);
-            if (sampleTargets.length < 5) {
+            if (sampleTargets && sampleTargets.length < 5) {
                 const firstRect = target.rects?.[0] ?? null;
                 sampleTargets.push({
                     elementId: target.elementId ?? null,
-                    surface: item.node?.querySelector?.('mnb-sur')?.textContent ?? item.node?.textContent ?? null,
+                    surface: item.node?.querySelector?.('m-t')?.textContent ?? item.node?.textContent ?? null,
                     rectCount: target.rects?.length ?? 0,
                     rectLeft: Number.isFinite(Number(firstRect?.left)) ? safeRound(Number(firstRect.left), 2) : null,
                     rectTop: Number.isFinite(Number(firstRect?.top)) ? safeRound(Number(firstRect.top), 2) : null,
@@ -5366,7 +5419,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             viewportLeft,
             viewportTop,
             firstVisibleSegmentID: visibleSegmentsResult?.visibleSegments?.[0]?.node?.id ?? null,
-            firstVisibleSurface: visibleSegmentsResult?.visibleSegments?.[0]?.node?.querySelector?.('mnb-sur')?.textContent ?? null,
+            firstVisibleSurface: visibleSegmentsResult?.visibleSegments?.[0]?.node?.querySelector?.('m-t')?.textContent ?? null,
         });
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
@@ -5419,7 +5472,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         minTop: Number.isFinite(minTargetTop) ? safeRound(minTargetTop, 2) : null,
         maxRight: Number.isFinite(maxTargetRight) ? safeRound(maxTargetRight, 2) : null,
         maxBottom: Number.isFinite(maxTargetBottom) ? safeRound(maxTargetBottom, 2) : null,
-        sampleTargets: JSON.stringify(sampleTargets),
+        sampleTargets: JSON.stringify(sampleTargets ?? []),
     });
     manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
         reason,
@@ -5463,6 +5516,88 @@ const visibleTrackingSignatureForResult = (doc, visibleSegmentsResult, extraPart
     ].join('|');
 };
 
+const hydrationItemForSegmentNode = (segmentNode) => {
+    if (segmentNode?.tagName?.toLowerCase?.() !== 'm-m' || segmentNode.closest?.('.tippy-box')) {
+        return null;
+    }
+    const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+    if (!segmentIdentifier) {
+        return null;
+    }
+    const sentenceNode = segmentNode.closest(manabiReaderSentenceSelector);
+    return {
+        node: segmentNode,
+        rect: null,
+        rects: [],
+        segmentIdentifier,
+        segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
+        sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
+    };
+};
+
+const expandedVisibleSegmentsResultForStatusHydration = (doc, visibleSegmentsResult, {
+    adjacentSegmentCount = 96,
+} = {}) => {
+    const visibleSegments = visibleSegmentsResult?.visibleSegments ?? [];
+    if (!isDocumentLike(doc) || visibleSegments.length === 0 || adjacentSegmentCount <= 0) {
+        return visibleSegmentsResult;
+    }
+    const orderedSegments = orderedSegmentNodesForDocument(doc);
+    const indexByNode = orderedSegments.indexByNode;
+    const visibleIndexes = visibleSegments
+        .map((item) => indexByNode.get(item?.node))
+        .filter((index) => Number.isFinite(index));
+    if (visibleIndexes.length === 0) {
+        return visibleSegmentsResult;
+    }
+    const firstIndex = Math.min(...visibleIndexes);
+    const lastIndex = Math.max(...visibleIndexes);
+    const windowStart = Math.max(0, firstIndex - adjacentSegmentCount);
+    const windowEnd = Math.min(orderedSegments.nodes.length - 1, lastIndex + adjacentSegmentCount);
+    const seenNodes = new Set();
+    const expandedSegments = [];
+    for (const item of visibleSegments) {
+        if (!item?.node || seenNodes.has(item.node)) {
+            continue;
+        }
+        seenNodes.add(item.node);
+        expandedSegments.push(item);
+    }
+    let addedCount = 0;
+    for (let index = windowStart; index <= windowEnd; index += 1) {
+        const node = orderedSegments.nodes[index];
+        if (!node || seenNodes.has(node)) {
+            continue;
+        }
+        const item = hydrationItemForSegmentNode(node);
+        if (!item) {
+            continue;
+        }
+        seenNodes.add(node);
+        expandedSegments.push(item);
+        addedCount += 1;
+    }
+    if (addedCount === 0) {
+        return visibleSegmentsResult;
+    }
+    expandedSegments.sort((first, second) => {
+        const firstIndexForNode = indexByNode.get(first?.node);
+        const secondIndexForNode = indexByNode.get(second?.node);
+        if (Number.isFinite(firstIndexForNode) && Number.isFinite(secondIndexForNode)) {
+            return firstIndexForNode - secondIndexForNode;
+        }
+        return 0;
+    });
+    return {
+        ...visibleSegmentsResult,
+        visibleSegments: expandedSegments,
+        hydrationStrictVisibleSegmentCount: visibleSegments.length,
+        hydrationExpandedSegmentCount: expandedSegments.length,
+        hydrationAdjacentAddedSegmentCount: addedCount,
+        hydrationAdjacentSegmentCount: adjacentSegmentCount,
+    };
+};
+
 const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const startedAt = performanceNowMs();
     const view = doc?.defaultView ?? null;
@@ -5470,8 +5605,9 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
     if (typeof hydrator !== 'function') {
         return null;
     }
-    const visibleSegments = visibleSegmentsResult?.visibleSegments ?? [];
-    const signature = visibleTrackingSignatureForResult(doc, visibleSegmentsResult);
+    const hydrationResult = expandedVisibleSegmentsResultForStatusHydration(doc, visibleSegmentsResult);
+    const visibleSegments = hydrationResult?.visibleSegments ?? [];
+    const signature = visibleTrackingSignatureForResult(doc, hydrationResult);
     if (doc.__manabiLastVisibleStatusHydrationRequestSignature === signature) {
         const coverage = {
             visibleSegmentCount: visibleSegments.length,
@@ -5495,6 +5631,8 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
         readerLoadLog('viewer.visibleStatusHydration.start', {
             reason,
             visibleSegmentCount: visibleSegments.length,
+            strictVisibleSegmentCount: hydrationResult?.hydrationStrictVisibleSegmentCount ?? visibleSegmentsResult?.visibleSegments?.length ?? visibleSegments.length,
+            adjacentAddedSegmentCount: hydrationResult?.hydrationAdjacentAddedSegmentCount ?? 0,
             signatureLength: signature.length,
         });
     }
@@ -5507,6 +5645,8 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
                 reason,
                 elapsedMs: safeRound(elapsedMs, 1),
                 visibleSegmentCount: visibleSegments.length,
+                strictVisibleSegmentCount: hydrationResult?.hydrationStrictVisibleSegmentCount ?? visibleSegmentsResult?.visibleSegments?.length ?? visibleSegments.length,
+                adjacentAddedSegmentCount: hydrationResult?.hydrationAdjacentAddedSegmentCount ?? 0,
                 skipped: coverage?.skipped ?? null,
                 mutatedCount: coverage?.mutatedCount ?? null,
                 wouldMutateCount: coverage?.wouldMutateCount ?? null,
@@ -5684,8 +5824,8 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             });
         }
         if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
-            const sentenceNode = item.node.closest('mnb-sen');
-            const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('mnb-seg') || [])
+            const sentenceNode = item.node.closest(manabiReaderSentenceSelector);
+            const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('m-m') || [])
                 .map((segmentNode) => segmentIdentifierAliasesForNode(segmentNode))
                 .filter((aliases) => aliases.length > 0);
             sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifierAliasSets);
@@ -6161,8 +6301,8 @@ const getCSSForBookContent = ({
     :lang(ja),
     body[data-mnb-has-sentences="true"],
     body[data-mnb-has-segments="true"],
-    body[data-mnb-has-sentences="true"] mnb-sen,
-    body[data-mnb-has-segments="true"] mnb-seg {
+    body[data-mnb-has-sentences="true"] m-s,
+    body[data-mnb-has-segments="true"] m-m {
         line-break: strict;
         -webkit-line-break: strict;
         word-break: normal;
@@ -6193,8 +6333,8 @@ const getCSSForBookContent = ({
     :lang(ja):is(p, li, blockquote, dd),
     body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
     body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
-    body[data-mnb-has-sentences="true"] mnb-sen,
-    body[data-mnb-has-segments="true"] mnb-seg {
+    body[data-mnb-has-sentences="true"] m-s,
+    body[data-mnb-has-segments="true"] m-m {
         /*
            Reserve ruby annotation space even on lines without <rt>. WebKit's
            ruby layout otherwise lets mixed ruby/non-ruby Japanese text fall
@@ -6232,16 +6372,16 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
-    mnb-con,
-    mnb-sen {
+    m-c,
+    m-s {
         display: contents !important;
     }
 
-    mnb-sur {
+    m-t {
         contain: style paint !important;
     }
 
-    mnb-seg {
+    m-m {
         /* Keep book segments atomic so page turns never split a segment across pages. */
         display: inline-block !important;
         contain: style paint !important;
@@ -6259,14 +6399,14 @@ const getCSSForBookContent = ({
         --mnb-highlight-gradient-direction: to right;
     }
     html.vrtl body [data-mnb-horizontal-writing-island="true"],
-    html.vrtl body mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-    html.vrtl body mnb-sur[data-mnb-horizontal-writing-island="true"],
+    html.vrtl body m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+    html.vrtl body m-t[data-mnb-horizontal-writing-island="true"],
     body[data-mnb-foliate-writing-direction="vertical"] [data-mnb-horizontal-writing-island="true"],
-    body[data-mnb-foliate-writing-direction="vertical"] mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-    body[data-mnb-foliate-writing-direction="vertical"] mnb-sur[data-mnb-horizontal-writing-island="true"],
+    body[data-mnb-foliate-writing-direction="vertical"] m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+    body[data-mnb-foliate-writing-direction="vertical"] m-t[data-mnb-horizontal-writing-island="true"],
     body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
-    body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
+    body.reader-vertical-writing m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+    body.reader-vertical-writing m-t[data-mnb-horizontal-writing-island="true"] {
         --mnb-highlight-gradient-direction: to bottom;
     }
     body.reader-vertical-writing [data-mnb-display-token="1"] {
@@ -6340,14 +6480,14 @@ const getCSSForBookContent = ({
         inherits: true;
         initial-value: transparent;
     }
-    body.reader-vertical-writing ruby > mnb-sur {
+    body.reader-vertical-writing ruby > m-t {
         display: inline !important;
     }
-    body.reader-vertical-writing mnb-sur {
+    body.reader-vertical-writing m-t {
         /*
            Preserve the ruby-reserved vertical line grid. The app stylesheet
-           normally tightens mnb-sur to 1em for highlight bounds, but in vertical
-           EPUB layout that can collapse adjacent line boxes after mnb-seg is
+           normally tightens m-t to 1em for highlight bounds, but in vertical
+           EPUB layout that can collapse adjacent line boxes after m-m is
            restored.
         */
         line-height: inherit !important;
@@ -6365,35 +6505,37 @@ const getCSSForBookContent = ({
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
     }
-    body.reader-vertical-writing:not([data-is-ebook="true"]) mnb-seg:not(.mnb-ruby) {
+    body.reader-vertical-writing:not([data-is-ebook="true"]) m-m > m-t {
         /*
            In vertical WebKit layout, line-height fixes the paragraph grid, but
            an inline no-ruby segment's own rect still only covers the base glyph.
            Reserve the missing rt lane, but clip tracking backgrounds to the
            base glyph content so learning-status highlights do not fill it.
+           Target only direct surface children; ruby base text uses ruby > m-t
+           and already owns its annotation lane.
         */
         padding-right: ${rubyReservedSegmentPaddingEm}em !important;
         background-clip: content-box !important;
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-unk,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-fam,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-learn,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-know {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk,
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam,
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn,
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] mnb-seg.mnb-unk > mnb-sur,
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] mnb-seg.mnb-fam > mnb-sur,
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] mnb-seg.mnb-learn > mnb-sur,
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] mnb-seg.mnb-know > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-unk > m-t,
+    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-fam > m-t,
+    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-learn > m-t,
+    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-know > m-t {
         background: transparent !important;
         transition: none !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-unk > mnb-sur,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-fam > mnb-sur,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-learn > mnb-sur,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-know > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk > m-t,
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam > m-t,
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn > m-t,
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know > m-t {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
@@ -6403,24 +6545,24 @@ const getCSSForBookContent = ({
             --word-tracking-learning-highlight-nav-conditional 350ms ease,
             --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-unk > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg.mnb-fam > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m.mnb-fam > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg.mnb-learn > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg.mnb-know > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m.mnb-know > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg.mnb-selected {
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected {
         background: transparent !important;
         background-color: transparent !important;
         background-image: none !important;
     }
-    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg.mnb-selected > mnb-sur {
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected > m-t {
         background: var(--theme-selection-color) !important;
         background-color: var(--theme-selection-color) !important;
         background-image: none !important;
@@ -6430,9 +6572,9 @@ const getCSSForBookContent = ({
         -webkit-box-decoration-break: clone;
     }
 
-    mnb-sen ruby.mnb-gen > rt,
-    mnb-sen ruby.mbn-src > rt,
-    mnb-sen ruby.mbn-src-fwd > rt {
+    m-s ruby.mnb-gen > rt,
+    m-s ruby.mnb-src > rt,
+    m-s ruby.mnb-src-fwd > rt {
         /*
            Keep Manabi-owned ruby annotations in the historical Japanese sans stack.
            Reader-selected surface fonts such as YuKyokasho should apply to the
@@ -7685,15 +7827,15 @@ class Reader {
         const segmentNodes = snapshotVisibleSegments.length > 0
             ? snapshotVisibleSegments
                 .map((item) => item?.node ?? null)
-                .filter((segmentNode) => segmentNode?.tagName?.toLowerCase?.() === 'mnb-seg')
-            : Array.from(doc.querySelectorAll('mnb-seg'));
+                .filter((segmentNode) => segmentNode?.tagName?.toLowerCase?.() === 'm-m')
+            : Array.from(doc.querySelectorAll(manabiReaderSegmentSelector));
         const segmentIdentifiers = segmentNodes
             .map((segmentNode) => segmentIdentifierForNode(segmentNode))
             .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
         const segmentIdentifierAliasSets = segmentNodes
             .map((segmentNode) => ({
                 aliases: segmentIdentifierAliasesForNode(segmentNode),
-                sentenceIdentifier: sentenceIdentifierForNode(segmentNode.closest?.('mnb-sen')),
+                sentenceIdentifier: sentenceIdentifierForNode(segmentNode.closest?.(manabiReaderSentenceSelector)),
             }))
             .filter((item) => item.aliases.length > 0);
         if (segmentIdentifiers.length === 0) {
@@ -7749,7 +7891,7 @@ class Reader {
         if (!isDocumentLike(doc)) {
             return null;
         }
-        const segmentNodes = Array.from(doc.querySelectorAll('mnb-seg'))
+        const segmentNodes = Array.from(doc.querySelectorAll(manabiReaderSegmentSelector))
             .filter((segmentNode) => !segmentNode.closest('.tippy-box'));
         const segmentsByIdentifier = new Map();
         const sentenceIdentifiers = new Set();
@@ -7773,7 +7915,7 @@ class Reader {
                 skippedMissingSearchStringCount += 1;
                 continue;
             }
-            const sentenceNode = segmentNode.closest('mnb-sen');
+            const sentenceNode = segmentNode.closest(manabiReaderSentenceSelector);
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
             if (sentenceIdentifier) {
                 sentenceIdentifiers.add(sentenceIdentifier);
@@ -8675,37 +8817,109 @@ class Reader {
             this.#chevronFadeTimers[key] = null;
         }, 180);
     }
+    #mainDocumentTouchPointPayload(touch) {
+        if (!touch) {
+            return {};
+        }
+        return {
+            clientX: touch.clientX ?? null,
+            clientY: touch.clientY ?? null,
+            screenX: touch.screenX ?? null,
+            screenY: touch.screenY ?? null,
+            pageX: touch.pageX ?? null,
+            pageY: touch.pageY ?? null,
+        };
+    }
+    #mainDocumentTouchTargetPayload(target) {
+        const element = target?.nodeType === Node.ELEMENT_NODE
+            ? target
+            : target?.parentElement;
+        const segment = element?.closest?.(manabiReaderSegmentSelector) ?? null;
+        const sentence = element?.closest?.(manabiReaderSentenceSelector) ?? null;
+        return {
+            targetTagName: element?.tagName?.toLowerCase?.() ?? null,
+            targetId: element?.getAttribute?.('id') ?? null,
+            targetClass: String(element?.getAttribute?.('class') ?? '').slice(0, 80),
+            targetSegmentId: segment?.getAttribute?.('id') ?? null,
+            targetSentenceId: sentence?.getAttribute?.('id') ?? null,
+            targetClosestRT: element?.closest?.('rt') != null,
+            targetOwnerIsMainDocument: target?.ownerDocument === document,
+        };
+    }
     #onMainDocumentTouchStart(event) {
         if (window.manabiNativePageTurnOwnsDrag === true) {
             this.#mainDocumentSwipeState = null;
+            popoverDiagnosticLog('gesture.swipe.skip', {
+                reason: 'nativePageTurnOwnsDrag',
+                eventType: event.type,
+            });
             return;
         }
         if (event.touches?.length !== 1) {
             this.#mainDocumentSwipeState = null;
+            popoverDiagnosticLog('gesture.swipe.skip', {
+                reason: 'nonSingleTouch',
+                eventType: event.type,
+                touchCount: event.touches?.length ?? null,
+                changedTouchCount: event.changedTouches?.length ?? null,
+            });
             return;
         }
         const touch = event.changedTouches?.[0];
         const target = event.target;
         if (!touch || !target || target.ownerDocument !== document) {
             this.#mainDocumentSwipeState = null;
+            popoverDiagnosticLog('gesture.swipe.skip', {
+                reason: !touch ? 'missingTouch' : (!target ? 'missingTarget' : 'targetOutsideMainDocument'),
+                eventType: event.type,
+                ...this.#mainDocumentTouchPointPayload(touch),
+                ...this.#mainDocumentTouchTargetPayload(target),
+            });
             return;
         }
         const isExcludedTouchTarget = target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
         const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
         if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
+            popoverDiagnosticLog('gesture.swipe.skip', {
+                reason: isExcludedTouchTarget ? 'excludedTarget' : 'interactiveNavTarget',
+                eventType: event.type,
+                excludedTagName: isExcludedTouchTarget?.tagName?.toLowerCase?.() ?? null,
+                excludedId: isExcludedTouchTarget?.getAttribute?.('id') ?? null,
+                interactiveTagName: isInteractiveNavTarget?.tagName?.toLowerCase?.() ?? null,
+                interactiveId: isInteractiveNavTarget?.getAttribute?.('id') ?? null,
+                ...this.#mainDocumentTouchPointPayload(touch),
+                ...this.#mainDocumentTouchTargetPayload(target),
+            });
             return;
         }
         this.#mainDocumentSwipeState = {
             startX: touch.screenX,
             startY: touch.screenY,
+            startClientX: touch.clientX,
+            startClientY: touch.clientY,
+            startAtMs: Date.now(),
             triggered: false,
             chevronActive: false,
             nativeLookupCancelled: false,
+            loggedIntent: false,
+            targetPayload: this.#mainDocumentTouchTargetPayload(target),
         };
+        popoverDiagnosticLog('gesture.swipe.start', {
+            eventType: event.type,
+            isRTL: this.isRTL,
+            ...this.#mainDocumentTouchPointPayload(touch),
+            ...this.#mainDocumentSwipeState.targetPayload,
+        });
     }
     async #onMainDocumentTouchMove(event) {
-        if (window.manabiNativePageTurnOwnsDrag === true) return;
+        if (window.manabiNativePageTurnOwnsDrag === true) {
+            popoverDiagnosticLog('gesture.swipe.skip', {
+                reason: 'nativePageTurnOwnsDrag.move',
+                eventType: event.type,
+            });
+            return;
+        }
         const state = this.#mainDocumentSwipeState;
         if (!state || state.triggered) {
             return;
@@ -8730,6 +8944,19 @@ class Reader {
         }
         event.preventDefault();
         const progress = Math.min(1, Math.abs(dx) / minSwipe);
+        if (!state.loggedIntent) {
+            state.loggedIntent = true;
+            popoverDiagnosticLog('gesture.swipe.intent', {
+                eventType: event.type,
+                dx,
+                dy,
+                progress,
+                minSwipe,
+                elapsedMs: Date.now() - state.startAtMs,
+                ...this.#mainDocumentTouchPointPayload(touch),
+                ...state.targetPayload,
+            });
+        }
         const swipedLeft = dx < 0;
         const logicalDirection = this.isRTL
             ? (swipedLeft ? 'backward' : 'forward')
@@ -8754,10 +8981,33 @@ class Reader {
         state.chevronActive = progress > 0;
         if (!state.nativeLookupCancelled && progress >= 0.25) {
             state.nativeLookupCancelled = true;
+            popoverDiagnosticLog('gesture.swipe.lookupTargetsInvalidated', {
+                reason: 'page-turn-swipe-intent',
+                dx,
+                dy,
+                progress,
+                logicalDirection,
+                chevronSide,
+                elapsedMs: Date.now() - state.startAtMs,
+                ...state.targetPayload,
+            });
             this.#invalidateVisiblePageSegmentSnapshot('page-turn-swipe-intent');
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
+        popoverDiagnosticLog('gesture.swipe.pageTurn', {
+            dx,
+            dy,
+            progress,
+            logicalDirection,
+            chevronSide,
+            swipedLeft,
+            isRTL: this.isRTL,
+            elapsedMs: Date.now() - state.startAtMs,
+            nativeLookupCancelled: state.nativeLookupCancelled,
+            ...this.#mainDocumentTouchPointPayload(touch),
+            ...state.targetPayload,
+        });
         this.#flashSideNavChevron(chevronSide);
         this.#clearVisiblePageReadChrome('page-turn-start');
         this.#applyLogicalPageTurnNavigationVisibility(logicalDirection, 'page-turn.swipe', {
@@ -8769,17 +9019,39 @@ class Reader {
             await this.view?.prev?.();
         }
     }
-    #onMainDocumentTouchEnd() {
+    #onMainDocumentTouchEnd(event) {
         if (window.manabiNativePageTurnOwnsDrag === true) {
+            popoverDiagnosticLog('gesture.swipe.end', {
+                reason: 'nativePageTurnOwnsDrag',
+                eventType: event?.type ?? null,
+            });
             this.#mainDocumentSwipeState = null;
             return;
         }
-        if (this.#mainDocumentSwipeState?.chevronActive) {
+        const state = this.#mainDocumentSwipeState;
+        if (state?.chevronActive) {
             this.view?.dispatchEvent?.(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
                 detail: { leftOpacity: '', rightOpacity: '', source: 'ebook-viewer', reason: 'mainDocumentSwipe.touchend' },
             }));
+        }
+        if (state) {
+            const touch = event?.changedTouches?.[0] ?? null;
+            const dx = touch ? touch.screenX - state.startX : null;
+            const dy = touch ? touch.screenY - state.startY : null;
+            popoverDiagnosticLog('gesture.swipe.end', {
+                eventType: event?.type ?? null,
+                triggered: state.triggered,
+                nativeLookupCancelled: state.nativeLookupCancelled,
+                chevronActive: state.chevronActive,
+                loggedIntent: state.loggedIntent,
+                dx,
+                dy,
+                elapsedMs: Date.now() - state.startAtMs,
+                ...this.#mainDocumentTouchPointPayload(touch),
+                ...state.targetPayload,
+            });
         }
         this.#mainDocumentSwipeState = null;
     }
@@ -8918,6 +9190,7 @@ class Reader {
                 };
             };
             const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+            markRestorePositionSavePageTurnInput(`pageTurn.sideButton.${eventType ?? 'unknown'}`);
             readerLoadLog('pageTurn.sideButton.start', {
                 side,
                 method,
@@ -9488,25 +9761,53 @@ class Reader {
 
     async #displayInitialSection(reason = 'reader.open', initialRestore = null) {
         if (!this.view?.renderer || this.initialDisplaySettled) {
+            jun22Log('ebook.initialDisplay.return', {
+                reason,
+                path: !this.view?.renderer ? 'missing-renderer' : 'already-settled',
+                hasRenderer: !!this.view?.renderer,
+                initialDisplaySettled: this.initialDisplaySettled === true,
+                hasInitialRestore: !!initialRestore,
+            });
             return true;
         }
         const syntheticInitialRestore = parseSyntheticRestoreLocator(initialRestore?.cfi);
-        const initialRestoreFraction = Number.isFinite(initialRestore?.fractionalCompletion)
-            ? Math.max(0, Math.min(1, initialRestore.fractionalCompletion))
+        const spineOnlyInitialRestoreSectionIndex = !syntheticInitialRestore
+            ? parseSpineOnlyEpubCFI(initialRestore?.cfi)
             : null;
+        const initialRestoreCFI = !syntheticInitialRestore && typeof initialRestore?.cfi === 'string'
+            ? initialRestore.cfi
+            : '';
+        const hasInitialRestoreCFI = initialRestoreCFI.length > 0;
+        const initialRestoreFraction = coerceRestoreFraction(initialRestore?.fractionalCompletion);
         const hasInitialRestoreFraction = initialRestoreFraction != null && initialRestoreFraction > 0;
         const restoreLocatorKind = syntheticInitialRestore
             ? 'synthetic'
-            : (hasInitialRestoreFraction ? 'fraction' : 'none');
+            : (hasInitialRestoreCFI ? 'cfi' : (hasInitialRestoreFraction ? 'fraction' : 'none'));
         const startedAt = performanceNowMs();
         readerLoadLog('viewer.initialDisplay.firstSection.start', {
             reason,
             restoreLocatorKind,
             sectionIndex: syntheticInitialRestore?.sectionIndex ?? null,
+            spineSectionIndex: spineOnlyInitialRestoreSectionIndex ?? null,
             fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
             bodyLoading: !!document.body?.classList?.contains?.('loading'),
             hasReaderContent: !!document.querySelector?.('foliate-view'),
             renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+        });
+        jun22Log('ebook.initialDisplay.start', {
+            reason,
+            restoreLocatorKind,
+            hasInitialRestore: !!initialRestore,
+            initialCFILength: typeof initialRestore?.cfi === 'string' ? initialRestore.cfi.length : 0,
+            initialCFIPrefix: hasInitialRestoreCFI ? initialRestoreCFI.slice(0, 24) : null,
+            requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
+            syntheticSectionIndex: syntheticInitialRestore?.sectionIndex ?? null,
+            syntheticLocalPage: syntheticInitialRestore?.localSectionIndex ?? null,
+            spineSectionIndex: spineOnlyInitialRestoreSectionIndex ?? null,
+            rawFractionType: typeof initialRestore?.fractionalCompletion,
+            rawFractionValue: initialRestore?.fractionalCompletion ?? null,
+            initialDisplaySettled: this.initialDisplaySettled === true,
+            hasLoadedLastPosition: this.hasLoadedLastPosition === true,
         });
         try {
             let intent;
@@ -9523,6 +9824,45 @@ class Reader {
                     index: syntheticInitialRestore.sectionIndex,
                     localPage: syntheticInitialRestore.localSectionIndex,
                 });
+            } else if (hasInitialRestoreCFI) {
+                intent = {
+                    source: `${reason}.initialRestoreCFI`,
+                    target: 'view.goTo',
+                    cfiLength: initialRestoreCFI.length,
+                    fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
+                };
+                operation = async () => {
+                    try {
+                        return await this.view.goTo(initialRestoreCFI);
+                    } catch (error) {
+                        jun22Log('ebook.initialDisplay.cfi.error', {
+                            reason,
+                            cfiLength: initialRestoreCFI.length,
+                            spineSectionIndex: spineOnlyInitialRestoreSectionIndex ?? null,
+                            requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
+                            error: error?.message || String(error),
+                        });
+                        if (Number.isInteger(spineOnlyInitialRestoreSectionIndex)) {
+                            const result = await this.view.renderer.goTo?.({
+                                index: spineOnlyInitialRestoreSectionIndex,
+                            });
+                            if (hasInitialRestoreFraction) {
+                                await this.view.goToFraction(initialRestoreFraction);
+                            }
+                            jun22Log('ebook.initialDisplay.cfi.fallback', {
+                                reason,
+                                path: 'spine-cfi',
+                                spineSectionIndex: spineOnlyInitialRestoreSectionIndex,
+                                requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
+                            });
+                            return result;
+                        }
+                        if (hasInitialRestoreFraction) {
+                            return this.view.goToFraction(initialRestoreFraction);
+                        }
+                        throw error;
+                    }
+                };
             } else if (hasInitialRestoreFraction) {
                 intent = {
                     source: `${reason}.initialRestoreFraction`,
@@ -9554,18 +9894,37 @@ class Reader {
                 hasReaderContent: !!document.querySelector?.('foliate-view'),
                 renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
             });
-            if (syntheticInitialRestore || hasInitialRestoreFraction) {
+            jun22Log('ebook.initialDisplay.finish', {
+                reason,
+                restoreLocatorKind,
+                requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
+                settledSectionIndex,
+                lastLocationFraction: typeof location?.fraction === 'number' ? safeRound(location.fraction, 6) : null,
+                lastLocationCurrent: location?.location?.current ?? null,
+                lastLocationTotal: location?.location?.total ?? null,
+                initialRestoreWillBeMarkedHandled: syntheticInitialRestore || hasInitialRestoreCFI || hasInitialRestoreFraction,
+            });
+            if (syntheticInitialRestore || hasInitialRestoreCFI || hasInitialRestoreFraction) {
                 globalThis.__manabiInitialRestoreHandled = {
                     cfi: typeof initialRestore?.cfi === 'string' ? initialRestore.cfi : '',
-                    fractionalCompletion: Number.isFinite(initialRestore?.fractionalCompletion)
-                        ? initialRestore.fractionalCompletion
-                        : null,
+                    fractionalCompletion: initialRestoreFraction,
                     sectionIndex: syntheticInitialRestore?.sectionIndex ?? settledSectionIndex,
                     localSectionIndex: syntheticInitialRestore?.localSectionIndex ?? null,
                     rendererTotal: syntheticInitialRestore?.rendererTotal ?? null,
                     fractionalAnchorSuppressed: !!syntheticInitialRestore,
                     handledAtMs: Date.now(),
                 };
+                jun22Log('ebook.initialDisplay.handledSet', {
+                    reason,
+                    restoreLocatorKind,
+                    requestedSectionIndex: syntheticInitialRestore?.sectionIndex ?? null,
+                    requestedLocalPage: syntheticInitialRestore?.localSectionIndex ?? null,
+                    cfiLength: typeof initialRestore?.cfi === 'string' ? initialRestore.cfi.length : 0,
+                    settledSectionIndex,
+                    lastLocationFraction: typeof location?.fraction === 'number' ? safeRound(location.fraction, 6) : null,
+                    lastLocationCurrent: location?.location?.current ?? null,
+                    lastLocationTotal: location?.location?.total ?? null,
+                });
             }
             return true;
         } catch (error) {
@@ -9725,6 +10084,7 @@ class Reader {
             } else if (!isRTL && await renderer.atStart()) {
                 this.buttons.prev.click();
             } else {
+                markRestorePositionSavePageTurnInput(`pageTurn.keydown.${k}`);
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility('goLeft', 'page-turn.keydown');
                 await this.view.goLeft();
@@ -9735,6 +10095,7 @@ class Reader {
             } else if (!isRTL && await renderer.atEnd()) {
                 this.buttons.next.click();
             } else {
+                markRestorePositionSavePageTurnInput(`pageTurn.keydown.${k}`);
                 this.#clearVisiblePageReadChrome('page-turn-start');
                 this.#applyPageTurnNavigationVisibility('goRight', 'page-turn.keydown');
                 await this.view.goRight();
@@ -10532,7 +10893,7 @@ class Reader {
             const closestSegmentForElement = element => {
                 if (!element) return null;
                 const targetElement = element?.nodeType === 1 ? element : element?.parentElement;
-                return targetElement?.closest?.('mnb-seg, .mnb-seg') ?? null;
+                return targetElement?.closest?.('m-m, .m-m') ?? null;
             };
             const segmentTargetForBlankPointerEvent = (event) => {
                 const directSegment = closestSegmentForElement(event.target);
@@ -10546,7 +10907,7 @@ class Reader {
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
                 const target = event.target;
                 const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
-                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-seg, mnb-sen, mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
                 const now = Date.now();
                 const point = touchPointForBlankPointer(event);
                 const segmentTarget = segmentTargetForBlankPointerEvent(event);
@@ -10610,7 +10971,7 @@ class Reader {
             const handleBlankPointerTouchStart = (event) => {
                 const target = event.target;
                 const targetElement = target?.nodeType === 1 ? target : target?.parentElement;
-                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-seg, mnb-sen, mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const excludedTarget = targetElement?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-m, m-s, m-t, .m-m, .m-sentence, ruby, rt');
                 const startSegment = segmentTargetForBlankPointerEvent(event);
                 if (excludedTarget && !startSegment) {
                     clearPendingBlankPointerTap();
@@ -10718,6 +11079,21 @@ class Reader {
             visibleRange,
             visibleSegmentsResult
         );
+        jun22Log('ebook.updateReadingProgress.post', {
+            reason,
+            fraction: Number.isFinite(fraction) ? safeRound(fraction, 6) : null,
+            cfiLength: typeof cfi === 'string' ? cfi.length : 0,
+            currentPageNumber,
+            totalPages,
+            sectionIndex,
+            hasVisibleJapaneseText: visibleJapaneseTextState.hasVisibleJapaneseText,
+            visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
+            observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
+            hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+            suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+            requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+        });
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
@@ -10961,6 +11337,28 @@ class Reader {
                 normalizedRelocateReason !== 'anchor'
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
+            jun22Log('ebook.relocate.persistDecision', {
+                reason: reason ?? null,
+                normalizedReason,
+                shouldPersist: shouldPersistRelocatePosition,
+                skipAnchor: normalizedRelocateReason === 'anchor',
+                suppressedRestoreSettleSave: shouldSuppressRestoreSettleSave,
+                requiresUserInputBeforeSave: requiresUserInputBeforePositionSave,
+                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
+                sectionIndex,
+                localSectionIndex,
+                rendererTotal,
+                persistedLocatorKind: shouldPreferSyntheticRestoreLocator
+                    ? 'synthetic'
+                    : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
+                persistedLocatorLength: typeof persistedLocator === 'string' ? persistedLocator.length : 0,
+                currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                    ? this.navHUD.rendererPageSnapshot.current
+                    : null,
+            });
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
@@ -11353,7 +11751,7 @@ class CacheWarmer {
     }) {
         const startedAt = performanceNowMs()
         const generation = cacheWarmerWorkGeneration()
-        const sentenceNodes = Array.from(doc?.querySelectorAll?.('mnb-sen') || []);
+        const sentenceNodes = Array.from(doc?.querySelectorAll?.('m-s') || []);
         const indexedSectionHref =
             Number.isInteger(index)
             ? this.view?.book?.sections?.[index]?.href || null
@@ -11517,6 +11915,41 @@ window.loadEBook = ({
 }) => {
     const normalizedReaderPresentationState = installReaderPresentationState(readerPresentationState, 'loadEBook');
     const requestedURL = typeof url === 'string' ? url : '';
+    const requestedRestoreFraction = coerceRestoreFraction(initialRestore?.fractionalCompletion);
+    const effectiveInitialRestore = initialRestore
+        ? {
+            ...initialRestore,
+            ...(requestedRestoreFraction != null ? { fractionalCompletion: requestedRestoreFraction } : {}),
+        }
+        : null;
+    const requestedSyntheticRestore = parseSyntheticRestoreLocator(effectiveInitialRestore?.cfi);
+    const requestedSpineOnlySectionIndex = !requestedSyntheticRestore
+        ? parseSpineOnlyEpubCFI(effectiveInitialRestore?.cfi)
+        : null;
+    const requestedRestoreCFI = !requestedSyntheticRestore && typeof effectiveInitialRestore?.cfi === 'string'
+        ? effectiveInitialRestore.cfi
+        : '';
+    jun22Log('ebook.loadEBook.call', {
+        hasURL: requestedURL.length > 0,
+        layoutMode: layoutMode || null,
+        hasInitialRestore: !!effectiveInitialRestore,
+        initialCFILength: typeof effectiveInitialRestore?.cfi === 'string' ? effectiveInitialRestore.cfi.length : 0,
+        restoreKind: requestedSyntheticRestore
+            ? 'synthetic'
+            : (requestedRestoreCFI.length > 0 ? 'cfi' : (requestedRestoreFraction != null && requestedRestoreFraction > 0 ? 'fraction' : 'none')),
+        syntheticSectionIndex: requestedSyntheticRestore?.sectionIndex ?? null,
+        syntheticLocalPage: requestedSyntheticRestore?.localSectionIndex ?? null,
+        syntheticRendererTotal: requestedSyntheticRestore?.rendererTotal ?? null,
+        spineSectionIndex: requestedSpineOnlySectionIndex ?? null,
+        requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
+        rawFractionType: typeof initialRestore?.fractionalCompletion,
+        rawFractionValue: initialRestore?.fractionalCompletion ?? null,
+        existingURLMatches: requestedURL.length > 0 && globalThis.manabiLoadEBookURL === requestedURL,
+        existingInFlight: globalThis.manabiLoadEBookInFlight === true,
+        existingReady: globalThis.manabiLoadEBookReady === true,
+        hasRenderer: !!globalThis.reader?.view?.renderer,
+        previousState: globalThis.manabiLoadEBookLastState || null,
+    });
     if (
         requestedURL.length > 0
         && globalThis.manabiLoadEBookURL === requestedURL
@@ -11524,9 +11957,32 @@ window.loadEBook = ({
     ) {
         const existingStartedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
         const existingStartedAgeMs = existingStartedAt > 0 ? Date.now() - existingStartedAt : 0;
+        const shouldQueueDuplicateRestore = !!effectiveInitialRestore && !globalThis.__manabiInitialRestoreHandled;
         if (globalThis.reader?.view?.renderer || existingStartedAgeMs < 2500) {
+            if (shouldQueueDuplicateRestore) {
+                globalThis.manabiLoadEBookPendingInitialRestore = effectiveInitialRestore;
+                globalThis.manabiLoadEBookLastState = 'duplicate-inflight-pending-restore';
+                jun22Log('ebook.loadEBook.return', {
+                    path: 'duplicate-inflight-pending-restore',
+                    existingStartedAgeMs,
+                    hasInitialRestore: true,
+                    initialCFILength: typeof effectiveInitialRestore?.cfi === 'string' ? effectiveInitialRestore.cfi.length : 0,
+                    restoreKind: requestedSyntheticRestore
+                        ? 'synthetic'
+                        : (requestedRestoreCFI.length > 0 ? 'cfi' : (requestedRestoreFraction != null ? 'fraction' : 'none')),
+                    requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
+                    hasRenderer: !!globalThis.reader?.view?.renderer,
+                });
+                return globalThis.manabiLoadEBookPromise;
+            }
             globalThis.manabiLoadEBookLastState = 'duplicate-inflight';
             globalThis.manabiPendingLoadEBookArgs = null;
+            jun22Log('ebook.loadEBook.return', {
+                path: 'duplicate-inflight',
+                existingStartedAgeMs,
+                hasInitialRestore: !!effectiveInitialRestore,
+                hasRenderer: !!globalThis.reader?.view?.renderer,
+            });
             return globalThis.manabiLoadEBookPromise;
         }
         globalThis.manabiLoadEBookLastState = 'duplicate-inflight-stale-restart';
@@ -11539,6 +11995,13 @@ window.loadEBook = ({
     ) {
         globalThis.manabiLoadEBookLastState = 'duplicate-ready';
         globalThis.manabiPendingLoadEBookArgs = null;
+        jun22Log('ebook.loadEBook.return', {
+            path: 'duplicate-ready',
+            hasInitialRestore: !!effectiveInitialRestore,
+            initialRestoreHandled: !!globalThis.__manabiInitialRestoreHandled,
+            hasRenderer: !!globalThis.reader?.view?.renderer,
+            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+        });
         return;
     }
     const loadToken = (globalThis.manabiLoadEBookToken ?? 0) + 1;
@@ -11549,10 +12012,11 @@ window.loadEBook = ({
     globalThis.manabiLoadEBookStartedAt = Date.now();
     globalThis.manabiLoadEBookReady = false;
     globalThis.manabiLoadEBookLastState = 'start';
+    globalThis.manabiLoadEBookPendingInitialRestore = effectiveInitialRestore ?? null;
     globalThis.manabiPendingLoadEBookArgs = {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || null,
-        hasInitialRestore: !!initialRestore,
+        hasInitialRestore: !!effectiveInitialRestore,
         hasReaderPresentationState: !!normalizedReaderPresentationState,
     };
     resetInitialVisibleWorkReady(`loadEBook:${loadToken}`);
@@ -11651,8 +12115,19 @@ window.loadEBook = ({
                 globalThis.__manabiEbookViewerLayoutMode = layoutMode
             }
             globalThis.manabiLoadEBookLastState = 'reader-open-dispatch';
+            jun22Log('ebook.loadEBook.readerOpen.dispatch', {
+                loadToken,
+                hasInitialRestore: !!effectiveInitialRestore,
+                initialCFILength: typeof effectiveInitialRestore?.cfi === 'string' ? effectiveInitialRestore.cfi.length : 0,
+                restoreKind: requestedSyntheticRestore
+                    ? 'synthetic'
+                    : (requestedRestoreCFI.length > 0 ? 'cfi' : (requestedRestoreFraction != null && requestedRestoreFraction > 0 ? 'fraction' : 'none')),
+                syntheticSectionIndex: requestedSyntheticRestore?.sectionIndex ?? null,
+                spineSectionIndex: requestedSpineOnlySectionIndex ?? null,
+                requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
+            });
             await reader.open(source, {
-                initialRestore,
+                initialRestore: effectiveInitialRestore,
                 readerPresentationState: normalizedReaderPresentationState,
             })
             if (!reader?.view?.renderer) {
@@ -11664,6 +12139,19 @@ window.loadEBook = ({
                 hasRenderer: !!reader?.view?.renderer,
                 renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
             });
+            const postOpenLocation = reader?.view?.lastLocation ?? null;
+            jun22Log('ebook.loadEBook.readerOpen.finish', {
+                loadToken,
+                hasInitialRestore: !!effectiveInitialRestore,
+                initialRestoreHandled: !!globalThis.__manabiInitialRestoreHandled,
+                lastLocationFraction: typeof postOpenLocation?.fraction === 'number' ? safeRound(postOpenLocation.fraction, 6) : null,
+                lastLocationCurrent: postOpenLocation?.location?.current ?? null,
+                lastLocationTotal: postOpenLocation?.location?.total ?? null,
+                sectionIndex: typeof postOpenLocation?.section?.current === 'number'
+                    ? postOpenLocation.section.current
+                    : (typeof postOpenLocation?.sectionIndex === 'number' ? postOpenLocation.sectionIndex : null),
+                hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
+            });
             reader.setLoadingIndicator(false, 'readerOpenResolved');
             readerLoadLog('viewer.loadEBook.readerOpen.loadingCleared', {
                 loadToken,
@@ -11673,6 +12161,54 @@ window.loadEBook = ({
             });
             if (globalThis.__manabiInitialRestoreHandled) {
                 finalizeInitialRestoreHandledWithoutNativeRestore('loadEBook.initialRestoreHandled');
+            }
+            const pendingInitialRestore = globalThis.manabiLoadEBookPendingInitialRestore ?? null;
+            if (
+                pendingInitialRestore
+                && !globalThis.__manabiInitialRestoreHandled
+                && reader?.hasLoadedLastPosition !== true
+            ) {
+                const pendingCFI = typeof pendingInitialRestore?.cfi === 'string'
+                    ? pendingInitialRestore.cfi
+                    : '';
+                const pendingFraction = Number.isFinite(pendingInitialRestore?.fractionalCompletion)
+                    ? Math.max(0, Math.min(1, pendingInitialRestore.fractionalCompletion))
+                    : null;
+                jun22Log('ebook.loadEBook.pendingRestore.apply', {
+                    loadToken,
+                    cfiLength: pendingCFI.length,
+                    requestedFraction: pendingFraction != null ? safeRound(pendingFraction, 6) : null,
+                    hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
+                });
+                await window.loadLastPosition({
+                    cfi: pendingCFI,
+                    fractionalCompletion: pendingFraction,
+                });
+                const pendingLocation = reader?.view?.lastLocation ?? null;
+                const pendingRestoreSucceeded = reader?.hasLoadedLastPosition === true;
+                if (pendingRestoreSucceeded) {
+                    globalThis.__manabiInitialRestoreHandled = {
+                        cfi: pendingCFI,
+                        fractionalCompletion: pendingFraction,
+                        sectionIndex: typeof pendingLocation?.section?.current === 'number'
+                            ? pendingLocation.section.current
+                            : (typeof pendingLocation?.sectionIndex === 'number' ? pendingLocation.sectionIndex : null),
+                        handledAtMs: Date.now(),
+                        source: 'duplicate-inflight-pending-restore',
+                    };
+                }
+                globalThis.manabiLoadEBookPendingInitialRestore = null;
+                jun22Log('ebook.loadEBook.pendingRestore.finish', {
+                    loadToken,
+                    cfiLength: pendingCFI.length,
+                    requestedFraction: pendingFraction != null ? safeRound(pendingFraction, 6) : null,
+                    restored: pendingRestoreSucceeded,
+                    currentFraction: typeof pendingLocation?.fraction === 'number' ? safeRound(pendingLocation.fraction, 6) : null,
+                    currentSectionIndex: typeof pendingLocation?.section?.current === 'number'
+                        ? pendingLocation.section.current
+                        : (typeof pendingLocation?.sectionIndex === 'number' ? pendingLocation.sectionIndex : null),
+                    hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
+                });
             }
         })
         .then(async () => {
@@ -11686,6 +12222,20 @@ window.loadEBook = ({
                 bookDir: globalThis.reader?.bookDir || null,
                 isRTL: !!globalThis.reader?.isRTL,
             }) ?? null;
+            const readyLocation = globalThis.reader?.view?.lastLocation ?? null;
+            jun22Log('ebook.loadEBook.ebookViewerLoaded.post', {
+                loadToken,
+                initialRestoreHandled: !!initialRestoreHandled,
+                initialRestoreSectionIndex: initialRestoreHandled?.sectionIndex ?? null,
+                initialRestoreFraction: Number.isFinite(initialRestoreHandled?.fractionalCompletion)
+                    ? safeRound(initialRestoreHandled.fractionalCompletion, 6)
+                    : null,
+                lastLocationFraction: typeof readyLocation?.fraction === 'number' ? safeRound(readyLocation.fraction, 6) : null,
+                lastLocationCurrent: readyLocation?.location?.current ?? null,
+                lastLocationTotal: readyLocation?.location?.total ?? null,
+                hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+            });
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                 probe,
                 initialRestoreHandled: !!initialRestoreHandled,
@@ -11742,12 +12292,21 @@ window.loadEBook = ({
     //.catch(e => console.error(e))
 }
 
-const markRestorePositionSaveUserInput = () => {
+const markRestorePositionSaveUserInput = (source = 'unknown') => {
     if (globalThis.__manabiRequireUserInputBeforePositionSave !== true) {
         return;
     }
     globalThis.__manabiRequireUserInputBeforePositionSave = false;
     globalThis.__manabiSuppressNextRestoreRelocateSave = false;
+    jun22Log('ebook.restoreSaveGuard.released', {
+        source,
+        suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+        requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+    });
+};
+
+const markRestorePositionSavePageTurnInput = (source = 'page-turn') => {
+    markRestorePositionSaveUserInput(source);
 };
 
 const ensureRestorePositionSaveUserInputTracking = () => {
@@ -11756,7 +12315,9 @@ const ensureRestorePositionSaveUserInputTracking = () => {
     }
     globalThis.__manabiRestoreUserInputTrackingInstalled = true;
     for (const eventName of ['pointerdown', 'touchstart', 'wheel', 'keydown', 'click']) {
-        window.addEventListener(eventName, markRestorePositionSaveUserInput, {
+        window.addEventListener(eventName, (event) => {
+            markRestorePositionSaveUserInput(`window.${event?.type ?? eventName}`);
+        }, {
             capture: true,
             passive: true,
         });
@@ -11782,6 +12343,7 @@ const finalizeInitialRestoreHandledWithoutNativeRestore = (reason = 'loadEBook.i
     if (!handled || !globalThis.reader?.view?.renderer) {
         return false;
     }
+    ensureRestorePositionSaveUserInputTracking();
     globalThis.reader.hasLoadedLastPosition = true;
     globalThis.__manabiSuppressNextRestoreRelocateSave = true;
     globalThis.__manabiRequireUserInputBeforePositionSave = true;
@@ -11798,6 +12360,17 @@ const finalizeInitialRestoreHandledWithoutNativeRestore = (reason = 'loadEBook.i
         hasReaderContent: !!document.querySelector?.('foliate-view'),
         renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
     });
+    jun22Log('ebook.initialRestore.finalized', {
+        reason,
+        sectionIndex: handled.sectionIndex ?? null,
+        localSectionIndex: handled.localSectionIndex ?? null,
+        rendererTotal: handled.rendererTotal ?? null,
+        fractionalCompletion: Number.isFinite(handled.fractionalCompletion) ? safeRound(handled.fractionalCompletion, 6) : null,
+        cfiLength: typeof handled.cfi === 'string' ? handled.cfi.length : 0,
+        hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+        suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+        requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+    });
     return true;
 };
 
@@ -11806,6 +12379,7 @@ window.loadLastPosition = async ({
     fractionalCompletion,
 }) => {
     ensureRestorePositionSaveUserInputTracking();
+    fractionalCompletion = coerceRestoreFraction(fractionalCompletion);
     globalThis.__manabiRequestedRestoreFraction = Number.isFinite(fractionalCompletion)
         ? Math.max(0, Math.min(1, fractionalCompletion))
         : null;
@@ -11902,9 +12476,24 @@ window.loadLastPosition = async ({
     };
     const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
     const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
+    const spineOnlyRestoreSectionIndex = !syntheticRestoreLocator
+        ? parseSpineOnlyEpubCFI(cfi)
+        : null;
     const restoreLocatorKind = syntheticRestoreLocator
         ? 'synthetic'
         : (typeof cfi === 'string' && cfi.length > 0 ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none'));
+    jun22Log('ebook.loadLastPosition.start', {
+        restoreLocatorKind,
+        cfiLength: typeof cfi === 'string' ? cfi.length : 0,
+        requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
+        syntheticSectionIndex: syntheticRestoreLocator?.sectionIndex ?? null,
+        syntheticLocalPage: syntheticRestoreLocator?.localSectionIndex ?? null,
+        syntheticRendererTotal: syntheticRestoreLocator?.rendererTotal ?? null,
+        spineSectionIndex: spineOnlyRestoreSectionIndex ?? null,
+        initialRestoreHandled: !!globalThis.__manabiInitialRestoreHandled,
+        hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+        restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+    });
     let shouldKeepRestoreSaveGuard = false;
     const releaseDispatchedNavigation = (reason, {
         markReadyReason = null,
@@ -11985,6 +12574,12 @@ window.loadLastPosition = async ({
             && finalizeInitialRestoreHandledWithoutNativeRestore('loadLastPosition.initialRestoreStaleNativeCall')
         ) {
             shouldKeepRestoreSaveGuard = true;
+            jun22Log('ebook.loadLastPosition.return', {
+                path: 'initialRestoreStaleNativeCall',
+                restoreLocatorKind,
+                handledSectionIndex: initialRestoreHandled.sectionIndex ?? null,
+                handledFraction: Number.isFinite(initialRestoreHandled.fractionalCompletion) ? safeRound(initialRestoreHandled.fractionalCompletion, 6) : null,
+            });
             readerLoadLog('viewer.loadLastPosition.initialRestoreStaleNativeCall', {
                 restoreLocatorKind,
                 sectionIndex: initialRestoreHandled.sectionIndex ?? null,
@@ -12017,6 +12612,14 @@ window.loadLastPosition = async ({
                 sectionIndex: initialRestoreHandled.sectionIndex ?? null,
             });
             globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(initialState);
+            jun22Log('ebook.loadLastPosition.return', {
+                path: 'initialRestoreAlreadyHandled',
+                restoreLocatorKind,
+                handledSectionIndex: initialRestoreHandled.sectionIndex ?? null,
+                handledFraction: Number.isFinite(initialRestoreHandled.fractionalCompletion) ? safeRound(initialRestoreHandled.fractionalCompletion, 6) : null,
+                currentFraction: typeof initialState?.currentFraction === 'number' ? safeRound(initialState.currentFraction, 6) : null,
+                currentSectionIndex: initialState?.sectionIndex ?? null,
+            });
             readerLoadLog('viewer.loadLastPosition.initialRestoreAlreadyHandled', {
                 restoreLocatorKind,
                 sectionIndex: initialRestoreHandled.sectionIndex ?? null,
@@ -12078,22 +12681,62 @@ window.loadLastPosition = async ({
                 navigationOk: syntheticDisplaySettledForRestore,
                 navigationPending: false,
             });
+            jun22Log('ebook.loadLastPosition.path.finish', {
+                path: 'synthetic',
+                navigationOk: syntheticDisplaySettledForRestore,
+                requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
+                currentFraction: typeof syntheticState.currentFraction === 'number' ? safeRound(syntheticState.currentFraction, 6) : null,
+                currentSectionIndex: syntheticState.sectionIndex ?? null,
+                locationCurrent: syntheticState.locationCurrent ?? null,
+                locationTotal: syntheticState.locationTotal ?? null,
+            });
         } else if (typeof cfi === 'string' && cfi.length > 0) {
-            await runRestoreNavigation({
+            globalThis.__manabiSuppressNextRestoreRelocateSave = true;
+            globalThis.__manabiRequireUserInputBeforePositionSave = true;
+            shouldKeepRestoreSaveGuard = true;
+            const navigationResult = await runRestoreNavigation({
                 source: 'restore.cfi',
                 target: 'view.goTo',
                 cfiLength: cfi.length,
                 fraction: hasFractionalCompletion ? fractionalCompletion : null,
-            }, () => globalThis.reader.view.goTo(cfi)).catch(async (e) => {
-                console.error(e)
-                if (hasFractionalCompletion) {
+            }, () => globalThis.reader.view.goTo(cfi), {
+                throwOnError: false,
+            });
+            if (navigationResult?.ok !== true) {
+                const error = navigationResult?.error;
+                console.error(error)
+                jun22Log('ebook.loadLastPosition.cfi.error', {
+                    cfiLength: cfi.length,
+                    spineSectionIndex: spineOnlyRestoreSectionIndex ?? null,
+                    requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
+                    error: error?.message || String(error),
+                });
+                if (Number.isInteger(spineOnlyRestoreSectionIndex)) {
                     await runRestoreNavigation({
-                        source: 'restore.cfi-fallback',
+                        source: 'restore.cfi-spine-fallback',
+                        target: 'renderer.goTo',
+                        sectionIndex: spineOnlyRestoreSectionIndex,
+                        cfiLength: cfi.length,
+                        fraction: hasFractionalCompletion ? fractionalCompletion : null,
+                    }, async () => {
+                        const result = await globalThis.reader.view.renderer.goTo?.({
+                            index: spineOnlyRestoreSectionIndex,
+                        });
+                        if (hasFractionalCompletion) {
+                            await globalThis.reader.view.goToFraction(fractionalCompletion);
+                        }
+                        return result;
+                    }, {
+                        throwOnError: false,
+                    });
+                } else if (hasFractionalCompletion) {
+                    await runRestoreNavigation({
+                        source: 'restore.cfi-fraction-fallback',
                         target: 'view.goToFraction',
                         fraction: fractionalCompletion,
-                    }, () => globalThis.reader.view.goToFraction(fractionalCompletion))
+                    }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
                 }
-            });
+            }
             await waitForPaintAfterNavigation();
             const cfiState = captureRestoreState('after-cfi');
             await reconcileRestoreFractionIfNeeded(
@@ -12101,8 +12744,21 @@ window.loadLastPosition = async ({
                 'cfi-fraction-drift',
                 'after-cfi-fraction-reconcile',
             );
+            const finalCfiState = captureRestoreState('after-cfi-final');
+            jun22Log('ebook.loadLastPosition.path.finish', {
+                path: 'cfi',
+                cfiLength: cfi.length,
+                requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
+                currentFraction: typeof finalCfiState.currentFraction === 'number' ? safeRound(finalCfiState.currentFraction, 6) : null,
+                currentSectionIndex: finalCfiState.sectionIndex ?? null,
+                locationCurrent: finalCfiState.locationCurrent ?? null,
+                locationTotal: finalCfiState.locationTotal ?? null,
+            });
         } else if (hasFractionalCompletion) {
             try {
+                globalThis.__manabiSuppressNextRestoreRelocateSave = true;
+                globalThis.__manabiRequireUserInputBeforePositionSave = true;
+                shouldKeepRestoreSaveGuard = true;
                 await runRestoreNavigation({
                     source: 'restore.fraction',
                     target: 'view.goToFraction',
@@ -12110,6 +12766,14 @@ window.loadLastPosition = async ({
                 }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
                 await waitForPaintAfterNavigation();
                 const fractionState = captureRestoreState('after-fraction');
+                jun22Log('ebook.loadLastPosition.path.finish', {
+                    path: 'fraction',
+                    requestedFraction: safeRound(fractionalCompletion, 6),
+                    currentFraction: typeof fractionState.currentFraction === 'number' ? safeRound(fractionState.currentFraction, 6) : null,
+                    currentSectionIndex: fractionState.sectionIndex ?? null,
+                    locationCurrent: fractionState.locationCurrent ?? null,
+                    locationTotal: fractionState.locationTotal ?? null,
+                });
             } catch (error) {
                 readerLoadLog('viewer.loadLastPosition.fractionRestoreSkipped', {
                     reason: 'restore-fraction-failed',
@@ -12119,6 +12783,12 @@ window.loadLastPosition = async ({
                     renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
                 });
                 const fallbackState = captureRestoreState('after-fraction-restore-skipped');
+                jun22Log('ebook.loadLastPosition.path.error', {
+                    path: 'fraction',
+                    error: error?.message || String(error),
+                    currentFraction: typeof fallbackState.currentFraction === 'number' ? safeRound(fallbackState.currentFraction, 6) : null,
+                    currentSectionIndex: fallbackState.sectionIndex ?? null,
+                });
             }
         } else {
             readerLoadLog('viewer.loadLastPosition.noRestoreTarget', {
@@ -12128,6 +12798,13 @@ window.loadLastPosition = async ({
             });
             await globalThis.reader?.displayInitialSection?.('loadLastPosition.noRestoreTarget');
             const defaultState = captureRestoreState('after-no-restore-target');
+            jun22Log('ebook.loadLastPosition.path.finish', {
+                path: 'default',
+                currentFraction: typeof defaultState.currentFraction === 'number' ? safeRound(defaultState.currentFraction, 6) : null,
+                currentSectionIndex: defaultState.sectionIndex ?? null,
+                locationCurrent: defaultState.locationCurrent ?? null,
+                locationTotal: defaultState.locationTotal ?? null,
+            });
         }
         globalThis.reader.hasLoadedLastPosition = true
         if (!syntheticRestoreLocator || syntheticDisplaySettledForRestore) {
@@ -12136,6 +12813,17 @@ window.loadLastPosition = async ({
         globalThis.reader.refreshNativeMarkReadState?.('load-last-position-done');
         const doneState = captureRestoreState('done');
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
+        jun22Log('ebook.loadLastPosition.done', {
+            restoreLocatorKind,
+            requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
+            currentFraction: typeof doneState.currentFraction === 'number' ? safeRound(doneState.currentFraction, 6) : null,
+            currentSectionIndex: doneState.sectionIndex ?? null,
+            locationCurrent: doneState.locationCurrent ?? null,
+            locationTotal: doneState.locationTotal ?? null,
+            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+            suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+            requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+        });
         postLandscapeInsetRestoreProbe('done', doneState, {
             hasCFI: typeof cfi === 'string' && cfi.length > 0,
             requestedFraction: Number.isFinite(fractionalCompletion) ? safeRound(fractionalCompletion, 6) : null,
@@ -12171,6 +12859,13 @@ window.loadLastPosition = async ({
             globalThis.__manabiSuppressNextRestoreRelocateSave = false;
         }
         globalThis.__manabiRequireUserInputBeforePositionSave = true;
+        jun22Log('ebook.loadLastPosition.finally', {
+            restoreLocatorKind,
+            hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+            suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+            requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+        });
     }
 }
 

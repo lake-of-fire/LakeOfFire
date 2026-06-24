@@ -710,6 +710,15 @@ export class NavigationHUD {
                 pageCount: this.rendererPageSnapshot?.total ?? null,
             });
         } else {
+            this.setHideNavigationDueToScroll(false, 'relocate.page-turn', {
+                direction,
+                reportedDirection,
+                isRTL: this.isRTL,
+                reason: detail?.reason ?? null,
+                sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+                pageNumber: this.rendererPageSnapshot?.current ?? null,
+                pageCount: this.rendererPageSnapshot?.total ?? null,
+            });
         }
         try {
             window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({

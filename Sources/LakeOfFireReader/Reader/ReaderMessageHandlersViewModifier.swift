@@ -458,8 +458,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     const body = doc?.body ?? null;
                     const root = doc?.documentElement ?? null;
                     const readerContent = doc?.getElementById?.('reader-content') ?? null;
-                    const segment = doc?.querySelector?.('mnb-seg') ?? null;
-                    const surface = segment?.querySelector?.('mnb-sur') ?? doc?.querySelector?.('mnb-sur') ?? null;
+                    const segment = doc?.querySelector?.('m-m') ?? null;
+                    const surface = segment?.querySelector?.('m-t') ?? doc?.querySelector?.('m-t') ?? null;
                     const css = (el) => el && doc?.defaultView ? doc.defaultView.getComputedStyle(el) : null;
                     const bodyStyle = css(body);
                     const rootStyle = css(root);
@@ -1153,27 +1153,84 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         if let initialRestore {
                             var restoreArguments: [String: Any] = ["cfi": initialRestore.cfi]
                             if let fractionalCompletion = initialRestore.fractionalCompletion {
-                                restoreArguments["fractionalCompletion"] = fractionalCompletion
+                                let restoreFraction = Double(fractionalCompletion)
+                                restoreArguments["fractionalCompletion"] = restoreFraction
                             }
                             loadArguments["initialRestore"] = restoreArguments
                         }
                         let hasInitialRestore = initialRestore != nil
                         let hasRestoreCFI = !(initialRestore?.cfi.isEmpty ?? true)
                         let restoreFraction = initialRestore?.fractionalCompletion.map { String($0) } ?? "nil"
+                        let restoreCFI = initialRestore?.cfi ?? ""
+                        let restoreCFIKind: String = {
+                            if restoreCFI.isEmpty { return "none" }
+                            if restoreCFI.hasPrefix("mnb-loc-v1:") { return "synthetic" }
+                            if restoreCFI.hasPrefix("epubcfi(") { return "epub-cfi" }
+                            return "other"
+                        }()
+                        let restoreCFIPrefix = restoreCFI.isEmpty ? "nil" : String(restoreCFI.prefix(48))
+                        print(
+                            "# JUN22 stage=swift.ebookInitialRestore.dispatch",
+                            "hasInitialRestore=\(hasInitialRestore)",
+                            "hasCFI=\(hasRestoreCFI)",
+                            "cfiKind=\(restoreCFIKind)",
+                            "cfiLength=\(initialRestore?.cfi.count ?? 0)",
+                            "cfiPrefix=\(restoreCFIPrefix)",
+                            "fractionalCompletion=\(restoreFraction)",
+                            "contentURL=\(url.absoluteString)"
+                        )
                         print(
                             "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
                         )
-                        try await scriptCaller.evaluateJavaScript(
-                            "window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState })",
-                            arguments: loadArguments,
-                            in: message.frameInfo
-                        )
+                        do {
+                            let loadArgumentsData = try JSONSerialization.data(withJSONObject: loadArguments)
+                            let loadArgumentsJSON = String(decoding: loadArgumentsData, as: UTF8.self)
+                            _ = try await scriptCaller.evaluateJavaScript(
+                                "window.loadEBook(JSON.parse(loadArgumentsJSON))",
+                                arguments: [
+                                    "loadArgumentsJSON": loadArgumentsJSON,
+                                ],
+                                in: message.frameInfo
+                            )
+                            print(
+                                "# JUN22 stage=swift.ebookInitialRestore.evaluate.finished",
+                                "hasInitialRestore=\(hasInitialRestore)",
+                                "hasCFI=\(hasRestoreCFI)",
+                                "cfiKind=\(restoreCFIKind)",
+                                "cfiLength=\(initialRestore?.cfi.count ?? 0)",
+                                "cfiPrefix=\(restoreCFIPrefix)",
+                                "fractionalCompletion=\(restoreFraction)",
+                                "contentURL=\(url.absoluteString)"
+                            )
+                        } catch {
+                            print(
+                                "# JUN22 stage=swift.ebookInitialRestore.evaluate.error",
+                                "hasInitialRestore=\(hasInitialRestore)",
+                                "hasCFI=\(hasRestoreCFI)",
+                                "cfiKind=\(restoreCFIKind)",
+                                "cfiLength=\(initialRestore?.cfi.count ?? 0)",
+                                "cfiPrefix=\(restoreCFIPrefix)",
+                                "fractionalCompletion=\(restoreFraction)",
+                                "contentURL=\(url.absoluteString)",
+                                "error=\(error.localizedDescription)"
+                            )
+                        }
                     }
                 }
             }),
             ("updateReadingProgress", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
+                print(
+                    "# JUN22 stage=swift.updateReadingProgress.received",
+                    "reason=\(result.reason)",
+                    "fractionalCompletion=\(result.fractionalCompletion)",
+                    "cfiLength=\(result.cfi.count)",
+                    "sectionIndex=\(result.sectionIndex.map(String.init) ?? "nil")",
+                    "currentPage=\(result.currentPageNumber.map(String.init) ?? "nil")",
+                    "totalPages=\(result.totalPages.map(String.init) ?? "nil")",
+                    "hasVisibleJapaneseText=\(result.hasVisibleJapaneseText.map(String.init) ?? "nil")"
+                )
                 handleNavigationVisibility(for: result)
             }),
             ("videoStatus", { @RealmBackgroundActor [weak self] message in

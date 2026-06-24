@@ -2301,7 +2301,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            let processedSegmentCount = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
+            let processedSegmentCount = (try? doc.getElementsByTag("m-m").size()) ?? 0
             let processedBodyExists = doc.body() != nil
             let processedIsEbook = ((try? doc.body()?.attr("data-is-ebook")) ?? "") == "true"
             let processedContentTextLength = ((try? doc.getElementById("reader-content")?.text()) ?? "").count

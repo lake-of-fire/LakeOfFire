@@ -114,11 +114,11 @@ body.readability-mode #reader-content [data-readability-carousel-slide] figcapti
     color: var(--theme-secondary-text, -apple-system-secondary-label);
 }
 
-body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:not(:has(mnb-seg)) {
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:not(:has(m-m)) {
     font: -apple-system-caption1;
 }
 
-body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:has(mnb-seg) {
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:has(m-m) {
     font-size: 0.8em;
 }
 
