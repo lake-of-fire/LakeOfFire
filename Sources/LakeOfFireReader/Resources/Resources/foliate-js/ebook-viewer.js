@@ -12404,23 +12404,6 @@ window.loadEBook = ({
             }) ?? null;
             const readyLocation = globalThis.reader?.view?.lastLocation ?? null;
             const readyLocationFraction = typeof readyLocation?.fraction === 'number' ? readyLocation.fraction : null;
-            globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.ebookViewerLoaded.post', {
-                loadToken,
-                initialRestoreHandled: !!initialRestoreHandled,
-                initialRestoreSectionIndex: initialRestoreHandled?.sectionIndex ?? null,
-                initialRestoreFraction: Number.isFinite(initialRestoreHandled?.fractionalCompletion)
-                    ? safeRound(initialRestoreHandled.fractionalCompletion, 6)
-                    : null,
-                lastLocationFraction: readyLocationFraction != null ? safeRound(readyLocationFraction, 6) : null,
-                lastLocationCurrent: readyLocation?.location?.current ?? null,
-                lastLocationTotal: readyLocation?.location?.total ?? null,
-                hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
-            scheduleEBookRestoreVisualStateProbes('ebookViewerLoaded', {
-                loadToken,
-                initialRestoreHandled: !!initialRestoreHandled,
-            });
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                 probe,
                 initialRestoreHandled: !!initialRestoreHandled,
@@ -12484,14 +12467,6 @@ const markRestorePositionSaveUserInput = (source = 'unknown') => {
     }
     globalThis.__manabiRequireUserInputBeforePositionSave = false;
     globalThis.__manabiSuppressNextRestoreRelocateSave = false;
-    globalThis.__manabiRestoreDebugLog?.('ebook.restoreSaveGuard.released', {
-        source,
-        suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
-        requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
-    });
-    void logEBookRestoreVisualState('restoreSaveGuard.released', {
-        inputSource: source,
-    });
 };
 
 const markRestorePositionSavePageTurnInput = (source = 'page-turn') => {
