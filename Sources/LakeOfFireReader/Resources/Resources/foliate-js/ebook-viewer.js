@@ -61,13 +61,11 @@ const restoreDebugLogStageEnabled = (stage) => {
     if (stage.startsWith('ebook.initialDisplay')) return true;
     if (stage.startsWith('ebook.loadEBook')) return true;
     if (stage.startsWith('ebook.loadLastPosition')) return true;
+    if (stage === 'ebook.restoreVisualState') return true;
+    if (stage === 'ebook.updateReadingProgress.post') return true;
     if (stage === 'ebook.initialRestore.finalized') return true;
     if (stage === 'ebook.restoreSaveGuard.released') return true;
-    if (stage === 'ebook.relocate.persistDecision') {
-        return globalThis.__manabiRestoreInProgress === true
-            || globalThis.__manabiSuppressNextRestoreRelocateSave === true
-            || globalThis.__manabiRequireUserInputBeforePositionSave === true;
-    }
+    if (stage === 'ebook.relocate.persistDecision') return true;
     return false;
 };
 
@@ -3308,6 +3306,118 @@ const safeRound = (value, digits = 1) =>
     typeof value === 'number' && Number.isFinite(value)
         ? Number(value.toFixed(digits))
         : null;
+
+const restoreDebugLocationSnapshot = (reader = globalThis.reader) => {
+    const location = reader?.view?.lastLocation ?? null;
+    return {
+        fraction: typeof location?.fraction === 'number' ? safeRound(location.fraction, 6) : null,
+        sectionIndex: typeof location?.section?.current === 'number'
+            ? location.section.current
+            : (typeof location?.sectionIndex === 'number' ? location.sectionIndex : null),
+        locationCurrent: typeof location?.location?.current === 'number' ? location.location.current : null,
+        locationTotal: typeof location?.location?.total === 'number' ? location.location.total : null,
+        cfiLength: typeof location?.cfi === 'string' ? location.cfi.length : 0,
+        cfiPrefix: typeof location?.cfi === 'string' && location.cfi.length > 0
+            ? location.cfi.slice(0, 48)
+            : null,
+    };
+};
+
+const logEBookRestoreVisualState = async (reason, extra = {}) => {
+    try {
+        const reader = globalThis.reader ?? null;
+        const renderer = reader?.view?.renderer ?? null;
+        let metrics = null;
+        let metricsError = null;
+        try {
+            metrics = typeof renderer?.pageMetrics === 'function'
+                ? await renderer.pageMetrics()
+                : null;
+        } catch (error) {
+            metricsError = error?.message || String(error);
+        }
+        const location = restoreDebugLocationSnapshot(reader);
+        const relocateDetail = reader?.navHUD?.lastRelocateDetail ?? null;
+        const primaryLabelDiagnostics = reader?.navHUD?.lastPrimaryLabelDiagnostics ?? null;
+        globalThis.__manabiRestoreDebugLog?.('ebook.restoreVisualState', {
+            reason,
+            ...extra,
+            requestedRestoreFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
+                ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
+                : null,
+            handledFraction: Number.isFinite(globalThis.__manabiInitialRestoreHandled?.fractionalCompletion)
+                ? safeRound(globalThis.__manabiInitialRestoreHandled.fractionalCompletion, 6)
+                : null,
+            handledSectionIndex: globalThis.__manabiInitialRestoreHandled?.sectionIndex ?? null,
+            lastLocationFraction: location.fraction,
+            lastLocationSectionIndex: location.sectionIndex,
+            lastLocationCurrent: location.locationCurrent,
+            lastLocationTotal: location.locationTotal,
+            lastLocationCFILength: location.cfiLength,
+            lastLocationCFIPrefix: location.cfiPrefix,
+            rendererLocalName: renderer?.localName ?? null,
+            rendererCurrentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
+            primaryRendererContentIndex: getPrimaryRendererContentIndex(renderer),
+            navPageCurrent: typeof reader?.navHUD?.rendererPageSnapshot?.current === 'number'
+                ? reader.navHUD.rendererPageSnapshot.current
+                : null,
+            navPageTotal: typeof reader?.navHUD?.rendererPageSnapshot?.total === 'number'
+                ? reader.navHUD.rendererPageSnapshot.total
+                : null,
+            relocateReason: relocateDetail?.reason ?? null,
+            relocateFraction: typeof relocateDetail?.fraction === 'number' ? safeRound(relocateDetail.fraction, 6) : null,
+            relocatePageNumber: typeof relocateDetail?.pageNumber === 'number' ? relocateDetail.pageNumber : null,
+            relocatePageCount: typeof relocateDetail?.pageCount === 'number' ? relocateDetail.pageCount : null,
+            relocateLocationCurrent: typeof relocateDetail?.location?.current === 'number'
+                ? relocateDetail.location.current
+                : null,
+            relocateLocationTotal: typeof relocateDetail?.location?.total === 'number'
+                ? relocateDetail.location.total
+                : null,
+            relocateSectionIndex: typeof relocateDetail?.sectionIndex === 'number'
+                ? relocateDetail.sectionIndex
+                : (typeof relocateDetail?.index === 'number' ? relocateDetail.index : null),
+            primaryLabelText: primaryLabelDiagnostics?.label ?? null,
+            primaryLabelFraction: typeof primaryLabelDiagnostics?.fraction === 'number'
+                ? safeRound(primaryLabelDiagnostics.fraction, 6)
+                : null,
+            primaryLabelSource: primaryLabelDiagnostics?.source ?? null,
+            metricPage: typeof metrics?.page === 'number' ? metrics.page : null,
+            metricPages: typeof metrics?.pages === 'number' ? metrics.pages : null,
+            metricSize: typeof metrics?.size === 'number' ? safeRound(metrics.size, 2) : null,
+            metricViewSize: typeof metrics?.viewSize === 'number' ? safeRound(metrics.viewSize, 2) : null,
+            metricStart: typeof metrics?.start === 'number' ? safeRound(metrics.start, 2) : null,
+            metricEnd: typeof metrics?.end === 'number' ? safeRound(metrics.end, 2) : null,
+            metricSource: metrics?.metricsSource ?? metrics?.source ?? null,
+            metricSideProp: metrics?.sideProp ?? null,
+            metricScrollProp: metrics?.scrollProp ?? null,
+            metricScrolled: metrics?.scrolled ?? null,
+            metricVertical: metrics?.vertical ?? null,
+            metricRTL: metrics?.rtl ?? null,
+            metricsError,
+            bodyLoading: !!document.body?.classList?.contains?.('loading'),
+            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+            hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
+            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+            suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
+            requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+        });
+    } catch (error) {
+        globalThis.__manabiRestoreDebugLog?.('ebook.restoreVisualState', {
+            reason,
+            error: error?.message || String(error),
+        });
+    }
+};
+
+const scheduleEBookRestoreVisualStateProbes = (reason, extra = {}) => {
+    void logEBookRestoreVisualState(`${reason}.immediate`, extra);
+    [250, 1000, 2000].forEach((delayMs) => {
+        setTimeout(() => {
+            void logEBookRestoreVisualState(`${reason}.plus${delayMs}ms`, extra);
+        }, delayMs);
+    });
+};
 
 const getAuthoritativeReaderFraction = ({ navHUD = null, detail = null, fallbackFraction = null } = {}) => {
     return getAuthoritativeReaderFractionDiagnostics({ navHUD, detail, fallbackFraction }).fraction;
@@ -9811,8 +9921,12 @@ class Reader {
             ? 'synthetic'
             : (hasSpineOnlyInitialRestore ? 'spine-cfi' : (hasInitialRestoreCFI ? 'cfi' : (hasInitialRestoreFraction ? 'fraction' : 'none')));
         const startedAt = performanceNowMs();
-        const initialNavigationTimeoutMs = 1500;
-        const initialDisplaySettleTimeoutMs = 3000;
+        const hasInitialRestoreTarget = !!syntheticInitialRestore
+            || hasSpineOnlyInitialRestore
+            || hasInitialRestoreCFI
+            || hasInitialRestoreFraction;
+        const initialNavigationTimeoutMs = hasInitialRestoreTarget ? 45000 : 3000;
+        const initialDisplaySettleTimeoutMs = hasInitialRestoreTarget ? 45000 : 3000;
         const runInitialDisplayNavigation = async (intent, operation) => {
             const navigationStartedAt = performanceNowMs();
             readerLoadLog('viewer.initialDisplay.navigation.start', {
@@ -9989,10 +10103,7 @@ class Reader {
                 ? location.section.current
                 : (typeof location?.sectionIndex === 'number' ? location.sectionIndex : null);
             const settledFraction = typeof location?.fraction === 'number' ? location.fraction : null;
-            const initialRestoreRequested = !!syntheticInitialRestore
-                || hasSpineOnlyInitialRestore
-                || hasInitialRestoreCFI
-                || hasInitialRestoreFraction;
+            const initialRestoreRequested = hasInitialRestoreTarget;
             const initialRestoreFractionSatisfied = !hasInitialRestoreFraction
                 || (
                     typeof settledFraction === 'number'
@@ -11324,6 +11435,12 @@ class Reader {
             fallbackFraction: fraction,
         });
         const effectiveFraction = effectiveFractionDiagnostics.fraction;
+        const progressFraction = typeof fraction === 'number' && Number.isFinite(fraction)
+            ? Math.max(0, Math.min(1, fraction))
+            : effectiveFraction;
+        const progressFractionSource = typeof fraction === 'number' && Number.isFinite(fraction)
+            ? 'relocate-detail'
+            : effectiveFractionDiagnostics.source;
         const currentPercent = typeof primaryLabelDiagnostics?.currentPercent === 'number'
             ? primaryLabelDiagnostics.currentPercent
             : null;
@@ -11412,8 +11529,12 @@ class Reader {
         });
         const shouldPreferSyntheticRestoreLocator = !!syntheticRestoreLocator
             && this.view?.renderer?.localName === 'foliate-paginator'
-            && !cfiLooksSectionBase
-            && !cfiIsUnstableAcrossPages;
+            && (
+                cfiLooksSectionBase
+                || cfiIsUnstableAcrossPages
+                || typeof cfi !== 'string'
+                || cfi.length === 0
+            );
         const persistedLocator = shouldPreferSyntheticRestoreLocator
             ? syntheticRestoreLocator
             : cfi;
@@ -11439,6 +11560,8 @@ class Reader {
             reason: reason ?? null,
             effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
             effectiveFractionSource: effectiveFractionDiagnostics.source,
+            progressFraction: Number.isFinite(progressFraction) ? safeRound(progressFraction, 6) : null,
+            progressFractionSource,
             effectivePrimaryLabelFraction: typeof effectiveFractionDiagnostics.primaryLabelFraction === 'number'
                 ? safeRound(effectiveFractionDiagnostics.primaryLabelFraction, 6)
                 : null,
@@ -11528,7 +11651,7 @@ class Reader {
                 && !requiresUserInputBeforePositionSave;
             globalThis.__manabiRestoreDebugLog?.('ebook.relocate.persistDecision', {
                 reason: reason ?? null,
-                normalizedReason,
+                normalizedReason: normalizedRelocateReason,
                 shouldPersist: shouldPersistRelocatePosition,
                 skipAnchor: normalizedRelocateReason === 'anchor',
                 suppressedRestoreSettleSave: shouldSuppressRestoreSettleSave,
@@ -11536,6 +11659,30 @@ class Reader {
                 hasLoadedLastPosition: this.hasLoadedLastPosition === true,
                 restoreInProgress: globalThis.__manabiRestoreInProgress === true,
                 effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+                progressFraction: Number.isFinite(progressFraction) ? safeRound(progressFraction, 6) : null,
+                progressFractionSource,
+                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
+                sectionIndex,
+                localSectionIndex,
+                rendererTotal,
+                persistedLocatorKind: shouldPreferSyntheticRestoreLocator
+                    ? 'synthetic'
+                    : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
+                persistedLocatorLength: typeof persistedLocator === 'string' ? persistedLocator.length : 0,
+                currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                    ? this.navHUD.rendererPageSnapshot.current
+                    : null,
+            });
+            void logEBookRestoreVisualState('relocate.persistDecision', {
+                reason: reason ?? null,
+                normalizedReason: normalizedRelocateReason,
+                shouldPersist: shouldPersistRelocatePosition,
+                skipAnchor: normalizedRelocateReason === 'anchor',
+                suppressedRestoreSettleSave: shouldSuppressRestoreSettleSave,
+                requiresUserInputBeforeSave: requiresUserInputBeforePositionSave,
+                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
+                progressFraction: Number.isFinite(progressFraction) ? safeRound(progressFraction, 6) : null,
+                progressFractionSource,
                 rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
                 sectionIndex,
                 localSectionIndex,
@@ -11551,7 +11698,7 @@ class Reader {
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
-                    fraction: Number.isFinite(effectiveFraction) ? effectiveFraction : fraction,
+                    fraction: Number.isFinite(progressFraction) ? progressFraction : fraction,
                     cfi: persistedLocator,
                     reason,
                     currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
@@ -12220,7 +12367,7 @@ window.loadEBook = ({
     globalThis.manabiLoadEBookStartedAt = Date.now();
     globalThis.manabiLoadEBookReady = false;
     globalThis.manabiLoadEBookLastState = 'start';
-    globalThis.manabiLoadEBookPendingInitialRestore = effectiveInitialRestore ?? null;
+    globalThis.manabiLoadEBookPendingInitialRestore = null;
     globalThis.manabiPendingLoadEBookArgs = {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || null,
@@ -12326,6 +12473,7 @@ window.loadEBook = ({
             globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.readerOpen.dispatch', {
                 loadToken,
                 hasInitialRestore: !!effectiveInitialRestore,
+                hasPendingInitialRestore: !!globalThis.manabiLoadEBookPendingInitialRestore,
                 initialCFILength: typeof effectiveInitialRestore?.cfi === 'string' ? effectiveInitialRestore.cfi.length : 0,
                 restoreKind: requestedRestoreKind,
                 syntheticSectionIndex: requestedSyntheticRestore?.sectionIndex ?? null,
@@ -12368,7 +12516,9 @@ window.loadEBook = ({
             if (globalThis.__manabiInitialRestoreHandled) {
                 finalizeInitialRestoreHandledWithoutNativeRestore('loadEBook.initialRestoreHandled');
             }
-            const pendingInitialRestore = globalThis.manabiLoadEBookPendingInitialRestore ?? null;
+            const queuedPendingInitialRestore = globalThis.manabiLoadEBookPendingInitialRestore ?? null;
+            const pendingInitialRestore = queuedPendingInitialRestore
+                ?? (!globalThis.__manabiInitialRestoreHandled ? effectiveInitialRestore : null);
             if (
                 pendingInitialRestore
                 && !globalThis.__manabiInitialRestoreHandled
@@ -12380,6 +12530,7 @@ window.loadEBook = ({
                 const pendingFraction = coerceRestoreFraction(pendingInitialRestore?.fractionalCompletion);
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.apply', {
                     loadToken,
+                    source: queuedPendingInitialRestore ? 'duplicate-inflight' : 'initial-restore-fallback',
                     cfiLength: pendingCFI.length,
                     requestedFraction: pendingFraction != null ? safeRound(pendingFraction, 6) : null,
                     hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
@@ -12412,6 +12563,7 @@ window.loadEBook = ({
                 globalThis.manabiLoadEBookPendingInitialRestore = null;
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.finish', {
                     loadToken,
+                    source: queuedPendingInitialRestore ? 'duplicate-inflight' : 'initial-restore-fallback',
                     cfiLength: pendingCFI.length,
                     requestedFraction: pendingFraction != null ? safeRound(pendingFraction, 6) : null,
                     restored: pendingRestoreSucceeded,
@@ -12449,6 +12601,10 @@ window.loadEBook = ({
                 lastLocationTotal: readyLocation?.location?.total ?? null,
                 hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
                 renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+            });
+            scheduleEBookRestoreVisualStateProbes('ebookViewerLoaded', {
+                loadToken,
+                initialRestoreHandled: !!initialRestoreHandled,
             });
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                 probe,
@@ -12517,6 +12673,9 @@ const markRestorePositionSaveUserInput = (source = 'unknown') => {
         source,
         suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
         requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
+    });
+    void logEBookRestoreVisualState('restoreSaveGuard.released', {
+        inputSource: source,
     });
 };
 
@@ -12604,7 +12763,8 @@ window.loadLastPosition = async ({
         ? Math.max(0, Math.min(1, fractionalCompletion))
         : null;
     globalThis.__manabiRestoreInProgress = true;
-    const restoreNavigationTimeoutMs = 750;
+    const restoreNavigationTimeoutMs = 45000;
+    const restoreStateSettleTimeoutMs = 45000;
     const runRestoreNavigation = async (
         intent,
         operation,
@@ -12695,6 +12855,82 @@ window.loadLastPosition = async ({
         };
     };
     const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
+    const restoreStateHasUsableLocation = (state) => {
+        if (!state) return false;
+        if (hasFractionalCompletion) {
+            return typeof state.currentFraction === 'number';
+        }
+        return typeof state.currentFraction === 'number'
+            || typeof state.sectionIndex === 'number'
+            || typeof state.locationCurrent === 'number';
+    };
+    const restoreStateFractionSatisfied = (state) => !hasFractionalCompletion
+        || (
+            typeof state?.currentFraction === 'number'
+            && Math.abs(state.currentFraction - fractionalCompletion) <= 0.003
+        );
+    const waitForRestoreStateIfNeeded = async (
+        state,
+        reason,
+        stage,
+        {
+            requireFractionSatisfied = false,
+            timeoutMs = restoreStateSettleTimeoutMs,
+        } = {},
+    ) => {
+        if (
+            restoreStateHasUsableLocation(state)
+            && (!requireFractionSatisfied || restoreStateFractionSatisfied(state))
+        ) {
+            return state;
+        }
+        globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.restoreState.wait.start', {
+            reason,
+            stage,
+            timeoutMs,
+            requireFractionSatisfied,
+            requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
+            currentFraction: typeof state?.currentFraction === 'number' ? safeRound(state.currentFraction, 6) : null,
+            currentSectionIndex: state?.sectionIndex ?? null,
+            locationCurrent: state?.locationCurrent ?? null,
+            locationTotal: state?.locationTotal ?? null,
+            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+        });
+        let waitResult = null;
+        if (typeof globalThis.reader?.waitForNextDisplaySettled === 'function') {
+            try {
+                waitResult = await globalThis.reader.waitForNextDisplaySettled(reason, { timeoutMs });
+            } catch (error) {
+                readerLoadLog('viewer.loadLastPosition.restoreState.wait.error', {
+                    reason,
+                    stage,
+                    timeoutMs,
+                    error: error?.message || String(error),
+                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
+                    hasReaderContent: !!document.querySelector?.('foliate-view'),
+                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+                });
+            }
+        }
+        await waitForPaintAfterNavigation();
+        const waitedState = captureRestoreState(stage, {
+            waitedForDisplay: !!waitResult,
+        });
+        globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.restoreState.wait.finish', {
+            reason,
+            stage,
+            settledReason: waitResult?.reason ?? null,
+            requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
+            currentFraction: typeof waitedState.currentFraction === 'number' ? safeRound(waitedState.currentFraction, 6) : null,
+            currentSectionIndex: waitedState.sectionIndex ?? null,
+            locationCurrent: waitedState.locationCurrent ?? null,
+            locationTotal: waitedState.locationTotal ?? null,
+            locationUsable: restoreStateHasUsableLocation(waitedState),
+            fractionSatisfied: restoreStateFractionSatisfied(waitedState),
+            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+        });
+        return waitedState;
+    };
     const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
     const spineOnlyRestoreSectionIndex = !syntheticRestoreLocator
         ? parseSpineOnlyEpubCFI(cfi)
@@ -12807,6 +13043,12 @@ window.loadLastPosition = async ({
             drift: Number.isFinite(delta) ? safeRound(delta, 6) : null,
             missingCurrentFraction: !hasCurrentFraction,
         });
+        return waitForRestoreStateIfNeeded(
+            reconciledState,
+            `restore.reconcile.${reason}`,
+            stageOnReconcile,
+            { requireFractionSatisfied: true },
+        );
     };
     try {
         let syntheticDisplaySettledForRestore = false;
@@ -13007,13 +13249,23 @@ window.loadLastPosition = async ({
                 });
             }
             await waitForPaintAfterNavigation();
-            const spineState = captureRestoreState('after-spine-cfi');
-            await reconcileRestoreFractionIfNeeded(
+            const spineState = await waitForRestoreStateIfNeeded(
+                captureRestoreState('after-spine-cfi'),
+                'restore.spine-cfi.after-navigation',
+                'after-spine-cfi',
+                { requireFractionSatisfied: hasFractionalCompletion },
+            );
+            const reconciledSpineState = await reconcileRestoreFractionIfNeeded(
                 spineState,
                 'spine-cfi-fraction-drift',
                 'after-spine-cfi-fraction-reconcile',
             );
-            const finalSpineState = captureRestoreState('after-spine-cfi-final');
+            const finalSpineState = await waitForRestoreStateIfNeeded(
+                reconciledSpineState ?? captureRestoreState('after-spine-cfi-final'),
+                'restore.spine-cfi.final',
+                'after-spine-cfi-final',
+                { requireFractionSatisfied: hasFractionalCompletion },
+            );
             globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.finish', {
                 path: 'spine-cfi',
                 cfiLength: typeof cfi === 'string' ? cfi.length : 0,
@@ -13072,13 +13324,23 @@ window.loadLastPosition = async ({
                 }
             }
             await waitForPaintAfterNavigation();
-            const cfiState = captureRestoreState('after-cfi');
-            await reconcileRestoreFractionIfNeeded(
+            const cfiState = await waitForRestoreStateIfNeeded(
+                captureRestoreState('after-cfi'),
+                'restore.cfi.after-navigation',
+                'after-cfi',
+                { requireFractionSatisfied: hasFractionalCompletion },
+            );
+            const reconciledCfiState = await reconcileRestoreFractionIfNeeded(
                 cfiState,
                 'cfi-fraction-drift',
                 'after-cfi-fraction-reconcile',
             );
-            const finalCfiState = captureRestoreState('after-cfi-final');
+            const finalCfiState = await waitForRestoreStateIfNeeded(
+                reconciledCfiState ?? captureRestoreState('after-cfi-final'),
+                'restore.cfi.final',
+                'after-cfi-final',
+                { requireFractionSatisfied: hasFractionalCompletion },
+            );
             globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.finish', {
                 path: 'cfi',
                 cfiLength: cfi.length,
@@ -13099,7 +13361,12 @@ window.loadLastPosition = async ({
                     fraction: fractionalCompletion,
                 }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
                 await waitForPaintAfterNavigation();
-                const fractionState = captureRestoreState('after-fraction');
+                const fractionState = await waitForRestoreStateIfNeeded(
+                    captureRestoreState('after-fraction'),
+                    'restore.fraction.after-navigation',
+                    'after-fraction',
+                    { requireFractionSatisfied: true },
+                );
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.finish', {
                     path: 'fraction',
                     requestedFraction: safeRound(fractionalCompletion, 6),
@@ -13140,16 +13407,27 @@ window.loadLastPosition = async ({
                 locationTotal: defaultState.locationTotal ?? null,
             });
         }
-        globalThis.reader.hasLoadedLastPosition = true
-        if (!syntheticRestoreLocator || syntheticDisplaySettledForRestore) {
+        const doneState = await waitForRestoreStateIfNeeded(
+            captureRestoreState('done'),
+            'loadLastPosition.done',
+            'done',
+            { requireFractionSatisfied: hasFractionalCompletion },
+        );
+        const doneHasUsableLocation = restoreStateHasUsableLocation(doneState);
+        const doneFractionSatisfied = restoreStateFractionSatisfied(doneState);
+        globalThis.reader.hasLoadedLastPosition = !hasExplicitRestoreTarget || doneHasUsableLocation;
+        if (globalThis.reader.hasLoadedLastPosition && (!syntheticRestoreLocator || syntheticDisplaySettledForRestore)) {
             markReaderRenderReady('loadLastPosition.done');
         }
-        globalThis.reader.refreshNativeMarkReadState?.('load-last-position-done');
-        const doneState = captureRestoreState('done');
-        const restoredExplicitPosition = !!syntheticRestoreLocator
+        if (globalThis.reader.hasLoadedLastPosition) {
+            globalThis.reader.refreshNativeMarkReadState?.('load-last-position-done');
+        }
+        const restoredExplicitPosition = doneHasUsableLocation && doneFractionSatisfied && (
+            !!syntheticRestoreLocator
             || Number.isInteger(spineOnlyRestoreSectionIndex)
             || hasPreciseCFI
-            || hasFractionalCompletion;
+            || hasFractionalCompletion
+        );
         if (restoredExplicitPosition) {
             globalThis.__manabiInitialRestoreHandled = {
                 cfi: typeof cfi === 'string' ? cfi : '',
@@ -13173,6 +13451,8 @@ window.loadLastPosition = async ({
             locationCurrent: doneState.locationCurrent ?? null,
             locationTotal: doneState.locationTotal ?? null,
             hasLoadedLastPosition: globalThis.reader?.hasLoadedLastPosition === true,
+            locationUsable: doneHasUsableLocation,
+            fractionSatisfied: doneFractionSatisfied,
             updatedInitialRestoreHandled: restoredExplicitPosition,
             suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
             requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,

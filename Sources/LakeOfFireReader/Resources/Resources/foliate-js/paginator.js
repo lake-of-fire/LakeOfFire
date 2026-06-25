@@ -192,6 +192,39 @@ const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
         );
     } catch (_error) {}
 };
+const manabiRectDiagnostics = (prefix, rect) => {
+    if (!rect) return {};
+    return {
+        [`${prefix}X`]: manabiRound(Number(rect.x ?? rect.left) || 0, 2),
+        [`${prefix}Y`]: manabiRound(Number(rect.y ?? rect.top) || 0, 2),
+        [`${prefix}Width`]: manabiRound(Number(rect.width) || 0, 2),
+        [`${prefix}Height`]: manabiRound(Number(rect.height) || 0, 2),
+        [`${prefix}Left`]: manabiRound(Number(rect.left) || 0, 2),
+        [`${prefix}Top`]: manabiRound(Number(rect.top) || 0, 2),
+        [`${prefix}Right`]: manabiRound(Number(rect.right) || 0, 2),
+        [`${prefix}Bottom`]: manabiRound(Number(rect.bottom) || 0, 2),
+    };
+};
+const manabiElementDiagnostics = (prefix, element, styleProperties = []) => {
+    if (!element) return {};
+    const style = element.ownerDocument?.defaultView?.getComputedStyle?.(element) ?? null;
+    const stylePayload = {};
+    for (const property of styleProperties) {
+        const key = property.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+        stylePayload[`${prefix}Style${key[0].toUpperCase()}${key.slice(1)}`] =
+            style?.getPropertyValue?.(property) || null;
+    }
+    return {
+        [`${prefix}ClientWidth`]: element.clientWidth ?? null,
+        [`${prefix}ClientHeight`]: element.clientHeight ?? null,
+        [`${prefix}ScrollWidth`]: element.scrollWidth ?? null,
+        [`${prefix}ScrollHeight`]: element.scrollHeight ?? null,
+        [`${prefix}OffsetWidth`]: element.offsetWidth ?? null,
+        [`${prefix}OffsetHeight`]: element.offsetHeight ?? null,
+        ...manabiRectDiagnostics(`${prefix}Rect`, element.getBoundingClientRect?.()),
+        ...stylePayload,
+    };
+};
 const manabiRunPaginatorBoundary = async (stage, payload, operation, { logReaderLoad = false } = {}) => {
     const startedAt = manabiPerfNow();
     manabiTimelineMark(`${stage}.start`, payload);
@@ -233,6 +266,21 @@ const manabiSetPropertyIfChanged = (style, property, value) => {
     }
     style.setProperty(property, value);
     return true;
+};
+export const manabiPreparePaginatorLayoutMeasurement = ({
+    top,
+    vertical,
+    flow,
+    invalidateSizes,
+    enableColumnizationOptimizations = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS,
+} = {}) => {
+    const usesVerticalPaginatedLayout =
+        enableColumnizationOptimizations && vertical === true && flow !== 'scrolled';
+    top?.classList?.toggle?.('mnb-vertical-paginated', usesVerticalPaginatedLayout);
+    if (typeof invalidateSizes === 'function') {
+        invalidateSizes();
+    }
+    return usesVerticalPaginatedLayout;
 };
 const manabiBlobResourceInfo = url => {
     try {
@@ -818,7 +866,7 @@ class View {
                                 void manabiRunPaginatorBoundary(
                                     'paginator.view.fontsReadyExpand',
                                     { ...basePayload, href: doc?.location?.href ?? null },
-                                    () => this.expand({ skipIfSignatureUnchanged: true }),
+                                    () => this.expand(),
                                     { logReaderLoad }
                                 )
                             })
@@ -1020,17 +1068,29 @@ class View {
 
         const doc = this.document
         const { isJapanese } = getJapaneseLayoutFlags(doc)
+        const paginationSide = vertical ? 'height' : 'width'
+        const paginationOtherSide = paginationSide === 'width' ? 'height' : 'width'
+        let preMeasureGeometryChanged = false
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.columnization.input', this.#columnizationDiagnostics({
+                phase: 'beforeStyles',
+                layoutWidth: width,
+                layoutHeight: height,
+                layoutGap: gap,
+                layoutColumnWidth: columnWidth,
+                layoutDivisor: divisor,
+                layoutSize: this._size,
+                isJapanese,
+            }));
+        }
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
             '--paginator-column-gap': `${gap}px`,
             'column-gap': `${gap}px`,
             'column-fill': 'auto',
-            ...(vertical ? {
-                'width': `${width}px`
-            } : {
-                'height': `${height}px`
-            }),
+            'width': `${width}px`,
+            'height': `${height}px`,
             'padding': vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
             'overflow': 'hidden',
             'overflow-wrap': isJapanese ? 'normal' : 'break-word',
@@ -1054,7 +1114,28 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
+        preMeasureGeometryChanged =
+            manabiSetStyleIfChanged(this.#iframe.style, paginationSide, `${this._size}px`) || preMeasureGeometryChanged
+        preMeasureGeometryChanged =
+            manabiSetStyleIfChanged(this.#element.style, paginationSide, `${this._size}px`) || preMeasureGeometryChanged
+        preMeasureGeometryChanged =
+            manabiSetStyleIfChanged(this.#iframe.style, paginationOtherSide, '100%') || preMeasureGeometryChanged
+        preMeasureGeometryChanged =
+            manabiSetStyleIfChanged(this.#element.style, paginationOtherSide, '100%') || preMeasureGeometryChanged
         this.setImageSize()
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.columnization.afterStyles', this.#columnizationDiagnostics({
+                phase: 'afterStyles',
+                layoutWidth: width,
+                layoutHeight: height,
+                layoutGap: gap,
+                layoutColumnWidth: columnWidth,
+                layoutDivisor: divisor,
+                layoutSize: this._size,
+                isJapanese,
+                preMeasureGeometryChanged,
+            }));
+        }
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
@@ -1189,6 +1270,64 @@ class View {
             href: doc?.location?.href ?? null,
         })
     }
+    #columnizationDiagnostics(extra = {}) {
+        const doc = this.document
+        const documentElement = doc?.documentElement ?? null
+        const body = doc?.body ?? null
+        const rootStyleProperties = [
+            'width',
+            'height',
+            'padding-top',
+            'padding-bottom',
+            'padding-left',
+            'padding-right',
+            'column-width',
+            'column-gap',
+            'column-fill',
+            'overflow',
+            'writing-mode',
+            'direction',
+        ];
+        const bodyStyleProperties = [
+            'width',
+            'height',
+            'max-width',
+            'max-height',
+            'margin',
+            'writing-mode',
+            'direction',
+        ];
+        const elementStyleProperties = [
+            'width',
+            'height',
+            'padding',
+            'overflow',
+        ];
+        return {
+            ...extra,
+            cacheWarmer: this.#isCacheWarmer,
+            column: this._column,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            size: this._size,
+            topMargin: this.layout?.topMargin ?? null,
+            bottomMargin: this.layout?.bottomMargin ?? null,
+            layoutWidth: this.layout?.width ?? extra.layoutWidth ?? null,
+            layoutHeight: this.layout?.height ?? extra.layoutHeight ?? null,
+            layoutGap: this.layout?.gap ?? extra.layoutGap ?? null,
+            layoutColumnWidth: this.layout?.columnWidth ?? extra.layoutColumnWidth ?? null,
+            layoutDivisor: this.layout?.divisor ?? extra.layoutDivisor ?? null,
+            iframeConnected: this.#iframe?.isConnected === true,
+            documentReadyState: doc?.readyState ?? null,
+            fontsStatus: doc?.fonts?.status ?? null,
+            bodyTextLength: body?.textContent?.trim?.().length ?? null,
+            ...manabiElementDiagnostics('container', this.container, elementStyleProperties),
+            ...manabiElementDiagnostics('view', this.#element, elementStyleProperties),
+            ...manabiElementDiagnostics('iframe', this.#iframe, elementStyleProperties),
+            ...manabiElementDiagnostics('root', documentElement, rootStyleProperties),
+            ...manabiElementDiagnostics('body', body, bodyStyleProperties),
+        };
+    }
     async expand({ skipIfSignatureUnchanged = false } = {}) {
         const expandStartedAt = manabiPerfNow();
         //        console.log("expand...")
@@ -1215,6 +1354,15 @@ class View {
                             column: this._column,
                             vertical: this.#vertical,
                         });
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.columnization.expand.skipSameSignature', this.#columnizationDiagnostics({
+                                phase: 'skipSameSignature',
+                                expandSignature,
+                                lastExpandedSide: this.#lastExpandedMetrics?.side ?? null,
+                                lastExpandedSize: this.#lastExpandedMetrics?.expandedSize ?? null,
+                                lastExpandedPageCount: this.#lastExpandedMetrics?.pageCount ?? null,
+                            }));
+                        }
                         resolve()
                         return
                     }
@@ -1234,6 +1382,7 @@ class View {
                         const contentSize = contentStart + contentRect[side]
                         const pageCount = Math.ceil(contentSize / this._size)
                         const expandedSize = pageCount * this._size
+                        const remainder = this._size > 0 ? contentSize % this._size : null
                         expandedMetrics = {
                             column: true,
                             side,
@@ -1246,6 +1395,23 @@ class View {
                             size: this._size,
                             inlineProgression,
                             scrollProp,
+                            contentStart,
+                            remainder,
+                        }
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.columnization.expand.measure', this.#columnizationDiagnostics({
+                                phase: 'measure',
+                                side,
+                                otherSide,
+                                scrollProp,
+                                inlineProgression,
+                                contentStart,
+                                contentSize,
+                                pageCount,
+                                expandedSize,
+                                remainder,
+                                ...manabiRectDiagnostics('contentRect', contentRect),
+                            }));
                         }
                         let geometryChanged = false
                         geometryChanged = manabiSetStyleIfChanged(this.#element.style, 'padding', '0') || geometryChanged
@@ -1264,6 +1430,34 @@ class View {
                             if (geometryChanged) {
                                 this.#overlayer.redraw()
                             }
+                        }
+                        if (!this.#isCacheWarmer) {
+                            const appliedContentRect = this.#contentRange.getBoundingClientRect()
+                            const appliedContentStart = this.#vertical ? 0 : (() => {
+                                const rootRect = documentElement.getBoundingClientRect()
+                                return this.#rtl ? rootRect.right - appliedContentRect.right : appliedContentRect.left - rootRect.left
+                            })()
+                            const appliedContentSize = appliedContentStart + appliedContentRect[side]
+                            const appliedRemainder = this._size > 0 ? appliedContentSize % this._size : null
+                            manabiPaginatorReaderLoadLog('paginator.columnization.expand.applied', this.#columnizationDiagnostics({
+                                phase: 'applied',
+                                side,
+                                otherSide,
+                                scrollProp,
+                                inlineProgression,
+                                contentStart,
+                                contentSize,
+                                pageCount,
+                                expandedSize,
+                                remainder,
+                                appliedContentStart,
+                                appliedContentSize,
+                                appliedContentDelta: appliedContentSize - contentSize,
+                                appliedRemainder,
+                                geometryChanged,
+                                ...manabiRectDiagnostics('contentRect', contentRect),
+                                ...manabiRectDiagnostics('appliedContentRect', appliedContentRect),
+                            }));
                         }
                     } else {
                         const side = defaultSide
@@ -2535,13 +2729,23 @@ export class Paginator extends HTMLElement {
         if (!this.#isCacheWarmer) {
         }
 
+        const flow = this.getAttribute('flow')
+        manabiPreparePaginatorLayoutMeasurement({
+            top: this.#top,
+            vertical,
+            flow,
+            invalidateSizes: () => {
+                this.#cachedSizes = null
+                this.#sizesPromise = null
+            },
+        })
+
         const {
             width,
             height
         } = await this.sizes()
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
-        const flow = this.getAttribute('flow')
         const typographyMetrics = this.#typographyMetrics()
         this.#lastTypographyRenderSignature = this.#typographyRenderSignature({
             width,
@@ -2553,10 +2757,6 @@ export class Paginator extends HTMLElement {
             lineHeight: typographyMetrics.lineHeight,
             inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
         })
-        this.#top.classList.toggle(
-            'mnb-vertical-paginated',
-            MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && vertical && flow !== 'scrolled'
-        )
 
         let maxInlineSize;
         let maxColumnCountSpread;
