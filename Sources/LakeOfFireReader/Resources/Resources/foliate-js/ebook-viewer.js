@@ -4598,8 +4598,8 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
     if (width <= 0 || height <= 0) {
         return null;
     }
-    const appendSegment = (segment) => {
-        if (candidateSegments.length >= candidateLimit) {
+    const appendSegment = (segment, { allowOverLimit = false } = {}) => {
+        if (!allowOverLimit && candidateSegments.length >= candidateLimit) {
             return;
         }
         if (segment?.tagName?.toLowerCase?.() !== 'm-m' || seenSegments.has(segment)) {
@@ -4667,6 +4667,28 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
                 if (candidateSegments.length >= candidateLimit) {
                     break;
                 }
+            }
+        }
+    }
+    if (isEbookDoc && candidateSegments.length > 0) {
+        const allSegments = Array.from(doc.querySelectorAll?.(manabiReaderSegmentSelector) ?? []);
+        const candidateExpansionLimit = candidateLimit + 48;
+        const appendNearbySegment = (segment) => {
+            if (candidateSegments.length >= candidateExpansionLimit) {
+                return;
+            }
+            appendSegment(segment, { allowOverLimit: true });
+        };
+        for (const segment of [...candidateSegments]) {
+            const index = allSegments.indexOf(segment);
+            if (index < 0) {
+                continue;
+            }
+            for (let offset = -2; offset <= 2; offset += 1) {
+                if (offset === 0) {
+                    continue;
+                }
+                appendNearbySegment(allSegments[index + offset] ?? null);
             }
         }
     }
