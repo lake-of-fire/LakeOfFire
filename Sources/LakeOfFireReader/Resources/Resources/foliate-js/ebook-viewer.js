@@ -56,33 +56,6 @@ const readerLoadLog = (stage, payload = {}) => {
 };
 globalThis.__manabiReaderLoadLog = readerLoadLog;
 
-const restoreDebugLogStageEnabled = (stage) => {
-    if (typeof stage !== 'string') return false;
-    if (stage.startsWith('ebook.initialDisplay')) return true;
-    if (stage.startsWith('ebook.loadEBook')) return true;
-    if (stage.startsWith('ebook.loadLastPosition')) return true;
-    if (stage === 'ebook.restoreVisualState') return true;
-    if (stage === 'ebook.updateReadingProgress.post') return true;
-    if (stage === 'ebook.initialRestore.finalized') return true;
-    if (stage === 'ebook.restoreSaveGuard.released') return true;
-    if (stage === 'ebook.relocate.persistDecision') return true;
-    return false;
-};
-
-globalThis.__manabiRestoreDebugLog = (stage, payload = {}) => {
-    try {
-        if (globalThis.__manabiEnableRestoreDebugLogs === false) return;
-        if (!restoreDebugLogStageEnabled(stage)) return;
-        const details = Object.entries(payload)
-            .filter(([key, value]) => value !== undefined && key !== 'src' && key !== 'url' && key !== 'currentURL')
-            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
-            .join(' ');
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            details.length > 0 ? `# RESTOREDEBUG stage=${stage} ${details}` : `# RESTOREDEBUG stage=${stage}`
-        );
-    } catch (_error) {}
-};
-
 const manabiReaderSegmentSelector = 'm-m';
 const manabiReaderSurfaceSelector = 'm-t';
 const manabiReaderSentenceSelector = 'm-s';
@@ -3306,118 +3279,6 @@ const safeRound = (value, digits = 1) =>
     typeof value === 'number' && Number.isFinite(value)
         ? Number(value.toFixed(digits))
         : null;
-
-const restoreDebugLocationSnapshot = (reader = globalThis.reader) => {
-    const location = reader?.view?.lastLocation ?? null;
-    return {
-        fraction: typeof location?.fraction === 'number' ? safeRound(location.fraction, 6) : null,
-        sectionIndex: typeof location?.section?.current === 'number'
-            ? location.section.current
-            : (typeof location?.sectionIndex === 'number' ? location.sectionIndex : null),
-        locationCurrent: typeof location?.location?.current === 'number' ? location.location.current : null,
-        locationTotal: typeof location?.location?.total === 'number' ? location.location.total : null,
-        cfiLength: typeof location?.cfi === 'string' ? location.cfi.length : 0,
-        cfiPrefix: typeof location?.cfi === 'string' && location.cfi.length > 0
-            ? location.cfi.slice(0, 48)
-            : null,
-    };
-};
-
-const logEBookRestoreVisualState = async (reason, extra = {}) => {
-    try {
-        const reader = globalThis.reader ?? null;
-        const renderer = reader?.view?.renderer ?? null;
-        let metrics = null;
-        let metricsError = null;
-        try {
-            metrics = typeof renderer?.pageMetrics === 'function'
-                ? await renderer.pageMetrics()
-                : null;
-        } catch (error) {
-            metricsError = error?.message || String(error);
-        }
-        const location = restoreDebugLocationSnapshot(reader);
-        const relocateDetail = reader?.navHUD?.lastRelocateDetail ?? null;
-        const primaryLabelDiagnostics = reader?.navHUD?.lastPrimaryLabelDiagnostics ?? null;
-        globalThis.__manabiRestoreDebugLog?.('ebook.restoreVisualState', {
-            reason,
-            ...extra,
-            requestedRestoreFraction: Number.isFinite(globalThis.__manabiRequestedRestoreFraction)
-                ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6)
-                : null,
-            handledFraction: Number.isFinite(globalThis.__manabiInitialRestoreHandled?.fractionalCompletion)
-                ? safeRound(globalThis.__manabiInitialRestoreHandled.fractionalCompletion, 6)
-                : null,
-            handledSectionIndex: globalThis.__manabiInitialRestoreHandled?.sectionIndex ?? null,
-            lastLocationFraction: location.fraction,
-            lastLocationSectionIndex: location.sectionIndex,
-            lastLocationCurrent: location.locationCurrent,
-            lastLocationTotal: location.locationTotal,
-            lastLocationCFILength: location.cfiLength,
-            lastLocationCFIPrefix: location.cfiPrefix,
-            rendererLocalName: renderer?.localName ?? null,
-            rendererCurrentIndex: typeof renderer?.currentIndex === 'number' ? renderer.currentIndex : null,
-            primaryRendererContentIndex: getPrimaryRendererContentIndex(renderer),
-            navPageCurrent: typeof reader?.navHUD?.rendererPageSnapshot?.current === 'number'
-                ? reader.navHUD.rendererPageSnapshot.current
-                : null,
-            navPageTotal: typeof reader?.navHUD?.rendererPageSnapshot?.total === 'number'
-                ? reader.navHUD.rendererPageSnapshot.total
-                : null,
-            relocateReason: relocateDetail?.reason ?? null,
-            relocateFraction: typeof relocateDetail?.fraction === 'number' ? safeRound(relocateDetail.fraction, 6) : null,
-            relocatePageNumber: typeof relocateDetail?.pageNumber === 'number' ? relocateDetail.pageNumber : null,
-            relocatePageCount: typeof relocateDetail?.pageCount === 'number' ? relocateDetail.pageCount : null,
-            relocateLocationCurrent: typeof relocateDetail?.location?.current === 'number'
-                ? relocateDetail.location.current
-                : null,
-            relocateLocationTotal: typeof relocateDetail?.location?.total === 'number'
-                ? relocateDetail.location.total
-                : null,
-            relocateSectionIndex: typeof relocateDetail?.sectionIndex === 'number'
-                ? relocateDetail.sectionIndex
-                : (typeof relocateDetail?.index === 'number' ? relocateDetail.index : null),
-            primaryLabelText: primaryLabelDiagnostics?.label ?? null,
-            primaryLabelFraction: typeof primaryLabelDiagnostics?.fraction === 'number'
-                ? safeRound(primaryLabelDiagnostics.fraction, 6)
-                : null,
-            primaryLabelSource: primaryLabelDiagnostics?.source ?? null,
-            metricPage: typeof metrics?.page === 'number' ? metrics.page : null,
-            metricPages: typeof metrics?.pages === 'number' ? metrics.pages : null,
-            metricSize: typeof metrics?.size === 'number' ? safeRound(metrics.size, 2) : null,
-            metricViewSize: typeof metrics?.viewSize === 'number' ? safeRound(metrics.viewSize, 2) : null,
-            metricStart: typeof metrics?.start === 'number' ? safeRound(metrics.start, 2) : null,
-            metricEnd: typeof metrics?.end === 'number' ? safeRound(metrics.end, 2) : null,
-            metricSource: metrics?.metricsSource ?? metrics?.source ?? null,
-            metricSideProp: metrics?.sideProp ?? null,
-            metricScrollProp: metrics?.scrollProp ?? null,
-            metricScrolled: metrics?.scrolled ?? null,
-            metricVertical: metrics?.vertical ?? null,
-            metricRTL: metrics?.rtl ?? null,
-            metricsError,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
-            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
-            suppressNextSave: globalThis.__manabiSuppressNextRestoreRelocateSave === true,
-            requireUserInputBeforeSave: globalThis.__manabiRequireUserInputBeforePositionSave === true,
-        });
-    } catch (error) {
-        globalThis.__manabiRestoreDebugLog?.('ebook.restoreVisualState', {
-            reason,
-            error: error?.message || String(error),
-        });
-    }
-};
-
-const scheduleEBookRestoreVisualStateProbes = (reason, extra = {}) => {
-    void logEBookRestoreVisualState(`${reason}.immediate`, extra);
-    [250, 1000, 2000].forEach((delayMs) => {
-        setTimeout(() => {
-            void logEBookRestoreVisualState(`${reason}.plus${delayMs}ms`, extra);
-        }, delayMs);
-    });
-};
 
 const getAuthoritativeReaderFraction = ({ navHUD = null, detail = null, fallbackFraction = null } = {}) => {
     return getAuthoritativeReaderFractionDiagnostics({ navHUD, detail, fallbackFraction }).fraction;
@@ -11649,52 +11510,6 @@ class Reader {
                 normalizedRelocateReason !== 'anchor'
                 && !shouldSuppressRestoreSettleSave
                 && !requiresUserInputBeforePositionSave;
-            globalThis.__manabiRestoreDebugLog?.('ebook.relocate.persistDecision', {
-                reason: reason ?? null,
-                normalizedReason: normalizedRelocateReason,
-                shouldPersist: shouldPersistRelocatePosition,
-                skipAnchor: normalizedRelocateReason === 'anchor',
-                suppressedRestoreSettleSave: shouldSuppressRestoreSettleSave,
-                requiresUserInputBeforeSave: requiresUserInputBeforePositionSave,
-                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
-                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
-                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
-                progressFraction: Number.isFinite(progressFraction) ? safeRound(progressFraction, 6) : null,
-                progressFractionSource,
-                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
-                sectionIndex,
-                localSectionIndex,
-                rendererTotal,
-                persistedLocatorKind: shouldPreferSyntheticRestoreLocator
-                    ? 'synthetic'
-                    : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
-                persistedLocatorLength: typeof persistedLocator === 'string' ? persistedLocator.length : 0,
-                currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
-                    ? this.navHUD.rendererPageSnapshot.current
-                    : null,
-            });
-            void logEBookRestoreVisualState('relocate.persistDecision', {
-                reason: reason ?? null,
-                normalizedReason: normalizedRelocateReason,
-                shouldPersist: shouldPersistRelocatePosition,
-                skipAnchor: normalizedRelocateReason === 'anchor',
-                suppressedRestoreSettleSave: shouldSuppressRestoreSettleSave,
-                requiresUserInputBeforeSave: requiresUserInputBeforePositionSave,
-                effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
-                progressFraction: Number.isFinite(progressFraction) ? safeRound(progressFraction, 6) : null,
-                progressFractionSource,
-                rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
-                sectionIndex,
-                localSectionIndex,
-                rendererTotal,
-                persistedLocatorKind: shouldPreferSyntheticRestoreLocator
-                    ? 'synthetic'
-                    : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
-                persistedLocatorLength: typeof persistedLocator === 'string' ? persistedLocator.length : 0,
-                currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
-                    ? this.navHUD.rendererPageSnapshot.current
-                    : null,
-            });
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
