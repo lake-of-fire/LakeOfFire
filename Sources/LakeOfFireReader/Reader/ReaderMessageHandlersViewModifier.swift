@@ -33,32 +33,6 @@ private enum ReaderPrintDeduper {
     }
 }
 
-private func readerIsSpineOnlyEpubCFI(_ cfi: String) -> Bool {
-    let trimmed = cfi.trimmingCharacters(in: .whitespacesAndNewlines)
-    let pattern = #"^epubcfi\(\s*/6/(\d+)(?:\[[^\]]*\])?\s*\)$"#
-    guard let regex = try? NSRegularExpression(pattern: pattern),
-          let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
-          match.numberOfRanges > 1,
-          let spineStepRange = Range(match.range(at: 1), in: trimmed),
-          let spineStep = Int(trimmed[spineStepRange]) else {
-        return false
-    }
-    return spineStep > 0 && spineStep.isMultiple(of: 2)
-}
-
-private func readerRestoreCFIKind(_ cfi: String) -> String {
-    if cfi.isEmpty { return "none" }
-    if cfi.hasPrefix("mnb-loc-v1:") { return "synthetic" }
-    if readerIsSpineOnlyEpubCFI(cfi) { return "spine-cfi" }
-    if cfi.hasPrefix("epubcfi(") { return "epub-cfi" }
-    return "other"
-}
-
-private func readerJavaScriptObjectLiteral(_ object: Any) throws -> String {
-    let data = try JSONSerialization.data(withJSONObject: object)
-    return String(decoding: data, as: UTF8.self)
-}
-
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
