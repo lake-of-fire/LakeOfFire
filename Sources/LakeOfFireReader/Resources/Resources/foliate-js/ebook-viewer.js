@@ -9808,8 +9808,8 @@ class Reader {
             || hasSpineOnlyInitialRestore
             || hasInitialRestoreCFI
             || hasInitialRestoreFraction;
-        const initialNavigationTimeoutMs = hasInitialRestoreTarget ? 45000 : 3000;
-        const initialDisplaySettleTimeoutMs = hasInitialRestoreTarget ? 45000 : 3000;
+        const initialNavigationTimeoutMs = hasInitialRestoreTarget ? 120000 : 3000;
+        const initialDisplaySettleTimeoutMs = hasInitialRestoreTarget ? 120000 : 3000;
         const runInitialDisplayNavigation = async (intent, operation) => {
             const navigationStartedAt = performanceNowMs();
             readerLoadLog('viewer.initialDisplay.navigation.start', {
@@ -9987,11 +9987,12 @@ class Reader {
                 : (typeof location?.sectionIndex === 'number' ? location.sectionIndex : null);
             const settledFraction = typeof location?.fraction === 'number' ? location.fraction : null;
             const initialRestoreRequested = hasInitialRestoreTarget;
-            const initialRestoreFractionSatisfied = !hasInitialRestoreFraction
-                || (
+            const initialRestoreFractionSatisfied = hasInitialRestoreFraction
+                ? (
                     typeof settledFraction === 'number'
                     && Math.abs(settledFraction - initialRestoreFraction) <= 0.003
-                );
+                )
+                : navigationResult?.ok === true;
             const spineOnlyRestoreIsPreciseEnough =
                 !hasSpineOnlyInitialRestore || hasInitialRestoreFraction;
             const initialRestoreWillBeMarkedHandled =
@@ -10338,6 +10339,7 @@ class Reader {
             let result = null;
             try {
                 result = await contentWindow[functionName]({
+                    ...(request && typeof request === 'object' ? request : {}),
                     kind,
                     direction,
                     allowEbookPageTurn: false,
@@ -10564,7 +10566,11 @@ class Reader {
             attempts.push(attempt);
             let visibleTargetResult = null;
             try {
-                visibleTargetResult = await this.#openVisibleLookupTargetAfterPageTurn({ kind, direction });
+                visibleTargetResult = await this.#openVisibleLookupTargetAfterPageTurn({
+                    ...(request && typeof request === 'object' ? request : {}),
+                    kind,
+                    direction,
+                });
             } catch (error) {
                 visibleTargetResult = {
                     opened: false,
@@ -13227,7 +13233,7 @@ window.loadLastPosition = async ({
         );
         const doneHasUsableLocation = restoreStateHasUsableLocation(doneState);
         const doneFractionSatisfied = restoreStateFractionSatisfied(doneState);
-        globalThis.reader.hasLoadedLastPosition = !hasExplicitRestoreTarget || doneHasUsableLocation;
+        globalThis.reader.hasLoadedLastPosition = !hasExplicitRestoreTarget || (doneHasUsableLocation && doneFractionSatisfied);
         if (globalThis.reader.hasLoadedLastPosition && (!syntheticRestoreLocator || syntheticDisplaySettledForRestore)) {
             markReaderRenderReady('loadLastPosition.done');
         }

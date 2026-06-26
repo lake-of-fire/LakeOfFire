@@ -562,6 +562,22 @@ public actor EBookProcessingActor {
                 ])
                 return cachedResult
             }
+            ebookLoadLog("processText.actor.finalCache.miss", [
+                "location": location,
+                "contentURL": contentURL.absoluteString,
+                "isCacheWarmer": isCacheWarmer,
+                "requestChars": text.count,
+                "fingerprint": resolvedContentFingerprint,
+                "elapsedMs": Int(Date().timeIntervalSince(cacheLookupStartedAt) * 1000)
+            ])
+        } else {
+            ebookLoadLog("processText.actor.finalCache.unavailable", [
+                "location": location,
+                "contentURL": contentURL.absoluteString,
+                "isCacheWarmer": isCacheWarmer,
+                "requestChars": text.count,
+                "fingerprint": resolvedContentFingerprint
+            ])
         }
         guard let ebookTextProcessor else {
             ebookLoadLog("processText.actor.noProcessor", [
