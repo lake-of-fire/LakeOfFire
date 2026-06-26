@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import LakeOfFireWeb
 import LakeOfFireFiles
@@ -30,6 +31,38 @@ private enum ReaderPrintDeduper {
         }
         recentMessages[message] = now
         return false
+    }
+}
+
+private struct ReaderEBookInitialRestoreBridgeRequest {
+    let requestID: String
+    let cfi: String
+    let fractionalCompletion: Double?
+    let requestedLocator: String
+
+    init?(restore: ReaderContentEbookInitialRestore?) {
+        guard let restore else { return nil }
+        let normalizedCFI = restore.cfi
+        let normalizedFraction = restore.fractionalCompletion.map { Double($0) }
+        let hasCFI = !normalizedCFI.isEmpty
+        let hasFraction = (normalizedFraction ?? 0) > 0
+        guard hasCFI || hasFraction else { return nil }
+        requestID = UUID().uuidString
+        cfi = normalizedCFI
+        fractionalCompletion = normalizedFraction
+        requestedLocator = hasCFI ? "cfi" : "fraction"
+    }
+
+    var javaScriptArgument: [String: any Sendable] {
+        var payload: [String: any Sendable] = [
+            "requestID": requestID,
+            "requestedLocator": requestedLocator,
+            "cfi": cfi,
+        ]
+        if let fractionalCompletion {
+            payload["fractionalCompletion"] = fractionalCompletion
+        }
+        return payload
     }
 }
 
@@ -1164,29 +1197,20 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize),
                             "writingDirection": "original",
                         ]
+                        let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
                         let hasInitialRestore = initialRestore != nil
-                        let hasRestoreCFI = !(initialRestore?.cfi.isEmpty ?? true)
-                        let restoreFraction = initialRestore?.fractionalCompletion.map { String($0) } ?? "nil"
-                        let restoreCFI = initialRestore?.cfi ?? ""
-                        let restoreFractionValue = initialRestore?.fractionalCompletion.map { Double($0) }
-                        let restoreFractionArgument = restoreFractionValue.map { String($0) } ?? ""
-                        let sentInitialRestore = hasInitialRestore
-                        loadArguments["hasInitialRestore"] = hasInitialRestore
-                        loadArguments["initialRestoreCFI"] = restoreCFI
-                        loadArguments["hasInitialRestoreFraction"] = restoreFractionValue != nil
-                        loadArguments["initialRestoreFractionalCompletion"] = restoreFractionArgument
+                        let sentInitialRestore = initialRestoreRequest != nil
+                        let hasRestoreCFI = !(initialRestoreRequest?.cfi.isEmpty ?? true)
+                        let restoreFraction = initialRestoreRequest?.fractionalCompletion.map { String($0) } ?? "nil"
+                        loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                        loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
+                        loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
                         print(
-                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) sentInitialRestore=\(sentInitialRestore) hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
+                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) sentInitialRestore=\(sentInitialRestore) requestID=\(initialRestoreRequest?.requestID ?? "nil") requestedLocator=\(initialRestoreRequest?.requestedLocator ?? "none") hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
                         )
                         do {
                             _ = try await scriptCaller.evaluateJavaScript(
                                 """
-                                const initialRestore = hasInitialRestore
-                                    ? { cfi: initialRestoreCFI }
-                                    : null;
-                                if (initialRestore && hasInitialRestoreFraction) {
-                                    initialRestore.fractionalCompletion = initialRestoreFractionalCompletion;
-                                }
                                 window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState });
                                 """,
                                 arguments: loadArguments,

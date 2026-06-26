@@ -3776,6 +3776,7 @@ const compactSegmentMetadataTables = (compactTables) => ({
     p: segmentMetadataTableArray(compactTables, 'p', 'partsOfSpeech'),
     x: segmentMetadataTableArray(compactTables, 'x', 'surfaceTexts'),
     sid: segmentMetadataTableArray(compactTables, 'sid', 'sentenceIdentifiers'),
+    pid: segmentMetadataTableArray(compactTables, 'pid', 'paragraphIdentifiers'),
 });
 
 const segmentMetadataFromCompactTuple = (segment, tables, version) => {
@@ -3785,6 +3786,10 @@ const segmentMetadataFromCompactTuple = (segment, tables, version) => {
     const sentenceID = version >= 3
         ? segmentMetadataTableValue(tables.sid, segment?.[9], null)
         : null;
+    const paragraphID = version >= 6
+        ? segmentMetadataTableValue(tables.pid, segment?.[10], null)
+        : null;
+    const hasRubyIndex = version >= 6 ? 11 : 10;
     return {
         i: expandSegmentIDToken(segment?.[0], version), // segment element ID
         h: segmentHash,
@@ -3797,23 +3802,32 @@ const segmentMetadataFromCompactTuple = (segment, tables, version) => {
         l: segment?.[7], // JLPT level, 1..5
         x: segmentMetadataTableValue(tables.x, segment?.[8], null), // surface text from table index
         sentenceID, // sentence identifier from table index
-        r: typeof segment?.[10] === 'boolean' ? segment[10] : null, // contains ruby
+        paragraphID, // paragraph identifier from table index
+        pid: paragraphID,
+        r: typeof segment?.[hasRubyIndex] === 'boolean' ? segment[hasRubyIndex] : null, // contains ruby
     };
 };
 
-const segmentMetadataFromLegacyEntry = (segment) => ({
-    i: typeof segment?.i === 'string' ? segment.i : null,
-    h: typeof segment?.h === 'string' ? segment.h : null,
-    sid: typeof segment?.sid === 'string' ? segment.sid : null,
-    j: Array.isArray(segment?.j) ? segment.j : [],
-    n: Array.isArray(segment?.n) ? segment.n : [],
-    s: typeof segment?.s === 'string' ? segment.s : null,
-    ns: typeof segment?.ns === 'string' ? segment.ns : null,
-    p: typeof segment?.p === 'string' ? segment.p : null,
-    l: Number.isInteger(segment?.l) ? segment.l : null,
-    x: typeof segment?.x === 'string' ? segment.x : null,
-    sentenceID: typeof segment?.sentenceID === 'string' ? segment.sentenceID : null,
-});
+const segmentMetadataFromLegacyEntry = (segment) => {
+    const paragraphID = typeof segment?.paragraphID === 'string'
+        ? segment.paragraphID
+        : (typeof segment?.pid === 'string' ? segment.pid : null);
+    return {
+        i: typeof segment?.i === 'string' ? segment.i : null,
+        h: typeof segment?.h === 'string' ? segment.h : null,
+        sid: typeof segment?.sid === 'string' ? segment.sid : null,
+        j: Array.isArray(segment?.j) ? segment.j : [],
+        n: Array.isArray(segment?.n) ? segment.n : [],
+        s: typeof segment?.s === 'string' ? segment.s : null,
+        ns: typeof segment?.ns === 'string' ? segment.ns : null,
+        p: typeof segment?.p === 'string' ? segment.p : null,
+        l: Number.isInteger(segment?.l) ? segment.l : null,
+        x: typeof segment?.x === 'string' ? segment.x : null,
+        sentenceID: typeof segment?.sentenceID === 'string' ? segment.sentenceID : null,
+        paragraphID,
+        pid: paragraphID,
+    };
+};
 
 const sentenceArchiveEntriesFromPayload = (payload) => (
     Array.isArray(payload?.e) ? payload.e
@@ -3824,7 +3838,7 @@ const expandSegmentMetadataPayload = (payload) => {
     const version = payload?.v ?? payload?.version;
     const compactTables = payload?.t ?? payload?.tables;
     const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
-    if ((version === 2 || version === 3 || version === 4) && compactTables && Array.isArray(compactSegments)) {
+    if (version >= 2 && version <= 6 && compactTables && Array.isArray(compactSegments)) {
         const tables = compactSegmentMetadataTables(compactTables);
         return compactSegments.map((segment) => segmentMetadataFromCompactTuple(segment, tables, version));
     }
@@ -3871,7 +3885,7 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
     const version = payload?.v ?? payload?.version;
     const compactTables = payload?.t ?? payload?.tables;
     const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
-    if ((version === 2 || version === 3 || version === 4) && compactTables && Array.isArray(compactSegments)) {
+    if (version >= 2 && version <= 6 && compactTables && Array.isArray(compactSegments)) {
         const tables = compactSegmentMetadataTables(compactTables);
         const state = segmentMetadataPayloadLookupState(payload);
         if (state?.byID?.has(segmentID)) {
@@ -9777,16 +9791,12 @@ class Reader {
     }
 
     async #displayInitialSection(reason = 'reader.open', initialRestore = null) {
-        if (!this.view?.renderer || this.initialDisplaySettled) {
-            globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.return', {
-                reason,
-                path: !this.view?.renderer ? 'missing-renderer' : 'already-settled',
-                hasRenderer: !!this.view?.renderer,
-                initialDisplaySettled: this.initialDisplaySettled === true,
-                hasInitialRestore: !!initialRestore,
-            });
-            return true;
-        }
+        const initialRestoreRequestID = typeof initialRestore?.requestID === 'string' && initialRestore.requestID.length > 0
+            ? initialRestore.requestID
+            : null;
+        const requestedLocatorFromBridge = typeof initialRestore?.requestedLocator === 'string'
+            ? initialRestore.requestedLocator
+            : null;
         const syntheticInitialRestore = parseSyntheticRestoreLocator(initialRestore?.cfi);
         const spineOnlyInitialRestoreSectionIndex = !syntheticInitialRestore
             ? parseSpineOnlyEpubCFI(initialRestore?.cfi)
@@ -9803,6 +9813,61 @@ class Reader {
         const restoreLocatorKind = syntheticInitialRestore
             ? 'synthetic'
             : (hasSpineOnlyInitialRestore ? 'spine-cfi' : (hasInitialRestoreCFI ? 'cfi' : (hasInitialRestoreFraction ? 'fraction' : 'none')));
+        const publishInitialRestoreResult = (terminalState, details = {}) => {
+            const location = details.location ?? this.view?.lastLocation ?? null;
+            const currentSectionIndex = typeof location?.section?.current === 'number'
+                ? location.section.current
+                : (typeof location?.sectionIndex === 'number' ? location.sectionIndex : null);
+            const currentFraction = typeof location?.fraction === 'number' ? location.fraction : null;
+            const result = {
+                requestID: initialRestoreRequestID,
+                terminalState,
+                requestedLocator: requestedLocatorFromBridge ?? restoreLocatorKind,
+                resolvedLocator: restoreLocatorKind,
+                requestedFraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
+                currentFraction,
+                fractionDelta: hasInitialRestoreFraction && typeof currentFraction === 'number'
+                    ? Math.abs(currentFraction - initialRestoreFraction)
+                    : null,
+                handledCFI: terminalState === 'satisfied' && typeof initialRestore?.cfi === 'string'
+                    ? initialRestore.cfi
+                    : null,
+                handledFractionalCompletion: terminalState === 'satisfied'
+                    ? (hasInitialRestoreFraction ? initialRestoreFraction : currentFraction)
+                    : null,
+                currentSectionIndex,
+                navigationOk: details.navigationOk ?? null,
+                restoreSatisfied: terminalState === 'satisfied',
+                error: details.error ?? null,
+                reason,
+                elapsedMs: safeRound(performanceNowMs() - (details.startedAt ?? performanceNowMs()), 1),
+            };
+            globalThis.__manabiInitialRestoreResult = result;
+            globalThis.__manabiRestoreDebugLog?.('ebook.initialRestore.terminalResult', {
+                ...result,
+                requestedFraction: result.requestedFraction != null ? safeRound(result.requestedFraction, 6) : null,
+                currentFraction: result.currentFraction != null ? safeRound(result.currentFraction, 6) : null,
+                fractionDelta: result.fractionDelta != null ? safeRound(result.fractionDelta, 6) : null,
+                handledFractionalCompletion: result.handledFractionalCompletion != null ? safeRound(result.handledFractionalCompletion, 6) : null,
+            });
+            return result;
+        };
+        if (!this.view?.renderer || this.initialDisplaySettled) {
+            globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.return', {
+                reason,
+                path: !this.view?.renderer ? 'missing-renderer' : 'already-settled',
+                hasRenderer: !!this.view?.renderer,
+                initialDisplaySettled: this.initialDisplaySettled === true,
+                hasInitialRestore: !!initialRestore,
+            });
+            if (initialRestore) {
+                publishInitialRestoreResult(!this.view?.renderer ? 'failed' : 'skipped', {
+                    error: !this.view?.renderer ? 'missing-renderer' : 'already-settled',
+                    startedAt: performanceNowMs(),
+                });
+            }
+            return true;
+        }
         const startedAt = performanceNowMs();
         const hasInitialRestoreTarget = !!syntheticInitialRestore
             || hasSpineOnlyInitialRestore
@@ -9934,21 +9999,7 @@ class Reader {
                     fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
                 };
                 operation = async () => {
-                    try {
-                        return await this.view.goTo(initialRestoreCFI);
-                    } catch (error) {
-                        globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.cfi.error', {
-                            reason,
-                            cfiLength: initialRestoreCFI.length,
-                            spineSectionIndex: spineOnlyInitialRestoreSectionIndex ?? null,
-                            requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
-                            error: error?.message || String(error),
-                        });
-                        if (hasInitialRestoreFraction) {
-                            return this.view.goToFraction(initialRestoreFraction);
-                        }
-                        throw error;
-                    }
+                    return await this.view.goTo(initialRestoreCFI);
                 };
             } else if (hasInitialRestoreFraction) {
                 intent = {
@@ -10044,10 +10095,20 @@ class Reader {
                 spineOnlyRestoreIsPreciseEnough,
                 navigationOk: navigationResult?.ok === true,
             });
+            const terminalRestoreResult = publishInitialRestoreResult(
+                initialRestoreWillBeMarkedHandled
+                    ? 'satisfied'
+                    : (initialRestoreRequested ? 'failed' : 'noTarget'),
+                {
+                    location,
+                    navigationOk: navigationResult?.ok === true,
+                    startedAt,
+                }
+            );
             if (initialRestoreWillBeMarkedHandled) {
                 globalThis.__manabiInitialRestoreHandled = {
                     cfi: typeof initialRestore?.cfi === 'string' ? initialRestore.cfi : '',
-                    fractionalCompletion: initialRestoreFraction,
+                    fractionalCompletion: terminalRestoreResult.handledFractionalCompletion,
                     sectionIndex: syntheticInitialRestore?.sectionIndex ?? settledSectionIndex,
                     localSectionIndex: syntheticInitialRestore?.localSectionIndex ?? null,
                     rendererTotal: syntheticInitialRestore?.rendererTotal ?? null,
@@ -10088,6 +10149,11 @@ class Reader {
                 bodyLoading: !!document.body?.classList?.contains?.('loading'),
                 hasReaderContent: !!document.querySelector?.('foliate-view'),
                 renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+            });
+            publishInitialRestoreResult(hasInitialRestoreTarget ? 'failed' : 'noTarget', {
+                error: error?.message || String(error),
+                navigationOk: false,
+                startedAt,
             });
             return false;
         }
@@ -12096,6 +12162,8 @@ window.loadEBook = ({
     const requestedURL = typeof url === 'string' ? url : '';
     globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.incoming', {
         hasInitialRestore: !!initialRestore,
+        requestID: typeof initialRestore?.requestID === 'string' ? initialRestore.requestID : null,
+        requestedLocator: typeof initialRestore?.requestedLocator === 'string' ? initialRestore.requestedLocator : null,
         incomingFractionType: typeof initialRestore?.fractionalCompletion,
         incomingFractionValue: initialRestore?.fractionalCompletion ?? null,
         incomingCFILength: typeof initialRestore?.cfi === 'string' ? initialRestore.cfi.length : 0,
@@ -12122,6 +12190,8 @@ window.loadEBook = ({
         : (hasRequestedSpineOnlyRestore ? 'spine-cfi' : (requestedRestoreCFI.length > 0 ? 'cfi' : (requestedRestoreFraction != null && requestedRestoreFraction > 0 ? 'fraction' : 'none')));
     globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.normalizedRestore', {
         hasInitialRestore: !!effectiveInitialRestore,
+        requestID: typeof effectiveInitialRestore?.requestID === 'string' ? effectiveInitialRestore.requestID : null,
+        requestedLocator: typeof effectiveInitialRestore?.requestedLocator === 'string' ? effectiveInitialRestore.requestedLocator : null,
         restoreKind: requestedRestoreKind,
         requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
         effectiveFractionType: typeof effectiveInitialRestore?.fractionalCompletion,
@@ -12157,28 +12227,15 @@ window.loadEBook = ({
     ) {
         const existingStartedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
         const existingStartedAgeMs = existingStartedAt > 0 ? Date.now() - existingStartedAt : 0;
-        const shouldQueueDuplicateRestore = !!effectiveInitialRestore && !globalThis.__manabiInitialRestoreHandled;
         if (globalThis.reader?.view?.renderer || existingStartedAgeMs < 2500) {
-            if (shouldQueueDuplicateRestore) {
-                globalThis.manabiLoadEBookPendingInitialRestore = effectiveInitialRestore;
-                globalThis.manabiLoadEBookLastState = 'duplicate-inflight-pending-restore';
-                globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.return', {
-                    path: 'duplicate-inflight-pending-restore',
-                    existingStartedAgeMs,
-                    hasInitialRestore: true,
-                    initialCFILength: typeof effectiveInitialRestore?.cfi === 'string' ? effectiveInitialRestore.cfi.length : 0,
-                    restoreKind: requestedRestoreKind,
-                    requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
-                    hasRenderer: !!globalThis.reader?.view?.renderer,
-                });
-                return globalThis.manabiLoadEBookPromise;
-            }
             globalThis.manabiLoadEBookLastState = 'duplicate-inflight';
             globalThis.manabiPendingLoadEBookArgs = null;
             globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.return', {
                 path: 'duplicate-inflight',
                 existingStartedAgeMs,
                 hasInitialRestore: !!effectiveInitialRestore,
+                restoreKind: requestedRestoreKind,
+                requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
                 hasRenderer: !!globalThis.reader?.view?.renderer,
             });
             return globalThis.manabiLoadEBookPromise;
@@ -12210,7 +12267,7 @@ window.loadEBook = ({
     globalThis.manabiLoadEBookStartedAt = Date.now();
     globalThis.manabiLoadEBookReady = false;
     globalThis.manabiLoadEBookLastState = 'start';
-    globalThis.manabiLoadEBookPendingInitialRestore = null;
+    globalThis.__manabiInitialRestoreResult = null;
     globalThis.manabiPendingLoadEBookArgs = {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || null,
@@ -12316,7 +12373,8 @@ window.loadEBook = ({
             globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.readerOpen.dispatch', {
                 loadToken,
                 hasInitialRestore: !!effectiveInitialRestore,
-                hasPendingInitialRestore: !!globalThis.manabiLoadEBookPendingInitialRestore,
+                requestID: typeof effectiveInitialRestore?.requestID === 'string' ? effectiveInitialRestore.requestID : null,
+                requestedLocator: typeof effectiveInitialRestore?.requestedLocator === 'string' ? effectiveInitialRestore.requestedLocator : null,
                 initialCFILength: typeof effectiveInitialRestore?.cfi === 'string' ? effectiveInitialRestore.cfi.length : 0,
                 restoreKind: requestedRestoreKind,
                 syntheticSectionIndex: requestedSyntheticRestore?.sectionIndex ?? null,
@@ -12359,63 +12417,18 @@ window.loadEBook = ({
             if (globalThis.__manabiInitialRestoreHandled) {
                 finalizeInitialRestoreHandledWithoutNativeRestore('loadEBook.initialRestoreHandled');
             }
-            const queuedPendingInitialRestore = globalThis.manabiLoadEBookPendingInitialRestore ?? null;
-            const pendingInitialRestore = queuedPendingInitialRestore
-                ?? (!globalThis.__manabiInitialRestoreHandled ? effectiveInitialRestore : null);
-            if (
-                pendingInitialRestore
-                && !globalThis.__manabiInitialRestoreHandled
-                && reader?.hasLoadedLastPosition !== true
-            ) {
-                const pendingCFI = typeof pendingInitialRestore?.cfi === 'string'
-                    ? pendingInitialRestore.cfi
-                    : '';
-                const pendingFraction = coerceRestoreFraction(pendingInitialRestore?.fractionalCompletion);
-                globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.apply', {
+            if (effectiveInitialRestore && !globalThis.__manabiInitialRestoreHandled) {
+                const postOpenLocation = reader?.view?.lastLocation ?? null;
+                globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.initialRestore.notHandledAfterOpen', {
                     loadToken,
-                    source: queuedPendingInitialRestore ? 'duplicate-inflight' : 'initial-restore-fallback',
-                    cfiLength: pendingCFI.length,
-                    requestedFraction: pendingFraction != null ? safeRound(pendingFraction, 6) : null,
+                    restoreKind: requestedRestoreKind,
+                    requestedFraction: requestedRestoreFraction != null ? safeRound(requestedRestoreFraction, 6) : null,
+                    currentFraction: typeof postOpenLocation?.fraction === 'number' ? safeRound(postOpenLocation.fraction, 6) : null,
+                    currentSectionIndex: typeof postOpenLocation?.section?.current === 'number'
+                        ? postOpenLocation.section.current
+                        : (typeof postOpenLocation?.sectionIndex === 'number' ? postOpenLocation.sectionIndex : null),
                     hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
-                });
-                await window.loadLastPosition({
-                    cfi: pendingCFI,
-                    fractionalCompletion: pendingFraction,
-                });
-                const pendingLocation = reader?.view?.lastLocation ?? null;
-                const pendingLocationFraction = typeof pendingLocation?.fraction === 'number'
-                    ? pendingLocation.fraction
-                    : null;
-                const pendingFractionSatisfied = pendingFraction == null
-                    || (
-                        typeof pendingLocationFraction === 'number'
-                        && Math.abs(pendingLocationFraction - pendingFraction) <= 0.003
-                    );
-                const pendingRestoreSucceeded = reader?.hasLoadedLastPosition === true && pendingFractionSatisfied;
-                if (pendingRestoreSucceeded) {
-                    globalThis.__manabiInitialRestoreHandled = {
-                        cfi: pendingCFI,
-                        fractionalCompletion: pendingFraction,
-                        sectionIndex: typeof pendingLocation?.section?.current === 'number'
-                            ? pendingLocation.section.current
-                            : (typeof pendingLocation?.sectionIndex === 'number' ? pendingLocation.sectionIndex : null),
-                        handledAtMs: Date.now(),
-                        source: 'duplicate-inflight-pending-restore',
-                    };
-                }
-                globalThis.manabiLoadEBookPendingInitialRestore = null;
-                globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.finish', {
-                    loadToken,
-                    source: queuedPendingInitialRestore ? 'duplicate-inflight' : 'initial-restore-fallback',
-                    cfiLength: pendingCFI.length,
-                    requestedFraction: pendingFraction != null ? safeRound(pendingFraction, 6) : null,
-                    restored: pendingRestoreSucceeded,
-                    currentFraction: typeof pendingLocationFraction === 'number' ? safeRound(pendingLocationFraction, 6) : null,
-                    fractionSatisfied: pendingFractionSatisfied,
-                    currentSectionIndex: typeof pendingLocation?.section?.current === 'number'
-                        ? pendingLocation.section.current
-                        : (typeof pendingLocation?.sectionIndex === 'number' ? pendingLocation.sectionIndex : null),
-                    hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
+                    action: 'reportOnly',
                 });
             }
         })
@@ -12425,20 +12438,14 @@ window.loadEBook = ({
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = true;
             globalThis.manabiLoadEBookLastState = 'reader-open-resolved';
-            const initialRestoreHandled = globalThis.__manabiInitialRestoreHandled ?? null;
+            const initialRestoreResult = globalThis.__manabiInitialRestoreResult ?? null;
             const probe = globalThis.reader?.collectLayoutGapProbe?.('ebookViewerLoaded', {
                 bookDir: globalThis.reader?.bookDir || null,
                 isRTL: !!globalThis.reader?.isRTL,
             }) ?? null;
-            const readyLocation = globalThis.reader?.view?.lastLocation ?? null;
-            const readyLocationFraction = typeof readyLocation?.fraction === 'number' ? readyLocation.fraction : null;
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                 probe,
-                initialRestoreHandled: !!initialRestoreHandled,
-                initialRestoreSectionIndex: initialRestoreHandled?.sectionIndex ?? null,
-                initialRestoreCFI: initialRestoreHandled?.cfi ?? null,
-                initialRestoreFractionalCompletion: initialRestoreHandled?.fractionalCompletion ?? null,
-                initialRestoreCurrentFractionalCompletion: readyLocationFraction,
+                initialRestoreResult,
             })
         })
         .catch((error) => {

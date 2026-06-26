@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import WebKit
 import LakeOfFireWeb
 import LakeOfFireFiles
 import LakeOfFireContentUI
@@ -54,6 +56,235 @@ public struct ConsoleLogMessage {
         self.arguments = body["arguments"] as? [Any?]
         guard let severity = body["severity"] as? String else { return nil }
         self.severity = severity
+    }
+}
+
+public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
+    public enum TerminalState: String, Sendable, Equatable {
+        case satisfied
+        case failed
+        case noTarget
+        case skipped
+    }
+
+    public let requestID: String?
+    public let terminalState: TerminalState
+    public let requestedLocator: String?
+    public let resolvedLocator: String?
+    public let requestedFraction: Double?
+    public let currentFraction: Double?
+    public let fractionDelta: Double?
+    public let handledCFI: String?
+    public let handledFractionalCompletion: Double?
+    public let currentSectionIndex: Int?
+    public let navigationOk: Bool?
+    public let restoreSatisfied: Bool
+    public let error: String?
+
+    public init?(payload: Any?) {
+        guard let payload = payload as? [String: Any] else { return nil }
+        guard let terminalStateRaw = payload["terminalState"] as? String,
+              let terminalState = TerminalState(rawValue: terminalStateRaw) else {
+            return nil
+        }
+
+        self.requestID = payload["requestID"] as? String
+        self.terminalState = terminalState
+        self.requestedLocator = payload["requestedLocator"] as? String
+        self.resolvedLocator = payload["resolvedLocator"] as? String
+        self.requestedFraction = Self.doubleValue(payload["requestedFraction"])
+        self.currentFraction = Self.doubleValue(payload["currentFraction"])
+        self.fractionDelta = Self.doubleValue(payload["fractionDelta"])
+        self.handledCFI = payload["handledCFI"] as? String
+        self.handledFractionalCompletion = Self.doubleValue(payload["handledFractionalCompletion"])
+        self.currentSectionIndex = Self.intValue(payload["currentSectionIndex"])
+        self.navigationOk = payload["navigationOk"] as? Bool
+        self.restoreSatisfied = (payload["restoreSatisfied"] as? Bool) ?? (terminalState == .satisfied)
+        self.error = payload["error"] as? String
+    }
+
+    public var logDescription: String {
+        [
+            "requestID=\(requestID ?? "nil")",
+            "terminalState=\(terminalState.rawValue)",
+            "requestedLocator=\(requestedLocator ?? "nil")",
+            "resolvedLocator=\(resolvedLocator ?? "nil")",
+            "requestedFraction=\(requestedFraction.map { String($0) } ?? "nil")",
+            "currentFraction=\(currentFraction.map { String($0) } ?? "nil")",
+            "fractionDelta=\(fractionDelta.map { String($0) } ?? "nil")",
+            "currentSectionIndex=\(currentSectionIndex.map { String($0) } ?? "nil")",
+            "navigationOk=\(navigationOk.map { String($0) } ?? "nil")",
+            "restoreSatisfied=\(restoreSatisfied)",
+            "error=\(error ?? "nil")"
+        ].joined(separator: " ")
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Float { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) }
+        return nil
+    }
+}
+
+public struct ReaderContentEbookInitialRestoreResultMessage: Sendable {
+    public let initialRestoreResult: ReaderContentEbookInitialRestoreResult?
+
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        self.initialRestoreResult = ReaderContentEbookInitialRestoreResult(
+            payload: body["initialRestoreResult"]
+        )
+    }
+}
+
+public struct NativeLookupHitTargetsMessage {
+    public struct RectPayload: Equatable {
+        public let left: CGFloat
+        public let top: CGFloat
+        public let width: CGFloat
+        public let height: CGFloat
+
+        public var rect: CGRect {
+            CGRect(x: left, y: top, width: width, height: height)
+        }
+
+        init?(payload: [String: Any], scale: CGFloat) {
+            guard let left = Self.number(payload["left"]),
+                  let top = Self.number(payload["top"]),
+                  let width = Self.number(payload["width"]),
+                  let height = Self.number(payload["height"]),
+                  width > 0,
+                  height > 0 else {
+                return nil
+            }
+            self.left = left * scale
+            self.top = top * scale
+            self.width = width * scale
+            self.height = height * scale
+        }
+
+        static func number(_ value: Any?) -> CGFloat? {
+            switch value {
+            case let value as CGFloat:
+                return value
+            case let value as Double:
+                return CGFloat(value)
+            case let value as Float:
+                return CGFloat(value)
+            case let value as Int:
+                return CGFloat(value)
+            case let value as NSNumber:
+                return CGFloat(value.doubleValue)
+            case let value as String:
+                guard let doubleValue = Double(value) else { return nil }
+                return CGFloat(doubleValue)
+            default:
+                return nil
+            }
+        }
+    }
+
+    public struct Target {
+        public let elementID: String
+        public let rectPayloads: [RectPayload]
+        public let rawRectPayloads: [[String: Any]]
+        public let lookupPayload: [String: Any]?
+
+        public var rects: [CGRect] {
+            rectPayloads.map(\.rect)
+        }
+
+        public var surface: Any {
+            (lookupPayload?["surface"] ?? lookupPayload?["selectedSurface"]) as Any
+        }
+    }
+
+    public let targets: [Target]
+    public let rawTargetCount: Int
+    public let scale: CGFloat
+    public let nativeLookupFrameKey: String?
+    public let viewportWidth: Any?
+    public let viewportHeight: Any?
+    public let viewportLeft: Any?
+    public let viewportTop: Any?
+    public let visualViewportScale: Any?
+
+    public init?(fromMessage message: WebViewMessage) {
+        self.init(body: message.body)
+    }
+
+    public init?(body: Any) {
+        guard let payload = body as? [String: Any],
+              let rawTargets = payload["targets"] as? [[String: Any]] else {
+            return nil
+        }
+        let scale = Self.coordinateScale(from: payload)
+        self.rawTargetCount = rawTargets.count
+        self.scale = scale
+        self.nativeLookupFrameKey = (payload["nativeLookupFrameKey"] as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        self.viewportWidth = payload["viewportWidth"]
+        self.viewportHeight = payload["viewportHeight"]
+        self.viewportLeft = payload["viewportLeft"]
+        self.viewportTop = payload["viewportTop"]
+        self.visualViewportScale = payload["visualViewportScale"]
+        self.targets = rawTargets.compactMap { target -> Target? in
+            guard let elementID = target["elementId"] as? String, !elementID.isEmpty else { return nil }
+            let rawRects = target["rects"] as? [[String: Any]] ?? []
+            let rectPayloads = rawRects.compactMap { RectPayload(payload: $0, scale: scale) }
+            guard !rectPayloads.isEmpty else { return nil }
+            return Target(
+                elementID: elementID,
+                rectPayloads: rectPayloads,
+                rawRectPayloads: rawRects,
+                lookupPayload: target["lookupPayload"] as? [String: Any]
+            )
+        }
+    }
+
+    public func webViewTargets(
+        frameInfo: WKFrameInfo,
+        coordinateOriginInWindow: CGPoint?
+    ) -> [WebViewNativeLookupHitTarget] {
+        targets.map { target in
+            WebViewNativeLookupHitTarget(
+                elementID: target.elementID,
+                rects: target.rects,
+                coordinateOriginInWindow: coordinateOriginInWindow,
+                lookupPayload: target.lookupPayload,
+                frameInfo: frameInfo,
+                nativeLookupFrameKey: nativeLookupFrameKey
+            )
+        }
+    }
+
+    public var viewportOrigin: CGPoint {
+        CGPoint(
+            x: (Self.number(viewportLeft) ?? 0) * scale,
+            y: (Self.number(viewportTop) ?? 0) * scale
+        )
+    }
+
+    private static func coordinateScale(from payload: [String: Any]) -> CGFloat {
+        guard let scale = number(payload["visualViewportScale"]),
+              scale.isFinite,
+              scale > 0 else {
+            return 1
+        }
+        return scale
+    }
+
+    private static func number(_ value: Any?) -> CGFloat? {
+        RectPayload.number(value)
     }
 }
 
