@@ -316,6 +316,18 @@ export const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summa
     }
     return target;
 };
+export const manabiPaginatorAnchorForLocalPage = ({ localPage, textPageCount } = {}) => {
+    const normalizedTextPageCount = Number.isFinite(textPageCount)
+        ? Math.max(1, Math.round(textPageCount))
+        : 1;
+    const normalizedLocalPage = Number.isFinite(localPage)
+        ? Math.max(0, Math.round(localPage))
+        : 0;
+    const targetLocalPage = Math.min(normalizedTextPageCount - 1, normalizedLocalPage);
+    return normalizedTextPageCount > 1
+        ? Math.max(0, Math.min(1, targetLocalPage / (normalizedTextPageCount - 1)))
+        : 0;
+};
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
     let timeout;
@@ -4386,6 +4398,20 @@ export class Paginator extends HTMLElement {
             const metrics = await this.pageMetrics()
             const textPageCount = Math.max(1, metrics.pages - 2)
             const targetPage = Math.min(textPageCount - 1, normalizedLocalPage) + 1
+            const targetLocalPage = Math.max(0, targetPage - 1)
+            this.#anchor = manabiPaginatorAnchorForLocalPage({
+                localPage: targetLocalPage,
+                textPageCount,
+            })
+            if (shouldLogReaderLoad) {
+                manabiPaginatorReaderLoadLog('paginator.display.localPage.anchorStored', {
+                    index,
+                    localPage: normalizedLocalPage,
+                    targetLocalPage,
+                    textPageCount,
+                    anchor: this.#anchor,
+                });
+            }
             const targetStart = metrics.size * (this.#rtl ? -targetPage : targetPage)
             const alreadyAtTargetPage =
                 Math.abs((metrics.start ?? 0) - Math.abs(targetStart)) < 0.5
