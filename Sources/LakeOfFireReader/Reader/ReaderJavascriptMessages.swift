@@ -469,6 +469,15 @@ public struct FractionalCompletionMessage: Sendable {
     public var currentPageNumber: Int?
     public var totalPages: Int?
     public var hasVisibleJapaneseText: Bool?
+    public var visibleSegmentCount: Int?
+    public var observedSegmentCount: Int?
+
+    public var representsKnownBlankViewport: Bool {
+        visibleSegmentCount == 0
+            && (observedSegmentCount ?? 0) > 0
+            && currentPageNumber == nil
+            && totalPages == nil
+    }
 
     public init?(fromMessage message: WebViewMessage) {
         self.init(body: message.body)
@@ -501,6 +510,20 @@ public struct FractionalCompletionMessage: Sendable {
             totalPages = Int(doubleTotalPages)
         } else if let stringTotalPages = body["totalPages"] as? String {
             totalPages = Int(stringTotalPages)
+        }
+        if let rawVisibleSegmentCount = body["visibleSegmentCount"] as? Int {
+            visibleSegmentCount = rawVisibleSegmentCount
+        } else if let doubleVisibleSegmentCount = body["visibleSegmentCount"] as? Double {
+            visibleSegmentCount = Int(doubleVisibleSegmentCount)
+        } else if let stringVisibleSegmentCount = body["visibleSegmentCount"] as? String {
+            visibleSegmentCount = Int(stringVisibleSegmentCount)
+        }
+        if let rawObservedSegmentCount = body["observedSegmentCount"] as? Int {
+            observedSegmentCount = rawObservedSegmentCount
+        } else if let doubleObservedSegmentCount = body["observedSegmentCount"] as? Double {
+            observedSegmentCount = Int(doubleObservedSegmentCount)
+        } else if let stringObservedSegmentCount = body["observedSegmentCount"] as? String {
+            observedSegmentCount = Int(stringObservedSegmentCount)
         }
     }
 }

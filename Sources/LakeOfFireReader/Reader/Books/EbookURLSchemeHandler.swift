@@ -131,6 +131,48 @@ fileprivate func shouldLogNativeEbookLoad(event: String, payload: [String: Any?]
     return false
 }
 
+fileprivate let ebookReaderLoadVerboseLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_READERLOAD_VERBOSE_LOGS"] == "1"
+
+fileprivate func shouldPrintEbookReaderLoadDebugMessage(_ message: String) -> Bool {
+    if ebookReaderLoadVerboseLoggingEnabled { return true }
+    if message.localizedCaseInsensitiveContains("error")
+        || message.localizedCaseInsensitiveContains("fail")
+        || message.localizedCaseInsensitiveContains("invalid")
+        || message.localizedCaseInsensitiveContains("watchdog")
+        || message.localizedCaseInsensitiveContains("slow") {
+        return true
+    }
+    guard let stageRange = message.range(of: "stage=") else { return false }
+    let stage = message[stageRange.upperBound...]
+        .split(separator: " ", maxSplits: 1)
+        .first
+        .map(String.init)?
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    switch stage {
+    case "viewer.renderReady.marked",
+        "viewer.initialDisplay.firstSection.finish",
+        "viewer.initialDisplay.restoreNotSatisfied",
+        "viewer.initialRestore.finalized",
+        "viewer.loadEBook.readerOpen.finish",
+        "ebookViewerInitialized.loadEBook.dispatch",
+        "readerLayout.inlineSegmentSnapshot",
+        "paginator.pageTurn.contentOffset",
+        "paginator.pageTurn.visualSnapshot",
+        "paginator.display.lifecycle",
+        "paginator.view.lifecycle",
+        "paginator.loading.state",
+        "paginator.display.visualSnapshot",
+        "paginator.mediaVisual.followUp",
+        "paginator.mediaVisual.event",
+        "ebook.updateReadingProgress.dropStale",
+        "ebook.updateReadingProgress.skipBlankViewport":
+        return true
+    default:
+        return false
+    }
+}
+
 
 fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> String {
     guard value.count > limit else { return value }
@@ -231,6 +273,48 @@ fileprivate func ebookHTMLWithInjectedBase(_ html: String, baseURL: String) -> S
         return result
     }
     return "<!doctype html><html><head>\(baseTag)</head><body>\(html)</body></html>"
+}
+
+fileprivate struct EBookProcessedSectionWritingHint {
+    let direction: String
+    let writingMode: String
+}
+
+fileprivate func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcessedSectionWritingHint? {
+    let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    let direction = queryItems
+        .first(where: { $0.name == "mnbWritingDirection" })?
+        .value?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    guard direction == "vertical" else { return nil }
+    let requestedWritingMode = queryItems
+        .first(where: { $0.name == "mnbWritingMode" })?
+        .value?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    let writingMode = requestedWritingMode == "vertical-lr" ? "vertical-lr" : "vertical-rl"
+    return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: writingMode)
+}
+
+fileprivate func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
+    guard let writingHint else { return html }
+    do {
+        let doc = try SwiftSoup.parse(html)
+        guard let body = doc.body() else { return html }
+        try body.attr("data-mnb-writing-direction", writingHint.direction)
+        try body.attr("data-mnb-writing-mode", writingHint.writingMode)
+        try body.attr("data-mnb-foliate-writing-direction", writingHint.direction)
+        try body.attr("data-mnb-foliate-writing-mode", writingHint.writingMode)
+        return try doc.outerHtml()
+    } catch {
+        ebookLoadLog("processedSection.presentationHint.injectFailed", [
+            "writingDirection": writingHint.direction,
+            "writingMode": writingHint.writingMode,
+            "error": "\(error)"
+        ])
+        return html
+    }
 }
 fileprivate let ebookReplaceTextSlowSummaryThresholdMs = 5_000
 
@@ -450,7 +534,7 @@ fileprivate actor EBookProcessTextRequestDeduper {
     }
 }
 
-public struct EBookNativeSectionPrewarmResult: Equatable {
+public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
     public let sectionHref: String
     public let requestBytes: Int
     public let responseBytes: Int
@@ -692,6 +776,7 @@ public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 private func ebookReaderLoadDebugLog(_ message: String) {
     guard ProcessInfo.processInfo.environment["MANABI_READER_LOAD_DEBUG"] == "1" else { return }
+    guard shouldPrintEbookReaderLoadDebugMessage(message) else { return }
     let line = "# READERLOAD stage=\(message)\n"
     print(line, terminator: "")
     guard let data = line.data(using: .utf8) else { return }
@@ -1183,10 +1268,22 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         throw CustomSchemeHandlerError.fileNotFound
                     }
 
-                    let responseHTML = ebookHTMLWithInjectedBase(
-                        responseText,
-                        baseURL: ebookProcessedSectionBaseURL(contentURL: mainDocumentURL, sectionHref: sectionHref)
+                    let writingHint = ebookProcessedSectionWritingHint(from: url)
+                    let responseHTML = ebookHTMLWithInjectedPresentationHints(
+                        ebookHTMLWithInjectedBase(
+                            responseText,
+                            baseURL: ebookProcessedSectionBaseURL(contentURL: mainDocumentURL, sectionHref: sectionHref)
+                        ),
+                        writingHint: writingHint
                     )
+                    if let writingHint {
+                        ebookLoadLog("processedSection.presentationHint", [
+                            "requestID": requestID,
+                            "location": sectionHref,
+                            "writingDirection": writingHint.direction,
+                            "writingMode": writingHint.writingMode
+                        ])
+                    }
                     guard let responseData = ebookProcessTextResponseData(processedText: responseHTML, isCacheWarmer: false) else {
                         throw CustomSchemeHandlerError.fileNotFound
                     }

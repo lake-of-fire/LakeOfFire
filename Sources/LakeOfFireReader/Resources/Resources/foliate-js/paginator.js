@@ -1,6 +1,6 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
-const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
+const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = false;
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -34,11 +34,88 @@ const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
     };
 
 const MANABI_DISABLE_POST_LOAD_RERENDER = false;
-const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
-const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = true;
-const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
+const MANABI_ENABLE_NEIGHBOR_PREFETCH = false;
+const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
+const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = false;
+const MANABI_ENABLE_SIMPLIFIED_SECTION_LOADING = true;
+const MANABI_ENABLE_PAGE_METRICS_CACHE = false;
+const MANABI_ENABLE_PAGE_TURN_BLANK_CORRECTION = false;
+const MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION = true;
 const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
+const MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180;
+const MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240;
+const manabiLockedPageTurnQueueDecision = ({
+    pendingQueueAllowed,
+    pendingRequestedPage,
+    pendingPageCount,
+    pendingDirection,
+    queuedDirection,
+    queuedStep,
+    lockedElapsedMs,
+    distance,
+}) => {
+    const sameDirectionAsPending = pendingDirection === queuedDirection
+    if (
+        sameDirectionAsPending
+        && lockedElapsedMs != null
+        && lockedElapsedMs < MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS
+        && distance == null
+    ) {
+        return { shouldQueue: false, reason: 'pageTurnDuplicateDuringLock' }
+    }
+    if (!pendingQueueAllowed) {
+        return { shouldQueue: false, reason: 'pageTurnQueueOutsideSection' }
+    }
+    if (
+        !Number.isFinite(pendingRequestedPage)
+        || !Number.isFinite(pendingPageCount)
+        || !Number.isFinite(queuedStep)
+    ) {
+        return { shouldQueue: false, reason: 'pageTurnQueueUnknownSection' }
+    }
+    const projectedQueuedPage = pendingRequestedPage + queuedStep
+    const crossesSection = queuedStep < 0
+        ? projectedQueuedPage <= 0
+        : projectedQueuedPage >= pendingPageCount - 1
+    return crossesSection
+        ? { shouldQueue: false, reason: 'pageTurnQueueWouldCrossSection', projectedQueuedPage }
+        : { shouldQueue: true, reason: 'pageTurnQueueWithinSection', projectedQueuedPage }
+}
+const manabiPageTurnBoundaryDecision = ({
+    currentPage,
+    pageCount,
+    step,
+    adjacentIndex,
+}) => {
+    const requestedPage = Number.isFinite(currentPage) && Number.isFinite(step)
+        ? currentPage + step
+        : null
+    const crossesSection = Number.isFinite(requestedPage) && Number.isFinite(pageCount)
+        ? (step < 0 ? requestedPage <= 0 : requestedPage >= pageCount - 1)
+        : false
+    const hasAdjacentSection = adjacentIndex != null
+    return {
+        requestedPage,
+        crossesSection,
+        hasAdjacentSection,
+        shouldGoToAdjacentSection: crossesSection && hasAdjacentSection,
+        shouldScrollWithinSection: !(crossesSection && hasAdjacentSection),
+    }
+}
+export const manabiShouldSuppressPostPageTurnDuplicate = ({
+    lastDirection,
+    direction,
+    distance = null,
+    navigationSource = null,
+    elapsedMs,
+} = {}) => {
+    if (distance != null || navigationSource != null) return false;
+    if (lastDirection == null || direction == null || lastDirection !== direction) return false;
+    return Number.isFinite(elapsedMs)
+        && elapsedMs >= 0
+        && elapsedMs < MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS;
+}
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
@@ -177,6 +254,42 @@ const manabiReaderLoadPayload = (payload = {}) => Object.fromEntries(
         && key !== 'href'
     )
 );
+const manabiReaderLoadSubpathFromURL = value => {
+    const documentURL = String(value ?? '')
+    if (!documentURL.includes('subpath=')) return null
+    const encodedSubpath = documentURL.split('subpath=')[1]?.split('&')[0] ?? ''
+    try {
+        return decodeURIComponent(encodedSubpath).slice(0, 96)
+    } catch (_error) {
+        return encodedSubpath.slice(0, 96)
+    }
+};
+const manabiNormalizeReaderLoadPath = value => {
+    if (value == null) return null
+    let path = String(value)
+    try {
+        path = decodeURIComponent(path)
+    } catch (_error) {}
+    return path
+        .split('#')[0]
+        .split('?')[0]
+        .replace(/^\.?\//, '')
+        .replace(/\/{2,}/g, '/')
+}
+const manabiReaderLoadPathsMatch = (lhs, rhs) => {
+    const left = manabiNormalizeReaderLoadPath(lhs)
+    const right = manabiNormalizeReaderLoadPath(rhs)
+    return left != null && right != null && left === right
+}
+const manabiShouldEmitPaginatorFallbackReaderLoadLog = stage => {
+    if (globalThis.__manabiReaderLoadVerbose === true || globalThis.__manabiPaginatorVerbosePageTurns === true) return true;
+    if (typeof stage !== 'string') return false;
+    if (stage.includes('error') || stage.includes('fail') || stage.includes('invalid') || stage.includes('watchdog') || stage.includes('slow')) return true;
+    return stage === 'paginator.pageTurn.ignoreLocked'
+        || stage === 'paginator.pageTurn.dropDuplicate'
+        || stage === 'paginator.pageTurn.noMove'
+        || stage === 'paginator.pageTurn.anomaly';
+}
 const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
     try {
         const readerPayload = manabiReaderLoadPayload(payload);
@@ -184,6 +297,7 @@ const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
             globalThis.__manabiReaderLoadLog(stage, readerPayload);
             return;
         }
+        if (!manabiShouldEmitPaginatorFallbackReaderLoadLog(stage)) return;
         const details = Object.entries(readerPayload)
             .map(([key, value]) => `${key}=${manabiTimelineValue(value)}`)
             .join(' ');
@@ -192,6 +306,10 @@ const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
         );
     } catch (_error) {}
 };
+const manabiPaginatorVerbosePageTurns = () =>
+    globalThis.__manabiPaginatorVerbosePageTurns === true;
+const manabiClamp01 = value =>
+    Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 const manabiRectDiagnostics = (prefix, rect) => {
     if (!rect) return {};
     return {
@@ -223,6 +341,29 @@ const manabiElementDiagnostics = (prefix, element, styleProperties = []) => {
         [`${prefix}OffsetHeight`]: element.offsetHeight ?? null,
         ...manabiRectDiagnostics(`${prefix}Rect`, element.getBoundingClientRect?.()),
         ...stylePayload,
+    };
+};
+const manabiDocumentStyleDiagnostics = (doc, phase) => {
+    const body = doc?.body;
+    const root = doc?.documentElement;
+    const bodyStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(body) ?? null;
+    const rootStyle = root?.ownerDocument?.defaultView?.getComputedStyle?.(root) ?? null;
+    return {
+        phase,
+        documentHref: doc?.location?.href ?? null,
+        bodyClass: body?.className ?? null,
+        rootClass: root?.className ?? null,
+        colorScheme: body?.dataset?.mnbColorScheme ?? null,
+        lightTheme: body?.dataset?.mnbLightTheme ?? null,
+        darkTheme: body?.dataset?.mnbDarkTheme ?? null,
+        writingDirection: body?.dataset?.mnbWritingDirection ?? null,
+        foliateDirection: body?.dataset?.mnbFoliateWritingDirection ?? null,
+        foliateWritingMode: body?.dataset?.mnbFoliateWritingMode ?? null,
+        bodyStyleWritingMode: bodyStyle?.getPropertyValue?.('writing-mode') || null,
+        rootStyleWritingMode: rootStyle?.getPropertyValue?.('writing-mode') || null,
+        bodyStyleBackgroundColor: bodyStyle?.getPropertyValue?.('background-color') || null,
+        rootStyleBackgroundColor: rootStyle?.getPropertyValue?.('background-color') || null,
+        bodyStyleColor: bodyStyle?.getPropertyValue?.('color') || null,
     };
 };
 const manabiRunPaginatorBoundary = async (stage, payload, operation, { logReaderLoad = false } = {}) => {
@@ -315,6 +456,17 @@ export const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summa
         target = nextTarget;
     }
     return target;
+};
+export const manabiNormalizeSingleMediaPageTarget = ({ page, pages, isSingleMedia = false } = {}) => {
+    if (
+        !MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
+        || !isSingleMedia
+        || !Number.isFinite(page)
+        || pages !== 3
+    ) {
+        return page;
+    }
+    return 1;
 };
 export const manabiPaginatorAnchorForLocalPage = ({ localPage, textPageCount } = {}) => {
     const normalizedTextPageCount = Number.isFinite(textPageCount)
@@ -739,6 +891,14 @@ class View {
             cacheWarmer: this.#isCacheWarmer,
         };
         manabiTimelineMark('paginator.view.load.start', basePayload);
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                phase: 'load.start',
+                elapsedMs: 0,
+                iframeConnected: this.#iframe.isConnected,
+                elementConnected: this.#element.isConnected,
+            });
+        }
         if (logReaderLoad) {
             manabiPaginatorReaderLoadLog('paginator.view.load.start', basePayload);
         }
@@ -765,6 +925,17 @@ class View {
                             href: this.document?.location?.href ?? null,
                         };
                         manabiTimelineMark('paginator.view.iframeLoad', eventPayload);
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                                phase: 'iframeLoad',
+                                elapsedMs: eventPayload.elapsedMs,
+                                documentSubpath: manabiReaderLoadSubpathFromURL(this.document?.location?.href),
+                                docReadyState: this.document?.readyState ?? null,
+                                hasBody: !!this.document?.body,
+                                bodyClass: this.document?.body?.className ?? null,
+                                mediaCount: this.document?.body?.querySelectorAll?.('img, svg, image, picture, video, object, canvas')?.length ?? null,
+                            });
+                        }
                         if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.iframeLoad', eventPayload);
                         }
@@ -776,6 +947,18 @@ class View {
                             () => afterLoad?.(doc),
                             { logReaderLoad }
                         )
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                                phase: 'afterLoad.finish',
+                                elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                                documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
+                                docReadyState: doc?.readyState ?? null,
+                                hasBody: !!doc?.body,
+                                bodyClass: doc?.body?.className ?? null,
+                                bodyTextLength: doc?.body?.textContent?.trim?.().length ?? null,
+                                mediaCount: doc?.body?.querySelectorAll?.('img, svg, image, picture, video, object, canvas')?.length ?? null,
+                            });
+                        }
 
                         let direction = await manabiRunPaginatorBoundary(
                             'paginator.view.direction.document',
@@ -834,6 +1017,20 @@ class View {
                         this.#verticalRTL = direction.verticalRTL;
                         this.#rtl = direction.rtl;
                         this.#directionReadyResolve?.();
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                                phase: 'direction.resolved',
+                                elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                                documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
+                                directionSource,
+                                writingMode: direction?.writingMode ?? null,
+                                direction: direction?.direction ?? null,
+                                vertical: this.#vertical,
+                                verticalRTL: this.#verticalRTL,
+                                rtl: this.#rtl,
+                                bodyClass: doc?.body?.className ?? null,
+                            });
+                        }
                         manabiTimelineMark('paginator.direction', {
                             source: directionSource,
                             writingMode: direction.writingMode,
@@ -859,6 +1056,16 @@ class View {
                             }),
                             { logReaderLoad }
                         )
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                                phase: 'beforeRender.finish',
+                                elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                                documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
+                                flow: layout?.flow ?? null,
+                                vertical: this.#vertical,
+                                rtl: this.#rtl,
+                            });
+                        }
                         await manabiRunPaginatorBoundary(
                             'paginator.view.render',
                             {
@@ -871,6 +1078,25 @@ class View {
                             () => this.render(layout),
                             { logReaderLoad }
                         )
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                                phase: 'render.finish',
+                                elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                                documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
+                                flow: layout?.flow ?? null,
+                                vertical: this.#vertical,
+                                rtl: this.#rtl,
+                                bodyClass: doc?.body?.className ?? null,
+                                docClientWidth: doc?.documentElement?.clientWidth ?? null,
+                                docClientHeight: doc?.documentElement?.clientHeight ?? null,
+                                docScrollWidth: doc?.documentElement?.scrollWidth ?? null,
+                                docScrollHeight: doc?.documentElement?.scrollHeight ?? null,
+                                bodyClientWidth: doc?.body?.clientWidth ?? null,
+                                bodyClientHeight: doc?.body?.clientHeight ?? null,
+                                bodyScrollWidth: doc?.body?.scrollWidth ?? null,
+                                bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                            });
+                        }
 
                         this.#resizeObserver.observe(doc.body)
                         if (doc.fonts?.ready && doc.fonts.status !== 'loaded') {
@@ -895,6 +1121,17 @@ class View {
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         };
                         manabiTimelineMark('paginator.view.load.finish', finishPayload);
+                        if (!this.#isCacheWarmer) {
+                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                                phase: 'load.finish',
+                                elapsedMs: finishPayload.elapsedMs,
+                                documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
+                                fontsStatus: doc.fonts?.status ?? null,
+                                hasExpandedMetrics: !!this.#lastExpandedMetrics,
+                                expandedSize: this.#lastExpandedMetrics?.expandedSize ?? null,
+                                expandedPageCount: this.#lastExpandedMetrics?.pageCount ?? null,
+                            });
+                        }
                         if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.load.finish', finishPayload);
                         }
@@ -933,6 +1170,14 @@ class View {
                 this.#iframe.addEventListener('load', onLoad, { once: true })
                 this.#iframe.addEventListener('error', onError, { once: true })
                 manabiTimelineMark('paginator.view.assignSrc', basePayload);
+                if (!this.#isCacheWarmer) {
+                    manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                        phase: 'assignSrc',
+                        elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
+                        iframeConnected: this.#iframe.isConnected,
+                        elementConnected: this.#element.isConnected,
+                    });
+                }
                 if (logReaderLoad) {
                     manabiPaginatorReaderLoadLog('paginator.view.assignSrc', basePayload);
                 }
@@ -958,6 +1203,12 @@ class View {
         if (!doc?.documentElement || !doc?.body) {
             return
         }
+        if (logReaderLoad) {
+            manabiPaginatorReaderLoadLog('paginator.render.styleSnapshot', {
+                ...renderPayload,
+                ...manabiDocumentStyleDiagnostics(doc, 'beforeFoliateStyle'),
+            });
+        }
         this._column = layout.flow !== 'scrolled'
         this.layout = layout
 
@@ -967,6 +1218,12 @@ class View {
         doc.body.dataset.mnbFoliateWritingDirection = this.#vertical ? 'vertical' : 'horizontal'
         doc.body.dataset.mnbFoliateWritingMode = foliateWritingMode
         doc.body.classList.toggle('reader-vertical-writing', this.#vertical)
+        if (logReaderLoad) {
+            manabiPaginatorReaderLoadLog('paginator.render.styleSnapshot', {
+                ...renderPayload,
+                ...manabiDocumentStyleDiagnostics(doc, 'afterFoliateStyle'),
+            });
+        }
 
         const renderSignature = JSON.stringify({
             flow: layout.flow ?? null,
@@ -981,10 +1238,22 @@ class View {
         })
         if (this.#lastRenderSignature === renderSignature) {
             manabiTimelineMark('paginator.view.render.skipSameSignature', renderPayload)
+            if (logReaderLoad) {
+                manabiPaginatorReaderLoadLog('paginator.view.render.skipSameSignature', {
+                    ...renderPayload,
+                    renderSignature,
+                });
+            }
             return
         }
         if (this.#renderInFlightSignature === renderSignature && this.#renderInFlightPromise) {
             manabiTimelineMark('paginator.view.render.awaitSameSignature', renderPayload)
+            if (logReaderLoad) {
+                manabiPaginatorReaderLoadLog('paginator.view.render.awaitSameSignature', {
+                    ...renderPayload,
+                    renderSignature,
+                });
+            }
             await this.#renderInFlightPromise
             return
         }
@@ -1083,18 +1352,6 @@ class View {
         const paginationSide = vertical ? 'height' : 'width'
         const paginationOtherSide = paginationSide === 'width' ? 'height' : 'width'
         let preMeasureGeometryChanged = false
-        if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.columnization.input', this.#columnizationDiagnostics({
-                phase: 'beforeStyles',
-                layoutWidth: width,
-                layoutHeight: height,
-                layoutGap: gap,
-                layoutColumnWidth: columnWidth,
-                layoutDivisor: divisor,
-                layoutSize: this._size,
-                isJapanese,
-            }));
-        }
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
@@ -1135,19 +1392,6 @@ class View {
         preMeasureGeometryChanged =
             manabiSetStyleIfChanged(this.#element.style, paginationOtherSide, '100%') || preMeasureGeometryChanged
         this.setImageSize()
-        if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.columnization.afterStyles', this.#columnizationDiagnostics({
-                phase: 'afterStyles',
-                layoutWidth: width,
-                layoutHeight: height,
-                layoutGap: gap,
-                layoutColumnWidth: columnWidth,
-                layoutDivisor: divisor,
-                layoutSize: this._size,
-                isJapanese,
-                preMeasureGeometryChanged,
-            }));
-        }
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
@@ -1366,15 +1610,6 @@ class View {
                             column: this._column,
                             vertical: this.#vertical,
                         });
-                        if (!this.#isCacheWarmer) {
-                            manabiPaginatorReaderLoadLog('paginator.columnization.expand.skipSameSignature', this.#columnizationDiagnostics({
-                                phase: 'skipSameSignature',
-                                expandSignature,
-                                lastExpandedSide: this.#lastExpandedMetrics?.side ?? null,
-                                lastExpandedSize: this.#lastExpandedMetrics?.expandedSize ?? null,
-                                lastExpandedPageCount: this.#lastExpandedMetrics?.pageCount ?? null,
-                            }));
-                        }
                         resolve()
                         return
                     }
@@ -1410,21 +1645,6 @@ class View {
                             contentStart,
                             remainder,
                         }
-                        if (!this.#isCacheWarmer) {
-                            manabiPaginatorReaderLoadLog('paginator.columnization.expand.measure', this.#columnizationDiagnostics({
-                                phase: 'measure',
-                                side,
-                                otherSide,
-                                scrollProp,
-                                inlineProgression,
-                                contentStart,
-                                contentSize,
-                                pageCount,
-                                expandedSize,
-                                remainder,
-                                ...manabiRectDiagnostics('contentRect', contentRect),
-                            }));
-                        }
                         let geometryChanged = false
                         geometryChanged = manabiSetStyleIfChanged(this.#element.style, 'padding', '0') || geometryChanged
                         geometryChanged = manabiSetStyleIfChanged(this.#iframe.style, side, `${expandedSize}px`) || geometryChanged
@@ -1451,25 +1671,6 @@ class View {
                             })()
                             const appliedContentSize = appliedContentStart + appliedContentRect[side]
                             const appliedRemainder = this._size > 0 ? appliedContentSize % this._size : null
-                            manabiPaginatorReaderLoadLog('paginator.columnization.expand.applied', this.#columnizationDiagnostics({
-                                phase: 'applied',
-                                side,
-                                otherSide,
-                                scrollProp,
-                                inlineProgression,
-                                contentStart,
-                                contentSize,
-                                pageCount,
-                                expandedSize,
-                                remainder,
-                                appliedContentStart,
-                                appliedContentSize,
-                                appliedContentDelta: appliedContentSize - contentSize,
-                                appliedRemainder,
-                                geometryChanged,
-                                ...manabiRectDiagnostics('contentRect', contentRect),
-                                ...manabiRectDiagnostics('appliedContentRect', appliedContentRect),
-                            }));
                         }
                     } else {
                         const side = defaultSide
@@ -1663,6 +1864,7 @@ export class Paginator extends HTMLElement {
     #isLoading = false
     #locked = false // while true, prevent any further navigation
     #lockedAt = null
+    #queuedPageTurn = null
     #styles
     #styleMap = new WeakMap()
     #scrollBounds
@@ -1677,7 +1879,10 @@ export class Paginator extends HTMLElement {
     #prefetchCache = new Map()
     #pendingPageTurnDirection = null
     #pendingPageTurnStep = null
-    #queuedPageTurn = null
+    #pendingPageTurnQueueAllowed = false
+    #pendingPageTurnRequestedPage = null
+    #pendingPageTurnPageCount = null
+    #lastSettledPageTurn = null
 
     #cachedSizes = null
     #cachedStart = null
@@ -1694,6 +1899,8 @@ export class Paginator extends HTMLElement {
     #lastRelocateDispatchSignature = null
     #elementVisibilityObserver = null
     #elementMutationObserver = null
+    #mediaVisualDiagnosticsToken = 0
+    #loadingWatchdogToken = 0
 
     constructor() {
         super()
@@ -1932,7 +2139,7 @@ export class Paginator extends HTMLElement {
     }
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
-    open(book, isCacheWarmer) {
+    open(book, isCacheWarmer = false) {
         // Keep layout measurable; hide visually until first anchor is settled.
         if (isCacheWarmer) {
             this.style.display = 'none'
@@ -1967,8 +2174,8 @@ export class Paginator extends HTMLElement {
     setSideNavWidth(widthPx) {
         this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
-    #createView() {
-        if (this.#view) return this.#view
+    #createView({ replacement = false } = {}) {
+        if (this.#view && !replacement) return this.#view
         this.#invalidateVisibleRangeCache()
         const view = new View({
             container: this,
@@ -1977,7 +2184,7 @@ export class Paginator extends HTMLElement {
             isCacheWarmer: this.#isCacheWarmer,
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
-        this.#view = view
+        if (!replacement) this.#view = view
         this.#container.append(view.element)
         return view
     }
@@ -2025,6 +2232,25 @@ export class Paginator extends HTMLElement {
             this.#top.classList.add('reader-loading');
         } else {
             this.#top.classList.remove('reader-loading');
+        }
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.loading.state', this.#displayLifecycleDiagnostics('loading.state', {
+                reason,
+                isLoading,
+            }))
+            const token = ++this.#loadingWatchdogToken
+            if (isLoading) {
+                for (const delayMs of [5000, 30000]) {
+                    setTimeout(() => {
+                        if (token !== this.#loadingWatchdogToken || !this.#isLoading) return
+                        manabiPaginatorReaderLoadLog('paginator.loading.watchdog', this.#displayLifecycleDiagnostics('loading.watchdog', {
+                            reason,
+                            delayMs,
+                            isLoading: this.#isLoading,
+                        }))
+                    }, delayMs)
+                }
+            }
         }
     }
     #cacheNeighborPrefetch(index, promise) {
@@ -2164,11 +2390,17 @@ export class Paginator extends HTMLElement {
         if (!metrics || !Number.isFinite(start)) return metrics
         const size = metrics.size
         const end = start + size
+        const measuredPage = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
+        const page = this.#logicalPageFromMeasuredPage({
+            measuredPage,
+            pages: metrics.pages,
+            rawPages: metrics.rawPages,
+        })
         return {
             ...metrics,
             start,
             end,
-            page: size > 0 ? Math.floor(((start + end) / 2) / size) : 0,
+            page,
         }
     }
     #rememberPageMetrics(metrics) {
@@ -2189,6 +2421,10 @@ export class Paginator extends HTMLElement {
             : expandedMetrics.expandedSize
         const rawPages = size > 0 ? Math.round(viewSize / size) : 0
         const pages = this.#normalizePages(rawPages)
+        const start = Math.abs(this.#container?.[scrollProp] ?? 0)
+        const end = start + size
+        const measuredPage = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
+        const page = this.#logicalPageFromMeasuredPage({ measuredPage, pages, rawPages })
         this.#rememberPageMetrics({
             index: this.#index,
             scrolled: this.scrolled,
@@ -2198,14 +2434,15 @@ export class Paginator extends HTMLElement {
             scrollProp,
             size,
             viewSize,
-            start: 0,
-            end: size,
-            page: 0,
+            start,
+            end,
+            page,
             pages,
+            rawPages,
             source: 'expand',
             inlineProgression: expandedMetrics.inlineProgression === true,
         })
-        if (!this.#isCacheWarmer) {
+        if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
             manabiPaginatorReaderLoadLog('paginator.expand.metrics', this.#layoutMetricDiagnostics(this.#pageMetricsCache, {
                 reason: 'expand',
                 contentRectWidth: expandedMetrics.contentRectWidth,
@@ -2279,6 +2516,370 @@ export class Paginator extends HTMLElement {
                 bodyTextLength: body?.textContent?.trim?.().length ?? null,
             } : null),
         }
+    }
+    #readerLoadDocumentSubpath(doc = this.#view?.document ?? null) {
+        return manabiReaderLoadSubpathFromURL(doc?.location?.href)
+    }
+    #displayLifecycleDiagnostics(phase, extra = {}) {
+        const doc = this.#view?.document ?? null
+        const body = doc?.body ?? null
+        const metrics = this.#pageMetricsCache
+        const viewElement = this.#view?.element ?? null
+        const mediaCount = body?.querySelectorAll?.('img, svg, image, picture, video, object, canvas')?.length ?? null
+        return {
+            ...extra,
+            phase,
+            index: this.#index,
+            sectionHref: this.sections?.[this.#index]?.href ?? this.sections?.[this.#index]?.id ?? null,
+            documentSubpath: this.#readerLoadDocumentSubpath(doc),
+            docReadyState: doc?.readyState ?? null,
+            bodyClass: body?.className ?? null,
+            bodyTextLength: body?.textContent?.trim?.().length ?? null,
+            mediaCount,
+            page: metrics?.page ?? null,
+            pages: metrics?.pages ?? null,
+            start: metrics ? manabiRound(metrics.start, 1) : null,
+            pageSize: metrics ? manabiRound(metrics.size, 1) : null,
+            viewSize: metrics ? manabiRound(metrics.viewSize, 1) : null,
+            metricsSource: metrics?.metricsSource ?? metrics?.source ?? null,
+            hasView: !!this.#view,
+            viewConnected: viewElement?.isConnected ?? null,
+            viewDisplay: viewElement ? getComputedStyle(viewElement).display : null,
+            viewVisibility: viewElement ? getComputedStyle(viewElement).visibility : null,
+            containerChildCount: this.#container?.children?.length ?? null,
+            containerScrollLeft: this.#container ? manabiRound(this.#container.scrollLeft, 1) : null,
+            containerScrollTop: this.#container ? manabiRound(this.#container.scrollTop, 1) : null,
+            paginatorLoading: this.#isLoading,
+            topReaderLoading: this.#top?.classList?.contains?.('reader-loading') === true,
+            locked: this.#locked,
+            pendingPageTurnDirection: this.#pendingPageTurnDirection,
+            pendingPageTurnStep: this.#pendingPageTurnStep,
+            inputSource: globalThis.__manabiNavigationIntent?.source ?? null,
+        }
+    }
+    #mediaVisualDiagnostics(metrics = null, extra = {}) {
+        const doc = this.#view?.document ?? null
+        const win = doc?.defaultView ?? null
+        const body = doc?.body ?? null
+        if (!doc || !win || !body) return null
+
+        const mediaElements = Array.from(doc.querySelectorAll('img, svg, image, picture, video, object, canvas'))
+        const bodyClass = body.className ?? ''
+        const documentURL = String(doc.location?.href ?? '')
+        const documentSubpath = this.#readerLoadDocumentSubpath(doc)
+        const hasImageBody =
+            body.classList?.contains?.('p-image') === true
+            || body.classList?.contains?.('p-cover') === true
+            || body.classList?.contains?.('reader-is-single-media-element-without-text') === true
+        if (!mediaElements.length && !hasImageBody) return null
+
+        const viewportWidth = Number(win.innerWidth) || doc.documentElement?.clientWidth || body.clientWidth || null
+        const viewportHeight = Number(win.innerHeight) || doc.documentElement?.clientHeight || body.clientHeight || null
+        const viewStyle = this.#view?.element ? getComputedStyle(this.#view.element) : null
+        let visibleMediaCount = 0
+        let loadedImageCount = 0
+        let incompleteImageCount = 0
+        let zeroRectMediaCount = 0
+        let hiddenMediaCount = 0
+        let firstMedia = null
+        let firstVisibleMedia = null
+
+        for (const element of mediaElements) {
+            const rect = element.getBoundingClientRect?.()
+            const width = rect ? Math.max(0, rect.width) : 0
+            const height = rect ? Math.max(0, rect.height) : 0
+            if (width < 0.5 || height < 0.5) zeroRectMediaCount += 1
+            const tag = element.tagName?.toLowerCase?.() ?? 'unknown'
+            const isImage = tag === 'img' || tag === 'image'
+            if (isImage) {
+                if (element.complete === true && ((element.naturalWidth ?? 0) > 0 || tag === 'image')) loadedImageCount += 1
+                else incompleteImageCount += 1
+            }
+            const displayStyle = win.getComputedStyle?.(element) ?? null
+            if (
+                displayStyle?.display === 'none'
+                || displayStyle?.visibility === 'hidden'
+                || Number(displayStyle?.opacity ?? 1) === 0
+            ) {
+                hiddenMediaCount += 1
+            }
+            const intersectionLeft = rect && viewportWidth != null ? Math.max(rect.left, 0) : null
+            const intersectionTop = rect && viewportHeight != null ? Math.max(rect.top, 0) : null
+            const intersectionRight = rect && viewportWidth != null ? Math.min(rect.right, viewportWidth) : null
+            const intersectionBottom = rect && viewportHeight != null ? Math.min(rect.bottom, viewportHeight) : null
+            const intersectionWidth = intersectionLeft != null && intersectionRight != null
+                ? Math.max(0, intersectionRight - intersectionLeft)
+                : null
+            const intersectionHeight = intersectionTop != null && intersectionBottom != null
+                ? Math.max(0, intersectionBottom - intersectionTop)
+                : null
+            const intersectsViewport =
+                rect
+                && viewportWidth != null
+                && viewportHeight != null
+                && intersectionWidth > 0
+                && intersectionHeight > 0
+                && displayStyle?.display !== 'none'
+                && displayStyle?.visibility !== 'hidden'
+                && Number(displayStyle?.opacity ?? 1) !== 0
+            if (intersectsViewport) visibleMediaCount += 1
+            const clipEdges = rect && viewportWidth != null && viewportHeight != null
+                ? [
+                    rect.left < 0 ? 'left' : null,
+                    rect.top < 0 ? 'top' : null,
+                    rect.right > viewportWidth ? 'right' : null,
+                    rect.bottom > viewportHeight ? 'bottom' : null,
+                ].filter(Boolean).join(',')
+                : null
+            const sample = {
+                tag,
+                complete: isImage ? element.complete === true : null,
+                naturalWidth: isImage ? (element.naturalWidth ?? null) : null,
+                naturalHeight: isImage ? (element.naturalHeight ?? null) : null,
+                currentSrcLength: typeof element.currentSrc === 'string' ? element.currentSrc.length : null,
+                srcLength: typeof element.src === 'string' ? element.src.length : null,
+                left: rect ? manabiRound(rect.left, 1) : null,
+                top: rect ? manabiRound(rect.top, 1) : null,
+                right: rect ? manabiRound(rect.right, 1) : null,
+                bottom: rect ? manabiRound(rect.bottom, 1) : null,
+                width: manabiRound(width, 1),
+                height: manabiRound(height, 1),
+                intersectsViewport,
+                intersectionWidth: intersectionWidth == null ? null : manabiRound(intersectionWidth, 1),
+                intersectionHeight: intersectionHeight == null ? null : manabiRound(intersectionHeight, 1),
+                clipEdges,
+                display: displayStyle?.display ?? null,
+                visibility: displayStyle?.visibility ?? null,
+                opacity: displayStyle?.opacity ?? null,
+                objectFit: displayStyle?.objectFit ?? null,
+                position: displayStyle?.position ?? null,
+                writingMode: displayStyle?.writingMode ?? null,
+                transform: displayStyle?.transform && displayStyle.transform !== 'none'
+                    ? displayStyle.transform.slice(0, 96)
+                    : null,
+                maxInlineSize: displayStyle?.maxInlineSize ?? null,
+                maxBlockSize: displayStyle?.maxBlockSize ?? null,
+                parentClass: element.parentElement?.className ? String(element.parentElement.className).slice(0, 96) : null,
+            }
+            if (!firstMedia) firstMedia = sample
+            if (intersectsViewport && !firstVisibleMedia) firstVisibleMedia = sample
+        }
+
+        const first = firstMedia ?? {}
+        const firstVisible = firstVisibleMedia ?? {}
+        const hasSuspiciousMediaState =
+            mediaElements.length > 0
+            && (visibleMediaCount === 0 || zeroRectMediaCount > 0 || incompleteImageCount > 0 || hiddenMediaCount > 0)
+        const sectionHref = this.sections?.[this.#index]?.href ?? this.sections?.[this.#index]?.id ?? null
+        const staleSnapshotPreviousIndex = extra?.staleDocumentSnapshot === true && Number.isInteger(extra?.previousIndex)
+            ? extra.previousIndex
+            : null
+        const documentMatchSectionHref = staleSnapshotPreviousIndex == null
+            ? sectionHref
+            : (this.sections?.[staleSnapshotPreviousIndex]?.href ?? this.sections?.[staleSnapshotPreviousIndex]?.id ?? null)
+        return {
+            ...extra,
+            index: this.#index,
+            sectionHref,
+            documentURLLength: documentURL.length,
+            documentSubpath,
+            documentMatchesSection: documentSubpath == null
+                ? null
+                : manabiReaderLoadPathsMatch(documentSubpath, documentMatchSectionHref),
+            documentMatchSectionHref,
+            page: metrics?.page ?? null,
+            pages: metrics?.pages ?? null,
+            start: metrics ? manabiRound(metrics.start, 1) : null,
+            pageSize: metrics ? manabiRound(metrics.size, 1) : null,
+            viewSize: metrics ? manabiRound(metrics.viewSize, 1) : null,
+            metricsSource: metrics?.metricsSource ?? metrics?.source ?? null,
+            bodyClass,
+            hasImageBody,
+            mediaCount: mediaElements.length,
+            visibleMediaCount,
+            loadedImageCount,
+            incompleteImageCount,
+            zeroRectMediaCount,
+            hiddenMediaCount,
+            suspiciousMediaState: hasSuspiciousMediaState,
+            viewportWidth: viewportWidth == null ? null : manabiRound(viewportWidth, 1),
+            viewportHeight: viewportHeight == null ? null : manabiRound(viewportHeight, 1),
+            docClientWidth: doc.documentElement?.clientWidth ?? null,
+            docClientHeight: doc.documentElement?.clientHeight ?? null,
+            docScrollWidth: doc.documentElement?.scrollWidth ?? null,
+            docScrollHeight: doc.documentElement?.scrollHeight ?? null,
+            bodyClientWidth: body.clientWidth ?? null,
+            bodyClientHeight: body.clientHeight ?? null,
+            bodyScrollWidth: body.scrollWidth ?? null,
+            bodyScrollHeight: body.scrollHeight ?? null,
+            containerScrollLeft: this.#container ? manabiRound(this.#container.scrollLeft, 1) : null,
+            containerScrollTop: this.#container ? manabiRound(this.#container.scrollTop, 1) : null,
+            viewConnected: this.#view?.element?.isConnected ?? null,
+            viewDisplay: viewStyle?.display ?? null,
+            viewVisibility: viewStyle?.visibility ?? null,
+            viewOpacity: viewStyle?.opacity ?? null,
+            containerChildCount: this.#container?.children?.length ?? null,
+            containerClass: this.#container?.className ?? null,
+            isLoading: this.#isLoading,
+            locked: this.#locked,
+            pendingPageTurnDirection: this.#pendingPageTurnDirection,
+            inputSource: globalThis.__manabiNavigationIntent?.source ?? null,
+            firstTag: first.tag ?? null,
+            firstComplete: first.complete ?? null,
+            firstNaturalWidth: first.naturalWidth ?? null,
+            firstNaturalHeight: first.naturalHeight ?? null,
+            firstCurrentSrcLength: first.currentSrcLength ?? null,
+            firstSrcLength: first.srcLength ?? null,
+            firstLeft: first.left ?? null,
+            firstTop: first.top ?? null,
+            firstRight: first.right ?? null,
+            firstBottom: first.bottom ?? null,
+            firstWidth: first.width ?? null,
+            firstHeight: first.height ?? null,
+            firstIntersectsViewport: first.intersectsViewport ?? null,
+            firstIntersectionWidth: first.intersectionWidth ?? null,
+            firstIntersectionHeight: first.intersectionHeight ?? null,
+            firstClipEdges: first.clipEdges ?? null,
+            firstDisplay: first.display ?? null,
+            firstVisibility: first.visibility ?? null,
+            firstOpacity: first.opacity ?? null,
+            firstObjectFit: first.objectFit ?? null,
+            firstPosition: first.position ?? null,
+            firstWritingMode: first.writingMode ?? null,
+            firstTransform: first.transform ?? null,
+            firstMaxInlineSize: first.maxInlineSize ?? null,
+            firstMaxBlockSize: first.maxBlockSize ?? null,
+            firstParentClass: first.parentClass ?? null,
+            firstVisibleTag: firstVisible.tag ?? null,
+            firstVisibleLeft: firstVisible.left ?? null,
+            firstVisibleTop: firstVisible.top ?? null,
+            firstVisibleWidth: firstVisible.width ?? null,
+            firstVisibleHeight: firstVisible.height ?? null,
+        }
+    }
+    #mediaVisualSignature(snapshot = null) {
+        if (!snapshot) return null
+        return [
+            snapshot.index,
+            snapshot.documentSubpath,
+            snapshot.page,
+            snapshot.pages,
+            snapshot.start,
+            snapshot.visibleMediaCount,
+            snapshot.loadedImageCount,
+            snapshot.incompleteImageCount,
+            snapshot.zeroRectMediaCount,
+            snapshot.hiddenMediaCount,
+            snapshot.firstComplete,
+            snapshot.firstLeft,
+            snapshot.firstTop,
+            snapshot.firstWidth,
+            snapshot.firstHeight,
+            snapshot.firstIntersectsViewport,
+            snapshot.firstClipEdges,
+            snapshot.bodyClass,
+            snapshot.containerScrollLeft,
+            snapshot.containerScrollTop,
+            snapshot.isLoading,
+            snapshot.locked,
+        ].join('|')
+    }
+    #mediaVisualChangedFields(before = null, after = null) {
+        if (!before || !after) return null
+        const fields = [
+            'index',
+            'documentSubpath',
+            'page',
+            'pages',
+            'start',
+            'visibleMediaCount',
+            'loadedImageCount',
+            'incompleteImageCount',
+            'zeroRectMediaCount',
+            'hiddenMediaCount',
+            'firstComplete',
+            'firstLeft',
+            'firstTop',
+            'firstWidth',
+            'firstHeight',
+            'firstIntersectsViewport',
+            'firstClipEdges',
+            'bodyClass',
+            'containerScrollLeft',
+            'containerScrollTop',
+            'isLoading',
+            'locked',
+        ]
+        const changed = fields.filter(field => before[field] !== after[field])
+        return changed.length ? changed.slice(0, 12).join(',') : null
+    }
+    #scheduleMediaVisualFollowUp(initialSnapshot = null, {
+        reason = null,
+        phase = null,
+        crossedSection = false,
+        displayBoundary = false,
+    } = {}) {
+        if (!this.#shouldLogMediaVisualDiagnostics(initialSnapshot, { crossedSection, displayBoundary })) return
+        const token = ++this.#mediaVisualDiagnosticsToken
+        const initialSignature = this.#mediaVisualSignature(initialSnapshot)
+        const delays = [50, 250, 1000]
+        for (const delayMs of delays) {
+            setTimeout(async () => {
+                if (token !== this.#mediaVisualDiagnosticsToken && delayMs > 50) return
+                const snapshot = this.#mediaVisualDiagnostics(this.#pageMetricsCache, {
+                    phase: phase ? `${phase}.followUp` : 'followUp',
+                    reason,
+                    delayMs,
+                })
+                if (!snapshot) return
+                const signature = this.#mediaVisualSignature(snapshot)
+                const changed = signature !== initialSignature
+                if (!changed && !snapshot.suspiciousMediaState && delayMs < 1000 && !manabiPaginatorVerbosePageTurns()) return
+                manabiPaginatorReaderLoadLog('paginator.mediaVisual.followUp', {
+                    ...snapshot,
+                    changed,
+                    changedFields: this.#mediaVisualChangedFields(initialSnapshot, snapshot),
+                })
+            }, delayMs)
+        }
+    }
+    #installMediaVisualEventDiagnostics(reason = null) {
+        const doc = this.#view?.document ?? null
+        if (!doc || this.#isCacheWarmer) return
+        const mediaElements = Array.from(doc.querySelectorAll('img, video')).slice(0, 6)
+        if (!mediaElements.length) return
+        for (const [mediaIndex, element] of mediaElements.entries()) {
+            if (element.dataset?.manabiMediaVisualDiagnostics === '1') continue
+            if (element.dataset) element.dataset.manabiMediaVisualDiagnostics = '1'
+            const logEvent = eventType => {
+                const metrics = this.#pageMetricsCache
+                const snapshot = this.#mediaVisualDiagnostics(metrics, {
+                    phase: 'mediaEvent',
+                    reason,
+                    mediaIndex,
+                    eventType,
+                })
+                if (this.#shouldLogMediaVisualDiagnostics(snapshot, { displayBoundary: true })) {
+                    manabiPaginatorReaderLoadLog('paginator.mediaVisual.event', snapshot)
+                }
+            }
+            element.addEventListener?.('load', () => logEvent('load'), { once: true })
+            element.addEventListener?.('error', () => logEvent('error'), { once: true })
+            element.addEventListener?.('loadedmetadata', () => logEvent('loadedmetadata'), { once: true })
+            element.addEventListener?.('loadeddata', () => logEvent('loadeddata'), { once: true })
+            if (element.tagName?.toLowerCase?.() === 'img' && element.complete === true) {
+                queueMicrotask(() => logEvent('alreadyComplete'))
+            }
+        }
+    }
+    #shouldLogMediaVisualDiagnostics(snapshot = null, { crossedSection = false, displayBoundary = false } = {}) {
+        if (!snapshot || this.#isCacheWarmer) return false
+        if (manabiPaginatorVerbosePageTurns()) return true
+        return !!(
+            snapshot.suspiciousMediaState
+            || (snapshot.hasImageBody && (crossedSection || displayBoundary))
+            || (snapshot.mediaCount > 0 && crossedSection)
+        )
     }
     async #visibleRangeCacheKey() {
         await this.#awaitDirection()
@@ -2859,7 +3460,11 @@ export class Paginator extends HTMLElement {
 
         let divisor;
         let columnWidth;
-        if (MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS && this.#isSingleMediaElementWithoutText()) {
+        const shouldNormalizeSingleMediaPage =
+            MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
+            && this.#isSingleMediaElementWithoutText()
+        if (shouldNormalizeSingleMediaPage) {
+            divisor = 1
             columnWidth = maxInlineSize
             this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
@@ -3171,7 +3776,8 @@ export class Paginator extends HTMLElement {
     async #startForScrollProp(scrollProp) {
         if (this.#cachedStart === null) {
             const cached = this.#pageMetricsCache
-            if (cached
+            if (MANABI_ENABLE_PAGE_METRICS_CACHE
+                && cached
                 && cached.index === this.#index
                 && cached.scrolled === this.scrolled
                 && cached.vertical === this.#vertical
@@ -3206,20 +3812,44 @@ export class Paginator extends HTMLElement {
         return metrics.pages
     }
     #normalizePages(rawPages) {
-        if (
-            MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
-            && rawPages > 3
-            && this.#isSingleMediaElementWithoutText()
-        ) {
-            return 3
+        if (this.#usesSingleMediaLogicalPage(rawPages)) {
+            return 1
         }
         return rawPages
+    }
+    #usesSingleMediaLogicalPage(rawPages) {
+        return MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
+            && rawPages >= 3
+            && this.#isSingleMediaElementWithoutText()
+    }
+    #logicalPageFromMeasuredPage({ measuredPage, pages, rawPages } = {}) {
+        if (this.#usesSingleMediaLogicalPage(rawPages)) {
+            return 0
+        }
+        return Number.isFinite(pages) && pages > 0
+            ? Math.max(0, Math.min(pages - 1, measuredPage))
+            : measuredPage
+    }
+    #physicalPageForScrollTarget({ page, metrics } = {}) {
+        if (
+            MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
+            && this.#isSingleMediaElementWithoutText()
+            && metrics?.pages === 1
+        ) {
+            return 1
+        }
+        return manabiNormalizeSingleMediaPageTarget({
+            page,
+            pages: metrics?.pages,
+            isSingleMedia: this.#isSingleMediaElementWithoutText(),
+        })
     }
     async pageMetrics() {
         const startedAt = manabiPerfNow();
         let metrics = null;
         const cached = this.#pageMetricsCache;
-        if (cached
+        if (MANABI_ENABLE_PAGE_METRICS_CACHE
+            && cached
             && cached.index === this.#index
             && cached.scrolled === this.scrolled
             && cached.vertical === this.#vertical
@@ -3266,7 +3896,8 @@ export class Paginator extends HTMLElement {
             const end = start + size
             const rawPages = size > 0 ? Math.round(viewSize / size) : 0
             const pages = this.#normalizePages(rawPages)
-            const page = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
+            const measuredPage = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
+            const page = this.#logicalPageFromMeasuredPage({ measuredPage, pages, rawPages })
             metrics = {
                 index: this.#index,
                 scrolled: this.scrolled,
@@ -3280,10 +3911,13 @@ export class Paginator extends HTMLElement {
                 end,
                 page,
                 pages,
+                rawPages,
                 metricsSource,
                 inlineProgression: this.#view?.expandedMetrics?.inlineProgression === true,
             }
-            this.#pageMetricsCache = metrics
+            if (MANABI_ENABLE_PAGE_METRICS_CACHE) {
+                this.#pageMetricsCache = metrics
+            }
             if (!this.#isCacheWarmer) {
                 manabiPaginatorReaderLoadLog('paginator.pageMetrics.compute', this.#layoutMetricDiagnostics(metrics, {
                     cacheHit: false,
@@ -3347,9 +3981,14 @@ export class Paginator extends HTMLElement {
         const page = Math.floor(
             Math.max(min, Math.min(max, (start + end) / 2 +
                 (isNaN(d) ? 0 : d))) / size)
+        const targetPage = manabiNormalizeSingleMediaPageTarget({
+            page,
+            pages,
+            isSingleMedia: this.#isSingleMediaElementWithoutText(),
+        })
 
-        await this.#scrollToPage(page, 'snap', undefined, metrics).then(async () => {
-            const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
+        await this.#scrollToPage(targetPage, 'snap', undefined, metrics).then(async () => {
+            const dir = targetPage <= 0 ? -1 : targetPage >= pages - 1 ? 1 : null
             if (dir) return await this.#goTo({
                 index: this.#adjacentIndex(dir),
                 anchor: dir < 0 ? () => 1 : () => 0,
@@ -3584,37 +4223,62 @@ export class Paginator extends HTMLElement {
                 const size = metrics.size
                 const atStart = this.#adjacentIndex(-1) == null && metrics.page <= 1
                 const atEnd = this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2
-                const scrolledMetrics = this.#metricsWithStart(metrics, Math.abs(offset))
-                if (knownMetrics && Math.abs((knownMetrics.start ?? 0) - Math.abs(offset)) < 0.5) {
+                const targetStart = Math.abs(offset)
+                const liveStart = () => Math.abs(element?.[scrollProp] ?? 0)
+                const scrolledMetrics = () => this.#metricsWithStart(metrics, liveStart())
+                if (
+                    knownMetrics
+                    && Math.abs((knownMetrics.start ?? 0) - targetStart) < 0.5
+                    && Math.abs(liveStart() - targetStart) < 0.5
+                ) {
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    this.#rememberPageMetrics(scrolledMetrics)
-                    await this.#afterScroll(reason, scrolledMetrics)
+                    const actualMetrics = scrolledMetrics()
+                    this.#rememberPageMetrics(actualMetrics)
+                    await this.#afterScroll(reason, actualMetrics)
                     return
                 }
-                if (!knownMetrics && element[scrollProp] === offset) {
+                if (!knownMetrics && Math.abs(liveStart() - targetStart) < 0.5) {
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    this.#rememberPageMetrics(scrolledMetrics)
-                    await this.#afterScroll(reason, scrolledMetrics)
+                    const actualMetrics = scrolledMetrics()
+                    this.#rememberPageMetrics(actualMetrics)
+                    await this.#afterScroll(reason, actualMetrics)
                     return
                 }
                 // FIXME: vertical-rl only, not -lr
                 if (this.scrolled && this.#vertical) offset = -offset
                 const rememberScrolledMetrics = () => {
-                    this.#rememberPageMetrics(scrolledMetrics)
+                    const actualStart = liveStart()
+                    const actualMetrics = scrolledMetrics()
+                    if (!this.#isCacheWarmer && Math.abs(actualStart - targetStart) > 0.5) {
+                        manabiPaginatorReaderLoadLog('paginator.scrollTo.actualStartMismatch', {
+                            reason,
+                            index: this.#index,
+                            scrollProp,
+                            targetStart: manabiRound(targetStart, 1),
+                            actualStart: manabiRound(actualStart, 1),
+                            requestedOffset: manabiRound(offset, 1),
+                            beforePage: metrics.page ?? null,
+                            beforeStart: Number.isFinite(metrics.start) ? manabiRound(metrics.start, 1) : null,
+                            actualPage: actualMetrics?.page ?? null,
+                            actualPages: actualMetrics?.pages ?? null,
+                        })
+                    }
+                    this.#rememberPageMetrics(actualMetrics)
+                    return actualMetrics
                 }
                 if ((reason === 'snap' || effectiveSmooth) && this.hasAttribute('animated')) return animate(
                     element[scrollProp], offset, 300, easeOutQuad,
                     x => element[scrollProp] = x,
                 ).then(async () => {
-                    rememberScrolledMetrics()
+                    const actualMetrics = rememberScrolledMetrics()
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    await this.#afterScroll(reason, scrolledMetrics)
+                    await this.#afterScroll(reason, actualMetrics)
                 })
                 else {
                     element[scrollProp] = offset
-                    rememberScrolledMetrics()
+                    const actualMetrics = rememberScrolledMetrics()
                     this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    await this.#afterScroll(reason, scrolledMetrics)
+                    await this.#afterScroll(reason, actualMetrics)
                 }
             }
 
@@ -3713,11 +4377,24 @@ export class Paginator extends HTMLElement {
     async #scrollToPage(page, reason, smooth, knownMetrics = null) {
         const metrics = knownMetrics || await this.pageMetrics()
         const size = metrics.size
-        const offset = size * (this.#rtl ? -page : page)
-        if (!this.#isCacheWarmer) {
+        const physicalTargetPage = this.#physicalPageForScrollTarget({ page, metrics })
+        const normalizedSingleMedia = physicalTargetPage !== page
+        const offset = size * (this.#rtl ? -physicalTargetPage : physicalTargetPage)
+        if (
+            !this.#isCacheWarmer
+            && (
+                manabiPaginatorVerbosePageTurns()
+                || normalizedSingleMedia
+                || page <= 0
+                || page >= metrics.pages - 1
+            )
+        ) {
             manabiPaginatorReaderLoadLog('paginator.scrollToPage.target', this.#layoutMetricDiagnostics(metrics, {
                 reason,
                 requestedPage: page,
+                targetPage: physicalTargetPage,
+                logicalTargetPage: page,
+                normalizedSingleMedia,
                 targetOffset: offset,
                 smooth: smooth ?? null,
                 willBeforeContent: page <= 0,
@@ -3826,7 +4503,7 @@ export class Paginator extends HTMLElement {
             if (!metrics.pages) return
             const textPages = metrics.pages - 2
             const newPage = Math.round(anchor * (textPages - 1))
-            if (!this.#isCacheWarmer) {
+            if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
                 manabiPaginatorReaderLoadLog('paginator.scrollToAnchor.fractionTarget', this.#layoutMetricDiagnostics(metrics, {
                     reason,
                     anchor,
@@ -4068,7 +4745,13 @@ export class Paginator extends HTMLElement {
         const index = this.#index
         const logProgressInputs = payload => {
             manabiTimelineMark('paginator.relocate.progressInputs', payload);
-            manabiPaginatorReaderLoadLog('paginator.relocate.progressInputs', payload);
+            if (
+                manabiPaginatorVerbosePageTurns()
+                || payload.fraction < 0
+                || payload.fraction > 1
+            ) {
+                manabiPaginatorReaderLoadLog('paginator.relocate.progressInputs', payload);
+            }
         };
         const detail = {
             reason,
@@ -4110,8 +4793,9 @@ export class Paginator extends HTMLElement {
                 return
             }
             this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
-            detail.fraction = (page - 1) / (pages - 2)
-            detail.size = 1 / (pages - 2)
+            const contentPageCount = Math.max(1, pages - 2)
+            detail.fraction = manabiClamp01((page - 1) / contentPageCount)
+            detail.size = 1 / contentPageCount
             logProgressInputs(this.#layoutMetricDiagnostics(metrics, {
                 reason,
                 mode: 'paginated',
@@ -4136,6 +4820,16 @@ export class Paginator extends HTMLElement {
                 fraction: detail.fraction,
                 size: detail.size,
             })
+            manabiPaginatorReaderLoadLog('paginator.relocate.skipDuplicate', {
+                reason,
+                index,
+                fraction: Number.isFinite(detail.fraction) ? manabiRound(detail.fraction, 6) : null,
+                size: Number.isFinite(detail.size) ? manabiRound(detail.size, 6) : null,
+                page: knownMetrics?.page ?? null,
+                pages: knownMetrics?.pages ?? null,
+                pageTurnDirection: detail.pageTurnDirection ?? null,
+                signature: relocateSignature,
+            })
             return
         }
         this.#lastRelocateDispatchSignature = relocateSignature
@@ -4143,6 +4837,8 @@ export class Paginator extends HTMLElement {
             detail
         }))
         if (
+            MANABI_ENABLE_PAGE_TURN_BLANK_CORRECTION
+            &&
             reason === 'page'
             && knownMetrics
             && !this.scrolled
@@ -4176,6 +4872,19 @@ export class Paginator extends HTMLElement {
     }
     #dispatchForegroundPageTurnActivity(logicalDirection, { input = 'touch', source = 'paginator' } = {}) {
         if (logicalDirection !== 'forward' && logicalDirection !== 'backward') return;
+        if (manabiPaginatorVerbosePageTurns()) {
+            manabiPaginatorReaderLoadLog('paginator.pageTurn.activity', {
+                input,
+                source,
+                logicalDirection,
+                chevronSide: this.#chevronSideForLogicalDirection(logicalDirection),
+                isRTL: this.bookDir === 'rtl',
+                index: this.#index,
+                pendingPageTurnDirection: this.#pendingPageTurnDirection,
+                isLoading: this.#isLoading,
+                locked: this.#locked,
+            });
+        }
         this.dispatchEvent(new CustomEvent('foregroundPageTurnActivity', {
             bubbles: true,
             composed: true,
@@ -4187,6 +4896,82 @@ export class Paginator extends HTMLElement {
                 isRTL: this.bookDir === 'rtl',
             },
         }));
+    }
+    #readerLoadPageTurnSummary(metrics = null) {
+        const container = this.#container;
+        return {
+            index: this.#index,
+            pendingPageTurnDirection: this.#pendingPageTurnDirection,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            scrollTop: container ? manabiRound(container.scrollTop, 1) : null,
+            page: metrics?.page ?? null,
+            pages: metrics?.pages ?? null,
+            start: metrics ? manabiRound(metrics.start, 1) : null,
+            viewSize: metrics ? manabiRound(metrics.viewSize, 1) : null,
+            metricsSource: metrics?.metricsSource ?? null,
+        };
+    }
+    #pageTurnContentOffsetDiagnostics(metrics = null, {
+        direction = null,
+        crossedSection = false,
+        expectedCrossSection = false,
+        shouldGo = null,
+        didMove = null,
+        adjacentIndex = null,
+        requestedPage = null,
+        beforeIndex = null,
+        beforePage = null,
+        beforePages = null,
+        beforeStart = null,
+        inputSource = null,
+        elapsedMs = null,
+    } = {}) {
+        const section = this.sections?.[this.#index] ?? null;
+        const doc = this.#view?.document ?? this.document ?? null;
+        const body = doc?.body ?? null;
+        const bodyStyle = body?.ownerDocument?.defaultView?.getComputedStyle?.(body) ?? null;
+        const page = metrics?.page ?? null;
+        const pages = metrics?.pages ?? null;
+        const contentPages = Number.isFinite(pages) ? Math.max(1, pages - 2) : null;
+        const contentPage = Number.isFinite(page) && contentPages !== null
+            ? Math.max(0, Math.min(contentPages - 1, page - 1))
+            : null;
+        const contentFraction = contentPages && Number.isFinite(contentPage)
+            ? contentPage / contentPages
+            : null;
+        const epubOffset = Number.isFinite(contentFraction)
+            ? this.#index + contentFraction
+            : this.#index;
+        return {
+            index: this.#index,
+            sectionHref: section?.href ?? section?.id ?? null,
+            direction,
+            crossedSection,
+            expectedCrossSection,
+            shouldGo,
+            didMove,
+            adjacentIndex,
+            requestedPage,
+            beforeIndex,
+            beforePage,
+            beforePages,
+            beforeStart: Number.isFinite(beforeStart) ? manabiRound(beforeStart, 1) : null,
+            page,
+            pages,
+            contentPage,
+            contentPages,
+            contentFraction: Number.isFinite(contentFraction) ? manabiRound(contentFraction, 6) : null,
+            epubOffset: Number.isFinite(epubOffset) ? manabiRound(epubOffset, 6) : null,
+            scrollStart: metrics ? manabiRound(metrics.start, 1) : null,
+            pageSize: metrics ? manabiRound(metrics.size, 1) : null,
+            viewSize: metrics ? manabiRound(metrics.viewSize, 1) : null,
+            metricsSource: metrics?.metricsSource ?? metrics?.source ?? null,
+            inputSource,
+            elapsedMs,
+            writingMode: bodyStyle?.writingMode ?? null,
+            bodyClass: body?.className ?? null,
+        };
     }
     #updateSwipeChevron(dx, minSwipe, { input = 'touch' } = {}) {
         const progress = Math.min(1, Math.abs(dx) / minSwipe);
@@ -4236,6 +5021,9 @@ export class Paginator extends HTMLElement {
         let displayError = null
         const shouldLogReaderLoad = manabiShouldLogPaginatorReaderLoad(this.#isCacheWarmer)
         if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.start', {
+                displayIndex,
+            }))
         }
         try {
             const {
@@ -4268,12 +5056,23 @@ export class Paginator extends HTMLElement {
             });
         }
         if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.inputResolved', {
+                targetIndex: index,
+                currentIndex: this.#index,
+                hasSrc: !!src,
+                anchorKind: displayAnchorKind,
+                localPage: Number.isFinite(localPage) ? localPage : null,
+                hasAnchor: !!anchor,
+            }))
         }
 
         //            console.log("#display...awaited promise")
+        const previousIndex = this.#index
         this.#index = index
         this.#lastRelocateDispatchSignature = null
         const hasFocus = this.#view?.document?.hasFocus?.()
+        let hiddenOldViewForSectionSwap = false
+        let previousViewForSectionSwap = null
         if (src) {
             const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
@@ -4331,8 +5130,32 @@ export class Paginator extends HTMLElement {
                 this.#invalidateVisibleRangeCache()
 
                 //                console.log("#display... await load")
-                const view = this.#createView()
+                const previousView = this.#view
+                const replacingLoadedDocument = previousIndex !== index && !!previousView?.document?.body
+                const view = this.#createView({ replacement: replacingLoadedDocument })
                 const beforeRender = this.#beforeRender.bind(this)
+                if (replacingLoadedDocument) {
+                    hiddenOldViewForSectionSwap = true
+                    previousViewForSectionSwap = previousView
+                    Object.assign(view.element.style, {
+                        position: 'absolute',
+                        inset: '0',
+                        visibility: 'hidden',
+                        pointerEvents: 'none',
+                        zIndex: '-1',
+                    })
+                    if (!this.#isCacheWarmer) {
+                    manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.prepareReplacementView', {
+                        targetIndex: index,
+                        previousIndex,
+                        previousDocumentSubpath: manabiReaderLoadSubpathFromURL(previousView?.document?.location?.href),
+                        targetHref: this.sections?.[index]?.href ?? this.sections?.[index]?.id ?? null,
+                        previousViewVisible: previousView?.element ? getComputedStyle(previousView.element).visibility !== 'hidden' : null,
+                        replacementViewHidden: getComputedStyle(view.element).visibility === 'hidden',
+                        anchorKind: displayAnchorKind,
+                    }))
+                    }
+                }
 
                 if (!this.#isCacheWarmer) {
                 }
@@ -4342,11 +5165,58 @@ export class Paginator extends HTMLElement {
                         src,
                     });
                 }
+                if (!this.#isCacheWarmer) {
+                    manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeViewLoad', {
+                        targetIndex: index,
+                        currentIndex: this.#index,
+                        replacingExistingView: !!previousView,
+                        previousViewHasBody: !!previousView?.document?.body,
+                        anchorKind: displayAnchorKind,
+                    }))
+                }
+                if (previousView?.document?.body) {
+                    const beforeLoadVisualSnapshot = this.#mediaVisualDiagnostics(this.#pageMetricsCache, {
+                        phase: 'beforeViewLoad',
+                        targetIndex: index,
+                        targetHref: this.sections?.[index]?.href ?? this.sections?.[index]?.id ?? null,
+                        previousIndex,
+                        previousDocumentSubpath: manabiReaderLoadSubpathFromURL(previousView?.document?.location?.href),
+                        staleDocumentSnapshot: previousIndex !== index,
+                        currentIndex: this.#index,
+                        anchorKind: displayAnchorKind,
+                    })
+                    if (this.#shouldLogMediaVisualDiagnostics(beforeLoadVisualSnapshot, { crossedSection: index !== this.#index, displayBoundary: true })) {
+                        manabiPaginatorReaderLoadLog('paginator.display.visualSnapshot', beforeLoadVisualSnapshot)
+                        if (!beforeLoadVisualSnapshot?.staleDocumentSnapshot) {
+                            this.#scheduleMediaVisualFollowUp(beforeLoadVisualSnapshot, {
+                                reason: 'beforeViewLoad',
+                                phase: 'display',
+                                crossedSection: index !== this.#index,
+                                displayBoundary: true,
+                            })
+                        }
+                    }
+                }
                 globalThis.manabiApplyChromeInsets?.(null, 'paginator.display.beforeViewLoad')
                 try {
                     await view.load(src, afterLoad, beforeRender)
                     this.#commitView(view)
+                    if (hiddenOldViewForSectionSwap) {
+                        Object.assign(view.element.style, {
+                            position: 'absolute',
+                            inset: '0',
+                            visibility: 'hidden',
+                            pointerEvents: 'none',
+                            zIndex: '-1',
+                        })
+                    }
                 } catch (error) {
+                    if (hiddenOldViewForSectionSwap) {
+                        Object.assign(view.element.style, {
+                            visibility: '',
+                            pointerEvents: '',
+                        })
+                    }
                     this.#discardView(view)
                     throw error
                 }
@@ -4356,6 +5226,15 @@ export class Paginator extends HTMLElement {
                         src,
                     });
                 }
+                if (!this.#isCacheWarmer) {
+                    manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.afterViewLoad', {
+                        targetIndex: index,
+                        currentIndex: this.#index,
+                        anchorKind: displayAnchorKind,
+                        elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                    }))
+                }
+                this.#installMediaVisualEventDiagnostics('display.viewLoad.finish')
                 //                console.log("#display... awaited load")
                 if (!this.#isCacheWarmer) {
                 }
@@ -4388,6 +5267,14 @@ export class Paginator extends HTMLElement {
                 index,
                 anchorKind: displayAnchorKind,
             });
+        }
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeScrollToAnchor', {
+                targetIndex: index,
+                currentIndex: this.#index,
+                anchorKind: displayAnchorKind,
+                localPage: Number.isFinite(localPage) ? localPage : null,
+            }))
         }
         const resolvedAnchor = (typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0
@@ -4439,8 +5326,38 @@ export class Paginator extends HTMLElement {
                 elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
             });
         }
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.afterScrollToAnchor', {
+                targetIndex: index,
+                currentIndex: this.#index,
+                anchorKind: displayAnchorKind,
+                scrollElapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
+                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+            }))
+        }
         this.#suspendOnExpandAnchor = false
         if (hasFocus) this.focusView()
+        if (hiddenOldViewForSectionSwap && this.#view?.element) {
+            Object.assign(this.#view.element.style, {
+                position: 'relative',
+                inset: '',
+                visibility: '',
+                pointerEvents: '',
+                zIndex: '',
+            })
+            if (previousViewForSectionSwap && previousViewForSectionSwap !== this.#view) {
+                previousViewForSectionSwap.destroy()
+                previousViewForSectionSwap.element.remove()
+            }
+            if (!this.#isCacheWarmer) {
+                manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.revealNewView', {
+                    targetIndex: index,
+                    previousIndex,
+                    anchorKind: displayAnchorKind,
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                }))
+            }
+        }
         if (!this.#isCacheWarmer && this.style.visibility === 'hidden') {
             this.style.visibility = 'visible'
         }
@@ -4448,11 +5365,34 @@ export class Paginator extends HTMLElement {
         }
         if (!this.#isCacheWarmer) {
         }
-        manabiTimelineMark('paginator.display.didDisplay.dispatch', {
-            index,
+                manabiTimelineMark('paginator.display.didDisplay.dispatch', {
+                    index,
+                    anchorKind: displayAnchorKind,
+                    cacheWarmer: this.#isCacheWarmer,
+                });
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeDidDisplay', {
+                targetIndex: index,
+                currentIndex: this.#index,
+                anchorKind: displayAnchorKind,
+                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+            }))
+        }
+        const displayVisualSnapshot = this.#mediaVisualDiagnostics(this.#pageMetricsCache, {
+            phase: 'afterScrollBeforeDidDisplay',
+            targetIndex: index,
+            currentIndex: this.#index,
             anchorKind: displayAnchorKind,
-            cacheWarmer: this.#isCacheWarmer,
-        });
+            elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+        })
+        if (this.#shouldLogMediaVisualDiagnostics(displayVisualSnapshot, { displayBoundary: true })) {
+            manabiPaginatorReaderLoadLog('paginator.display.visualSnapshot', displayVisualSnapshot)
+            this.#scheduleMediaVisualFollowUp(displayVisualSnapshot, {
+                reason: 'afterScrollBeforeDidDisplay',
+                phase: 'display',
+                displayBoundary: true,
+            })
+        }
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         this.#schedulePastContentCorrection({
             index,
@@ -4466,6 +5406,14 @@ export class Paginator extends HTMLElement {
                 anchorKind: displayAnchorKind,
             });
         }
+        if (!this.#isCacheWarmer) {
+            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.didDisplayDispatched', {
+                targetIndex: index,
+                currentIndex: this.#index,
+                anchorKind: displayAnchorKind,
+                elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+            }))
+        }
         //            console.log("#display... fin")
         } catch (error) {
             displayError = error
@@ -4476,10 +5424,26 @@ export class Paginator extends HTMLElement {
                     error: error?.message || String(error),
                 });
             }
+            if (!this.#isCacheWarmer) {
+                manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.error', {
+                    targetIndex: displayIndex,
+                    anchorKind: displayAnchorKind,
+                    error: error?.message || String(error),
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                }))
+            }
             throw error
         } finally {
             this.#suspendOnExpandAnchor = false
             this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
+            if (!this.#isCacheWarmer) {
+                manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.finally', {
+                    targetIndex: displayIndex,
+                    anchorKind: displayAnchorKind,
+                    error: displayError?.message ?? null,
+                    elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
+                }))
+            }
             manabiTimelineMeasure('paginator.display', displayStartedAt, {
                 cacheWarmer: this.#isCacheWarmer,
                 index: displayIndex,
@@ -4549,6 +5513,38 @@ export class Paginator extends HTMLElement {
                     throw error;
                 }
             } else {
+                if (MANABI_ENABLE_SIMPLIFIED_SECTION_LOADING) {
+                    const oldIndex = this.#index
+                    const onLoad = async (detail) => {
+                        if (!this.#isCacheWarmer) {
+                            this.setStyles(this.#styles)
+                        }
+
+                        this.dispatchEvent(new CustomEvent('load', {
+                            detail
+                        }))
+                    }
+                    if (shouldLogReaderLoad) {
+                        manabiPaginatorReaderLoadLog('paginator.section.load.simplified', {
+                            index,
+                            sectionID: this.sections?.[index]?.id ?? null,
+                        });
+                    }
+                    await this.#display(Promise.resolve(this.sections[index].load())
+                        .then(src => ({
+                            index,
+                            src,
+                            anchor,
+                            localPage,
+                            onLoad,
+                            select
+                        }))
+                        .catch(error => {
+                            throw error
+                        }));
+                    this.sections[oldIndex]?.unload?.()
+                    return
+                }
                 let prefetchEntry = null
                 let usedPrefetchPromise = false
                 if (MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT) {
@@ -4690,7 +5686,7 @@ export class Paginator extends HTMLElement {
         const metrics = await this.pageMetrics()
         const previousSectionIndex = this.#adjacentIndex(-1)
         const blockedAtBookStart = previousSectionIndex == null && metrics.page <= 1
-        if (!this.#isCacheWarmer) {
+        if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
             manabiPaginatorReaderLoadLog('paginator.pageTurn.prev.decision', this.#layoutMetricDiagnostics(metrics, {
                 distance: distance ?? null,
                 adjacentIndex: previousSectionIndex ?? null,
@@ -4698,23 +5694,31 @@ export class Paginator extends HTMLElement {
                 willCrossSectionIfPageBeforeContent: metrics.page - 1 <= 0,
             }))
         }
-        if (blockedAtBookStart) return
-        const page = metrics.page - 1
+        if (blockedAtBookStart) return false
+        const boundaryDecision = manabiPageTurnBoundaryDecision({
+            currentPage: metrics.page,
+            pageCount: metrics.pages,
+            step: -1,
+            adjacentIndex: previousSectionIndex,
+        })
+        const page = boundaryDecision.requestedPage
         const textPageCount = Math.max(1, metrics.pages - 2)
         const textPage = Math.max(1, Math.min(textPageCount, metrics.page))
-        if (!this.#isCacheWarmer) {
+        if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
             manabiPaginatorReaderLoadLog('paginator.pageTurn.prev.target', this.#layoutMetricDiagnostics(metrics, {
                 requestedPage: metrics.page - 1,
                 resolvedPage: page,
                 adjacentIndex: previousSectionIndex ?? null,
-                willCrossSection: page <= 0,
+                willCrossSection: boundaryDecision.crossesSection,
+                skipSentinelScroll: boundaryDecision.shouldGoToAdjacentSection,
                 textPage,
                 textPageCount,
                 beforeContentBoundary: metrics.page <= 1,
                 afterContentBoundary: metrics.page >= metrics.pages - 2,
             }))
         }
-        return await this.#scrollToPage(page, 'page', false, metrics).then(() => page <= 0)
+        if (boundaryDecision.shouldGoToAdjacentSection) return true
+        return await this.#scrollToPage(page, 'page', false, metrics).then(() => boundaryDecision.crossesSection)
     }
     async #scrollNext(distance) {
         if (!this.#view) return true
@@ -4733,7 +5737,7 @@ export class Paginator extends HTMLElement {
         const metrics = await this.pageMetrics()
         const nextSectionIndex = this.#adjacentIndex(1)
         const blockedAtBookEnd = nextSectionIndex == null && metrics.page >= metrics.pages - 2
-        if (!this.#isCacheWarmer) {
+        if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
             manabiPaginatorReaderLoadLog('paginator.pageTurn.next.decision', this.#layoutMetricDiagnostics(metrics, {
                 distance: distance ?? null,
                 adjacentIndex: nextSectionIndex ?? null,
@@ -4741,24 +5745,32 @@ export class Paginator extends HTMLElement {
                 willCrossSectionIfPageAfterContent: metrics.page + 1 >= metrics.pages - 1,
             }))
         }
-        if (blockedAtBookEnd) return
-        const page = metrics.page + 1
+        if (blockedAtBookEnd) return false
+        const boundaryDecision = manabiPageTurnBoundaryDecision({
+            currentPage: metrics.page,
+            pageCount: metrics.pages,
+            step: 1,
+            adjacentIndex: nextSectionIndex,
+        })
+        const page = boundaryDecision.requestedPage
         const pages = metrics.pages
         const textPageCount = Math.max(1, metrics.pages - 2)
         const textPage = Math.max(1, Math.min(textPageCount, metrics.page))
-        if (!this.#isCacheWarmer) {
+        if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
             manabiPaginatorReaderLoadLog('paginator.pageTurn.next.target', this.#layoutMetricDiagnostics(metrics, {
                 requestedPage: metrics.page + 1,
                 resolvedPage: page,
                 adjacentIndex: nextSectionIndex ?? null,
-                willCrossSection: page >= pages - 1,
+                willCrossSection: boundaryDecision.crossesSection,
+                skipSentinelScroll: boundaryDecision.shouldGoToAdjacentSection,
                 textPage,
                 textPageCount,
                 beforeContentBoundary: metrics.page <= 1,
                 afterContentBoundary: metrics.page >= metrics.pages - 2,
             }))
         }
-        return await this.#scrollToPage(page, 'page', false, metrics).then(() => page >= pages - 1)
+        if (boundaryDecision.shouldGoToAdjacentSection) return true
+        return await this.#scrollToPage(page, 'page', false, metrics).then(() => boundaryDecision.crossesSection)
     }
     async atStart() {
         const metrics = await this.pageMetrics()
@@ -4783,8 +5795,76 @@ export class Paginator extends HTMLElement {
         for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
             if (this.sections[index]?.linear !== 'no') return index
     }
-    async #turnPage(dir, distance) {
+    #shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, now = manabiPerfNow()) {
+        const lastPageTurn = this.#lastSettledPageTurn
+        if (!lastPageTurn) return false
+        return manabiShouldSuppressPostPageTurnDuplicate({
+            lastDirection: lastPageTurn.direction,
+            direction: dir > 0 ? 'forward' : 'backward',
+            distance,
+            navigationSource,
+            elapsedMs: Number.isFinite(lastPageTurn.settledAt) ? now - lastPageTurn.settledAt : null,
+        })
+    }
+    async #turnPage(dir, distance, options = {}) {
+        const navigationSource = globalThis.__manabiNavigationIntent?.source ?? null
+        const turnStartedAt = manabiPerfNow()
+        if (!options.bypassPostTurnDuplicateSuppression && this.#shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, turnStartedAt)) {
+            const lastPageTurn = this.#lastSettledPageTurn
+            if (!this.#isCacheWarmer) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.dropDuplicate', {
+                    index: this.#index,
+                    direction: dir > 0 ? 'forward' : 'backward',
+                    reason: 'pageTurnDuplicateAfterSettle',
+                    elapsedMs: Number.isFinite(lastPageTurn?.settledAt)
+                        ? manabiRound(turnStartedAt - lastPageTurn.settledAt, 1)
+                        : null,
+                    thresholdMs: MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS,
+                    previousIndex: lastPageTurn?.index ?? null,
+                    previousPage: lastPageTurn?.page ?? null,
+                    inputSource: navigationSource,
+                })
+            }
+            return { ignored: true, reason: 'pageTurnDuplicateAfterSettle' }
+        }
         if (this.#locked) {
+            const lockedElapsedMs = this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1)
+            const pendingDirection = this.#pendingPageTurnDirection
+            const queuedDirection = dir > 0 ? 'forward' : 'backward'
+            const queueDecision = manabiLockedPageTurnQueueDecision({
+                pendingQueueAllowed: this.#pendingPageTurnQueueAllowed === true,
+                pendingRequestedPage: this.#pendingPageTurnRequestedPage,
+                pendingPageCount: this.#pendingPageTurnPageCount,
+                pendingDirection,
+                queuedDirection,
+                queuedStep: dir,
+                lockedElapsedMs,
+                distance,
+            })
+            if (!queueDecision.shouldQueue) {
+                if (!this.#isCacheWarmer) {
+                    manabiPaginatorReaderLoadLog(
+                        queueDecision.reason === 'pageTurnDuplicateDuringLock'
+                            ? 'paginator.pageTurn.dropDuplicate'
+                            : 'paginator.pageTurn.ignoreLocked',
+                        {
+                            index: this.#index,
+                            direction: queuedDirection,
+                            reason: queueDecision.reason,
+                            pendingPageTurnDirection: pendingDirection,
+                            pendingPageTurnQueueAllowed: this.#pendingPageTurnQueueAllowed === true,
+                            pendingRequestedPage: this.#pendingPageTurnRequestedPage,
+                            pendingPageCount: this.#pendingPageTurnPageCount,
+                            projectedQueuedPage: queueDecision.projectedQueuedPage ?? null,
+                            isLoading: this.#isLoading,
+                            lockedElapsedMs,
+                            thresholdMs: MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS,
+                            inputSource: navigationSource,
+                        }
+                    )
+                }
+                return { ignored: true, reason: queueDecision.reason }
+            }
             const previousQueuedPageTurn = this.#queuedPageTurn
             previousQueuedPageTurn?.resolve?.({ superseded: true })
             const queuedPromise = new Promise((resolve, reject) => {
@@ -4793,12 +5873,17 @@ export class Paginator extends HTMLElement {
             if (!this.#isCacheWarmer) {
                 manabiPaginatorReaderLoadLog('paginator.pageTurn.queued', {
                     index: this.#index,
-                    direction: dir,
+                    direction: queuedDirection,
                     distance: distance ?? null,
+                    queuedDirection,
+                    reason: queueDecision.reason,
                     replacedQueuedTurn: !!previousQueuedPageTurn,
-                    pendingPageTurnDirection: this.#pendingPageTurnDirection,
+                    pendingPageTurnDirection: pendingDirection,
+                    pendingRequestedPage: this.#pendingPageTurnRequestedPage,
+                    pendingPageCount: this.#pendingPageTurnPageCount,
+                    projectedQueuedPage: queueDecision.projectedQueuedPage ?? null,
                     isLoading: this.#isLoading,
-                    lockedElapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
+                    lockedElapsedMs,
                 })
             }
             return await queuedPromise
@@ -4808,35 +5893,176 @@ export class Paginator extends HTMLElement {
         this.#lockedAt = manabiPerfNow()
         this.#pendingPageTurnDirection = dir > 0 ? 'forward' : 'backward'
         this.#pendingPageTurnStep = dir
+        this.#pendingPageTurnQueueAllowed = false
+        this.#pendingPageTurnRequestedPage = null
+        this.#pendingPageTurnPageCount = null
+        const beforeMetrics = await this.pageMetrics().catch(() => null)
+        const beforeIndex = this.#index
+        const beforeAdjacentIndex = this.#adjacentIndex(dir)
+        const requestedPage = Number.isFinite(beforeMetrics?.page)
+            ? beforeMetrics.page + dir
+            : null
+        const expectedCrossSection = Number.isFinite(requestedPage) && Number.isFinite(beforeMetrics?.pages)
+            ? (dir < 0 ? requestedPage <= 0 : requestedPage >= beforeMetrics.pages - 1)
+            : false
+        this.#pendingPageTurnRequestedPage = requestedPage
+        this.#pendingPageTurnPageCount = Number.isFinite(beforeMetrics?.pages) ? beforeMetrics.pages : null
+        this.#pendingPageTurnQueueAllowed =
+            Number.isFinite(requestedPage)
+            && Number.isFinite(beforeMetrics?.pages)
+            && !expectedCrossSection
+        const beforeVisualSnapshot = this.#mediaVisualDiagnostics(beforeMetrics, {
+            phase: 'before',
+            direction: dir > 0 ? 'forward' : 'backward',
+            adjacentIndex: beforeAdjacentIndex ?? null,
+            requestedPage,
+        })
         try {
             const prev = dir === -1
-            const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
-            if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.finish', {
-                    index: this.#index,
-                    direction: dir,
-                    distance: distance ?? null,
-                    shouldGo,
-                    adjacentIndex: this.#adjacentIndex(dir) ?? null,
-                    queuedPageTurn: !!this.#queuedPageTurn,
-                })
-            }
+            const shouldGo = !!(await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance)))
             if (shouldGo) await this.#goTo({
-                index: this.#adjacentIndex(dir),
+                index: beforeAdjacentIndex,
                 anchor: prev ? () => 1 : () => 0,
             })
+            const finalMetrics = await this.pageMetrics().catch(() => null)
+            const didMove =
+                shouldGo
+                || this.#index !== beforeIndex
+                || finalMetrics?.page !== beforeMetrics?.page
+                || Math.abs((finalMetrics?.start ?? NaN) - (beforeMetrics?.start ?? NaN)) >= 1
+            if (didMove) {
+                this.#lastSettledPageTurn = {
+                    direction: dir > 0 ? 'forward' : 'backward',
+                    settledAt: manabiPerfNow(),
+                    index: this.#index,
+                    page: finalMetrics?.page ?? null,
+                }
+            }
+            if (!this.#isCacheWarmer && didMove) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.contentOffset', this.#pageTurnContentOffsetDiagnostics(finalMetrics, {
+                    direction: dir > 0 ? 'forward' : 'backward',
+                    crossedSection: this.#index !== beforeIndex,
+                    expectedCrossSection,
+                    shouldGo,
+                    didMove,
+                    adjacentIndex: beforeAdjacentIndex ?? null,
+                    requestedPage,
+                    beforeIndex,
+                    beforePage: beforeMetrics?.page ?? null,
+                    beforePages: beforeMetrics?.pages ?? null,
+                    beforeStart: beforeMetrics?.start ?? null,
+                    inputSource: navigationSource,
+                    elapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
+                }))
+            }
+            const finalVisualSnapshot = this.#mediaVisualDiagnostics(finalMetrics, {
+                phase: 'final',
+                direction: dir > 0 ? 'forward' : 'backward',
+                crossedSection: this.#index !== beforeIndex,
+                expectedCrossSection,
+                shouldGo,
+                didMove,
+                adjacentIndex: beforeAdjacentIndex ?? null,
+                requestedPage,
+                beforeIndex,
+                beforePage: beforeMetrics?.page ?? null,
+                beforePages: beforeMetrics?.pages ?? null,
+                elapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
+            })
+            if (this.#shouldLogMediaVisualDiagnostics(beforeVisualSnapshot, { crossedSection: this.#index !== beforeIndex || expectedCrossSection })) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.visualSnapshot', beforeVisualSnapshot)
+                this.#scheduleMediaVisualFollowUp(beforeVisualSnapshot, {
+                    reason: 'pageTurn.before',
+                    phase: 'pageTurn',
+                    crossedSection: this.#index !== beforeIndex || expectedCrossSection,
+                })
+            }
+            if (this.#shouldLogMediaVisualDiagnostics(finalVisualSnapshot, { crossedSection: this.#index !== beforeIndex || expectedCrossSection })) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.visualSnapshot', finalVisualSnapshot)
+                this.#scheduleMediaVisualFollowUp(finalVisualSnapshot, {
+                    reason: 'pageTurn.final',
+                    phase: 'pageTurn',
+                    crossedSection: this.#index !== beforeIndex || expectedCrossSection,
+                })
+            }
+            if (!this.#isCacheWarmer && !didMove) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.noMove', this.#layoutMetricDiagnostics(finalMetrics ?? beforeMetrics, {
+                    direction: dir > 0 ? 'forward' : 'backward',
+                    shouldGo,
+                    expectedCrossSection,
+                    adjacentIndex: beforeAdjacentIndex ?? null,
+                    requestedPage,
+                    beforeIndex,
+                    beforePage: beforeMetrics?.page ?? null,
+                    beforePages: beforeMetrics?.pages ?? null,
+                    beforeStart: beforeMetrics ? manabiRound(beforeMetrics.start, 1) : null,
+                    inputSource: navigationSource,
+                    elapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
+                }))
+            }
+            if (
+                !this.#isCacheWarmer
+                && (
+                    (shouldGo && this.#index === beforeIndex)
+                    || (expectedCrossSection && !shouldGo && this.#index === beforeIndex && beforeAdjacentIndex != null)
+                    || (Number.isFinite(finalMetrics?.page) && Number.isFinite(finalMetrics?.pages) && (finalMetrics.page < 0 || finalMetrics.page >= finalMetrics.pages))
+                )
+            ) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.anomaly', this.#layoutMetricDiagnostics(finalMetrics ?? beforeMetrics, {
+                    direction: dir > 0 ? 'forward' : 'backward',
+                    shouldGo,
+                    didMove,
+                    expectedCrossSection,
+                    crossedSection: this.#index !== beforeIndex,
+                    adjacentIndex: beforeAdjacentIndex ?? null,
+                    requestedPage,
+                    beforeIndex,
+                    beforePage: beforeMetrics?.page ?? null,
+                    beforePages: beforeMetrics?.pages ?? null,
+                    inputSource: navigationSource,
+                }))
+            }
+            if (
+                !this.#isCacheWarmer
+                && (
+                    manabiPaginatorVerbosePageTurns()
+                    || shouldGo
+                )
+            ) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.settled', {
+                    ...this.#readerLoadPageTurnSummary(finalMetrics),
+                    direction: dir,
+                    shouldGo,
+                    beforePage: beforeMetrics?.page ?? null,
+                    beforePages: beforeMetrics?.pages ?? null,
+                    beforeStart: beforeMetrics ? manabiRound(beforeMetrics.start, 1) : null,
+                    elapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
+                })
+            }
             if (shouldGo || !this.hasAttribute('animated')) await wait(100)
             if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
-            this.#pendingPageTurnDirection = null
-            this.#pendingPageTurnStep = null
-            this.#locked = false
-            this.#lockedAt = null
+            const lockElapsedMs = this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1)
             const queuedPageTurn = this.#queuedPageTurn
             this.#queuedPageTurn = null
+            this.#pendingPageTurnDirection = null
+            this.#pendingPageTurnStep = null
+            this.#pendingPageTurnQueueAllowed = false
+            this.#pendingPageTurnRequestedPage = null
+            this.#pendingPageTurnPageCount = null
+            this.#locked = false
+            this.#lockedAt = null
+            if (!this.#isCacheWarmer && queuedPageTurn) {
+                manabiPaginatorReaderLoadLog('paginator.pageTurn.dequeue', {
+                    index: this.#index,
+                    direction: queuedPageTurn.dir > 0 ? 'forward' : 'backward',
+                    lockElapsedMs,
+                    inputSource: navigationSource,
+                })
+            }
             if (queuedPageTurn) {
                 queueMicrotask(() => {
-                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance)
+                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance, { bypassPostTurnDuplicateSuppression: true })
                         .then(value => queuedPageTurn.resolve?.(value))
                         .catch(error => queuedPageTurn.reject?.(error))
                 })

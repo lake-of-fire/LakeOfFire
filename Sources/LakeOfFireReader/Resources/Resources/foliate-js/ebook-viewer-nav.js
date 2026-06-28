@@ -1441,10 +1441,39 @@ export class NavigationHUD {
             || this.isProcessingRelocateJump
             || this.pendingRelocateJump
         );
+        readerNavLoadLog('nav.relocateHistory.input', {
+            reason,
+            pageTurnDirection: detail?.pageTurnDirection ?? null,
+            sectionIndex: descriptor.sectionIndex ?? null,
+            localSectionIndex: descriptor.localSectionIndex ?? null,
+            rendererTotal: descriptor.rendererTotal ?? null,
+            fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
+            locationCurrent: descriptor.location?.current ?? null,
+            locationTotal: descriptor.location?.total ?? null,
+            cfiLength: typeof descriptor.cfi === 'string' ? descriptor.cfi.length : 0,
+            currentSectionIndex: this.currentLocationDescriptor?.sectionIndex ?? null,
+            currentLocalSectionIndex: this.currentLocationDescriptor?.localSectionIndex ?? null,
+            currentFraction: typeof this.currentLocationDescriptor?.fraction === 'number'
+                ? safeRound(this.currentLocationDescriptor.fraction, 6)
+                : null,
+            explicitMutationSource,
+            explicitMutate,
+            shouldMutateRelocateHistory,
+            isProcessingRelocateJump: !!this.isProcessingRelocateJump,
+            hasPendingRelocateJump: !!this.pendingRelocateJump,
+            backStackCount: this.relocateStacks?.back?.length ?? null,
+            forwardStackCount: this.relocateStacks?.forward?.length ?? null,
+        });
         if (!shouldMutateRelocateHistory && isImplicitProgressEvent) {
             this.currentLocationDescriptor = descriptor;
             this.pendingReleasedScrubDescriptor = null;
             this._maybeCommitPendingScrub(detail, descriptor);
+            readerNavLoadLog('nav.relocateHistory.skipImplicit', {
+                reason,
+                sectionIndex: descriptor.sectionIndex ?? null,
+                localSectionIndex: descriptor.localSectionIndex ?? null,
+                fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
+            });
             return;
         }
         const lastOrigin = this.scrubSession?.originDescriptor;
@@ -1501,6 +1530,17 @@ export class NavigationHUD {
         this.currentLocationDescriptor = descriptor;
         this.pendingReleasedScrubDescriptor = null;
         this._maybeCommitPendingScrub(detail, descriptor);
+        readerNavLoadLog('nav.relocateHistory.applied', {
+            reason,
+            sectionIndex: descriptor.sectionIndex ?? null,
+            localSectionIndex: descriptor.localSectionIndex ?? null,
+            fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
+            descriptorChanged,
+            isJumpReason,
+            isScrubbing,
+            backStackCount: this.relocateStacks?.back?.length ?? null,
+            forwardStackCount: this.relocateStacks?.forward?.length ?? null,
+        });
     }
 
     _trackScrubMovement({ descriptor, movedFromOrigin, detailFraction }) {
@@ -1849,22 +1889,6 @@ export class NavigationHUD {
         return this.pageTargetSectionOffsets.get(sectionIndex) ?? null;
     }
 
-    _cacheWarmerHighestSectionIndex() {
-        const highest = globalThis.__manabiCacheWarmerHighestSectionIndex;
-        return typeof highest === 'number' && highest >= 0 ? highest : null;
-    }
-
-    _cacheWarmerHasReachedCurrentSection(sectionIndex) {
-        if (sectionIndex == null) return false;
-        if (sectionIndex <= 0) return true;
-        const highest = this._cacheWarmerHighestSectionIndex();
-        return highest != null && highest >= sectionIndex - 1;
-    }
-
-    _cacheWarmerHasFinishedBook() {
-        return !!globalThis.__manabiCacheWarmerFinished;
-    }
-    
     _pageIndexFromFraction(fraction, totalOverride) {
         const total = typeof totalOverride === 'number' && totalOverride > 0
             ? totalOverride

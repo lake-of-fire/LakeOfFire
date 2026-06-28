@@ -3,6 +3,55 @@ import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
+const readerLoadRound = (value, digits = 3) =>
+    globalThis.__manabiSafeRound?.(value, digits)
+        ?? (typeof value === 'number' && Number.isFinite(value)
+            ? Number(value.toFixed(digits))
+            : null)
+const readerLoadLocationID = value => {
+    if (value == null) return null
+    try {
+        return String(value).replace(/^blob:/, 'blob:').slice(0, 160)
+    } catch (_error) {
+        return null
+    }
+}
+const readerLoadLocationSignature = detail => {
+    if (!detail) return null
+    const fraction = typeof detail.fraction === 'number' && Number.isFinite(detail.fraction)
+        ? readerLoadRound(detail.fraction, 6)
+        : null
+    const size = typeof detail.size === 'number' && Number.isFinite(detail.size)
+        ? readerLoadRound(detail.size, 6)
+        : null
+    return [
+        detail.index ?? null,
+        detail.sectionIndex ?? null,
+        detail.reason ?? null,
+        fraction,
+        size,
+        detail.pageTurnDirection ?? null,
+    ].join('|')
+}
+const readerLoadDocumentSnapshot = doc => {
+    const body = doc?.body
+    const root = doc?.documentElement
+    const style = body?.ownerDocument?.defaultView?.getComputedStyle?.(body) ?? null
+    return {
+        documentHref: readerLoadLocationID(doc?.location?.href),
+        bodyClass: body?.className ?? null,
+        rootClass: root?.className ?? null,
+        colorScheme: body?.dataset?.mnbColorScheme ?? null,
+        darkTheme: body?.dataset?.mnbDarkTheme ?? null,
+        lightTheme: body?.dataset?.mnbLightTheme ?? null,
+        writingDirection: body?.dataset?.mnbWritingDirection ?? null,
+        foliateDirection: body?.dataset?.mnbFoliateWritingDirection ?? null,
+        foliateWritingMode: body?.dataset?.mnbFoliateWritingMode ?? null,
+        styleWritingMode: style?.getPropertyValue?.('writing-mode') || null,
+        styleBackgroundColor: style?.getPropertyValue?.('background-color') || null,
+        styleColor: style?.getPropertyValue?.('color') || null,
+    }
+}
 
 class History extends EventTarget {
     #arr = []
@@ -89,8 +138,8 @@ export class View extends HTMLElement {
     #sectionProgress
     #tocProgress
     #pageProgress
-    #isCacheWarmer
     #searchResults = new Map()
+    #lastReaderLoadRelocateSignature = null
     isFixedLayout = false
     lastLocation
     history = new History()
@@ -101,10 +150,9 @@ export class View extends HTMLElement {
             await this.renderer.goTo(resolved)
         })
     }
-    async open(book, isCacheWarmer) {
+    async open(book) {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
-        this.#isCacheWarmer = isCacheWarmer
 
         if (book.splitTOCHref && book.getTOCFragment) {
             const ids = book.sections.map(s => s.id)
@@ -128,25 +176,23 @@ export class View extends HTMLElement {
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
-        if (!this.#isCacheWarmer) {
-            this.renderer.addEventListener('create-overlayer', e =>
-                                           e.detail.attach(this.#createOverlayer(e.detail)))
-            //            this.renderer.addEventListener('setViewTransition', e => {
-            //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
-            //                this.style.setProperty('display', 'block');
-            //                this.style.setProperty('width', '100%');
-            //                this.style.setProperty('height', '100%');
-            //
-            //                this.style.viewTransitionName = e.detail.viewTransitionName;
-            //                this.style.setProperty('--slide-from', e.detail.slideFrom);
-            //                this.style.setProperty('--slide-to', e.detail.slideTo);
-            ////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
-            ////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
-            ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
-            //            });
-        }
+        this.renderer.addEventListener('create-overlayer', e =>
+                                       e.detail.attach(this.#createOverlayer(e.detail)))
+        //        this.renderer.addEventListener('setViewTransition', e => {
+        //            // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
+        //            this.style.setProperty('display', 'block');
+        //            this.style.setProperty('width', '100%');
+        //            this.style.setProperty('height', '100%');
+        //
+        //            this.style.viewTransitionName = e.detail.viewTransitionName;
+        //            this.style.setProperty('--slide-from', e.detail.slideFrom);
+        //            this.style.setProperty('--slide-to', e.detail.slideTo);
+        ////            document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
+        ////            document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
+        ////            document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
+        //        });
 
-        this.renderer.open(book, isCacheWarmer)
+        this.renderer.open(book)
         this.#root.append(this.renderer)
     }
     close() {
@@ -184,6 +230,7 @@ export class View extends HTMLElement {
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
+        const previousSignature = this.#lastReaderLoadRelocateSignature
         this.lastLocation = {
             ...progress,
             index,
@@ -195,19 +242,38 @@ export class View extends HTMLElement {
             reason,
             pageTurnDirection,
         }
+        const nextSignature = readerLoadLocationSignature(this.lastLocation)
+        globalThis.__manabiReaderLoadLog?.('view.relocate', {
+            index,
+            sectionIndex: this.lastLocation.sectionIndex,
+            reason,
+            pageTurnDirection: pageTurnDirection ?? null,
+            fraction: typeof fraction === 'number' ? readerLoadRound(fraction, 6) : null,
+            size: typeof size === 'number' ? readerLoadRound(size, 6) : null,
+            locationCurrent: this.lastLocation.location?.current ?? null,
+            locationTotal: this.lastLocation.location?.total ?? null,
+            pageItemLabel: typeof pageItem?.label === 'string' ? pageItem.label : null,
+            cfiLength: typeof cfi === 'string' ? cfi.length : 0,
+            duplicateSignature: previousSignature === nextSignature,
+            signature: nextSignature,
+        })
+        this.#lastReaderLoadRelocateSignature = nextSignature
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
             this.#emit('relocate', this.lastLocation)
             }
     #onLoad({ doc, location, index }) {
-        if (!this.#isCacheWarmer) {
-            // set language and dir if not already set
-            doc.documentElement.lang ||= this.language.canonical ?? ''
-            if (!this.language.isCJK)
-                doc.documentElement.dir ||= this.language.direction ?? ''
+        // set language and dir if not already set
+        doc.documentElement.lang ||= this.language.canonical ?? ''
+        if (!this.language.isCJK)
+            doc.documentElement.dir ||= this.language.direction ?? ''
 
-                this.#handleLinks(doc, index)
-                }
+        globalThis.__manabiReaderLoadLog?.('view.document.load', {
+            index,
+            location: readerLoadLocationID(location?.href ?? location),
+            ...readerLoadDocumentSnapshot(doc),
+        })
+        this.#handleLinks(doc, index)
         this.#emit('load', { doc, location, index })
     }
     #handleLinks(doc, index) {
@@ -326,9 +392,21 @@ export class View extends HTMLElement {
     async goTo(target) {
         //        this.#emit('is-loading', true)
         const resolved = this.resolveNavigation(target)
+        globalThis.__manabiReaderLoadLog?.('view.goTo.resolved', {
+            targetType: typeof target,
+            target: typeof target === 'string' || typeof target === 'number' ? String(target).slice(0, 160) : null,
+            index: resolved?.index ?? null,
+            anchorType: typeof resolved?.anchor,
+            hasRenderer: !!this.renderer,
+        })
         try {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
+            globalThis.__manabiReaderLoadLog?.('view.goTo.finish', {
+                index: resolved?.index ?? null,
+                anchorType: typeof resolved?.anchor,
+                lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+            })
             return resolved
         } catch(e) {
             console.error(e)
@@ -443,16 +521,66 @@ export class View extends HTMLElement {
         }
     }
     async prev(distance) {
-        await this.renderer.prev(distance)
+        globalThis.__manabiReaderLoadLog?.('view.prev.start', {
+            distance: distance ?? null,
+            bookDir: this.book?.dir ?? null,
+            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+        })
+        try {
+            const result = await this.renderer.prev(distance)
+            globalThis.__manabiReaderLoadLog?.('view.prev.finish', {
+                distance: distance ?? null,
+                bookDir: this.book?.dir ?? null,
+                lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+            })
+            return result
+        } catch (error) {
+            globalThis.__manabiReaderLoadLog?.('view.prev.error', {
+                distance: distance ?? null,
+                message: error?.message ?? String(error),
+            })
+            throw error
+        }
     }
     async next(distance) {
-        await this.renderer.next(distance)
+        globalThis.__manabiReaderLoadLog?.('view.next.start', {
+            distance: distance ?? null,
+            bookDir: this.book?.dir ?? null,
+            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+        })
+        try {
+            const result = await this.renderer.next(distance)
+            globalThis.__manabiReaderLoadLog?.('view.next.finish', {
+                distance: distance ?? null,
+                bookDir: this.book?.dir ?? null,
+                lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+            })
+            return result
+        } catch (error) {
+            globalThis.__manabiReaderLoadLog?.('view.next.error', {
+                distance: distance ?? null,
+                message: error?.message ?? String(error),
+            })
+            throw error
+        }
     }
     async goLeft() {
-        return this.book.dir === 'rtl' ? await this.next() : await this.prev()
+        const method = this.book.dir === 'rtl' ? 'next' : 'prev'
+        globalThis.__manabiReaderLoadLog?.('view.goLeft.dispatch', {
+            bookDir: this.book?.dir ?? null,
+            method,
+            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+        })
+        return method === 'next' ? await this.next() : await this.prev()
     }
     async goRight() {
-        return this.book.dir === 'rtl' ? await this.prev() : await this.next()
+        const method = this.book.dir === 'rtl' ? 'prev' : 'next'
+        globalThis.__manabiReaderLoadLog?.('view.goRight.dispatch', {
+            bookDir: this.book?.dir ?? null,
+            method,
+            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
+        })
+        return method === 'prev' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()

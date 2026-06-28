@@ -34,6 +34,68 @@ private enum ReaderPrintDeduper {
     }
 }
 
+private let readerLoadVerboseLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_READERLOAD_VERBOSE_LOGS"] == "1"
+
+private func readerLoadStage(from message: String) -> String? {
+    guard let range = message.range(of: "stage=") else { return nil }
+    let tail = message[range.upperBound...]
+    return tail.split(separator: " ", maxSplits: 1).first?
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+}
+
+private func shouldPrintReaderLoadMessage(_ message: String) -> Bool {
+    if readerLoadVerboseLoggingEnabled { return true }
+    let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmedMessage.hasPrefix("# READERLOAD")
+        || trimmedMessage.hasPrefix("\"# READERLOAD")
+        || trimmedMessage.contains("# READERLOAD stage=") else {
+        return true
+    }
+    guard let stage = readerLoadStage(from: message) else { return true }
+    if stage.localizedCaseInsensitiveContains("error")
+        || stage.localizedCaseInsensitiveContains("fail")
+        || stage.localizedCaseInsensitiveContains("invalid")
+        || stage.localizedCaseInsensitiveContains("watchdog")
+        || stage.localizedCaseInsensitiveContains("slow") {
+        return true
+    }
+    if stage == "paginator.pageTurn.contentOffset" { return true }
+    if stage == "paginator.pageTurn.visualSnapshot" { return true }
+    if stage == "paginator.pageTurn.ignoreLocked" { return true }
+    if stage == "paginator.pageTurn.queued" { return true }
+    if stage == "paginator.pageTurn.dequeue" { return true }
+    if stage == "paginator.pageTurn.noMove" { return true }
+    if stage == "paginator.pageTurn.anomaly" { return true }
+    if stage == "paginator.display.lifecycle" { return true }
+    if stage == "paginator.view.lifecycle" { return true }
+    if stage == "paginator.loading.state" { return true }
+    if stage == "paginator.display.visualSnapshot" { return true }
+    if stage == "paginator.mediaVisual.followUp" { return true }
+    if stage == "paginator.mediaVisual.event" { return true }
+    if stage == "readerLayout.inlineSegmentSnapshot" { return true }
+    if stage == "ebook.updateReadingProgress.dropStale" { return true }
+    if stage == "ebook.updateReadingProgress.skipBlankViewport" { return true }
+    if stage.hasPrefix("pageTurn."), stage.hasSuffix(".finish") || stage.hasSuffix(".error") { return true }
+    switch stage {
+    case "viewer.renderReady.marked",
+        "viewer.initialDisplay.firstSection.finish",
+        "viewer.initialDisplay.restoreNotSatisfied",
+        "viewer.initialRestore.finalized",
+        "viewer.loadEBook.readerOpen.finish",
+        "ebookViewerInitialized.loadEBook.dispatch":
+        return true
+    case "view.document.load":
+        return message.contains("styleWritingMode=horizontal-tb")
+            && (
+                message.contains("foliateWritingMode=vertical")
+                || message.contains("reader-vertical-writing")
+            )
+    default:
+        return false
+    }
+}
+
 private struct ReaderEBookInitialRestoreBridgeRequest {
     let requestID: String
     let cfi: String
@@ -575,9 +637,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     guard mainDocumentURL.isEBookURL || mainDocumentURL.scheme == "blob" || mainDocumentURL.isFileURL || mainDocumentURL.isReaderFileURL || mainDocumentURL.isSnippetURL else { return }
                 }
                 
+                let renderedMessage = result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)"
+                if !readerLoadVerboseLoggingEnabled,
+                   renderedMessage.contains("# READERLOAD") || renderedMessage.contains("# EBOOKLOAD") {
+                    return
+                }
                 Logger.shared.logger.log(
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
-                    "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
+                    "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(renderedMessage)"
                 )
             }),
             ("print", { @MainActor [weak self] message in
@@ -586,7 +653,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     if ReaderPrintDeduper.shouldSuppress(logMessage) {
                         return
                     }
-                    if logMessage.hasPrefix("# EBOOKLOAD") || logMessage.hasPrefix("# READERLOAD") {
+                    if logMessage.contains("# READERLOAD") && !readerLoadVerboseLoggingEnabled {
+                        return
+                    }
+                    if logMessage.contains("# EBOOKLOAD") || logMessage.contains("# READERLOAD") {
+                        guard shouldPrintReaderLoadMessage(logMessage) else { return }
                         print(logMessage)
                     } else if logMessage.hasPrefix("# CAROUSEL")
                         || logMessage.hasPrefix("# HIGHLIGHT") {
@@ -795,14 +866,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
-                print(
-                    "# HIDENAV bridge.receive",
-                    "shouldHide=\(shouldHide)",
-                    "current=\(hideNavigationDueToScroll.wrappedValue)",
-                    "source=\(source ?? "nil")",
-                    "direction=\(direction ?? "nil")",
-                    "payload=\(payload)"
-                )
+                if readerLoadVerboseLoggingEnabled {
+                    print(
+                        "# HIDENAV bridge.receive",
+                        "shouldHide=\(shouldHide)",
+                        "current=\(hideNavigationDueToScroll.wrappedValue)",
+                        "source=\(source ?? "nil")",
+                        "direction=\(direction ?? "nil")",
+                        "payload=\(payload)"
+                    )
+                }
                 if source == "toolbar.blankTap" {
                     navigationVisibilityWillChangeHandler?(
                         ReaderNavigationVisibilityChange(
@@ -1308,15 +1381,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
-        print(
-            "# HIDENAV bridge.set.begin",
-            "shouldHide=\(shouldHide)",
-            "current=\(previousValue)",
-            "source=\(source ?? "nil")",
-            "reason=\(reason ?? "nil")",
-            "direction=\(direction ?? "nil")",
-            "isPageTurn=\(isPageTurnVisibilityChange)"
-        )
+        if readerLoadVerboseLoggingEnabled {
+            print(
+                "# HIDENAV bridge.set.begin",
+                "shouldHide=\(shouldHide)",
+                "current=\(previousValue)",
+                "source=\(source ?? "nil")",
+                "reason=\(reason ?? "nil")",
+                "direction=\(direction ?? "nil")",
+                "isPageTurn=\(isPageTurnVisibilityChange)"
+            )
+        }
         guard previousValue != shouldHide else {
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
@@ -1328,7 +1403,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 )
             }
-            print("# HIDENAV bridge.set.noop value=\(shouldHide) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
+            if readerLoadVerboseLoggingEnabled {
+                print("# HIDENAV bridge.set.noop value=\(shouldHide) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
+            }
             return
         }
         navigationVisibilityWillChangeHandler?(
@@ -1346,7 +1423,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
         }
-        print("# HIDENAV bridge.set.applied new=\(shouldHide) old=\(previousValue) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
+        if readerLoadVerboseLoggingEnabled {
+            print("# HIDENAV bridge.set.applied new=\(shouldHide) old=\(previousValue) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
+        }
     }
 
     private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
@@ -1365,21 +1444,25 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                let recentPageMotionHide,
                recentPageMotionHide.age >= 0,
                recentPageMotionHide.age < 5.0 {
-                print(
-                    "# HIDENAV bridge.updateReadingProgress.skip",
-                    "reason=\(normalizedReason)",
-                    "current=\(hideNavigationDueToScroll.wrappedValue)",
-                    "lastSource=\(recentPageMotionHide.source ?? "nil")",
-                    "lastDirection=\(recentPageMotionHide.direction ?? "nil")",
-                    "age=\(recentPageMotionHide.age)"
-                )
+                if readerLoadVerboseLoggingEnabled {
+                    print(
+                        "# HIDENAV bridge.updateReadingProgress.skip",
+                        "reason=\(normalizedReason)",
+                        "current=\(hideNavigationDueToScroll.wrappedValue)",
+                        "lastSource=\(recentPageMotionHide.source ?? "nil")",
+                        "lastDirection=\(recentPageMotionHide.direction ?? "nil")",
+                        "age=\(recentPageMotionHide.age)"
+                    )
+                }
                 return
             }
-            print(
-                "# HIDENAV bridge.updateReadingProgress.apply",
-                "reason=\(normalizedReason)",
-                "current=\(hideNavigationDueToScroll.wrappedValue)"
-            )
+            if readerLoadVerboseLoggingEnabled {
+                print(
+                    "# HIDENAV bridge.updateReadingProgress.apply",
+                    "reason=\(normalizedReason)",
+                    "current=\(hideNavigationDueToScroll.wrappedValue)"
+                )
+            }
             setHideNavigationDueToScroll(
                 false,
                 reason: normalizedReason,
