@@ -1433,17 +1433,14 @@
                     /*pointer-events: auto;*/
                 }
                 .side-nav .icon {
-                    position: absolute;
-                    top: 50%;
-                    transform: translateY(-50%);
                     opacity: 0;
                     visibility: hidden;
                     transition: opacity 0.25s ease-out;
                     /*pointer-events: none;*/
                     
-                    width: 12px;
-                    height: 36px;
-                    stroke-width: 3px;
+                    width: 18px;
+                    height: 48px;
+                    stroke-width: 4px;
                     stroke: var(--secondary-color);
                 }
                 .side-nav .icon {
@@ -1500,12 +1497,10 @@
                     text-align: right;
                 }
                 #btn-scroll-left .icon {
-                    left: 1px;
-                    margin-left: 0;
+                    margin-left: calc(var(--side-nav-width, 32px) / 5);
                 }
                 #btn-scroll-right .icon {
-                    right: 1px;
-                    margin-right: 0;
+                    margin-right: calc(var(--side-nav-width, 32px) / 5);
                 }
                 #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-leading,
                 #nav-bar.nav-hidden-due-to-scroll #nav-section-progress-trailing,

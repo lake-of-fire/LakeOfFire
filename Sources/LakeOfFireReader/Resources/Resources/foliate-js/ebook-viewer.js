@@ -127,6 +127,19 @@ const readerLoadLog = (stage, payload = {}) => {
 };
 globalThis.__manabiReaderLoadLog = readerLoadLog;
 
+const cssLayoutLog = (stage, payload = {}) => {
+    try {
+        const details = Object.entries(payload)
+            .filter(([key, value]) => value !== undefined && key !== 'src' && key !== 'url' && key !== 'currentURL')
+            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
+            .join(' ');
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            details.length > 0 ? `# CSS stage=${stage} ${details}` : `# CSS stage=${stage}`
+        );
+    } catch (_error) {}
+};
+globalThis.__manabiCSSLayoutLog = cssLayoutLog;
+
 const readerLoadSubpathFromURL = (value) => {
     const documentURL = String(value ?? '');
     if (!documentURL.includes('subpath=')) return null;
@@ -289,6 +302,7 @@ const markReaderRenderReady = (reason = 'unspecified') => {
             hasReaderContent: !!document.querySelector?.('foliate-view'),
             bodyLoading: !!body?.classList?.contains?.('loading'),
         });
+        postOuterChromeLayoutSnapshot(`renderReady.${reason}`);
     }
     globalThis.__manabiPostReaderDocStateEvent?.(`renderReady.${reason}`);
 };
@@ -1306,6 +1320,215 @@ const layoutElementSnapshot = element => {
         offsetWidth: roundLayoutNumber(element.offsetWidth),
         offsetHeight: roundLayoutNumber(element.offsetHeight),
     };
+};
+
+const layoutRectOverlap = (a, b) => {
+    if (!a || !b) return null;
+    const left = Math.max(a.left, b.left);
+    const right = Math.min(a.right, b.right);
+    const top = Math.max(a.top, b.top);
+    const bottom = Math.min(a.bottom, b.bottom);
+    const width = Math.max(0, right - left);
+    const height = Math.max(0, bottom - top);
+    return {
+        width: roundLayoutNumber(width),
+        height: roundLayoutNumber(height),
+        area: roundLayoutNumber(width * height),
+    };
+};
+
+const collectOuterChromeLayoutSnapshot = (reason = 'unknown', event = null) => {
+    const body = document.body;
+    const bodyStyle = body ? getComputedStyle(body) : null;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const readerStage = document.getElementById('reader-stage');
+    const foliateView = Array.from(document.querySelectorAll('foliate-view'))
+        .find((candidate) => candidate?.dataset?.isCache !== 'true') ?? document.querySelector('foliate-view');
+    const leftNav = document.getElementById('btn-scroll-left');
+    const rightNav = document.getElementById('btn-scroll-right');
+    const leftIcon = leftNav?.querySelector?.('.icon') ?? null;
+    const rightIcon = rightNav?.querySelector?.('.icon') ?? null;
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const renderer = foliateView?.renderer ?? globalThis.reader?.view?.renderer ?? null;
+    const shadowRoot = renderer?.shadowRoot ?? null;
+    const container = shadowRoot?.getElementById?.('container') ?? shadowRoot?.querySelector?.('#container') ?? null;
+    const contents = renderer?.getContents?.() || [];
+    const primaryContent = contents.find?.((content) => {
+        const elementRect = content?.element?.getBoundingClientRect?.();
+        const frameRect = content?.iframe?.getBoundingClientRect?.();
+        const doc = content?.doc ?? content?.document ?? content?.iframe?.contentDocument ?? content?.frame?.contentDocument ?? null;
+        return doc?.body && (
+            (elementRect && elementRect.width > 0 && elementRect.height > 0)
+            || (frameRect && frameRect.width > 0 && frameRect.height > 0)
+        );
+    }) ?? contents.find?.((content) =>
+        content?.doc?.body
+        || content?.document?.body
+        || content?.iframe?.contentDocument?.body
+        || content?.frame?.contentDocument?.body
+    ) ?? null;
+    const firstFrame = primaryContent?.iframe ?? primaryContent?.frame ?? null;
+    const contentElement = primaryContent?.element ?? firstFrame?.parentElement ?? null;
+    const contentDoc = primaryContent?.doc
+        ?? primaryContent?.document
+        ?? firstFrame?.contentDocument
+        ?? renderer?.view?.document
+        ?? null;
+    const contentBody = contentDoc?.body ?? null;
+    const contentFirstVisible = contentDoc
+        ? Array.from(contentDoc.querySelectorAll?.('m-m, m-t, img, svg, image, picture, video, object, canvas') ?? [])
+            .find((element) => {
+                const rect = element?.getBoundingClientRect?.();
+                const style = contentDoc.defaultView?.getComputedStyle?.(element);
+                return rect
+                    && rect.width > 0
+                    && rect.height > 0
+                    && rect.right > 0
+                    && rect.bottom > 0
+                    && rect.left < (contentDoc.defaultView?.innerWidth ?? contentDoc.documentElement?.clientWidth ?? 0)
+                    && rect.top < (contentDoc.defaultView?.innerHeight ?? contentDoc.documentElement?.clientHeight ?? 0)
+                    && style?.display !== 'none'
+                    && style?.visibility !== 'hidden'
+                    && Number(style?.opacity ?? 1) !== 0;
+            })
+        : null;
+    const stageRect = readerStage?.getBoundingClientRect?.() ?? null;
+    const foliateRect = foliateView?.getBoundingClientRect?.() ?? null;
+    const leftRect = leftNav?.getBoundingClientRect?.() ?? null;
+    const rightRect = rightNav?.getBoundingClientRect?.() ?? null;
+    const contentElementRect = contentElement?.getBoundingClientRect?.() ?? null;
+    const frameRect = firstFrame?.getBoundingClientRect?.() ?? contentElementRect ?? null;
+    const leftStyle = leftNav ? getComputedStyle(leftNav) : null;
+    const rightStyle = rightNav ? getComputedStyle(rightNav) : null;
+    const leftIconStyle = leftIcon ? getComputedStyle(leftIcon) : null;
+    const rightIconStyle = rightIcon ? getComputedStyle(rightIcon) : null;
+    const loadingStyle = loadingIndicator ? getComputedStyle(loadingIndicator) : null;
+    const contentStyle = contentDoc?.defaultView && contentBody
+        ? contentDoc.defaultView.getComputedStyle(contentBody)
+        : null;
+    const contentFirstRect = contentFirstVisible?.getBoundingClientRect?.() ?? null;
+    const contentFirstViewportRect = contentFirstRect && frameRect
+        ? {
+            left: frameRect.left + contentFirstRect.left,
+            right: frameRect.left + contentFirstRect.right,
+            top: frameRect.top + contentFirstRect.top,
+            bottom: frameRect.top + contentFirstRect.bottom,
+            width: contentFirstRect.width,
+            height: contentFirstRect.height,
+        }
+        : null;
+    return {
+        reason,
+        eventType: event?.type ?? null,
+        eventX: event?.clientX == null ? null : roundLayoutNumber(event.clientX),
+        eventY: event?.clientY == null ? null : roundLayoutNumber(event.clientY),
+        bodyClass: body?.className || null,
+        renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
+        bodyLoading: !!body?.classList?.contains?.('loading'),
+        bodyLoadingVisual: !!body?.classList?.contains?.('loading-visual'),
+        sideNavWidthVar: rootStyle?.getPropertyValue('--side-nav-width')?.trim() || bodyStyle?.getPropertyValue('--side-nav-width')?.trim() || null,
+        windowInnerWidth: roundLayoutNumber(window.innerWidth),
+        windowInnerHeight: roundLayoutNumber(window.innerHeight),
+        visualViewportWidth: roundLayoutNumber(window.visualViewport?.width),
+        visualViewportHeight: roundLayoutNumber(window.visualViewport?.height),
+        stageLeft: stageRect ? roundLayoutNumber(stageRect.left) : null,
+        stageRight: stageRect ? roundLayoutNumber(stageRect.right) : null,
+        stageWidth: stageRect ? roundLayoutNumber(stageRect.width) : null,
+        stageTop: stageRect ? roundLayoutNumber(stageRect.top) : null,
+        stageBottom: stageRect ? roundLayoutNumber(stageRect.bottom) : null,
+        foliateLeft: foliateRect ? roundLayoutNumber(foliateRect.left) : null,
+        foliateRight: foliateRect ? roundLayoutNumber(foliateRect.right) : null,
+        foliateWidth: foliateRect ? roundLayoutNumber(foliateRect.width) : null,
+        contentElementLeft: contentElementRect ? roundLayoutNumber(contentElementRect.left) : null,
+        contentElementRight: contentElementRect ? roundLayoutNumber(contentElementRect.right) : null,
+        contentElementWidth: contentElementRect ? roundLayoutNumber(contentElementRect.width) : null,
+        frameLeft: frameRect ? roundLayoutNumber(frameRect.left) : null,
+        frameRight: frameRect ? roundLayoutNumber(frameRect.right) : null,
+        frameWidth: frameRect ? roundLayoutNumber(frameRect.width) : null,
+        leftNavLeft: leftRect ? roundLayoutNumber(leftRect.left) : null,
+        leftNavRight: leftRect ? roundLayoutNumber(leftRect.right) : null,
+        leftNavWidth: leftRect ? roundLayoutNumber(leftRect.width) : null,
+        leftNavPointerEvents: leftStyle?.pointerEvents ?? null,
+        leftNavDisplay: leftStyle?.display ?? null,
+        leftNavVisibility: leftStyle?.visibility ?? null,
+        leftNavDisabled: leftNav?.disabled ?? null,
+        rightNavLeft: rightRect ? roundLayoutNumber(rightRect.left) : null,
+        rightNavRight: rightRect ? roundLayoutNumber(rightRect.right) : null,
+        rightNavWidth: rightRect ? roundLayoutNumber(rightRect.width) : null,
+        rightNavPointerEvents: rightStyle?.pointerEvents ?? null,
+        rightNavDisplay: rightStyle?.display ?? null,
+        rightNavVisibility: rightStyle?.visibility ?? null,
+        rightNavDisabled: rightNav?.disabled ?? null,
+        leftIconLeft: leftIcon ? roundLayoutNumber(leftIcon.getBoundingClientRect().left) : null,
+        leftIconRight: leftIcon ? roundLayoutNumber(leftIcon.getBoundingClientRect().right) : null,
+        leftIconOpacity: leftIconStyle?.opacity ?? null,
+        rightIconLeft: rightIcon ? roundLayoutNumber(rightIcon.getBoundingClientRect().left) : null,
+        rightIconRight: rightIcon ? roundLayoutNumber(rightIcon.getBoundingClientRect().right) : null,
+        rightIconOpacity: rightIconStyle?.opacity ?? null,
+        leftOverlapFoliateArea: layoutRectOverlap(leftRect, foliateRect)?.area ?? null,
+        rightOverlapFoliateArea: layoutRectOverlap(rightRect, foliateRect)?.area ?? null,
+        leftOverlapFrameArea: layoutRectOverlap(leftRect, frameRect)?.area ?? null,
+        rightOverlapFrameArea: layoutRectOverlap(rightRect, frameRect)?.area ?? null,
+        containerClientWidth: roundLayoutNumber(container?.clientWidth),
+        containerScrollWidth: roundLayoutNumber(container?.scrollWidth),
+        contentBodyClass: contentBody?.className || null,
+        contentWritingMode: contentStyle?.writingMode ?? null,
+        contentViewportWidth: roundLayoutNumber(contentDoc?.defaultView?.innerWidth),
+        contentViewportHeight: roundLayoutNumber(contentDoc?.defaultView?.innerHeight),
+        contentBodyClientWidth: roundLayoutNumber(contentBody?.clientWidth),
+        contentBodyScrollWidth: roundLayoutNumber(contentBody?.scrollWidth),
+        contentFirstTag: contentFirstVisible?.tagName?.toLowerCase?.() ?? null,
+        contentFirstLeft: contentFirstRect ? roundLayoutNumber(contentFirstRect.left) : null,
+        contentFirstRight: contentFirstRect ? roundLayoutNumber(contentFirstRect.right) : null,
+        contentFirstWidth: contentFirstRect ? roundLayoutNumber(contentFirstRect.width) : null,
+        contentFirstViewportLeft: contentFirstViewportRect ? roundLayoutNumber(contentFirstViewportRect.left) : null,
+        contentFirstViewportRight: contentFirstViewportRect ? roundLayoutNumber(contentFirstViewportRect.right) : null,
+        contentFirstViewportWidth: contentFirstViewportRect ? roundLayoutNumber(contentFirstViewportRect.width) : null,
+        leftNavGapToFirstContent: leftRect && contentFirstViewportRect
+            ? roundLayoutNumber(contentFirstViewportRect.left - leftRect.right)
+            : null,
+        rightNavGapToFirstContent: rightRect && contentFirstViewportRect
+            ? roundLayoutNumber(rightRect.left - contentFirstViewportRect.right)
+            : null,
+        leftOverlapFirstContentArea: layoutRectOverlap(leftRect, contentFirstViewportRect)?.area ?? null,
+        rightOverlapFirstContentArea: layoutRectOverlap(rightRect, contentFirstViewportRect)?.area ?? null,
+        loadingHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
+        loadingDisplay: loadingStyle?.display ?? null,
+        loadingVisibility: loadingStyle?.visibility ?? null,
+    };
+};
+
+const postOuterChromeLayoutSnapshot = (reason = 'unknown', event = null) => {
+    const snapshot = collectOuterChromeLayoutSnapshot(reason, event);
+    const key = JSON.stringify(snapshot);
+    if (globalThis.__manabiLastOuterChromeLayoutSnapshotKey === key && reason !== 'sideNavEvent') return;
+    globalThis.__manabiLastOuterChromeLayoutSnapshotKey = key;
+    cssLayoutLog('readerChrome.layoutSnapshot', snapshot);
+};
+
+const normalizeManabiSegmentWhitespace = (doc) => {
+    try {
+        if (!doc?.body || isCacheWarmerDocument(doc)) return;
+        for (const segment of doc.querySelectorAll?.('m-m') ?? []) {
+            for (const containerNode of [segment, ...Array.from(segment.querySelectorAll?.('ruby') ?? [])]) {
+                for (const node of Array.from(containerNode.childNodes ?? [])) {
+                    if (node?.nodeType === Node.TEXT_NODE && /^\s*$/.test(node.nodeValue ?? '')) {
+                        node.remove();
+                    }
+                }
+            }
+            for (const inlineNode of segment.querySelectorAll?.('m-t, rt') ?? []) {
+                for (const node of Array.from(inlineNode.childNodes ?? [])) {
+                    if (node?.nodeType !== Node.TEXT_NODE) continue;
+                    const value = node.nodeValue ?? '';
+                    const trimmed = value.trim();
+                    if (trimmed.length > 0 && trimmed !== value) {
+                        node.nodeValue = trimmed;
+                    }
+                }
+            }
+        }
+    } catch (_error) {}
 };
 
 
@@ -5900,9 +6123,6 @@ const getCSSForBookContent = ({
     justify,
     hyphenate
 }) => {
-    const disableInjectedBookContentCSSForLayoutDiagnosis = true
-    if (disableInjectedBookContentCSSForLayoutDiagnosis) return ''
-
     const parsedSpacing = Number.parseFloat(spacing)
     const rubyReservedSpacing = Number.isFinite(parsedSpacing)
         ? Math.max(parsedSpacing, 1.8)
@@ -5917,16 +6137,11 @@ const getCSSForBookContent = ({
     }
     html:lang(ja),
     body:lang(ja),
-    :lang(ja),
-    body[data-mnb-has-sentences="true"],
-    body[data-mnb-has-segments="true"],
-    body[data-mnb-has-sentences="true"] m-s,
-    body[data-mnb-has-segments="true"] m-m {
+    :lang(ja) {
         line-break: strict;
         -webkit-line-break: strict;
         word-break: normal;
         overflow-wrap: normal;
-        font-feature-settings: "vchw" 1, "chws" 1;
     }
     /* https://github.com/whatwg/html/issues/5426 */
     @media (prefers-color-scheme: dark) {
@@ -5946,21 +6161,6 @@ const getCSSForBookContent = ({
         -webkit-hyphenate-limit-lines: 2;
         hanging-punctuation: allow-end last;
         widows: 2;
-    }
-    html:lang(ja) :is(p, li, blockquote, dd),
-    body:lang(ja) :is(p, li, blockquote, dd),
-    :lang(ja):is(p, li, blockquote, dd),
-    body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
-    body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
-    body[data-mnb-has-sentences="true"] m-s,
-    body[data-mnb-has-segments="true"] m-m {
-        /*
-           Reserve ruby annotation space even on lines without <rt>. WebKit's
-           ruby layout otherwise lets mixed ruby/non-ruby Japanese text fall
-           off a consistent line grid.
-        */
-        --mnb-ruby-reserved-line-height: ${rubyReservedSpacing};
-        line-height: ${rubyReservedSpacing} !important;
     }
     /*
        Neutralize book-provided body/p justification as well. Some EPUBs ship
@@ -6014,9 +6214,10 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing[data-is-ebook="true"] m-m {
         display: inline !important;
-        contain: none !important;
         vertical-align: baseline !important;
         break-inside: auto !important;
+        break-before: auto !important;
+        break-after: auto !important;
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
     }
@@ -6220,6 +6421,8 @@ const getCSSForBookContent = ({
            sentence surface text, not to the compact annotation text.
         */
         font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
+        line-height: 1em !important;
+        block-size: 1em !important;
     }
 
     body:not([data-mnb-romaji-mode-enabled="true"]) rt {
@@ -8924,6 +9127,13 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
+            postOuterChromeLayoutSnapshot('sideNavEvent', {
+                type: eventType,
+                clientX: side === 'left'
+                    ? button?.getBoundingClientRect?.().left
+                    : button?.getBoundingClientRect?.().right,
+                clientY: button?.getBoundingClientRect?.().top,
+            });
             const compactDisabled = isCompactNavigationSheetSidePaginationDisabled();
             if (button?.disabled || compactDisabled) {
                 readerLoadLog('pageTurn.sideButton.skip', {
@@ -8970,7 +9180,8 @@ class Reader {
             });
         };
         const leftSideBtn = document.getElementById('btn-scroll-left');
-        if (leftSideBtn) leftSideBtn.addEventListener('click', async () => {
+        if (leftSideBtn) leftSideBtn.addEventListener('click', async (event) => {
+            postOuterChromeLayoutSnapshot('sideNavEvent', event);
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'left'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
@@ -8979,7 +9190,8 @@ class Reader {
             await runSideButtonPageTurn('left', 'goLeft', leftSideBtn, 'click');
         });
         const rightSideBtn = document.getElementById('btn-scroll-right');
-        if (rightSideBtn) rightSideBtn.addEventListener('click', async () => {
+        if (rightSideBtn) rightSideBtn.addEventListener('click', async (event) => {
+            postOuterChromeLayoutSnapshot('sideNavEvent', event);
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'right'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
@@ -8991,12 +9203,14 @@ class Reader {
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
             nav.addEventListener('touchstart', (event) => {
+                postOuterChromeLayoutSnapshot('sideNavEvent', event);
                 if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
             nav.addEventListener('touchend', (event) => {
+                postOuterChromeLayoutSnapshot('sideNavEvent', event);
                 nav.classList.remove('pressed');
                 if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
@@ -10814,6 +11028,9 @@ class Reader {
             window.manabiApplyReaderFontSizeToEbookDocuments?.('document-load', doc);
         } catch (error) {
         }
+        if (!isCacheWarmerDocument(doc)) {
+            normalizeManabiSegmentWhitespace(doc);
+        }
         if (doc?.fonts?.ready?.then) {
             const fontsReadyStartedAt = performanceNowMs();
             doc.fonts.ready.then(() => {
@@ -10827,6 +11044,10 @@ class Reader {
             const sourceHref = doc?.body?.dataset?.mnbSourceHref || null;
             if (!isCacheWarmerDocument(doc)) {
                 window.manabi_recordLiveSettledSection?.(sourceHref);
+                postOuterChromeLayoutSnapshot('reader.documentLoad.raf');
+                setTimeout(() => {
+                    postOuterChromeLayoutSnapshot('reader.documentLoad.followUp');
+                }, 250);
             }
         });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
@@ -11812,6 +12033,7 @@ window.loadEBook = ({
                 hasRenderer: !!reader?.view?.renderer,
                 renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
             });
+            postOuterChromeLayoutSnapshot('loadEBook.readerOpen.finish');
             const postOpenLocation = reader?.view?.lastLocation ?? null;
             globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.readerOpen.finish', {
                 loadToken,
@@ -11851,6 +12073,7 @@ window.loadEBook = ({
                     hasRenderer: !!reader?.view?.renderer,
                     renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
                 });
+                postOuterChromeLayoutSnapshot('loadEBook.readerOpen.loadingCleared');
             }
             if (pendingInitialRestoreAfterOpen) {
                 globalThis.__manabiPendingInitialRestore = null;

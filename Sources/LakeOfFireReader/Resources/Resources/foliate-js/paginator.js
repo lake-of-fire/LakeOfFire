@@ -26,7 +26,7 @@ const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
         verticalPaginatedGapPx: 0,
         verticalPaginatedTopMarginPx: 48,
         verticalPaginatedBottomMarginPx: 48,
-        sideMarginPx: 0,
+        sideMarginPx: 32,
         maxInlineSizePx: 720,
         maxBlockSizePx: 1440,
         maxColumnCount: 2,
@@ -1914,13 +1914,16 @@ export class Paginator extends HTMLElement {
             maxColumnCount,
             maxColumnCountPortrait
         } = CSS_DEFAULTS;
-        const topSpacingCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
-            ? `
+    const topSpacingCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+        ? `
                 --_top-margin: ${topMarginPx}px;
                 --_bottom-margin: ${bottomMarginPx}px;
                 --_side-margin: var(--side-nav-width, ${sideMarginPx}px);
             `
-            : `--_margin: ${topMarginPx}px;`;
+            : `
+                --_margin: ${topMarginPx}px;
+                --_side-margin: var(--side-nav-width, ${sideMarginPx}px);
+            `;
         const gridTemplateColumnsCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
             ? `
                 var(--_side-margin)
@@ -1929,12 +1932,12 @@ export class Paginator extends HTMLElement {
                 1fr
                 var(--_side-margin)
             `
-            : `
-                minmax(var(--_half-gap), 1fr)
+        : `
+                var(--_side-margin)
                 var(--_half-gap)
                 minmax(0, calc(var(--_max-width) - var(--_gap)))
                 var(--_half-gap)
-                minmax(var(--_half-gap), 1fr)
+                var(--_side-margin)
             `;
         const gridTemplateRowsCSS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
             ? `
@@ -6102,6 +6105,8 @@ export class Paginator extends HTMLElement {
             index: this.#index,
             overlayer: this.#view.overlayer,
             doc: this.#view.document,
+            element: this.#view.element,
+            iframe: this.#view.element?.querySelector?.('iframe') ?? null,
         }]
         return []
     }

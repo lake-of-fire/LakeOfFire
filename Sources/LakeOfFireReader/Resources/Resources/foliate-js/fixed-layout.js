@@ -294,6 +294,8 @@ export class FixedLayout extends HTMLElement {
     getContents() {
         return Array.from(this.#root.querySelectorAll('iframe'), frame => ({
             doc: frame.contentDocument,
+            iframe: frame,
+            element: frame.parentElement,
             // TODO: index, overlayer
         }))
     }
