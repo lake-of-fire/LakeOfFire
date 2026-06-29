@@ -160,9 +160,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
         
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
-            
-            realm.objects(LibraryConfiguration.self)
+            let libraryRealm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+
+            libraryRealm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { _ in }
@@ -187,8 +187,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     }
                 })
                 .store(in: &cancellables)
-            
-            realm.objects(UserScript.self)
+
+            libraryRealm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { _ in }

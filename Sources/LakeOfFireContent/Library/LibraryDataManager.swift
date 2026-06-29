@@ -851,16 +851,7 @@ public class LibraryDataManager: NSObject {
                        feed.title.localizedCaseInsensitiveContains("niponica")
                         || feed.rssUrl.absoluteString.localizedCaseInsensitiveContains("niponica")
                         || (opmlEntry.feedURL?.absoluteString.localizedCaseInsensitiveContains("niponica") ?? false) {
-                        debugPrint(
-                            "# NIPONICA stage=library.opml.feed.reconcileManagedURL",
-                            "feedID=\(feed.id.uuidString)",
-                            "title=\(feed.title)",
-                            "oldRSSURL=\(feed.rssUrl.absoluteString)",
-                            "newRSSURL=\(opmlEntry.feedURL?.absoluteString ?? "nil")",
-                            "categoryID=\(feedCategory?.id.uuidString ?? "nil")",
-                            "categoryOpmlURL=\(feedCategory?.opmlURL?.absoluteString ?? "nil")",
-                            "downloadURL=\(download?.url.absoluteString ?? "nil")"
-                        )
+                        ()
                     }
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal) {
                         try Task.checkCancellation()

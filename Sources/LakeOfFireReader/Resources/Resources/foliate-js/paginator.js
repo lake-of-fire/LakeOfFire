@@ -1,6 +1,6 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
-const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = false;
+const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -45,6 +45,18 @@ const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180;
 const MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240;
+const manabiDocumentIsProcessedEbook = doc => {
+    const body = doc?.body;
+    const documentElement = doc?.documentElement;
+    if (body?.dataset?.isEbook === 'true' || documentElement?.dataset?.isEbook === 'true') {
+        return true;
+    }
+    try {
+        return String(doc?.location?.href ?? '').startsWith('ebook://ebook/processed-section');
+    } catch (_error) {
+        return false;
+    }
+};
 const manabiLockedPageTurnQueueDecision = ({
     pendingQueueAllowed,
     pendingRequestedPage,
@@ -298,12 +310,6 @@ const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
             return;
         }
         if (!manabiShouldEmitPaginatorFallbackReaderLoadLog(stage)) return;
-        const details = Object.entries(readerPayload)
-            .map(([key, value]) => `${key}=${manabiTimelineValue(value)}`)
-            .join(' ');
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            details.length > 0 ? `# READERLOAD stage=${stage} ${details}` : `# READERLOAD stage=${stage}`
-        );
     } catch (_error) {}
 };
 const manabiPaginatorVerbosePageTurns = () =>
@@ -912,7 +918,6 @@ class View {
         this.#lastExpandedMetrics = null
         return new Promise((resolve, reject) => {
             if (this.#isCacheWarmer) {
-                console.log("Don't create View for cache warmers")
                 resolve()
             } else {
                 const onLoad = async () => {
@@ -3090,25 +3095,40 @@ export class Paginator extends HTMLElement {
             elementSamples: [],
         };
 
-        const walker = doc.createTreeWalker(doc.body, SHOW_TEXT, {
-            acceptNode: node => /\S/.test(node.nodeValue || '') ? FILTER_ACCEPT : FILTER_REJECT,
-        });
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-            const range = doc.createRange();
-            try {
-                range.selectNodeContents(node);
-                const rects = Array.from(range.getClientRects?.() || []);
+        if (manabiDocumentIsProcessedEbook(doc)) {
+            for (const element of doc.body.querySelectorAll?.('m-m') || []) {
+                const rects = Array.from(element.getClientRects?.() || []);
                 if (!rects.some(rect => this.#intersectsPageRange(rectMapper(rect), pageStart, pageEnd))) {
                     continue;
                 }
-                const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
                 summary.textNodeCount += 1;
                 summary.textCharCount += text.length;
                 if (summary.textSamples.length < 3 && text) {
                     summary.textSamples.push(text.slice(0, 80));
                 }
-            } finally {
-                range.detach?.();
+            }
+        } else {
+            const walker = doc.createTreeWalker(doc.body, SHOW_TEXT, {
+                acceptNode: node => /\S/.test(node.nodeValue || '') ? FILTER_ACCEPT : FILTER_REJECT,
+            });
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                const range = doc.createRange();
+                try {
+                    range.selectNodeContents(node);
+                    const rects = Array.from(range.getClientRects?.() || []);
+                    if (!rects.some(rect => this.#intersectsPageRange(rectMapper(rect), pageStart, pageEnd))) {
+                        continue;
+                    }
+                    const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                    summary.textNodeCount += 1;
+                    summary.textCharCount += text.length;
+                    if (summary.textSamples.length < 3 && text) {
+                        summary.textSamples.push(text.slice(0, 80));
+                    }
+                } finally {
+                    range.detach?.();
+                }
             }
         }
 
@@ -4649,7 +4669,6 @@ export class Paginator extends HTMLElement {
         // Find the first and last visible content node, skipping <reader-sentinel> and mnb-* elements
 
         const doc = this.#view.document
-
         if (visibleSentinelIDs.length === 0) {
             const range = doc.createRange();
             range.selectNodeContents(doc.body);

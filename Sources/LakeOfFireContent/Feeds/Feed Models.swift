@@ -1059,7 +1059,7 @@ public enum FeedError: Error {
 
 private func logNiponica(_ message: String) {
 #if DEBUG
-    debugPrint("# NIPONICA \(message)")
+    ()
 #endif
 }
 
@@ -1894,11 +1894,7 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                             break
                         }
                     default:
-                        debugPrint(
-                            "# FEED filterEntriesToPersist.unsupportedArrayType",
-                            "property=\(propertyName)",
-                            "type=\(property.type)"
-                        )
+                        ()
                         differentEntries.append(entry)
                         break
                     }

@@ -1239,7 +1239,7 @@ public struct Reader: View {
                             sampledInsets.top = explicitTopInset
                         }
                         if pageURL.isEBookURL {
-                            print("# POPOVER native.safeArea.appear rawTop=\(geometrySafeAreaInsets.top) acceptedTop=\(sampledInsets.top) previousTop=\(obscuredInsets?.top ?? -1) effectiveTop=\(effectiveTopInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) size=\(geometrySize.width)x\(geometrySize.height) rawBottom=\(geometrySafeAreaInsets.bottom) acceptedBottom=\(sampledInsets.bottom)")
+                            ()
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1270,7 +1270,7 @@ public struct Reader: View {
                             }
                         }
                         if pageURL.isEBookURL {
-                            print("# POPOVER native.safeArea.change rawTop=\(safeAreaInsets.top) acceptedTop=\(sampledInsets.top) previousTop=\(previousInsets?.top ?? -1) effectiveTop=\(effectiveTopInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) size=\(geometrySize.width)x\(geometrySize.height) rawBottom=\(safeAreaInsets.bottom) acceptedBottom=\(sampledInsets.bottom)")
+                            ()
                         }
                         obscuredGeometrySize = geometrySize
                         obscuredInsets = sampledInsets
@@ -1318,7 +1318,7 @@ public struct Reader: View {
                        attempt == retryDelaysInNanoseconds.startIndex
                        || attempt == retryDelaysInNanoseconds.index(before: retryDelaysInNanoseconds.endIndex)
                    ) {
-                    print("# POPOVER native.chromeInsets.attempt attempt=\(attempt) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hideNavigationDueToScroll=\(hideNavigationDueToScroll) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
+                    ()
                 }
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,

@@ -17,7 +17,7 @@ let feedQueue = DispatchQueue(label: "FeedQueue")
 
 private func logNiponica(_ message: String) {
 #if DEBUG
-    debugPrint("# NIPONICA \(message)")
+    ()
 #endif
 }
 

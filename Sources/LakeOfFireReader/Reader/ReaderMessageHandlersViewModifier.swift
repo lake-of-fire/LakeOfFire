@@ -867,14 +867,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
                 if readerLoadVerboseLoggingEnabled {
-                    print(
-                        "# HIDENAV bridge.receive",
-                        "shouldHide=\(shouldHide)",
-                        "current=\(hideNavigationDueToScroll.wrappedValue)",
-                        "source=\(source ?? "nil")",
-                        "direction=\(direction ?? "nil")",
-                        "payload=\(payload)"
-                    )
+                    ()
                 }
                 if source == "toolbar.blankTap" {
                     navigationVisibilityWillChangeHandler?(
@@ -1087,12 +1080,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 } ?? result.outputHTML
                 if publicationDateFallback != nil {
-                    debugPrint(
-                        "# BYLINE readabilityParsed.fallbackPublicationDate",
-                        "windowURL=\(url.absoluteString)",
-                        "contentURL=\(content.url.absoluteString)",
-                        "publishedTime=\(publicationDateFallback ?? "nil")"
-                    )
+                    ()
                 }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
                 if shouldPreserveFullContentOriginal {
@@ -1278,9 +1266,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
                         loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
                         loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
-                        print(
-                            "# READERLOAD stage=ebookViewerInitialized.loadEBook.dispatch hasInitialRestore=\(hasInitialRestore) sentInitialRestore=\(sentInitialRestore) requestID=\(initialRestoreRequest?.requestID ?? "nil") requestedLocator=\(initialRestoreRequest?.requestedLocator ?? "none") hasCFI=\(hasRestoreCFI) fractionalCompletion=\(restoreFraction)"
-                        )
+                        ()
                         do {
                             _ = try await scriptCaller.evaluateJavaScript(
                                 """
@@ -1382,15 +1368,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
         if readerLoadVerboseLoggingEnabled {
-            print(
-                "# HIDENAV bridge.set.begin",
-                "shouldHide=\(shouldHide)",
-                "current=\(previousValue)",
-                "source=\(source ?? "nil")",
-                "reason=\(reason ?? "nil")",
-                "direction=\(direction ?? "nil")",
-                "isPageTurn=\(isPageTurnVisibilityChange)"
-            )
+            ()
         }
         guard previousValue != shouldHide else {
             if isPageTurnVisibilityChange {
@@ -1404,7 +1382,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 )
             }
             if readerLoadVerboseLoggingEnabled {
-                print("# HIDENAV bridge.set.noop value=\(shouldHide) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
+                ()
             }
             return
         }
@@ -1424,7 +1402,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }
         }
         if readerLoadVerboseLoggingEnabled {
-            print("# HIDENAV bridge.set.applied new=\(shouldHide) old=\(previousValue) source=\(source ?? "nil") reason=\(reason ?? "nil") direction=\(direction ?? "nil") isPageTurn=\(isPageTurnVisibilityChange)")
+            ()
         }
     }
 
@@ -1445,23 +1423,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                recentPageMotionHide.age >= 0,
                recentPageMotionHide.age < 5.0 {
                 if readerLoadVerboseLoggingEnabled {
-                    print(
-                        "# HIDENAV bridge.updateReadingProgress.skip",
-                        "reason=\(normalizedReason)",
-                        "current=\(hideNavigationDueToScroll.wrappedValue)",
-                        "lastSource=\(recentPageMotionHide.source ?? "nil")",
-                        "lastDirection=\(recentPageMotionHide.direction ?? "nil")",
-                        "age=\(recentPageMotionHide.age)"
-                    )
+                    ()
                 }
                 return
             }
             if readerLoadVerboseLoggingEnabled {
-                print(
-                    "# HIDENAV bridge.updateReadingProgress.apply",
-                    "reason=\(normalizedReason)",
-                    "current=\(hideNavigationDueToScroll.wrappedValue)"
-                )
+                ()
             }
             setHideNavigationDueToScroll(
                 false,
@@ -1580,7 +1547,7 @@ extension ReaderMessageHandlersViewModifier {
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
             if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
-                print("# POPOVER native.hideNavigation.bridge.skip reason=\(reason) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+                ()
             }
             return
         }
@@ -1590,7 +1557,7 @@ extension ReaderMessageHandlersViewModifier {
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
             if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
-                print("# POPOVER native.hideNavigation.bridge.push reason=\(reason) shouldHide=\(shouldHide) nativeLookupTapAgeMs=\(nativeLookupTapAgeMs ?? -1)")
+                ()
             }
         } catch {
             // Ignore boot timing races.

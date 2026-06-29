@@ -27,7 +27,7 @@ public extension EnvironmentValues {
 
 private func logSnippetLoad(_ message: String) {
 #if DEBUG
-    debugPrint("# SNIPPETLOAD", message)
+    ()
 #endif
 }
 

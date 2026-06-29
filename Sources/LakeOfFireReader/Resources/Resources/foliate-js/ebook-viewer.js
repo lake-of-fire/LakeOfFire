@@ -31,17 +31,7 @@ const ebookLoadLogValue = (value) => {
     return String(value).replace(/\s+/g, ' ').slice(0, 180);
 };
 
-const ebookLoadLog = (event, payload = {}) => {
-    try {
-        const details = Object.entries(payload)
-            .filter(([, value]) => value !== undefined)
-            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
-            .join(' ');
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            details.length > 0 ? `# EBOOKLOAD js.${event} ${details}` : `# EBOOKLOAD js.${event}`
-        );
-    } catch (_error) {}
-};
+const ebookLoadLog = (_event, _payload = {}) => {};
 
 const readerLoadVerboseLogs = () =>
     globalThis.__manabiReaderLoadVerbose === true
@@ -113,32 +103,8 @@ const shouldEmitReaderLoadLog = (stage, payload = {}) => {
     return !readerLoadNoisyPrefixes.some(prefix => stage.startsWith(prefix));
 };
 
-const readerLoadLog = (stage, payload = {}) => {
-    try {
-        if (!shouldEmitReaderLoadLog(stage, payload)) return;
-        const details = Object.entries(payload)
-            .filter(([key, value]) => value !== undefined && key !== 'src' && key !== 'url' && key !== 'currentURL')
-            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
-            .join(' ');
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            details.length > 0 ? `# READERLOAD stage=${stage} ${details}` : `# READERLOAD stage=${stage}`
-        );
-    } catch (_error) {}
-};
+const readerLoadLog = (_stage, _payload = {}) => {};
 globalThis.__manabiReaderLoadLog = readerLoadLog;
-
-const cssLayoutLog = (stage, payload = {}) => {
-    try {
-        const details = Object.entries(payload)
-            .filter(([key, value]) => value !== undefined && key !== 'src' && key !== 'url' && key !== 'currentURL')
-            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
-            .join(' ');
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            details.length > 0 ? `# CSS stage=${stage} ${details}` : `# CSS stage=${stage}`
-        );
-    } catch (_error) {}
-};
-globalThis.__manabiCSSLayoutLog = cssLayoutLog;
 
 const readerLoadSubpathFromURL = (value) => {
     const documentURL = String(value ?? '');
@@ -195,17 +161,7 @@ const manabiIsReaderSentenceElement = element => manabiReaderSentenceTagNames.ha
 const MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS = false;
 globalThis.__manabiEbookNativeLookupHitTargetsDisabled = MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS;
 
-const popoverDiagnosticLog = (event, payload = {}) => {
-    try {
-        const details = Object.entries(payload)
-            .filter(([key, value]) => value !== undefined && !popoverDiagnosticShouldRedactKey(key))
-            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
-            .join(' ');
-        window.webkit?.messageHandlers?.print?.postMessage?.(
-            details.length > 0 ? `# POPOVER ${event} ${details}` : `# POPOVER ${event}`
-        );
-    } catch (_error) {}
-};
+const popoverDiagnosticLog = (_event, _payload = {}) => {};
 
 const popoverDiagnosticShouldRedactKey = (key) => {
     const normalized = String(key ?? '').toLowerCase();
@@ -216,22 +172,7 @@ const popoverDiagnosticShouldRedactKey = (key) => {
         || normalized === 'locationhref';
 };
 
-const highlightStatusLog = (stage, payload = {}) => {
-    try {
-        const details = Object.entries(payload)
-            .filter(([, value]) => value !== undefined)
-            .map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`)
-            .join(' ');
-        const line = details.length > 0
-            ? `# HIGHLIGHT stage=${stage} ${details}`
-            : `# HIGHLIGHT stage=${stage}`;
-        if (globalThis.__manabiLastHighlightStatusViewerLog === line) {
-            return;
-        }
-        globalThis.__manabiLastHighlightStatusViewerLog = line;
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_error) {}
-};
+const highlightStatusLog = (_stage, _payload = {}) => {};
 
 const enableInitialRestoreRenderReadyGate = (reason, payload = {}) => {
     globalThis.__manabiInitialRestoreRenderReadyGate = {
@@ -302,7 +243,6 @@ const markReaderRenderReady = (reason = 'unspecified') => {
             hasReaderContent: !!document.querySelector?.('foliate-view'),
             bodyLoading: !!body?.classList?.contains?.('loading'),
         });
-        postOuterChromeLayoutSnapshot(`renderReady.${reason}`);
     }
     globalThis.__manabiPostReaderDocStateEvent?.(`renderReady.${reason}`);
 };
@@ -505,13 +445,7 @@ const logHighlightGradientDiagnostic = (reason = 'unspecified', explicitDoc = nu
         });
         if (globalThis.__manabiLastHighlightGradientDiagnosticKey === key) return;
         globalThis.__manabiLastHighlightGradientDiagnosticKey = key;
-        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
     } catch (error) {
-        window.webkit?.messageHandlers?.print?.postMessage?.({
-            message: '# HIGHLIGHT ebook.gradient.error',
-            reason,
-            error: String(error),
-        });
     }
 };
 
@@ -1322,193 +1256,125 @@ const layoutElementSnapshot = element => {
     };
 };
 
-const layoutRectOverlap = (a, b) => {
-    if (!a || !b) return null;
-    const left = Math.max(a.left, b.left);
-    const right = Math.min(a.right, b.right);
-    const top = Math.max(a.top, b.top);
-    const bottom = Math.min(a.bottom, b.bottom);
-    const width = Math.max(0, right - left);
-    const height = Math.max(0, bottom - top);
-    return {
-        width: roundLayoutNumber(width),
-        height: roundLayoutNumber(height),
-        area: roundLayoutNumber(width * height),
-    };
+const postManabiCSSLog = (stage, payload = {}) => {
+    try {
+        const parts = Object.entries(payload).map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`);
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# CSS stage=${stage} ${parts.join(' ')}`);
+    } catch (_error) {}
 };
 
-const collectOuterChromeLayoutSnapshot = (reason = 'unknown', event = null) => {
-    const body = document.body;
-    const bodyStyle = body ? getComputedStyle(body) : null;
-    const rootStyle = getComputedStyle(document.documentElement);
-    const readerStage = document.getElementById('reader-stage');
-    const foliateView = Array.from(document.querySelectorAll('foliate-view'))
-        .find((candidate) => candidate?.dataset?.isCache !== 'true') ?? document.querySelector('foliate-view');
-    const leftNav = document.getElementById('btn-scroll-left');
-    const rightNav = document.getElementById('btn-scroll-right');
-    const leftIcon = leftNav?.querySelector?.('.icon') ?? null;
-    const rightIcon = rightNav?.querySelector?.('.icon') ?? null;
-    const loadingIndicator = document.getElementById('loading-indicator');
-    const renderer = foliateView?.renderer ?? globalThis.reader?.view?.renderer ?? null;
-    const shadowRoot = renderer?.shadowRoot ?? null;
-    const container = shadowRoot?.getElementById?.('container') ?? shadowRoot?.querySelector?.('#container') ?? null;
-    const contents = renderer?.getContents?.() || [];
-    const primaryContent = contents.find?.((content) => {
-        const elementRect = content?.element?.getBoundingClientRect?.();
-        const frameRect = content?.iframe?.getBoundingClientRect?.();
-        const doc = content?.doc ?? content?.document ?? content?.iframe?.contentDocument ?? content?.frame?.contentDocument ?? null;
-        return doc?.body && (
-            (elementRect && elementRect.width > 0 && elementRect.height > 0)
-            || (frameRect && frameRect.width > 0 && frameRect.height > 0)
-        );
-    }) ?? contents.find?.((content) =>
-        content?.doc?.body
-        || content?.document?.body
-        || content?.iframe?.contentDocument?.body
-        || content?.frame?.contentDocument?.body
-    ) ?? null;
-    const firstFrame = primaryContent?.iframe ?? primaryContent?.frame ?? null;
-    const contentElement = primaryContent?.element ?? firstFrame?.parentElement ?? null;
-    const contentDoc = primaryContent?.doc
-        ?? primaryContent?.document
-        ?? firstFrame?.contentDocument
-        ?? renderer?.view?.document
-        ?? null;
-    const contentBody = contentDoc?.body ?? null;
-    const contentFirstVisible = contentDoc
-        ? Array.from(contentDoc.querySelectorAll?.('m-m, m-t, img, svg, image, picture, video, object, canvas') ?? [])
-            .find((element) => {
-                const rect = element?.getBoundingClientRect?.();
-                const style = contentDoc.defaultView?.getComputedStyle?.(element);
-                return rect
-                    && rect.width > 0
-                    && rect.height > 0
-                    && rect.right > 0
-                    && rect.bottom > 0
-                    && rect.left < (contentDoc.defaultView?.innerWidth ?? contentDoc.documentElement?.clientWidth ?? 0)
-                    && rect.top < (contentDoc.defaultView?.innerHeight ?? contentDoc.documentElement?.clientHeight ?? 0)
-                    && style?.display !== 'none'
-                    && style?.visibility !== 'hidden'
-                    && Number(style?.opacity ?? 1) !== 0;
-            })
-        : null;
-    const stageRect = readerStage?.getBoundingClientRect?.() ?? null;
-    const foliateRect = foliateView?.getBoundingClientRect?.() ?? null;
-    const leftRect = leftNav?.getBoundingClientRect?.() ?? null;
-    const rightRect = rightNav?.getBoundingClientRect?.() ?? null;
-    const contentElementRect = contentElement?.getBoundingClientRect?.() ?? null;
-    const frameRect = firstFrame?.getBoundingClientRect?.() ?? contentElementRect ?? null;
-    const leftStyle = leftNav ? getComputedStyle(leftNav) : null;
-    const rightStyle = rightNav ? getComputedStyle(rightNav) : null;
-    const leftIconStyle = leftIcon ? getComputedStyle(leftIcon) : null;
-    const rightIconStyle = rightIcon ? getComputedStyle(rightIcon) : null;
-    const loadingStyle = loadingIndicator ? getComputedStyle(loadingIndicator) : null;
-    const contentStyle = contentDoc?.defaultView && contentBody
-        ? contentDoc.defaultView.getComputedStyle(contentBody)
-        : null;
-    const contentFirstRect = contentFirstVisible?.getBoundingClientRect?.() ?? null;
-    const contentFirstViewportRect = contentFirstRect && frameRect
-        ? {
-            left: frameRect.left + contentFirstRect.left,
-            right: frameRect.left + contentFirstRect.right,
-            top: frameRect.top + contentFirstRect.top,
-            bottom: frameRect.top + contentFirstRect.bottom,
-            width: contentFirstRect.width,
-            height: contentFirstRect.height,
+const manabiElementTextContainsJapanese = (element) => /[\u3040-\u30ff\u3400-\u9fff]/.test(element?.textContent ?? '');
+
+const manabiAdjacentElementSibling = (node, direction) => {
+    let sibling = direction === 'previous' ? node?.previousSibling : node?.nextSibling;
+    while (sibling) {
+        if (sibling.nodeType === Node.ELEMENT_NODE) return sibling;
+        if (sibling.nodeType === Node.TEXT_NODE && !/^\s*$/.test(sibling.nodeValue ?? '')) return null;
+        sibling = direction === 'previous' ? sibling.previousSibling : sibling.nextSibling;
+    }
+    return null;
+};
+
+const manabiInterSegmentWhitespaceText = (previousSegment, nextSegment) => {
+    let node = previousSegment?.nextSibling ?? null;
+    let value = '';
+    let count = 0;
+    while (node && node !== nextSegment) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            value += node.nodeValue ?? '';
+            count += 1;
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+            break;
         }
-        : null;
-    return {
-        reason,
-        eventType: event?.type ?? null,
-        eventX: event?.clientX == null ? null : roundLayoutNumber(event.clientX),
-        eventY: event?.clientY == null ? null : roundLayoutNumber(event.clientY),
-        bodyClass: body?.className || null,
-        renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-        bodyLoading: !!body?.classList?.contains?.('loading'),
-        bodyLoadingVisual: !!body?.classList?.contains?.('loading-visual'),
-        sideNavWidthVar: rootStyle?.getPropertyValue('--side-nav-width')?.trim() || bodyStyle?.getPropertyValue('--side-nav-width')?.trim() || null,
-        windowInnerWidth: roundLayoutNumber(window.innerWidth),
-        windowInnerHeight: roundLayoutNumber(window.innerHeight),
-        visualViewportWidth: roundLayoutNumber(window.visualViewport?.width),
-        visualViewportHeight: roundLayoutNumber(window.visualViewport?.height),
-        stageLeft: stageRect ? roundLayoutNumber(stageRect.left) : null,
-        stageRight: stageRect ? roundLayoutNumber(stageRect.right) : null,
-        stageWidth: stageRect ? roundLayoutNumber(stageRect.width) : null,
-        stageTop: stageRect ? roundLayoutNumber(stageRect.top) : null,
-        stageBottom: stageRect ? roundLayoutNumber(stageRect.bottom) : null,
-        foliateLeft: foliateRect ? roundLayoutNumber(foliateRect.left) : null,
-        foliateRight: foliateRect ? roundLayoutNumber(foliateRect.right) : null,
-        foliateWidth: foliateRect ? roundLayoutNumber(foliateRect.width) : null,
-        contentElementLeft: contentElementRect ? roundLayoutNumber(contentElementRect.left) : null,
-        contentElementRight: contentElementRect ? roundLayoutNumber(contentElementRect.right) : null,
-        contentElementWidth: contentElementRect ? roundLayoutNumber(contentElementRect.width) : null,
-        frameLeft: frameRect ? roundLayoutNumber(frameRect.left) : null,
-        frameRight: frameRect ? roundLayoutNumber(frameRect.right) : null,
-        frameWidth: frameRect ? roundLayoutNumber(frameRect.width) : null,
-        leftNavLeft: leftRect ? roundLayoutNumber(leftRect.left) : null,
-        leftNavRight: leftRect ? roundLayoutNumber(leftRect.right) : null,
-        leftNavWidth: leftRect ? roundLayoutNumber(leftRect.width) : null,
-        leftNavPointerEvents: leftStyle?.pointerEvents ?? null,
-        leftNavDisplay: leftStyle?.display ?? null,
-        leftNavVisibility: leftStyle?.visibility ?? null,
-        leftNavDisabled: leftNav?.disabled ?? null,
-        rightNavLeft: rightRect ? roundLayoutNumber(rightRect.left) : null,
-        rightNavRight: rightRect ? roundLayoutNumber(rightRect.right) : null,
-        rightNavWidth: rightRect ? roundLayoutNumber(rightRect.width) : null,
-        rightNavPointerEvents: rightStyle?.pointerEvents ?? null,
-        rightNavDisplay: rightStyle?.display ?? null,
-        rightNavVisibility: rightStyle?.visibility ?? null,
-        rightNavDisabled: rightNav?.disabled ?? null,
-        leftIconLeft: leftIcon ? roundLayoutNumber(leftIcon.getBoundingClientRect().left) : null,
-        leftIconRight: leftIcon ? roundLayoutNumber(leftIcon.getBoundingClientRect().right) : null,
-        leftIconOpacity: leftIconStyle?.opacity ?? null,
-        rightIconLeft: rightIcon ? roundLayoutNumber(rightIcon.getBoundingClientRect().left) : null,
-        rightIconRight: rightIcon ? roundLayoutNumber(rightIcon.getBoundingClientRect().right) : null,
-        rightIconOpacity: rightIconStyle?.opacity ?? null,
-        leftOverlapFoliateArea: layoutRectOverlap(leftRect, foliateRect)?.area ?? null,
-        rightOverlapFoliateArea: layoutRectOverlap(rightRect, foliateRect)?.area ?? null,
-        leftOverlapFrameArea: layoutRectOverlap(leftRect, frameRect)?.area ?? null,
-        rightOverlapFrameArea: layoutRectOverlap(rightRect, frameRect)?.area ?? null,
-        containerClientWidth: roundLayoutNumber(container?.clientWidth),
-        containerScrollWidth: roundLayoutNumber(container?.scrollWidth),
-        contentBodyClass: contentBody?.className || null,
-        contentWritingMode: contentStyle?.writingMode ?? null,
-        contentViewportWidth: roundLayoutNumber(contentDoc?.defaultView?.innerWidth),
-        contentViewportHeight: roundLayoutNumber(contentDoc?.defaultView?.innerHeight),
-        contentBodyClientWidth: roundLayoutNumber(contentBody?.clientWidth),
-        contentBodyScrollWidth: roundLayoutNumber(contentBody?.scrollWidth),
-        contentFirstTag: contentFirstVisible?.tagName?.toLowerCase?.() ?? null,
-        contentFirstLeft: contentFirstRect ? roundLayoutNumber(contentFirstRect.left) : null,
-        contentFirstRight: contentFirstRect ? roundLayoutNumber(contentFirstRect.right) : null,
-        contentFirstWidth: contentFirstRect ? roundLayoutNumber(contentFirstRect.width) : null,
-        contentFirstViewportLeft: contentFirstViewportRect ? roundLayoutNumber(contentFirstViewportRect.left) : null,
-        contentFirstViewportRight: contentFirstViewportRect ? roundLayoutNumber(contentFirstViewportRect.right) : null,
-        contentFirstViewportWidth: contentFirstViewportRect ? roundLayoutNumber(contentFirstViewportRect.width) : null,
-        leftNavGapToFirstContent: leftRect && contentFirstViewportRect
-            ? roundLayoutNumber(contentFirstViewportRect.left - leftRect.right)
-            : null,
-        rightNavGapToFirstContent: rightRect && contentFirstViewportRect
-            ? roundLayoutNumber(rightRect.left - contentFirstViewportRect.right)
-            : null,
-        leftOverlapFirstContentArea: layoutRectOverlap(leftRect, contentFirstViewportRect)?.area ?? null,
-        rightOverlapFirstContentArea: layoutRectOverlap(rightRect, contentFirstViewportRect)?.area ?? null,
-        loadingHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
-        loadingDisplay: loadingStyle?.display ?? null,
-        loadingVisibility: loadingStyle?.visibility ?? null,
-    };
+        node = node.nextSibling;
+    }
+    return { count, value };
 };
 
-const postOuterChromeLayoutSnapshot = (reason = 'unknown', event = null) => {
-    const snapshot = collectOuterChromeLayoutSnapshot(reason, event);
-    const key = JSON.stringify(snapshot);
-    if (globalThis.__manabiLastOuterChromeLayoutSnapshotKey === key && reason !== 'sideNavEvent') return;
-    globalThis.__manabiLastOuterChromeLayoutSnapshotKey = key;
-    cssLayoutLog('readerChrome.layoutSnapshot', snapshot);
+const logManabiVisibleSegmentGaps = (doc, reason, extra = {}) => {
+    try {
+        const body = doc?.body;
+        const win = doc?.defaultView ?? window;
+        if (!body?.classList?.contains?.('reader-vertical-writing')) return;
+        if (body?.dataset?.isEbook !== 'true') return;
+        const viewportTop = win?.visualViewport?.offsetTop ?? 0;
+        const viewportLeft = win?.visualViewport?.offsetLeft ?? 0;
+        const viewportWidth = win?.visualViewport?.width ?? win?.innerWidth ?? 0;
+        const viewportHeight = win?.visualViewport?.height ?? win?.innerHeight ?? 0;
+        const viewportRight = viewportLeft + viewportWidth;
+        const viewportBottom = viewportTop + viewportHeight;
+        const segments = Array.from(doc.querySelectorAll?.('m-m') ?? []);
+        const visible = [];
+        for (const segment of segments) {
+            if (visible.length >= 36) break;
+            const rect = segment.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            if (rect.right < viewportLeft || rect.left > viewportRight || rect.bottom < viewportTop || rect.top > viewportBottom) continue;
+            visible.push({
+                node: segment,
+                rect,
+                surface: (segment.querySelector?.('m-t')?.textContent ?? segment.textContent ?? '').trim().replace(/\s+/g, ' '),
+            });
+        }
+        const pairs = [];
+        for (let index = 0; index + 1 < visible.length && pairs.length < 12; index += 1) {
+            const current = visible[index];
+            const next = visible[index + 1];
+            const sameColumn = Math.abs(current.rect.left - next.rect.left) < 4 || Math.abs(current.rect.right - next.rect.right) < 4;
+            if (!sameColumn) continue;
+            const gap = next.rect.top - current.rect.bottom;
+            const whitespace = manabiInterSegmentWhitespaceText(current.node, next.node);
+            pairs.push({
+                surfaces: `${current.surface}>${next.surface}`,
+                gap: roundLayoutNumber(gap),
+                wsCount: whitespace.count,
+                wsLength: whitespace.value.length,
+                ws: JSON.stringify(whitespace.value.slice(0, 24)),
+                prevBottom: roundLayoutNumber(current.rect.bottom),
+                nextTop: roundLayoutNumber(next.rect.top),
+            });
+        }
+        postManabiCSSLog('readerLayout.segmentGaps', {
+            reason,
+            visibleSegmentCount: visible.length,
+            pairCount: pairs.length,
+            bodyClass: body.className,
+            ...extra,
+            pairs: JSON.stringify(pairs),
+        });
+    } catch (error) {
+        postManabiCSSLog('readerLayout.segmentGaps.error', {
+            reason,
+            error: error?.message || String(error),
+        });
+    }
 };
 
 const normalizeManabiSegmentWhitespace = (doc) => {
     try {
         if (!doc?.body || isCacheWarmerDocument(doc)) return;
+        const shouldRemoveInterSegmentWhitespace =
+            doc.body.classList?.contains?.('reader-vertical-writing') === true
+            && doc.body.dataset?.isEbook === 'true';
+        let removedInterSegmentWhitespaceCount = 0;
+        if (shouldRemoveInterSegmentWhitespace) {
+            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+            const removableNodes = [];
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (!/^\s+$/.test(node.nodeValue ?? '')) continue;
+                const previous = manabiAdjacentElementSibling(node, 'previous');
+                const next = manabiAdjacentElementSibling(node, 'next');
+                if (previous?.tagName?.toLowerCase?.() !== 'm-m') continue;
+                if (next?.tagName?.toLowerCase?.() !== 'm-m') continue;
+                if (!manabiElementTextContainsJapanese(previous) || !manabiElementTextContainsJapanese(next)) continue;
+                removableNodes.push(node);
+            }
+            for (const node of removableNodes) {
+                node.remove();
+                removedInterSegmentWhitespaceCount += 1;
+            }
+        }
         for (const segment of doc.querySelectorAll?.('m-m') ?? []) {
             for (const containerNode of [segment, ...Array.from(segment.querySelectorAll?.('ruby') ?? [])]) {
                 for (const node of Array.from(containerNode.childNodes ?? [])) {
@@ -1527,6 +1393,11 @@ const normalizeManabiSegmentWhitespace = (doc) => {
                     }
                 }
             }
+        }
+        if (shouldRemoveInterSegmentWhitespace) {
+            logManabiVisibleSegmentGaps(doc, 'normalizeManabiSegmentWhitespace.after', {
+                removedInterSegmentWhitespaceCount,
+            });
         }
     } catch (_error) {}
 };
@@ -3124,9 +2995,6 @@ const manabiTimelineMark = (event, payload = {}) => {
     try {
         performance?.mark?.(label);
     } catch (_error) {}
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# MANABITRACE ${label}`);
-    } catch (_error) {}
     return label;
 };
 const manabiTimelineMeasure = (event, startedAt, payload = {}, thresholdMs = MANABI_TIMELINE_SLOW_THRESHOLD_MS) => {
@@ -4059,22 +3927,6 @@ const positiveClientRectsForNode = (node) => {
             return rects;
         }
     }
-    const doc = node?.ownerDocument ?? null;
-    if (doc?.createRange && node?.childNodes?.length > 0) {
-        const range = doc.createRange();
-        try {
-            range.selectNodeContents(node);
-            const rects = Array.from(range.getClientRects?.() ?? [])
-                .filter((rect) => rect && rect.width > 0 && rect.height > 0);
-            if (rects.length > 0) {
-                return rects;
-            }
-        } catch (_error) {
-            // ignore unmeasurable nodes
-        } finally {
-            range.detach?.();
-        }
-    }
     const boundingRect = positiveBoundingClientRectForNode(node);
     return boundingRect ? [boundingRect] : [];
 };
@@ -4701,63 +4553,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }, 50);
         return cachedCollection;
     }
-    if (isEbookDoc && visibleBounds) {
-        const allSegmentNodes = Array.from(doc.querySelectorAll?.('m-m') ?? []);
-        const queryCompletedAt = performance.now();
-        const measured = measureVisibleSegmentsInWindow(allSegmentNodes, null, visibleBounds, {
-            assumeInVisibleRange: true,
-            includeClientRects,
-        });
-        const completedAt = performance.now();
-        manabiTimelineMeasure('visibleSegments.collect', startedAt, {
-            source: 'ebook-viewport-rect-scan',
-            reason,
-            includeClientRects,
-            useVisibleRange: false,
-            totalSegmentCount: allSegmentNodes.length,
-            visibleSegmentCount: measured.visibleSegments.length,
-            viewportSampleCount: 0,
-            viewportSampleMeasuredCount: 0,
-            viewportSampleMergedCount: 0,
-            rectMeasureCount: measured.rectMeasureCount,
-            hiddenTooltipCount: measured.hiddenTooltipCount,
-            missingIdentifierCount: measured.missingIdentifierCount,
-            outOfViewportCount: measured.outOfViewportCount,
-            queryElapsedMs: queryCompletedAt - startedAt,
-            rectMeasureElapsedMs: measured.rectMeasureElapsedMs,
-            rangeCheckElapsedMs: measured.rangeCheckElapsedMs,
-            broadEbookRangeAncestor: isBroadEbookRangeAncestor,
-            elapsedMs: completedAt - startedAt,
-        }, 100);
-        const result = {
-            visibleSegments: measured.visibleSegments,
-            viewportWidth,
-            viewportHeight,
-            viewportLeft,
-            viewportTop,
-            frameLeft: Number.isFinite(frameRect?.left) ? frameRect.left : 0,
-            frameTop: Number.isFinite(frameRect?.top) ? frameRect.top : 0,
-            frameWidth: Number.isFinite(frameRect?.width) ? frameRect.width : null,
-            frameHeight: Number.isFinite(frameRect?.height) ? frameRect.height : null,
-            containerLeft: Number.isFinite(containerRect?.left) ? containerRect.left : null,
-            containerTop: Number.isFinite(containerRect?.top) ? containerRect.top : null,
-            containerWidth: Number.isFinite(containerRect?.width) ? containerRect.width : null,
-            containerHeight: Number.isFinite(containerRect?.height) ? containerRect.height : null,
-            hasExpectedPaginatorContainer,
-            totalSegmentCount: allSegmentNodes.length,
-            segmentCandidateSource: 'ebook-viewport-rect-scan',
-            viewportSampleCount: 0,
-            viewportSampleMeasuredCount: 0,
-            viewportSampleMergedCount: 0,
-            hiddenTooltipCount: measured.hiddenTooltipCount,
-            missingIdentifierCount: measured.missingIdentifierCount,
-            outOfViewportCount: measured.outOfViewportCount,
-            includeClientRects,
-        };
-        cacheVisibleSegmentCollection(doc, collectionCacheKey, result);
-        return result;
-    }
-    const expandedRangeResult = useVisibleRange && !isEbookDoc
+    const expandedRangeResult = useVisibleRange && (!isEbookDoc || !isBroadEbookRangeAncestor)
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects })
         : null;
     let viewportSample = null;
@@ -6214,10 +6010,9 @@ const getCSSForBookContent = ({
     }
     body.reader-vertical-writing[data-is-ebook="true"] m-m {
         display: inline !important;
+        contain: none !important;
         vertical-align: baseline !important;
         break-inside: auto !important;
-        break-before: auto !important;
-        break-after: auto !important;
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
     }
@@ -8444,7 +8239,7 @@ class Reader {
         const effectivePostLookupTargets = postLookupTargets;
         const effectiveIncludeClientRects = includeClientRects && effectivePostLookupTargets;
         const isEbookDoc = isEbookContentDocument(doc);
-        const collectionVisibleRange = isEbookDoc ? null : visibleRange;
+        const collectionVisibleRange = visibleRange;
         if (doc?.defaultView) {
             doc.defaultView.__manabiVisibleSegmentCollectionGeneration = this.visiblePageCollectionGeneration;
         }
@@ -9127,13 +8922,6 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
-            postOuterChromeLayoutSnapshot('sideNavEvent', {
-                type: eventType,
-                clientX: side === 'left'
-                    ? button?.getBoundingClientRect?.().left
-                    : button?.getBoundingClientRect?.().right,
-                clientY: button?.getBoundingClientRect?.().top,
-            });
             const compactDisabled = isCompactNavigationSheetSidePaginationDisabled();
             if (button?.disabled || compactDisabled) {
                 readerLoadLog('pageTurn.sideButton.skip', {
@@ -9180,8 +8968,7 @@ class Reader {
             });
         };
         const leftSideBtn = document.getElementById('btn-scroll-left');
-        if (leftSideBtn) leftSideBtn.addEventListener('click', async (event) => {
-            postOuterChromeLayoutSnapshot('sideNavEvent', event);
+        if (leftSideBtn) leftSideBtn.addEventListener('click', async () => {
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'left'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
@@ -9190,8 +8977,7 @@ class Reader {
             await runSideButtonPageTurn('left', 'goLeft', leftSideBtn, 'click');
         });
         const rightSideBtn = document.getElementById('btn-scroll-right');
-        if (rightSideBtn) rightSideBtn.addEventListener('click', async (event) => {
-            postOuterChromeLayoutSnapshot('sideNavEvent', event);
+        if (rightSideBtn) rightSideBtn.addEventListener('click', async () => {
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'right'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
@@ -9203,14 +8989,12 @@ class Reader {
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
             nav.addEventListener('touchstart', (event) => {
-                postOuterChromeLayoutSnapshot('sideNavEvent', event);
                 if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
             nav.addEventListener('touchend', (event) => {
-                postOuterChromeLayoutSnapshot('sideNavEvent', event);
                 nav.classList.remove('pressed');
                 if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
@@ -10319,9 +10103,6 @@ class Reader {
         const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
         const direction = request?.direction === 'previous' ? 'previous' : 'next';
         const functionName = 'manabi_openVisibleLookupTargetAfterPageTurn';
-        console.log('# POPOVER lookup.nav.visibleAfterPageTurn.begin',
-            `kind=${kind}`,
-            `direction=${direction}`);
         await this.#waitForLookupContentFunction(functionName);
         const contentWindows = this.#lookupContentWindows()
             .filter((view) => typeof view?.[functionName] === 'function');
@@ -10359,30 +10140,12 @@ class Reader {
                 failureReason: result?.failureReason ?? null,
                 targetElementID: result?.target?.id ?? null,
             });
-            console.log('# POPOVER lookup.nav.visibleAfterPageTurn.attempt',
-                `kind=${kind}`,
-                `direction=${direction}`,
-                `opened=${result?.opened === true}`,
-                `failureReason=${result?.failureReason ?? 'nil'}`,
-                `targetElementID=${result?.target?.id ?? 'nil'}`,
-                `attemptCount=${attempts.length}`);
             if (result?.opened === true) {
                 result.contentWindowURL = contentWindow.location?.href ?? null;
                 result.contentWindowAttempts = attempts;
-                console.log('# POPOVER lookup.nav.visibleAfterPageTurn.finish',
-                    `kind=${kind}`,
-                    `direction=${direction}`,
-                    'opened=true',
-                    `attemptCount=${attempts.length}`);
                 return result;
             }
             if (result?.failureReason !== 'noVisibleTargetAfterPageTurn') {
-                console.log('# POPOVER lookup.nav.visibleAfterPageTurn.finish',
-                    `kind=${kind}`,
-                    `direction=${direction}`,
-                    'opened=false',
-                    `failureReason=${result?.failureReason ?? 'nil'}`,
-                    `attemptCount=${attempts.length}`);
                 return {
                     ...(result ?? {}),
                     opened: false,
@@ -10393,12 +10156,6 @@ class Reader {
                 };
             }
         }
-        console.log('# POPOVER lookup.nav.visibleAfterPageTurn.finish',
-            `kind=${kind}`,
-            `direction=${direction}`,
-            'opened=false',
-            'failureReason=noVisibleTargetAfterPageTurn',
-            `attemptCount=${attempts.length}`);
         return {
             opened: false,
             failureReason: 'noVisibleTargetAfterPageTurn',
@@ -10410,10 +10167,6 @@ class Reader {
     async #turnLookupNavigationPage(direction) {
         const renderer = this.view?.renderer;
         if (!renderer || !this.view) {
-            console.log('# POPOVER lookup.nav.pageTurn.step',
-                `direction=${direction}`,
-                'moved=false',
-                'failureReason=missingRenderer');
             return {
                 moved: false,
                 failureReason: 'missingRenderer',
@@ -10428,66 +10181,30 @@ class Reader {
                 this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
                 this.#applyLogicalPageTurnNavigationVisibility('forward', 'lookup-navigation.next-section');
                 await renderer.nextSection?.();
-                console.log('# POPOVER lookup.nav.pageTurn.step',
-                    'direction=next',
-                    'mode=nextSection',
-                    `atStart=${atStart}`,
-                    `atEnd=${atEnd}`,
-                    `before=${JSON.stringify(beforePosition)}`);
                 return { moved: true, mode: 'nextSection' };
             }
             this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
             this.#applyLogicalPageTurnNavigationVisibility('forward', 'lookup-navigation.page');
             if (this.isRTL) {
                 await this.view.goLeft();
-                console.log('# POPOVER lookup.nav.pageTurn.step',
-                    'direction=next',
-                    'mode=goLeft',
-                    `atStart=${atStart}`,
-                    `atEnd=${atEnd}`,
-                    `before=${JSON.stringify(beforePosition)}`);
                 return { moved: true, mode: 'goLeft' };
             }
             await this.view.goRight();
-            console.log('# POPOVER lookup.nav.pageTurn.step',
-                'direction=next',
-                'mode=goRight',
-                `atStart=${atStart}`,
-                `atEnd=${atEnd}`,
-                `before=${JSON.stringify(beforePosition)}`);
             return { moved: true, mode: 'goRight' };
         }
         if (atStart === true) {
             this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
             this.#applyLogicalPageTurnNavigationVisibility('backward', 'lookup-navigation.previous-section');
             await renderer.prevSection?.();
-            console.log('# POPOVER lookup.nav.pageTurn.step',
-                'direction=previous',
-                'mode=prevSection',
-                `atStart=${atStart}`,
-                `atEnd=${atEnd}`,
-                `before=${JSON.stringify(beforePosition)}`);
             return { moved: true, mode: 'prevSection' };
         }
         this.#clearVisiblePageReadChrome('lookup-navigation-page-turn-start');
         this.#applyLogicalPageTurnNavigationVisibility('backward', 'lookup-navigation.page');
         if (this.isRTL) {
             await this.view.goRight();
-            console.log('# POPOVER lookup.nav.pageTurn.step',
-                'direction=previous',
-                'mode=goRight',
-                `atStart=${atStart}`,
-                `atEnd=${atEnd}`,
-                `before=${JSON.stringify(beforePosition)}`);
             return { moved: true, mode: 'goRight' };
         }
         await this.view.goLeft();
-        console.log('# POPOVER lookup.nav.pageTurn.step',
-            'direction=previous',
-            'mode=goLeft',
-            `atStart=${atStart}`,
-            `atEnd=${atEnd}`,
-            `before=${JSON.stringify(beforePosition)}`);
         return { moved: true, mode: 'goLeft' };
     }
     async performLookupNavigationPageTurn(request = {}) {
@@ -10498,21 +10215,8 @@ class Reader {
         const maxPageTurns = Math.max(1, Math.min(12, Number.isFinite(request?.maxPageTurns) ? Math.round(request.maxPageTurns) : 8));
         const startedAt = performance.now();
         const attempts = [];
-        console.log('# POPOVER lookup.nav.pageTurn.begin',
-            `kind=${kind}`,
-            `direction=${direction}`,
-            `maxPageTurns=${maxPageTurns}`,
-            `failureReason=${request?.failureReason ?? 'nil'}`,
-            `currentElementID=${request?.currentElementID ?? 'nil'}`,
-            `currentSegmentIdentifier=${request?.currentSegmentIdentifier ?? 'nil'}`);
         for (let pageTurnIndex = 0; pageTurnIndex < maxPageTurns; pageTurnIndex += 1) {
             if (this.lookupNavigationPageTurnToken !== token) {
-                console.log('# POPOVER lookup.nav.pageTurn.finish',
-                    `kind=${kind}`,
-                    `direction=${direction}`,
-                    'opened=false',
-                    'failureReason=superseded',
-                    `attemptCount=${attempts.length}`);
                 return {
                     opened: false,
                     failureReason: 'superseded',
@@ -10542,15 +10246,6 @@ class Reader {
                 turnResult.positionChanged = positionChanged;
             }
             if (turnResult?.moved === false || !positionChanged) {
-                console.log('# POPOVER lookup.nav.pageTurn.attempt',
-                    `kind=${kind}`,
-                    `direction=${direction}`,
-                    `pageTurnIndex=${pageTurnIndex}`,
-                    `moved=${turnResult?.moved === true}`,
-                    `positionChanged=${positionChanged}`,
-                    `turnMode=${turnResult?.mode ?? 'nil'}`,
-                    `visibleTargetOpened=false`,
-                    `visibleTargetFailureReason=${turnResult?.failureReason ?? (positionChanged ? 'nil' : 'pageTurnDidNotMove')}`);
                 attempts.push({
                     pageTurnIndex,
                     turnResult,
@@ -10582,23 +10277,7 @@ class Reader {
             }
             attempt.visibleTargetOpened = visibleTargetResult?.opened === true;
             attempt.visibleTargetFailureReason = visibleTargetResult?.failureReason ?? null;
-            console.log('# POPOVER lookup.nav.pageTurn.attempt',
-                `kind=${kind}`,
-                `direction=${direction}`,
-                `pageTurnIndex=${pageTurnIndex}`,
-                `moved=${turnResult?.moved === true}`,
-                `positionChanged=${positionChanged}`,
-                `turnMode=${turnResult?.mode ?? 'nil'}`,
-                `visibleTargetOpened=${attempt.visibleTargetOpened}`,
-                `visibleTargetFailureReason=${attempt.visibleTargetFailureReason ?? 'nil'}`);
             if (visibleTargetResult?.opened === true) {
-                console.log('# POPOVER lookup.nav.pageTurn.finish',
-                    `kind=${kind}`,
-                    `direction=${direction}`,
-                    'opened=true',
-                    `pageTurnIndex=${pageTurnIndex}`,
-                    `turnMode=${turnResult?.mode ?? 'nil'}`,
-                    `attemptCount=${attempts.length}`);
                 return {
                     opened: true,
                     kind,
@@ -10613,12 +10292,6 @@ class Reader {
                 break;
             }
         }
-        console.log('# POPOVER lookup.nav.pageTurn.finish',
-            `kind=${kind}`,
-            `direction=${direction}`,
-            'opened=false',
-            'failureReason=pageTurnLookupTargetNotFound',
-            `attemptCount=${attempts.length}`);
         return {
             opened: false,
             failureReason: 'pageTurnLookupTargetNotFound',
@@ -11044,10 +10717,6 @@ class Reader {
             const sourceHref = doc?.body?.dataset?.mnbSourceHref || null;
             if (!isCacheWarmerDocument(doc)) {
                 window.manabi_recordLiveSettledSection?.(sourceHref);
-                postOuterChromeLayoutSnapshot('reader.documentLoad.raf');
-                setTimeout(() => {
-                    postOuterChromeLayoutSnapshot('reader.documentLoad.followUp');
-                }, 250);
             }
         });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
@@ -12033,7 +11702,6 @@ window.loadEBook = ({
                 hasRenderer: !!reader?.view?.renderer,
                 renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
             });
-            postOuterChromeLayoutSnapshot('loadEBook.readerOpen.finish');
             const postOpenLocation = reader?.view?.lastLocation ?? null;
             globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.readerOpen.finish', {
                 loadToken,
@@ -12073,7 +11741,6 @@ window.loadEBook = ({
                     hasRenderer: !!reader?.view?.renderer,
                     renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
                 });
-                postOuterChromeLayoutSnapshot('loadEBook.readerOpen.loadingCleared');
             }
             if (pendingInitialRestoreAfterOpen) {
                 globalThis.__manabiPendingInitialRestore = null;

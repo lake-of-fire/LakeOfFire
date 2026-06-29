@@ -63,7 +63,7 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
         return doc
     } catch {
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
-            print("# VISIBLERANGE sentinelPreprocess.minimal.error \(error)")
+            ()
         }
         return doc
     }
@@ -201,22 +201,7 @@ public func ebookTextProcessor(
         let elapsedMs = ebookProcessorElapsedMilliseconds(since: totalStartedAt)
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled
             || (!isCacheWarmer && elapsedMs >= ebookTextProcessorSlowLogThresholdMs) {
-            debugPrint(
-                "# READERLOAD stage=ebookTextProcessor.slow",
-                "hasSection=\(!sectionLocation.isEmpty)",
-                "isCacheWarmer=\(isCacheWarmer)",
-                "requestBytes=\(content.utf8.count)",
-                "responseBytes=\(htmlBytes.count)",
-                "elapsedMs=\(elapsedMs)",
-                "readabilityProcessElapsedMs=\(readabilityProcessElapsedMs)",
-                "fallbackParseElapsedMs=\(fallbackParseElapsedMs)",
-                "readerModeProcessElapsedMs=\(readerModeProcessElapsedMs)",
-                "preprocessEbookElapsedMs=\(preprocessEbookElapsedMs)",
-                "serializeElapsedMs=\(serializeElapsedMs)",
-                "processHTMLBytesElapsedMs=\(processHTMLBytesElapsedMs)",
-                "processHTMLElapsedMs=\(processHTMLElapsedMs)",
-                "responseDecodeElapsedMs=\(responseDecodeElapsedMs)"
-            )
+            ()
         }
         return response
     } catch {
