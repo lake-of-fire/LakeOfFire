@@ -78,7 +78,7 @@ const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
         if (typeof globalThis.__manabiReaderLoadLog !== 'function') return
         if (!String(globalThis.__manabiNavigationIntent?.source || '').startsWith('restore')) return
-        globalThis.__manabiReaderLoadLog(stage, payload)
+        ()
     } catch (_error) {}
 }
 

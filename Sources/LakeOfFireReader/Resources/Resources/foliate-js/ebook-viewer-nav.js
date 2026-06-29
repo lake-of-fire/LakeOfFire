@@ -111,7 +111,7 @@ const safeRound = (value, digits = 1) =>
 
 const readerNavLoadLog = (stage, payload = {}) => {
     try {
-        globalThis.__manabiReaderLoadLog?.(stage, payload);
+        ();
     } catch (_error) {}
 };
 

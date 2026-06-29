@@ -306,7 +306,7 @@ const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
     try {
         const readerPayload = manabiReaderLoadPayload(payload);
         if (typeof globalThis.__manabiReaderLoadLog === 'function') {
-            globalThis.__manabiReaderLoadLog(stage, readerPayload);
+            ();
             return;
         }
         if (!manabiShouldEmitPaginatorFallbackReaderLoadLog(stage)) return;

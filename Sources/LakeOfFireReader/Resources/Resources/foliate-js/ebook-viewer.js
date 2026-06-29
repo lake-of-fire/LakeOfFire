@@ -5628,10 +5628,7 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
         && typeof globalThis.__manabiReaderLoadLog === 'function';
     const readerLoadStartedAt = performanceNowMs();
     if (readerLoadTrace) {
-        globalThis.__manabiReaderLoadLog('nativeEntry.fetch.start', {
-            subpath,
-            pendingCount: globalThis.__manabiForegroundNativeResourcePendingCount ?? 0,
-        });
+        ();
     }
     try {
         const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
@@ -5640,13 +5637,7 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
             },
         })
         if (readerLoadTrace) {
-            globalThis.__manabiReaderLoadLog('nativeEntry.fetch.response', {
-                subpath,
-                status: response.status,
-                ok: response.ok,
-                elapsedMs: Math.round(performanceNowMs() - readerLoadStartedAt),
-                pendingCount: globalThis.__manabiForegroundNativeResourcePendingCount ?? 0,
-            });
+            ();
         }
         if (!response.ok) {
             finishNativeForegroundResourceTrace(trace, 'http-not-ok', {
@@ -5658,12 +5649,7 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
         return response
     } catch (error) {
         if (readerLoadTrace) {
-            globalThis.__manabiReaderLoadLog('nativeEntry.fetch.error', {
-                subpath,
-                elapsedMs: Math.round(performanceNowMs() - readerLoadStartedAt),
-                error: error?.message || String(error),
-                pendingCount: globalThis.__manabiForegroundNativeResourcePendingCount ?? 0,
-            });
+            ();
         }
         finishNativeForegroundResourceTrace(trace, 'error', {
             error: error?.message || String(error),
@@ -5690,13 +5676,7 @@ const readNativeEntryText = async (response) => {
         }
         const text = decoder.decode(arrayBuffer)
         if (readerLoadTrace) {
-            globalThis.__manabiReaderLoadLog('nativeEntry.body.text', {
-                subpath: trace.subpath,
-                bytes: arrayBuffer.byteLength,
-                chars: text.length,
-                elapsedMs: Math.round(performanceNowMs() - readerLoadStartedAt),
-                pendingCount: globalThis.__manabiForegroundNativeResourcePendingCount ?? 0,
-            })
+            ()
         }
         return text
     } finally {

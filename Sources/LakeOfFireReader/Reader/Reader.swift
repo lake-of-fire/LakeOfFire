@@ -955,27 +955,12 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
         let loadStartedAt = CFAbsoluteTimeGetCurrent()
-        ReaderLoadSignposts.event(
-            .navigatorContentBegin,
-            [
-                "attached": "\(hasAttachedWebView)",
-                "contentURL": content.url.absoluteString,
-                "ready": "\(isReadyForDirectLoad)"
-            ]
-        )
+        ()
         lakeReaderLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
         lakeReaderModeLoadDebugLog("navigator.content.begin contentURL=\(content.url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad) hasReaderModeViewModel=\(readerModeViewModel != nil)")
         let beginSnapshot = debugLoadSnapshot
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
-            ReaderLoadSignposts.event(
-                .navigatorContentResolved,
-                [
-                    "attached": "\(hasAttachedWebView)",
-                    "contentURL": content.url.absoluteString,
-                    "ready": "\(isReadyForDirectLoad)",
-                    "targetURL": url.absoluteString
-                ]
-            )
+            ()
             lakeReaderLoadDebugLog("navigator.content.resolved contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             let loadSnapshot = debugLoadSnapshot
             let resolvedAt = CFAbsoluteTimeGetCurrent()
@@ -1019,15 +1004,7 @@ public extension WebViewNavigator {
                 return
             }
             lakeReaderLoadDebugLog("navigator.content.dispatch targetURL=\(url.absoluteString)")
-            ReaderLoadSignposts.event(
-                .navigatorContentDispatch,
-                [
-                    "attached": "\(hasAttachedWebView)",
-                    "elapsedSinceResolved": readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt),
-                    "ready": "\(isReadyForDirectLoad)",
-                    "targetURL": url.absoluteString
-                ]
-            )
+            ()
             lakeReaderModeLoadDebugLog("navigator.content.dispatch.begin targetURL=\(url.absoluteString) elapsedSinceResolved=\(readerLoadDurationString(CFAbsoluteTimeGetCurrent() - resolvedAt)) attached=\(hasAttachedWebView) ready=\(isReadyForDirectLoad)")
             load(URLRequest(url: url))
             let afterDispatchSnapshot = debugLoadSnapshot

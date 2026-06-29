@@ -243,20 +243,7 @@ export class View extends HTMLElement {
             pageTurnDirection,
         }
         const nextSignature = readerLoadLocationSignature(this.lastLocation)
-        globalThis.__manabiReaderLoadLog?.('view.relocate', {
-            index,
-            sectionIndex: this.lastLocation.sectionIndex,
-            reason,
-            pageTurnDirection: pageTurnDirection ?? null,
-            fraction: typeof fraction === 'number' ? readerLoadRound(fraction, 6) : null,
-            size: typeof size === 'number' ? readerLoadRound(size, 6) : null,
-            locationCurrent: this.lastLocation.location?.current ?? null,
-            locationTotal: this.lastLocation.location?.total ?? null,
-            pageItemLabel: typeof pageItem?.label === 'string' ? pageItem.label : null,
-            cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-            duplicateSignature: previousSignature === nextSignature,
-            signature: nextSignature,
-        })
+        ()
         this.#lastReaderLoadRelocateSignature = nextSignature
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
@@ -268,11 +255,7 @@ export class View extends HTMLElement {
         if (!this.language.isCJK)
             doc.documentElement.dir ||= this.language.direction ?? ''
 
-        globalThis.__manabiReaderLoadLog?.('view.document.load', {
-            index,
-            location: readerLoadLocationID(location?.href ?? location),
-            ...readerLoadDocumentSnapshot(doc),
-        })
+        ()
         this.#handleLinks(doc, index)
         this.#emit('load', { doc, location, index })
     }
@@ -392,21 +375,11 @@ export class View extends HTMLElement {
     async goTo(target) {
         //        this.#emit('is-loading', true)
         const resolved = this.resolveNavigation(target)
-        globalThis.__manabiReaderLoadLog?.('view.goTo.resolved', {
-            targetType: typeof target,
-            target: typeof target === 'string' || typeof target === 'number' ? String(target).slice(0, 160) : null,
-            index: resolved?.index ?? null,
-            anchorType: typeof resolved?.anchor,
-            hasRenderer: !!this.renderer,
-        })
+        ()
         try {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
-            globalThis.__manabiReaderLoadLog?.('view.goTo.finish', {
-                index: resolved?.index ?? null,
-                anchorType: typeof resolved?.anchor,
-                lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-            })
+            ()
             return resolved
         } catch(e) {
             console.error(e)
@@ -424,32 +397,13 @@ export class View extends HTMLElement {
         const round = globalThis.__manabiSafeRound ?? ((value) => value);
         const startedAt = now();
         const [index, anchor] = this.#sectionProgress.getSection(frac)
-        globalThis.__manabiReaderLoadLog?.('view.goToFraction.resolved', {
-            fraction: typeof frac === 'number' ? round(frac, 6) : null,
-            index,
-            anchorType: typeof anchor,
-            anchor: typeof anchor === 'number' ? round(anchor, 6) : null,
-            hasRenderer: !!this.renderer,
-        });
+        ();
         try {
             await this.renderer.goTo({ index, anchor })
             this.history.pushState({ fraction: frac })
-            globalThis.__manabiReaderLoadLog?.('view.goToFraction.finish', {
-                fraction: typeof frac === 'number' ? round(frac, 6) : null,
-                index,
-                anchorType: typeof anchor,
-                anchor: typeof anchor === 'number' ? round(anchor, 6) : null,
-                elapsedMs: round(now() - startedAt, 1),
-            });
+            ();
         } catch (error) {
-            globalThis.__manabiReaderLoadLog?.('view.goToFraction.error', {
-                fraction: typeof frac === 'number' ? round(frac, 6) : null,
-                index,
-                anchorType: typeof anchor,
-                anchor: typeof anchor === 'number' ? round(anchor, 6) : null,
-                elapsedMs: round(now() - startedAt, 1),
-                error: error?.message || String(error),
-            });
+            ();
             throw error;
         }
     }
@@ -521,65 +475,35 @@ export class View extends HTMLElement {
         }
     }
     async prev(distance) {
-        globalThis.__manabiReaderLoadLog?.('view.prev.start', {
-            distance: distance ?? null,
-            bookDir: this.book?.dir ?? null,
-            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-        })
+        ()
         try {
             const result = await this.renderer.prev(distance)
-            globalThis.__manabiReaderLoadLog?.('view.prev.finish', {
-                distance: distance ?? null,
-                bookDir: this.book?.dir ?? null,
-                lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-            })
+            ()
             return result
         } catch (error) {
-            globalThis.__manabiReaderLoadLog?.('view.prev.error', {
-                distance: distance ?? null,
-                message: error?.message ?? String(error),
-            })
+            ()
             throw error
         }
     }
     async next(distance) {
-        globalThis.__manabiReaderLoadLog?.('view.next.start', {
-            distance: distance ?? null,
-            bookDir: this.book?.dir ?? null,
-            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-        })
+        ()
         try {
             const result = await this.renderer.next(distance)
-            globalThis.__manabiReaderLoadLog?.('view.next.finish', {
-                distance: distance ?? null,
-                bookDir: this.book?.dir ?? null,
-                lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-            })
+            ()
             return result
         } catch (error) {
-            globalThis.__manabiReaderLoadLog?.('view.next.error', {
-                distance: distance ?? null,
-                message: error?.message ?? String(error),
-            })
+            ()
             throw error
         }
     }
     async goLeft() {
         const method = this.book.dir === 'rtl' ? 'next' : 'prev'
-        globalThis.__manabiReaderLoadLog?.('view.goLeft.dispatch', {
-            bookDir: this.book?.dir ?? null,
-            method,
-            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-        })
+        ()
         return method === 'next' ? await this.next() : await this.prev()
     }
     async goRight() {
         const method = this.book.dir === 'rtl' ? 'prev' : 'next'
-        globalThis.__manabiReaderLoadLog?.('view.goRight.dispatch', {
-            bookDir: this.book?.dir ?? null,
-            method,
-            lastRelocateSignature: this.#lastReaderLoadRelocateSignature,
-        })
+        ()
         return method === 'prev' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {
