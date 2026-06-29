@@ -14,97 +14,6 @@ const MANABI_ENABLE_DID_DISPLAY_POST_FRAME_SETTLE = false;
 const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 const MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS = false;
-const MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS = 5000;
-
-const ebookLoadLogNumber = (value) => {
-    if (!Number.isFinite(value)) return String(value);
-    if (Number.isInteger(value)) return String(value);
-    const abs = Math.abs(value);
-    const digits = abs > 0 && abs < 1 ? 6 : (abs < 1000 ? 2 : 1);
-    return String(Number(value.toFixed(digits)));
-};
-
-const ebookLoadLogValue = (value) => {
-    if (value == null) return 'nil';
-    if (typeof value === 'number') return ebookLoadLogNumber(value);
-    if (typeof value === 'boolean') return value ? 'true' : 'false';
-    return String(value).replace(/\s+/g, ' ').slice(0, 180);
-};
-
-const ebookLoadLog = (_event, _payload = {}) => {};
-
-const readerLoadVerboseLogs = () =>
-    globalThis.__manabiReaderLoadVerbose === true
-    || globalThis.__manabiPaginatorVerbosePageTurns === true
-    || globalThis.__manabiTimelineTraceAll === true;
-const readerLoadImportantStages = new Set([
-    'viewer.renderReady.marked',
-    'viewer.initialDisplay.firstSection.finish',
-    'viewer.initialDisplay.restoreNotSatisfied',
-    'viewer.initialRestore.finalized',
-    'viewer.loadEBook.readerOpen.finish',
-]);
-const readerLoadNoisyPrefixes = [
-    'ebook.updateReadingProgress.',
-    'hideNav.',
-    'nav.relocateHistory.',
-    'paginator.blankPageCorrection.',
-    'paginator.display.',
-    'paginator.prefetch.',
-    'paginator.goTo.',
-    'paginator.render.',
-    'paginator.section.load.',
-    'paginator.view.',
-    'processText.directionProbe.',
-    'readerMode.domSummary.',
-    'readerPresentationState.',
-    'readerSettings.',
-    'view.',
-    'viewer.didDisplay.',
-    'viewer.initialDisplay.',
-    'viewer.nativeLookup.',
-    'viewer.percent.',
-    'viewer.progress.',
-    'viewer.restoreLocator.',
-    'viewer.visibleLookup.',
-];
-const shouldEmitReaderLoadLog = (stage, payload = {}) => {
-    if (readerLoadVerboseLogs()) return true;
-    if (typeof stage !== 'string') return false;
-    if (readerLoadImportantStages.has(stage)) return true;
-    if (stage.includes('error') || stage.includes('fail') || stage.includes('invalid') || stage.includes('watchdog') || stage.includes('slow')) return true;
-    if (stage === 'paginator.pageTurn.ignoreLocked') return true;
-    if (stage === 'paginator.pageTurn.dropDuplicate') return true;
-    if (stage === 'paginator.pageTurn.noMove') return true;
-    if (stage === 'paginator.pageTurn.anomaly') return true;
-    if (
-        (
-            stage === 'paginator.mediaVisual.event'
-            || stage === 'paginator.mediaVisual.followUp'
-            || stage === 'paginator.display.visualSnapshot'
-            || stage === 'paginator.pageTurn.visualSnapshot'
-        )
-        && payload?.hasImageBody === true
-    ) {
-        return true;
-    }
-    if (stage === 'ebook.updateReadingProgress.dropStale') return true;
-    if (stage === 'ebook.updateReadingProgress.skipBlankViewport') return true;
-    if (stage.startsWith('pageTurn.') && (stage.endsWith('.finish') || stage.endsWith('.error'))) return true;
-    if (stage.startsWith('pageTurn.')) return false;
-    if (stage === 'view.document.load') {
-        return payload?.styleWritingMode === 'horizontal-tb'
-            && (
-                payload?.foliateWritingMode === 'vertical-rl'
-                || payload?.foliateWritingMode === 'vertical-lr'
-                || String(payload?.bodyClass ?? '').includes('reader-vertical-writing')
-            );
-    }
-    return !readerLoadNoisyPrefixes.some(prefix => stage.startsWith(prefix));
-};
-
-const readerLoadLog = (_stage, _payload = {}) => {};
-globalThis.__manabiReaderLoadLog = readerLoadLog;
 
 const readerLoadSubpathFromURL = (value) => {
     const documentURL = String(value ?? '');
@@ -183,12 +92,6 @@ const enableInitialRestoreRenderReadyGate = (reason, payload = {}) => {
         cfiLength: payload.cfiLength ?? null,
         startedAtMs: Date.now(),
     };
-    readerLoadLog('viewer.initialRestore.renderReadyGate.enabled', {
-        reason,
-        restoreKind: payload.restoreKind ?? null,
-        requestedFraction: payload.requestedFraction ?? null,
-        cfiLength: payload.cfiLength ?? null,
-    });
 };
 
 const clearInitialRestoreRenderReadyGate = (reason) => {
@@ -197,12 +100,6 @@ const clearInitialRestoreRenderReadyGate = (reason) => {
     }
     const gate = globalThis.__manabiInitialRestoreRenderReadyGate;
     globalThis.__manabiInitialRestoreRenderReadyGate = null;
-    readerLoadLog('viewer.initialRestore.renderReadyGate.cleared', {
-        reason,
-        gateReason: gate.reason ?? null,
-        restoreKind: gate.restoreKind ?? null,
-        elapsedMs: typeof gate.startedAtMs === 'number' ? Date.now() - gate.startedAtMs : null,
-    });
     return true;
 };
 
@@ -216,13 +113,6 @@ const markReaderRenderReady = (reason = 'unspecified') => {
             || reasonString.startsWith('loadLastPosition.syntheticNavigationSettled')
             || reasonString.startsWith('loadLastPosition.done')
         if (!allowedByRestore) {
-            readerLoadLog('viewer.renderReady.suppressed', {
-                reason,
-                gateReason: globalThis.__manabiInitialRestoreRenderReadyGate?.reason ?? null,
-                restoreKind: globalThis.__manabiInitialRestoreRenderReadyGate?.restoreKind ?? null,
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            });
             return;
         }
         globalThis.__manabiInitialRestoreRenderReadyGate = null;
@@ -238,11 +128,6 @@ const markReaderRenderReady = (reason = 'unspecified') => {
         body.dataset.mnbReaderRenderReady = '1';
     }
     if (!wasReady) {
-        readerLoadLog('viewer.renderReady.marked', {
-            reason,
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            bodyLoading: !!body?.classList?.contains?.('loading'),
-        });
     }
     globalThis.__manabiPostReaderDocStateEvent?.(`renderReady.${reason}`);
 };
@@ -332,122 +217,7 @@ const describeMarkReadNode = (node) => {
     };
 };
 
-const highlightDiagnosticStyleSnapshot = (doc, element) => {
-    if (!doc || !element || !doc.defaultView?.getComputedStyle) return null;
-    const style = doc.defaultView.getComputedStyle(element);
-    const prop = (name) => style.getPropertyValue(name)?.trim?.() || null;
-    const rect = element.getBoundingClientRect?.();
-    return {
-        tag: element.tagName?.toLowerCase?.() || null,
-        id: element.id || null,
-        className: typeof element.className === 'string' ? element.className : null,
-        writingMode: style.writingMode || null,
-        direction: style.direction || null,
-        gradientDirection: prop('--mnb-highlight-gradient-direction'),
-        trackingAlpha: prop('--mnb-tracking-highlight-alpha'),
-        fillOpacity: prop('--mnb-highlight-fill-opacity'),
-        learningHighlight: prop('--word-tracking-learning-highlight'),
-        learningNav: prop('--word-tracking-learning-highlight-nav-conditional'),
-        background: style.background || null,
-        backgroundImage: style.backgroundImage || null,
-        backgroundOrigin: style.backgroundOrigin || null,
-        backgroundClip: style.backgroundClip || null,
-        boxDecorationBreak: style.boxDecorationBreak || style.webkitBoxDecorationBreak || null,
-        rect: rect ? {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-            width: rect.width,
-            height: rect.height,
-        } : null,
-    };
-};
 
-const logHighlightGradientDiagnostic = (reason = 'unspecified', explicitDoc = null) => {
-    try {
-        const contents = globalThis.reader?.view?.renderer?.getContents?.() || [];
-        const doc = isDocumentLike(explicitDoc) ? explicitDoc : contents[0]?.doc;
-        if (!isDocumentLike(doc)) return;
-        const body = doc.body;
-        const root = doc.documentElement;
-        const learningSurface = doc.querySelector?.('m-m.mnb-learning > m-t');
-        const learningSegment = learningSurface?.closest?.(manabiReaderSegmentSelector) ?? doc.querySelector?.('m-m.mnb-learning');
-        const surface = learningSurface ?? learningSegment?.querySelector?.('m-t') ?? null;
-        if (!body || !learningSegment) return;
-        const bodyStyle = doc.defaultView?.getComputedStyle?.(body);
-        const rootStyle = doc.defaultView?.getComputedStyle?.(root);
-        const isVerticalBody = body.classList?.contains?.('reader-vertical-writing') === true
-            || root?.classList?.contains?.('vrtl') === true
-            || String(bodyStyle?.writingMode || rootStyle?.writingMode || '').startsWith('vertical');
-        if (!isVerticalBody) return;
-        const targetRect = learningSegment.getBoundingClientRect?.();
-        const inViewport = targetRect
-            && targetRect.bottom >= -200
-            && targetRect.top <= ((doc.defaultView?.innerHeight ?? 0) + 200)
-            && targetRect.right >= -200
-            && targetRect.left <= ((doc.defaultView?.innerWidth ?? 0) + 200);
-        if (!inViewport) return;
-        const datasetSnapshot = (element) => element?.dataset ? Object.fromEntries(Object.entries(element.dataset)) : null;
-        const ancestorChain = [];
-        for (let node = learningSegment; node && node !== body && ancestorChain.length < 6; node = node.parentElement) {
-            ancestorChain.push({
-                tag: node.tagName?.toLowerCase?.() || null,
-                id: node.id || null,
-                className: typeof node.className === 'string' ? node.className : null,
-                horizontalIsland: node.dataset?.mnbHorizontalWritingIsland ?? null,
-                displayToken: node.dataset?.mnbDisplayToken ?? null,
-            });
-        }
-        const payload = {
-            message: '# HIGHLIGHT ebook.gradient',
-            reason,
-            documentURL: doc.URL || doc.location?.href || null,
-            outerURL: window.location.href,
-            bodyClassName: body.className || null,
-            rootClassName: root?.className || null,
-            bodyDataset: datasetSnapshot(body),
-            rootDataset: datasetSnapshot(root),
-            bodyStyle: highlightDiagnosticStyleSnapshot(doc, body),
-            rootStyle: highlightDiagnosticStyleSnapshot(doc, root),
-            segmentStyle: highlightDiagnosticStyleSnapshot(doc, learningSegment),
-            surfaceStyle: highlightDiagnosticStyleSnapshot(doc, surface),
-            segmentHasRuby: !!learningSegment.querySelector?.('rt'),
-            segmentHorizontalIsland: learningSegment.dataset?.mnbHorizontalWritingIsland ?? null,
-            surfaceHorizontalIsland: surface?.dataset?.mnbHorizontalWritingIsland ?? null,
-            ancestorChain,
-            text: learningSegment.textContent?.trim?.().slice?.(0, 48) ?? null,
-            navHidden: body.dataset?.mnbNavigationHiddenDueToScroll ?? null,
-            contentCount: contents.length,
-        };
-        const expectedDirection = (payload.segmentHorizontalIsland === 'true' || payload.surfaceHorizontalIsland === 'true')
-            ? 'to bottom'
-            : 'to right';
-        const directionValues = [
-            payload.bodyStyle?.gradientDirection,
-            payload.segmentStyle?.gradientDirection,
-            payload.surfaceStyle?.gradientDirection,
-        ].filter((value) => typeof value === 'string' && value.length > 0 && value !== '<null>');
-        const hasDirectionAnomaly = directionValues.some((value) => value !== expectedDirection);
-        if (!hasDirectionAnomaly) return;
-        payload.expectedDirection = expectedDirection;
-        payload.directionValues = directionValues;
-        const key = JSON.stringify({
-            reason,
-            documentURL: payload.documentURL,
-            id: learningSegment.id || null,
-            className: learningSegment.className || null,
-            bodyGradient: payload.bodyStyle?.gradientDirection,
-            segmentGradient: payload.segmentStyle?.gradientDirection,
-            surfaceGradient: payload.surfaceStyle?.gradientDirection,
-            surfaceBackgroundImage: payload.surfaceStyle?.backgroundImage,
-            navHidden: payload.navHidden,
-        });
-        if (globalThis.__manabiLastHighlightGradientDiagnosticKey === key) return;
-        globalThis.__manabiLastHighlightGradientDiagnosticKey = key;
-    } catch (error) {
-    }
-};
 
 const MANABI_RESTORE_LOCATOR_PREFIX = 'mnb-loc-v1:';
 
@@ -699,13 +469,6 @@ const makeReplaceText = ({ allowForegroundHTML = true } = {}) => async (href, te
     };
     const fetchStartedAt = performanceNowMs();
     const response = await fetch(requestURL, requestOptions).catch((error) => {
-        ebookLoadLog('processText.fetch.error', {
-            requestID: processTextRequestID,
-            href,
-            transport,
-            elapsedMs: performanceNowMs() - replaceTextStartedAt,
-            error: error?.message || String(error),
-        });
         throw error;
     })
     const responseHeadersElapsedMs = performanceNowMs() - fetchStartedAt;
@@ -727,26 +490,6 @@ const makeReplaceText = ({ allowForegroundHTML = true } = {}) => async (href, te
         const nativeResponseReadyElapsedMs = Number(response.headers?.get?.('x-manabi-response-ready-elapsed-ms'));
         const nativeResponseEncodeElapsedMs = Number(response.headers?.get?.('x-manabi-response-encode-elapsed-ms'));
         const nativeDidCoalesce = response.headers?.get?.('x-manabi-did-coalesce') || null;
-        const processTextElapsedMs = performanceNowMs() - replaceTextStartedAt;
-        const slowProcessTextLogThresholdMs = typeof MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS === 'number'
-            ? MANABI_SLOW_PROCESS_TEXT_LOG_THRESHOLD_MS
-            : 5000;
-        if (processTextElapsedMs >= slowProcessTextLogThresholdMs) {
-            ebookLoadLog('processText.slow', {
-                requestID: processTextRequestID,
-                href,
-                elapsedMs: processTextElapsedMs,
-                requestBytes,
-                responseBytes: responseTextLength,
-                nativeCache: nativeCacheOutcome,
-                transport,
-                fetchHeadersElapsedMs: responseHeadersElapsedMs,
-                responseTextElapsedMs,
-                nativeResponseReadyElapsedMs: Number.isFinite(nativeResponseReadyElapsedMs) ? nativeResponseReadyElapsedMs : null,
-                nativeResponseEncodeElapsedMs: Number.isFinite(nativeResponseEncodeElapsedMs) ? nativeResponseEncodeElapsedMs : null,
-                nativeDidCoalesce,
-            });
-        }
         manabiTimelineMeasure('processText.responseText', textStartedAt, {
             requestID: processTextRequestID,
             href,
@@ -773,12 +516,6 @@ const makeReplaceText = ({ allowForegroundHTML = true } = {}) => async (href, te
         rememberReplaceTextResult(cacheKey, html);
         return html
     } catch (error) {
-        ebookLoadLog('processText.errorFallbackOriginal', {
-            requestID: processTextRequestID,
-            href,
-            elapsedMs: performanceNowMs() - replaceTextStartedAt,
-            error: error?.message || String(error),
-        });
         console.error("Error replacing text:", error)
         return text
     } finally {
@@ -830,11 +567,6 @@ const seedObservedBookWritingDirection = (direction, writingMode = null, source 
     globalThis.__manabiObservedBookWritingDirection = 'vertical';
     globalThis.__manabiObservedBookWritingMode = normalizedWritingMode;
     manabiTimelineMark('processText.directionFallback.seedObservedBook', {
-        source,
-        writingDirection: 'vertical',
-        writingMode: normalizedWritingMode,
-    });
-    readerLoadLog('processText.directionFallback.seedObservedBook', {
         source,
         writingDirection: 'vertical',
         writingMode: normalizedWritingMode,
@@ -912,15 +644,6 @@ const computeRawSectionWritingDirectionFromText = async (href, text, loadText) =
         const hasVerticalWritingClass =
             probeDoc?.body?.classList?.contains?.('reader-vertical-writing') === true
             || probeDoc?.documentElement?.classList?.contains?.('vrtl') === true;
-        readerLoadLog('processText.directionProbe.rawComputed', {
-            href,
-            stylesheetCount: stylesheetLinks.length,
-            bodyClass: probeDoc?.body?.className ?? null,
-            rootClass: probeDoc?.documentElement?.className ?? null,
-            writingMode: writingMode || null,
-            direction,
-            hasVerticalWritingClass,
-        });
         if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
             return { direction: 'vertical', writingMode };
         }
@@ -949,7 +672,6 @@ const rawSectionWritingDirectionCache = new Map();
 const computeRawSectionWritingDirection = async (sourceURL, href, loadText = null) => {
     const cacheKey = `${sourceURL || ''}|${href || ''}`;
     if (rawSectionWritingDirectionCache.has(cacheKey)) {
-        readerLoadLog('processText.directionProbe.cacheHit', { href });
         return rawSectionWritingDirectionCache.get(cacheKey);
     }
     const startedAt = performanceNowMs();
@@ -965,12 +687,6 @@ const computeRawSectionWritingDirection = async (sourceURL, href, loadText = nul
             settled = true;
             clearTimeout(timeout);
             iframe.remove();
-            readerLoadLog('processText.directionProbe.finish', {
-                href,
-                writingDirection: value?.direction ?? null,
-                writingMode: value?.writingMode ?? null,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            });
             resolve(value);
         };
         const timeout = setTimeout(() => finish(null), 1200);
@@ -990,12 +706,6 @@ const computeRawSectionWritingDirection = async (sourceURL, href, loadText = nul
         const startURLProbe = () => {
             if (settled) return;
             iframe.style.cssText = 'position:absolute;width:0;height:0;border:0;visibility:hidden;pointer-events:none;';
-            readerLoadLog('processText.directionProbe.start', {
-                href,
-                sourceScheme: (() => {
-                    try { return new URL(sourceURL).protocol.replace(':', ''); } catch (_error) { return 'unknown'; }
-                })(),
-            });
             iframe.addEventListener('load', () => {
                 try {
                     const doc = iframe.contentDocument;
@@ -1008,17 +718,6 @@ const computeRawSectionWritingDirection = async (sourceURL, href, loadText = nul
                         || rootStyle?.writingMode?.trim?.().toLowerCase?.()
                         || ''
                     );
-                    readerLoadLog('processText.directionProbe.loaded', {
-                        href,
-                        readyState: doc?.readyState ?? null,
-                        bodyClass: body?.className ?? null,
-                        rootClass: root?.className ?? null,
-                        bodyTextLength: body?.textContent?.length ?? null,
-                        writingMode: writingMode || null,
-                        direction: bodyStyle?.direction?.trim?.().toLowerCase?.() ?? null,
-                        hasReaderShell: !!doc?.querySelector?.('foliate-view, #viewer, #reader'),
-                        hasEbookBody: body?.dataset?.isEbook === 'true',
-                    });
                     if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
                         finish({ direction: 'vertical', writingMode });
                         return;
@@ -1034,7 +733,6 @@ const computeRawSectionWritingDirection = async (sourceURL, href, loadText = nul
                 sectionURL.searchParams.set('directionProbe', '1');
                 iframe.src = sectionURL.toString();
             } catch (_error) {
-                readerLoadLog('processText.directionProbe.urlFallback', { href });
                 iframe.src = `${sourceURL}?subpath=${encodeURIComponent(href)}&directionProbe=1`;
             }
         };
@@ -1064,12 +762,6 @@ function makeReplaceURL(sourceURL, loadText = null) {
             mediaType,
             transport: 'processed-section-url',
             requestBytes: 0,
-            writingDirection: writingDirection?.direction ?? null,
-            writingMode: writingDirection?.writingMode ?? null,
-        });
-        readerLoadLog('processText.directURL', {
-            href,
-            mediaType,
             writingDirection: writingDirection?.direction ?? null,
             writingMode: writingDirection?.writingMode ?? null,
         });
@@ -1256,12 +948,6 @@ const layoutElementSnapshot = element => {
     };
 };
 
-const postManabiCSSLog = (stage, payload = {}) => {
-    try {
-        const parts = Object.entries(payload).map(([key, value]) => `${key}=${ebookLoadLogValue(value)}`);
-        window.webkit?.messageHandlers?.print?.postMessage?.(`# CSS stage=${stage} ${parts.join(' ')}`);
-    } catch (_error) {}
-};
 
 const manabiElementTextContainsJapanese = (element) => /[\u3040-\u30ff\u3400-\u9fff]/.test(element?.textContent ?? '');
 
@@ -1334,19 +1020,7 @@ const logManabiVisibleSegmentGaps = (doc, reason, extra = {}) => {
                 nextTop: roundLayoutNumber(next.rect.top),
             });
         }
-        postManabiCSSLog('readerLayout.segmentGaps', {
-            reason,
-            visibleSegmentCount: visible.length,
-            pairCount: pairs.length,
-            bodyClass: body.className,
-            ...extra,
-            pairs: JSON.stringify(pairs),
-        });
     } catch (error) {
-        postManabiCSSLog('readerLayout.segmentGaps.error', {
-            reason,
-            error: error?.message || String(error),
-        });
     }
 };
 
@@ -2044,17 +1718,6 @@ const installReaderPresentationState = (settings = null, reason = 'unknown') => 
     if (normalized.maxWidthOverride) globalThis.manabiReaderMaxWidthOverride = normalized.maxWidthOverride;
     if (normalized.writingDirection) globalThis.__manabiEbookViewerWritingDirection = normalized.writingDirection;
     const applied = applyReaderPresentationStateToDocument(document, normalized, reason);
-    readerLoadLog('readerPresentationState.applied', {
-        reason,
-        applied,
-        colorScheme: normalized.colorScheme,
-        lightModeTheme: normalized.lightModeTheme,
-        darkModeTheme: normalized.darkModeTheme,
-        readerFontSizeCSS: normalized.readerFontSizeCSS,
-        readerBoldText: normalized.readerBoldText,
-        maxWidthOverride: normalized.maxWidthOverride,
-        writingDirection: normalized.writingDirection,
-    });
     return normalized;
 };
 
@@ -4841,25 +4504,10 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             try {
                 doc.defaultView.manabi_prepareVisiblePageLookupIndex?.(index);
             } catch (error) {
-                ebookLoadLog('visibleLookup.index.prepare.error', {
-                    reason,
-                    error: error?.message || String(error),
-                });
             }
         }
         requestNativeVisibleTrackedWordsPrime(doc, index, `visible-prime:${reason}`);
     }
-    readerLoadLog('viewer.visibleLookup.index.finish', {
-        reason,
-        elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-        visibleSegmentCount: visibleSegments.length,
-        indexedSegmentCount: byElementID.size,
-        sentenceIdentifierCount: sentenceIdentifiers.size,
-        entryIDKeyCount: idsByEntryID.size,
-        payloadPrepared: index.lookupPayloadPrepared === true,
-        rubyPresenceMarkedCount,
-        firstVisibleElementID: visibleElementIDs[0] ?? null,
-    });
     manabiTimelineMeasure('visibleLookup.index.built', startedAt, {
         reason,
         visibleSegmentCount: visibleSegments.length,
@@ -5289,29 +4937,12 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
     }
     doc.__manabiLastVisibleStatusHydrationRequestSignature = signature;
     if (globalThis.__manabiTimelineTraceAll === true) {
-        readerLoadLog('viewer.visibleStatusHydration.start', {
-            reason,
-            visibleSegmentCount: visibleSegments.length,
-            strictVisibleSegmentCount: hydrationResult?.hydrationStrictVisibleSegmentCount ?? visibleSegmentsResult?.visibleSegments?.length ?? visibleSegments.length,
-            adjacentAddedSegmentCount: hydrationResult?.hydrationAdjacentAddedSegmentCount ?? 0,
-            signatureLength: signature.length,
-        });
     }
     let coverage = null;
     try {
         coverage = hydrator(visibleSegments, reason) ?? null;
         const elapsedMs = performanceNowMs() - startedAt;
         if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50 || (coverage?.mutatedCount ?? 0) > 0) {
-            readerLoadLog('viewer.visibleStatusHydration.finish', {
-                reason,
-                elapsedMs: safeRound(elapsedMs, 1),
-                visibleSegmentCount: visibleSegments.length,
-                strictVisibleSegmentCount: hydrationResult?.hydrationStrictVisibleSegmentCount ?? visibleSegmentsResult?.visibleSegments?.length ?? visibleSegments.length,
-                adjacentAddedSegmentCount: hydrationResult?.hydrationAdjacentAddedSegmentCount ?? 0,
-                skipped: coverage?.skipped ?? null,
-                mutatedCount: coverage?.mutatedCount ?? null,
-                wouldMutateCount: coverage?.wouldMutateCount ?? null,
-            });
         }
         if (
             (coverage?.mutatedCount ?? 0) > 0
@@ -5332,15 +4963,6 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
         if (doc) {
             doc.__manabiLastVisibleStatusHydrationRequestSignature = null;
         }
-        readerLoadLog('viewer.visibleStatusHydration.error', {
-            reason,
-            elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            error: error?.message || String(error),
-        });
-        ebookLoadLog('visibleStatusHydration.error', {
-            reason,
-            error: error?.message || String(error),
-        });
         return null;
     } finally {
         manabiTimelineMeasure('visibleStatusHydration.call', startedAt, {
@@ -5624,21 +5246,12 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
         sourceURL,
         subpath,
     });
-    const readerLoadTrace = String(globalThis.__manabiNavigationIntent?.source || '').startsWith('restore')
-        && typeof globalThis.__manabiReaderLoadLog === 'function';
-    const readerLoadStartedAt = performanceNowMs();
-    if (readerLoadTrace) {
-        ();
-    }
     try {
         const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
             headers: {
                 'X-Ebook-Source-URL': sourceURL,
             },
         })
-        if (readerLoadTrace) {
-            ();
-        }
         if (!response.ok) {
             finishNativeForegroundResourceTrace(trace, 'http-not-ok', {
                 status: response.status,
@@ -5648,9 +5261,6 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
         response.__manabiNativeForegroundResourceTrace = trace;
         return response
     } catch (error) {
-        if (readerLoadTrace) {
-            ();
-        }
         finishNativeForegroundResourceTrace(trace, 'error', {
             error: error?.message || String(error),
         });
@@ -5660,11 +5270,6 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
 
 const readNativeEntryText = async (response) => {
     if (!response) return null
-    const trace = response.__manabiNativeForegroundResourceTrace
-    const readerLoadTrace = !!trace
-        && typeof globalThis.__manabiReaderLoadLog === 'function'
-        && String(globalThis.__manabiNavigationIntent?.source || '').startsWith('restore')
-    const readerLoadStartedAt = performanceNowMs()
     try {
         const arrayBuffer = await response.arrayBuffer()
         const charset = response.headers?.get?.('content-type')?.match(/charset=([^;]+)/i)?.[1]?.trim() || 'utf-8'
@@ -5675,9 +5280,6 @@ const readNativeEntryText = async (response) => {
             decoder = new TextDecoder('utf-8')
         }
         const text = decoder.decode(arrayBuffer)
-        if (readerLoadTrace) {
-            ()
-        }
         return text
     } finally {
         finishNativeForegroundResourceTrace(response.__manabiNativeForegroundResourceTrace, 'body-text')
@@ -6467,10 +6069,7 @@ class Reader {
                 coverElement.src = this.#sidebarCoverObjectURL
             })
             .catch(error => {
-                readerLoadLog('viewer.coverLoad.error', {
-                    error: error?.message || String(error),
-                })
-            })
+})
         return this.#sidebarCoverLoadPromise
     }
     closeSideBar() {
@@ -6753,14 +6352,6 @@ class Reader {
         }
         this.appliedBookContentHideNavigationDueToScroll = hidden;
         const finishedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
-        readerLoadLog('hideNav.bookContent.apply', {
-            hidden,
-            reason,
-            contents: contents.length,
-            changedCount,
-            mode: 'visual-vars',
-            elapsedMs: Math.round(finishedAt - startedAt),
-        });
     }
     constructor() {
         applyStoredChromeInsets('reader.constructor');
@@ -7168,18 +6759,10 @@ class Reader {
         if (this.hasLoadedLastPosition === true && !shouldResetNativeLookupTargets) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         } else if (shouldResetNativeLookupTargets && globalThis.__manabiTimelineTraceAll === true) {
-            readerLoadLog('viewer.nativeLookup.invalidationRefresh.skip', {
-                sourceReason,
-                reason: 'transient-page-turn',
-            });
         }
     }
     async #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
         const syncStartedAt = performance.now();
-        readerLoadLog('viewer.pageTracking.sync.start', {
-            reason,
-            retryCount,
-        });
         const isRestorePending =
             reason === 'document-load'
             && globalThis.reader
@@ -7293,21 +6876,7 @@ class Reader {
         this.#renderPageTrackingButtons(reason);
         const renderElapsedMs = performanceNowMs() - renderStartedAt;
         const syncElapsedMs = performanceNowMs() - syncStartedAt;
-        readerLoadLog('viewer.pageTracking.sync.finish', {
-            reason,
-            retryCount,
-            elapsedMs: safeRound(syncElapsedMs, 1),
-            visibleSegmentsElapsedMs: safeRound(visibleSegmentsElapsedMs, 1),
-            buildStatesElapsedMs: safeRound(buildStatesElapsedMs, 1),
-            renderElapsedMs: safeRound(renderElapsedMs, 1),
-            stateCount: diagnostics.stateCount,
-            visibleSegmentCount: diagnostics.visibleSegmentCount,
-            totalSegmentCount: diagnostics.totalSegmentCount,
-            clusterCount: diagnostics.clusterCount,
-        });
-        logHighlightGradientDiagnostic(`page-tracking:${reason}`, doc);
         requestAnimationFrame(() => {
-            logHighlightGradientDiagnostic(`page-tracking:${reason}:raf`, doc);
         });
         manabiTimelineMeasure('pageTracking.sync', syncStartedAt, {
             reason,
@@ -7395,9 +6964,7 @@ class Reader {
         if (this.lastBookReadingProgressKey !== progressKey) {
             this.lastBookReadingProgressKey = progressKey;
         }
-        logHighlightGradientDiagnostic(`progress-applied:${reason}`);
         requestAnimationFrame(() => {
-            logHighlightGradientDiagnostic(`progress-applied:${reason}:raf`);
         });
         if (MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS) {
             this.#syncPageTrackingButtons('progress-applied', null, 2).catch((error) => console.error(error));
@@ -7991,21 +7558,9 @@ class Reader {
                 clearReadChromeReason,
                 details,
             };
-            readerLoadLog(`${stage}.finish`, {
-                ...details,
-                ignored: true,
-                ignoreReason: 'pageTurnInFlightQueued',
-                queued: true,
-                ...readerLoadViewerSnapshot(this),
-            });
             return { ignored: true, reason: 'pageTurnInFlightQueued' };
         }
         if (typeof move !== 'function') {
-            readerLoadLog(`${stage}.error`, {
-                ...details,
-                error: 'missingMoveHandler',
-                ...readerLoadViewerSnapshot(this),
-            });
             return { ignored: true, reason: 'missingMoveHandler' };
         }
 
@@ -8015,10 +7570,6 @@ class Reader {
             markRestorePositionSavePageTurnInput(markInputSource);
         }
         this.#clearVisiblePageReadChrome(clearReadChromeReason);
-        readerLoadLog(`${stage}.beforeMove`, {
-            ...details,
-            ...readerLoadViewerSnapshot(this),
-        });
         try {
             const result = markInputSource
                 ? await runWithNavigationIntent({
@@ -8028,38 +7579,16 @@ class Reader {
                     ...details,
                 }, move)
                 : await move();
-            readerLoadLog(`${stage}.finish`, {
-                ...details,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                ignored: result?.ignored === true,
-                ignoreReason: result?.reason ?? null,
-                ...readerLoadViewerSnapshot(this),
-            });
             return result ?? {};
         } catch (error) {
-            readerLoadLog(`${stage}.error`, {
-                ...details,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                error: error?.message || String(error),
-                ...readerLoadViewerSnapshot(this),
-            });
             throw error;
         } finally {
             this.#pageTurnInFlight = false;
             const queuedPageTurnRun = this.#queuedPageTurnRun;
             this.#queuedPageTurnRun = null;
             if (queuedPageTurnRun) {
-                readerLoadLog(`${stage}.queued`, {
-                    queuedStage: queuedPageTurnRun.stage,
-                    elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                    ...readerLoadViewerSnapshot(this),
-                });
                 queueMicrotask(() => {
                     void this.#runPageTurn(queuedPageTurnRun).catch((error) => {
-                        readerLoadLog(`${queuedPageTurnRun.stage}.queuedError`, {
-                            error: error?.message || String(error),
-                            ...readerLoadViewerSnapshot(this),
-                        });
                     });
                 });
             }
@@ -8282,12 +7811,6 @@ class Reader {
             && snapshot
             && snapshot.doc === doc
             && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
-            readerLoadLog('viewer.visibleLookup.index.preserveNonEmptySnapshot', {
-                reason,
-                emptySource: result?.segmentCandidateSource ?? null,
-                preservedVisibleSegmentCount: snapshot.result?.visibleSegments?.length ?? 0,
-                preservedFirstVisibleElementID: snapshot.result?.visibleSegments?.[0]?.node?.id ?? null,
-            });
             if (prepareLookupIndex && snapshot.lookupIndex) {
                 doc.manabiVisiblePageLookupIndex = snapshot.lookupIndex;
                 if (doc.defaultView) {
@@ -8367,11 +7890,6 @@ class Reader {
         const scheduledAt = performanceNowMs();
         const settleDelayMs = reason === 'manual' ? 0 : 180;
         if (globalThis.__manabiTimelineTraceAll === true) {
-            readerLoadLog('viewer.nativeLookup.settle.schedule', {
-                reason,
-                explicitDoc: isDocumentLike(explicitDoc),
-                settleDelayMs,
-            });
         }
         this.nativeLookupHitTargetRefreshTimeout = setTimeout(() => {
             this.nativeLookupHitTargetRefreshTimeout = null;
@@ -8392,12 +7910,6 @@ class Reader {
                     }
                     const elapsedMs = performanceNowMs() - startedAt;
                     if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
-                        readerLoadLog('viewer.nativeLookup.settle.finish', {
-                            reason,
-                            scheduledDelayMs: safeRound(startedAt - scheduledAt, 1),
-                            elapsedMs: safeRound(elapsedMs, 1),
-                            docCount: docs.length,
-                        });
                     }
                 });
             });
@@ -8417,12 +7929,6 @@ class Reader {
             explicitDoc: isDocumentLike(explicitDoc) && this.hasLoadedLastPosition === true ? explicitDoc : null,
             deferredAtMs: performanceNowMs(),
         };
-        readerLoadLog('viewer.nativeLookup.defer', {
-            reason,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
-            hasLoadedLastPosition: this.hasLoadedLastPosition === true,
-        });
     }
     #flushPendingNativeLookupHitTargetRefresh(reason = 'unspecified') {
         const pending = this.pendingNativeLookupHitTargetRefresh;
@@ -8431,11 +7937,6 @@ class Reader {
         }
         this.pendingNativeLookupHitTargetRefresh = null;
         this.visiblePageSegmentSnapshot = null;
-        readerLoadLog('viewer.nativeLookup.flush', {
-            reason,
-            pendingReason: pending.reason,
-            deferredElapsedMs: safeRound(performanceNowMs() - pending.deferredAtMs, 1),
-        });
         this.#scheduleNativeLookupHitTargetRefreshSettle(`${pending.reason}.flush:${reason}`, pending.explicitDoc);
     }
     refreshNativeLookupHitTargets(reason = 'manual') {
@@ -8904,13 +8405,6 @@ class Reader {
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
             const compactDisabled = isCompactNavigationSheetSidePaginationDisabled();
             if (button?.disabled || compactDisabled) {
-                readerLoadLog('pageTurn.sideButton.skip', {
-                    side,
-                    method,
-                    eventType,
-                    buttonDisabled: !!button?.disabled,
-                    compactDisabled,
-                });
                 return;
             }
             const viewSnapshot = () => {
@@ -8928,12 +8422,6 @@ class Reader {
                     contentIndex: contents[0]?.index ?? null,
                 };
             };
-            readerLoadLog('pageTurn.sideButton.start', {
-                side,
-                method,
-                eventType,
-                ...viewSnapshot(),
-            });
             await this.#runPageTurn({
                 stage: 'pageTurn.sideButton',
                 markInputSource: `pageTurn.sideButton.${eventType ?? 'unknown'}`,
@@ -9391,9 +8879,6 @@ class Reader {
     #schedulePostInitialOpenWork(book) {
         setTimeout(() => {
             void this.#runPostInitialOpenWork(book).catch((error) => {
-                readerLoadLog('viewer.postInitialOpenWork.error', {
-                    error: error?.message || String(error),
-                });
                 console.error(error);
             });
         }, 0);
@@ -9418,9 +8903,6 @@ class Reader {
         try {
             bookmarks = await book.getCalibreBookmarks?.()
         } catch (error) {
-            readerLoadLog('viewer.calibreBookmarks.error', {
-                error: error?.message || String(error),
-            });
             return;
         }
         if (bookmarks) {
@@ -9538,46 +9020,15 @@ class Reader {
         const initialDisplaySettleTimeoutMs = hasInitialRestoreTarget ? 120000 : 3000;
         const runInitialDisplayNavigation = async (intent, operation) => {
             const navigationStartedAt = performanceNowMs();
-            readerLoadLog('viewer.initialDisplay.navigation.start', {
-                reason,
-                restoreLocatorKind,
-                source: intent?.source ?? null,
-                target: intent?.target ?? null,
-                timeoutMs: initialNavigationTimeoutMs,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             try {
                 const result = await runWithNavigationIntent(intent, operation, {
                     timeoutMs: initialNavigationTimeoutMs,
-                });
-                readerLoadLog('viewer.initialDisplay.navigation.finish', {
-                    reason,
-                    restoreLocatorKind,
-                    source: intent?.source ?? null,
-                    target: intent?.target ?? null,
-                    elapsedMs: safeRound(performanceNowMs() - navigationStartedAt, 1),
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    hasReaderContent: !!document.querySelector?.('foliate-view'),
-                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
                 });
                 return {
                     ok: true,
                     result,
                 };
             } catch (error) {
-                readerLoadLog('viewer.initialDisplay.navigation.error', {
-                    reason,
-                    restoreLocatorKind,
-                    source: intent?.source ?? null,
-                    target: intent?.target ?? null,
-                    elapsedMs: safeRound(performanceNowMs() - navigationStartedAt, 1),
-                    error: error?.message || String(error),
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    hasReaderContent: !!document.querySelector?.('foliate-view'),
-                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                });
                 globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.navigation.error', {
                     reason,
                     restoreLocatorKind,
@@ -9593,16 +9044,6 @@ class Reader {
                 };
             }
         };
-        readerLoadLog('viewer.initialDisplay.firstSection.start', {
-            reason,
-            restoreLocatorKind,
-            sectionIndex: syntheticInitialRestore?.sectionIndex ?? null,
-            spineSectionIndex: spineOnlyInitialRestoreSectionIndex ?? null,
-            fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-        });
         globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.start', {
             reason,
             restoreLocatorKind,
@@ -9745,24 +9186,6 @@ class Reader {
                 settledSectionIndex,
                 settledReason: displaySettled?.reason ?? null,
             });
-            readerLoadLog('viewer.initialDisplay.firstSection.finish', {
-                reason,
-                restoreLocatorKind,
-                sectionIndex: syntheticInitialRestore?.sectionIndex ?? settledSectionIndex,
-                fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
-                currentFraction: typeof settledFraction === 'number' ? safeRound(settledFraction, 6) : null,
-                restoreSatisfied: initialRestoreWillBeMarkedHandled,
-                restorePrecision,
-                restoreDegraded: initialRestoreDegraded,
-                fractionTolerance: initialRestoreFractionTolerance,
-                spineOnlyRestoreIsPreciseEnough,
-                navigationOk: navigationResult?.ok === true,
-                settledReason: displaySettled?.reason ?? null,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.finish', {
                 reason,
                 restoreLocatorKind,
@@ -9815,29 +9238,9 @@ class Reader {
                     lastLocationTotal: location?.location?.total ?? null,
                 });
             } else if (initialRestoreRequested) {
-                readerLoadLog('viewer.initialDisplay.restoreNotSatisfied', {
-                    reason,
-                    restoreLocatorKind,
-                    requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
-                    currentFraction: typeof settledFraction === 'number' ? safeRound(settledFraction, 6) : null,
-                    settledSectionIndex,
-                    locationCurrent: location?.location?.current ?? null,
-                    locationTotal: location?.location?.total ?? null,
-                });
             }
             return true;
         } catch (error) {
-            readerLoadLog('viewer.initialDisplay.firstSection.error', {
-                reason,
-                restoreLocatorKind,
-                sectionIndex: syntheticInitialRestore?.sectionIndex ?? null,
-                fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                error: error?.message || String(error),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             publishInitialRestoreResult(hasInitialRestoreTarget ? 'failed' : 'noTarget', {
                 error: error?.message || String(error),
                 navigationOk: false,
@@ -10340,13 +9743,6 @@ class Reader {
         timeoutMs = null,
     } = {}) {
         if (this.initialDisplaySettled) {
-            readerLoadLog('viewer.initialDisplay.wait.skip', {
-                reason,
-                settled: true,
-                timeoutMs,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-            });
             return {
                 settled: true,
                 reason: 'already-settled',
@@ -10357,13 +9753,6 @@ class Reader {
         }
         const startedAt = performanceNowMs();
         let timeoutHandle = null;
-        readerLoadLog('viewer.initialDisplay.wait.start', {
-            reason,
-            timeoutMs,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            hasRenderer: !!this.view?.renderer,
-        });
         try {
             const result = await (
                 Number.isFinite(timeoutMs) && timeoutMs > 0
@@ -10377,28 +9766,11 @@ class Reader {
                     ])
                     : this.initialDisplaySettledPromise
             );
-            readerLoadLog('viewer.initialDisplay.wait.finish', {
-                reason,
-                timeoutMs,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                settledReason: result?.reason ?? null,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-            });
             return {
                 settled: true,
                 ...result,
             };
         } catch (error) {
-            readerLoadLog('viewer.initialDisplay.wait.error', {
-                reason,
-                timeoutMs,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                error: error?.message || String(error),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                hasRenderer: !!this.view?.renderer,
-            });
             throw error;
         } finally {
             if (timeoutHandle !== null) {
@@ -10417,11 +9789,6 @@ class Reader {
             hasReaderContent: !!document.querySelector?.('foliate-view'),
             renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
         };
-        readerLoadLog('viewer.display.settled.resolve', {
-            ...result,
-            waiterCount: waiters.length,
-            ...readerLoadViewerSnapshot(this),
-        });
         waiters.forEach((waiter) => {
             if (typeof waiter === 'function') {
                 waiter(result);
@@ -10437,15 +9804,6 @@ class Reader {
         const startedSequence = this.displaySettledSequence;
         let timeoutHandle = null;
         let waiter = null;
-        readerLoadLog('viewer.display.wait.start', {
-            reason,
-            sequence: startedSequence,
-            timeoutMs,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            ...readerLoadViewerSnapshot(this),
-        });
         try {
             const result = await new Promise((resolve, reject) => {
                 waiter = { resolve, reject };
@@ -10457,29 +9815,8 @@ class Reader {
                     }, timeoutMs);
                 }
             });
-            readerLoadLog('viewer.display.wait.finish', {
-                reason,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                startedSequence,
-                settledSequence: result?.sequence ?? null,
-                settledReason: result?.reason ?? null,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                ...readerLoadViewerSnapshot(this),
-            });
             return result;
         } catch (error) {
-            readerLoadLog('viewer.display.wait.error', {
-                reason,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                error: error?.message || String(error),
-                startedSequence,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                ...readerLoadViewerSnapshot(this),
-            });
             throw error;
         } finally {
             clearTimeout(timeoutHandle);
@@ -10506,19 +9843,9 @@ class Reader {
             && !document.body?.classList?.contains?.('loading');
         if (shouldSkipSameIndexDidDisplay) {
             this.sameIndexGoToDidDisplaySkips = Math.max(0, (this.sameIndexGoToDidDisplaySkips || 0) - 1);
-            readerLoadLog('viewer.didDisplay.skipSameIndex', {
-                elapsedMs: performanceNowMs() - didDisplayStartedAt,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            });
             this.#resolveInitialDisplaySettled('didDisplay.skipSameIndex');
             return;
         }
-        readerLoadLog('viewer.didDisplay.begin', {
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasRenderer: !!this.view?.renderer,
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            ...readerLoadViewerSnapshot(this),
-        });
         this.#postBookInsetSnapshot('didDisplay.begin', {
             beforeNavigationVisibility: navVisibilityBefore,
         });
@@ -10526,16 +9853,8 @@ class Reader {
         let postFrameSettleResult = null;
         try {
             applyStoredChromeInsets('reader.didDisplay');
-            readerLoadLog('viewer.didDisplay.initialSettle.start', {
-                elapsedMs: performanceNowMs() - didDisplayStartedAt,
-            });
             initialSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear', {
                 allowWhileLoading: true,
-            });
-            readerLoadLog('viewer.didDisplay.initialSettle.finish', {
-                elapsedMs: performanceNowMs() - didDisplayStartedAt,
-                rendered: initialSettleResult?.rendered ?? null,
-                reason: initialSettleResult?.reason ?? null,
             });
             this.#postBookInsetSnapshot('didDisplay.after-initial-settle', {
                 initialSettleResult,
@@ -10551,18 +9870,9 @@ class Reader {
                 this.#postBookInsetSnapshot('didDisplay.after-two-frames-before-force', {
                     initialSettleResult,
                 });
-                readerLoadLog('viewer.didDisplay.postFrameSettle.start', {
-                    elapsedMs: performanceNowMs() - didDisplayStartedAt,
-                    initialReason: initialSettleResult?.reason ?? null,
-                });
                 postFrameSettleResult = await this.#settleInitialPaginatorLayout('did-display.pre-clear.post-frame', {
                     allowWhileLoading: true,
                     force: true,
-                });
-                readerLoadLog('viewer.didDisplay.postFrameSettle.finish', {
-                    elapsedMs: performanceNowMs() - didDisplayStartedAt,
-                    rendered: postFrameSettleResult?.rendered ?? null,
-                    reason: postFrameSettleResult?.reason ?? null,
                 });
             } else {
                 postFrameSettleResult = {
@@ -10582,10 +9892,6 @@ class Reader {
                 reason: 'did-display-error',
                 message: error?.message ?? String(error),
             };
-            readerLoadLog('viewer.didDisplay.error', {
-                elapsedMs: performanceNowMs() - didDisplayStartedAt,
-                error: error?.message || String(error),
-            });
             console.error(error);
         }
         try {
@@ -10617,13 +9923,6 @@ class Reader {
             });
         }
         this.setLoadingIndicator(false, 'didDisplay');
-        readerLoadLog('viewer.didDisplay.loadingCleared', {
-            elapsedMs: performanceNowMs() - didDisplayStartedAt,
-            initialReason: initialSettleResult?.reason ?? null,
-            postFrameReason: postFrameSettleResult?.reason ?? null,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            ...readerLoadViewerSnapshot(this),
-        });
         markReaderRenderReady('didDisplay.loading-cleared');
         this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
             initialSettleResult,
@@ -10776,7 +10075,6 @@ class Reader {
                         clientY: point?.clientY ?? null,
                         elementID: segmentTarget?.id || segmentTarget?.getAttribute?.('id') || null,
                     };
-                    ebookLoadLog('nativeLookup.blankTap.segmentSuppressed', payload);
                     popoverDiagnosticLog('nativeLookup.blankTap.segmentSuppressed', payload);
                     return;
                 }
@@ -10801,7 +10099,6 @@ class Reader {
                         excludedTarget: excludedTarget?.tagName ?? null,
                         segmentTarget: segmentTarget?.id ?? null,
                     };
-                    ebookLoadLog('nativeLookup.blankTap.postNoElement', payload);
                     popoverDiagnosticLog('nativeLookup.blankTap.postNoElement', payload);
                     globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
                     if (event.type === 'touchend') {
@@ -10940,21 +10237,6 @@ class Reader {
         if (documentMismatch || sectionMismatch) {
             const rendererLoading = this.view?.renderer?.isLoading === true
                 || document.body?.classList?.contains?.('loading') === true;
-            readerLoadLog('ebook.updateReadingProgress.dropStale', {
-                reason,
-                fraction: Number.isFinite(fraction) ? safeRound(fraction, 6) : null,
-                sectionIndex,
-                expectedSectionIndex,
-                currentSectionIndex,
-                expectedDocumentSubpath: readerLoadSubpathFromURL(expectedDocumentURL),
-                currentDocumentSubpath: readerLoadSubpathFromURL(currentDocumentURL),
-                expectedDocumentURLLength: typeof expectedDocumentURL === 'string' ? expectedDocumentURL.length : 0,
-                currentDocumentURLLength: typeof currentDocumentURL === 'string' ? currentDocumentURL.length : 0,
-                documentMismatch,
-                sectionMismatch,
-                rendererLoading,
-                likelyDisplaySwap: rendererLoading && sectionMismatch && !documentMismatch,
-            });
             return;
         }
         const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;
@@ -11134,24 +10416,6 @@ class Reader {
         const persistedLocator = shouldPreferSyntheticRestoreLocator
             ? syntheticRestoreLocator
             : cfi;
-        readerLoadLog('viewer.restoreLocator.decision', {
-            reason: reason ?? null,
-            sectionIndex,
-            snapshotLocalSectionIndex,
-            snapshotRendererTotal,
-            liveTextPageCurrent,
-            liveTextPageTotal,
-            localSectionIndex,
-            rendererTotal,
-            cfiLooksSectionBase,
-            cfiIsUnstableAcrossPages,
-            didMarkCFIUnstable,
-            hasSyntheticRestoreLocator: !!syntheticRestoreLocator,
-            shouldPreferSyntheticRestoreLocator,
-            persistedLocatorKind: shouldPreferSyntheticRestoreLocator
-                ? 'synthetic'
-                : (typeof cfi === 'string' && cfi ? 'cfi' : 'empty'),
-        });
         const progressBridgePayload = {
             reason: reason ?? null,
             effectiveFraction: Number.isFinite(effectiveFraction) ? safeRound(effectiveFraction, 6) : null,
@@ -11226,7 +10490,6 @@ class Reader {
             restoreRequestedDisplayPercent: roundedDisplayPercent(globalThis.__manabiRequestedRestoreFraction),
         };
         manabiTimelineMark('viewer.progress.inputs', progressBridgePayload);
-        readerLoadLog('viewer.progress.inputs', progressBridgePayload);
         // (removed: setting tocView currentHref here)
 
         if (this.hasLoadedLastPosition && !globalThis.__manabiRestoreInProgress) {
@@ -11285,13 +10548,6 @@ class Reader {
                 this.lastPercentValue = pct;
                 percentButton.disabled = true;
             } else {
-                readerLoadLog('viewer.percent.input.skip', {
-                    reason: reason ?? null,
-                    effectiveFraction,
-                    effectiveFractionSource: effectiveFractionDiagnostics.source,
-                    rawFraction: typeof fraction === 'number' ? safeRound(fraction, 6) : null,
-                    primaryLabelText: primaryLabelDiagnostics?.label ?? null,
-                });
             }
         }
     }
@@ -11591,16 +10847,6 @@ window.loadEBook = ({
     const loadWatchdogTimers = [1000, 3000, 8000, 20000, 45000].map(delayMs =>
         setTimeout(() => {
             if (loadSettled) return;
-            ebookLoadLog('loadEBook.watchdog', {
-                loadToken,
-                delayMs,
-                lastState: globalThis.manabiLoadEBookLastState || null,
-                inFlight: globalThis.manabiLoadEBookInFlight === true,
-                ready: globalThis.manabiLoadEBookReady === true,
-                hasRenderer: !!globalThis.reader?.view?.renderer,
-                inflightReplaceText: globalThis.__manabiInflightReplaceTextCount ?? 0,
-                inflightLiveReplaceText: globalThis.__manabiInflightLiveReplaceTextCount ?? 0,
-            });
         }, delayMs)
     );
     const finishLoadWatchdogs = () => {
@@ -11676,12 +10922,6 @@ window.loadEBook = ({
             if (!reader?.view?.renderer) {
                 throw new Error('reader-open-missing-renderer');
             }
-            readerLoadLog('viewer.loadEBook.readerOpen.finish', {
-                loadToken,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasRenderer: !!reader?.view?.renderer,
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             const postOpenLocation = reader?.view?.lastLocation ?? null;
             globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.readerOpen.finish', {
                 loadToken,
@@ -11704,23 +10944,8 @@ window.loadEBook = ({
                 && !globalThis.__manabiInitialRestoreHandled
                 && (!!initialRestoreForOpen || !!pendingInitialRestoreAfterOpen);
             if (shouldDeferReaderOpenLoadingClear) {
-                readerLoadLog('viewer.loadEBook.readerOpen.loadingDeferred', {
-                    loadToken,
-                    hasInitialRestore: !!initialRestoreForOpen,
-                    hasPendingInitialRestore: !!pendingInitialRestoreAfterOpen,
-                    restoreKind: requestedRestoreKind,
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    hasRenderer: !!reader?.view?.renderer,
-                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                });
             } else {
                 reader.setLoadingIndicator(false, 'readerOpenResolved');
-                readerLoadLog('viewer.loadEBook.readerOpen.loadingCleared', {
-                    loadToken,
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    hasRenderer: !!reader?.view?.renderer,
-                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                });
             }
             if (pendingInitialRestoreAfterOpen) {
                 globalThis.__manabiPendingInitialRestore = null;
@@ -11741,10 +10966,6 @@ window.loadEBook = ({
                     pendingRestoreSucceeded = globalThis.reader?.hasLoadedLastPosition === true
                         && !!globalThis.__manabiInitialRestoreHandled;
                 } catch (error) {
-                    readerLoadLog('viewer.loadEBook.pendingRestore.error', {
-                        loadToken,
-                        error: error?.message || String(error),
-                    });
                 }
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.finish', {
                     loadToken,
@@ -11802,19 +11023,6 @@ window.loadEBook = ({
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = false;
             globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
-            ebookLoadLog('loadEBook.error', {
-                loadToken,
-                requestedURL,
-                error: error?.message || String(error),
-                lastState: globalThis.manabiLoadEBookLastState,
-            });
-            readerLoadLog('loadEBook.error', {
-                loadToken,
-                error: error?.message || String(error),
-                errorName: error?.name ?? null,
-                lastState: globalThis.manabiLoadEBookLastState,
-                stack: typeof error?.stack === 'string' ? error.stack.slice(0, 800) : null,
-            });
             if (globalThis.reader === reader || !globalThis.reader?.view?.renderer) {
                 globalThis.reader = previousReader ?? null;
             }
@@ -11898,13 +11106,6 @@ const finalizeInitialRestoreHandledWithoutNativeRestore = (reason = 'loadEBook.i
         markReaderRenderReady(reason);
     }
     globalThis.reader.refreshNativeMarkReadState?.(`${reason}.markRead`);
-    readerLoadLog('viewer.initialRestore.finalized', {
-        reason,
-        sectionIndex: handled.sectionIndex ?? null,
-        bodyLoading: !!document.body?.classList?.contains?.('loading'),
-        hasReaderContent: !!document.querySelector?.('foliate-view'),
-        renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-    });
     globalThis.__manabiRestoreDebugLog?.('ebook.initialRestore.finalized', {
         reason,
         sectionIndex: handled.sectionIndex ?? null,
@@ -11945,51 +11146,18 @@ window.loadLastPosition = async ({
         } = {},
     ) => {
         const startedAt = performanceNowMs();
-        readerLoadLog('viewer.loadLastPosition.navigation.start', {
-            source: intent?.source ?? null,
-            target: intent?.target ?? null,
-            timeoutMs,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-        });
         const watchdogDelaysMs = Number.isFinite(timeoutMs) && timeoutMs > 0
             ? []
             : [10000, 30000, 60000, 120000];
         const watchdogHandles = watchdogDelaysMs.map((delayMs) => setTimeout(() => {
-            readerLoadLog('viewer.loadLastPosition.navigation.watchdog', {
-                source: intent?.source ?? null,
-                target: intent?.target ?? null,
-                delayMs,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
         }, delayMs));
         try {
             const result = await runWithNavigationIntent(intent, operation, { timeoutMs });
-            readerLoadLog('viewer.loadLastPosition.navigation.finish', {
-                source: intent?.source ?? null,
-                target: intent?.target ?? null,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             return {
                 ok: true,
                 result,
             };
         } catch (error) {
-            readerLoadLog('viewer.loadLastPosition.navigation.error', {
-                source: intent?.source ?? null,
-                target: intent?.target ?? null,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-                error: error?.message || String(error),
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             if (throwOnError) {
                 throw error;
             }
@@ -12072,15 +11240,6 @@ window.loadLastPosition = async ({
             try {
                 waitResult = await globalThis.reader.waitForNextDisplaySettled(reason, { timeoutMs });
             } catch (error) {
-                readerLoadLog('viewer.loadLastPosition.restoreState.wait.error', {
-                    reason,
-                    stage,
-                    timeoutMs,
-                    error: error?.message || String(error),
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    hasReaderContent: !!document.querySelector?.('foliate-view'),
-                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                });
             }
         }
         await waitForPaintAfterNavigation();
@@ -12152,24 +11311,9 @@ window.loadLastPosition = async ({
             markReaderRenderReady(markReadyReason);
         }
         globalThis.reader?.setLoadingIndicator?.(false, reason);
-        readerLoadLog('viewer.loadLastPosition.dispatchedNavigation.released', {
-            reason,
-            markReadyReason,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            restoreLocatorKind,
-        });
     };
     const clearDispatchedNavigationLoading = (reason) => {
         globalThis.reader?.setLoadingIndicator?.(false, reason);
-        readerLoadLog('viewer.loadLastPosition.dispatchedNavigation.loadingCleared', {
-            reason,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            restoreLocatorKind,
-        });
     };
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
         if (!hasFractionalCompletion) {
@@ -12249,13 +11393,6 @@ window.loadLastPosition = async ({
                 handledSectionIndex: initialRestoreHandled.sectionIndex ?? null,
                 handledFraction: Number.isFinite(initialRestoreHandled.fractionalCompletion) ? safeRound(initialRestoreHandled.fractionalCompletion, 6) : null,
             });
-            readerLoadLog('viewer.loadLastPosition.initialRestoreStaleNativeCall', {
-                restoreLocatorKind,
-                sectionIndex: initialRestoreHandled.sectionIndex ?? null,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             return;
         }
         const initialRestoreCfiMatches = typeof cfi === 'string'
@@ -12318,25 +11455,8 @@ window.loadLastPosition = async ({
                 currentFraction: typeof initialState?.currentFraction === 'number' ? safeRound(initialState.currentFraction, 6) : null,
                 currentSectionIndex: initialState?.sectionIndex ?? null,
             });
-            readerLoadLog('viewer.loadLastPosition.initialRestoreAlreadyHandled', {
-                restoreLocatorKind,
-                sectionIndex: initialRestoreHandled.sectionIndex ?? null,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             return;
         }
-        readerLoadLog('viewer.loadLastPosition.initialDisplayBypassed', {
-            reason: syntheticRestoreLocator
-                ? 'synthetic-restore'
-                : (Number.isInteger(spineOnlyRestoreSectionIndex) ? 'spine-cfi-restore' : (hasFractionalCompletion ? 'fraction-restore' : (hasPreciseCFI ? 'cfi-restore' : 'default-position'))),
-            initialDisplaySettled: globalThis.reader?.initialDisplaySettled === true,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            restoreLocatorKind,
-        });
         if (syntheticRestoreLocator) {
             globalThis.__manabiSuppressNextRestoreRelocateSave = true;
             globalThis.__manabiRequireUserInputBeforePositionSave = true;
@@ -12355,18 +11475,6 @@ window.loadLastPosition = async ({
                 throwOnError: false,
             });
             syntheticDisplaySettledForRestore = navigationResult?.ok === true || !!document.querySelector?.('foliate-view');
-            readerLoadLog('viewer.loadLastPosition.syntheticLocatorSkipped', {
-                reason: 'synthetic-renderer-go-to',
-                sectionIndex: syntheticRestoreLocator.sectionIndex,
-                suppressedFractionalAnchor: syntheticRestoreLocator.fractionInSection,
-                syntheticLocalSectionIndex: syntheticRestoreLocator.localSectionIndex,
-                syntheticRendererTotal: syntheticRestoreLocator.rendererTotal,
-                fraction: hasFractionalCompletion ? fractionalCompletion : null,
-                displayHandled: navigationResult?.ok === true,
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             await waitForPaintAfterNavigation();
             releaseDispatchedNavigation('loadLastPosition.syntheticNavigation.release', {
                 markReadyReason: 'loadLastPosition.syntheticNavigationSettled',
@@ -12548,13 +11656,6 @@ window.loadLastPosition = async ({
                     locationTotal: fractionState.locationTotal ?? null,
                 });
             } catch (error) {
-                readerLoadLog('viewer.loadLastPosition.fractionRestoreSkipped', {
-                    reason: 'restore-fraction-failed',
-                    error: error?.message || String(error),
-                    bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                    hasReaderContent: !!document.querySelector?.('foliate-view'),
-                    renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-                });
                 const fallbackState = captureRestoreState('after-fraction-restore-skipped');
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.error', {
                     path: 'fraction',
@@ -12564,11 +11665,6 @@ window.loadLastPosition = async ({
                 });
             }
         } else {
-            readerLoadLog('viewer.loadLastPosition.noRestoreTarget', {
-                bodyLoading: !!document.body?.classList?.contains?.('loading'),
-                hasReaderContent: !!document.querySelector?.('foliate-view'),
-                renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            });
             await globalThis.reader?.displayInitialSection?.('loadLastPosition.noRestoreTarget');
             const defaultState = captureRestoreState('after-no-restore-target');
             globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.path.finish', {
@@ -12660,27 +11756,12 @@ window.loadLastPosition = async ({
         console.error(error);
         const hasReaderContent = !!document.querySelector?.('foliate-view');
         const hasRenderer = !!globalThis.reader?.view?.renderer;
-        readerLoadLog('viewer.loadLastPosition.error', {
-            error: error?.message || String(error),
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent,
-            hasRenderer,
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-            hasCFI: typeof cfi === 'string' && cfi.length > 0,
-            hasFractionalCompletion,
-            restoreLocatorKind,
-        });
     } finally {
         globalThis.__manabiRestoreInProgress = false;
         globalThis.reader?.setLoadingIndicator?.(false, 'loadLastPosition.finally');
         if (globalThis.reader?.hasLoadedLastPosition === true) {
             globalThis.reader.refreshNativeMarkReadState?.('load-last-position-finally');
         }
-        readerLoadLog('viewer.loadLastPosition.loadingCleared', {
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-        });
         if (!shouldKeepRestoreSaveGuard) {
             globalThis.__manabiSuppressNextRestoreRelocateSave = false;
         }

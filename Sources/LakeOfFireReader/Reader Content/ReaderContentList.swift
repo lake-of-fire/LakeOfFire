@@ -25,28 +25,6 @@ public extension EnvironmentValues {
 #endif
 
 
-private func logSnippetLoad(_ message: String) {
-#if DEBUG
-    ()
-#endif
-}
-
-private func logReaderSelectionLoad(_ message: String) {
-    let line = "# READERLOAD stage=selection.\(message)\n"
-    print(line, terminator: "")
-    guard let data = line.data(using: .utf8) else { return }
-    let url = URL(fileURLWithPath: "/tmp/manabi-reader-load.log")
-    if FileManager.default.fileExists(atPath: url.path),
-       let handle = try? FileHandle(forWritingTo: url) {
-        defer { try? handle.close() }
-        try? handle.seekToEnd()
-        try? handle.write(contentsOf: data)
-    } else {
-        try? data.write(to: url, options: .atomic)
-    }
-}
-
-
 
 public func readerContentListSeparatedRowScrollAnchorID(_ contentID: String) -> String {
     "reader-content-list-section-\(contentID)"
@@ -341,29 +319,20 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 }
                 let isAlreadyLoaded = selectedContent.url.matchesReaderURL(readerContent.pageURL)
                 if selectedContent.url.isSnippetURL {
-                    logSnippetLoad(
-                        "selectionChanged oldSelection=\(oldValue ?? "nil") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
-                    )
                 }
                 if isAlreadyLoaded {
                 }
 
                 let loadGeneration = UUID()
                 selectionLoadGeneration = loadGeneration
-                logReaderSelectionLoad("scheduled generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) oldSelection=\(oldValue ?? "nil") currentReaderURL=\(readerContent.pageURL.absoluteString) alreadyLoaded=\(isAlreadyLoaded) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil)")
 
                 Task { @MainActor in
                     guard selectionLoadGeneration == loadGeneration else {
-                        logReaderSelectionLoad("skipStaleBeforeDispatch generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentGeneration=\(selectionLoadGeneration.uuidString) entrySelection=\(entrySelection ?? "nil") currentReaderURL=\(readerContent.pageURL.absoluteString)")
                         return
                     }
                     if let onSelection {
                         if selectedContent.url.isSnippetURL {
-                            logSnippetLoad(
-                                "selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                            )
                         }
-                        logReaderSelectionLoad("dispatchCustom generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)")
                         onSelection(selectedContent)
                         if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
                             entrySelection = nil
@@ -372,32 +341,24 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     }
 
                     guard shouldSyncToReader else {
-                        logReaderSelectionLoad("skipSyncDisabled generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)")
                         return
                     }
                     if selectedContent.url.isSnippetURL {
-                        logSnippetLoad(
-                            "selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
-                        )
                     }
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
                     guard !isAlreadyLoaded else {
-                        logReaderSelectionLoad("skipAlreadyLoaded generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString)")
                         if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
                             entrySelection = nil
                         }
                         return
                     }
                     guard entrySelection == itemSelection else {
-                        logReaderSelectionLoad("skipEntryChanged generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) entrySelection=\(entrySelection ?? "nil") currentReaderURL=\(readerContent.pageURL.absoluteString)")
                         return
                     }
                     guard selectionLoadGeneration == loadGeneration else {
-                        logReaderSelectionLoad("skipStaleAfterHint generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentGeneration=\(selectionLoadGeneration.uuidString) entrySelection=\(entrySelection ?? "nil") currentReaderURL=\(readerContent.pageURL.absoluteString)")
                         return
                     }
                     do {
-                        logReaderSelectionLoad("dispatchNavigator generation=\(loadGeneration.uuidString) selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString)")
                         try await navigator.load(
                             content: selectedContent,
                             readerModeViewModel: readerModeViewModel

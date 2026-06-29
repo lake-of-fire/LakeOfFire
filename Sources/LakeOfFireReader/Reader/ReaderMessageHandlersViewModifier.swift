@@ -12,90 +12,6 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 
-private enum ReaderPrintDeduper {
-    private static let lock = NSLock()
-    private static var recentMessages: [String: Date] = [:]
-    private static let window: TimeInterval = 0.5
-
-    static func shouldSuppress(_ message: String) -> Bool {
-        guard message.hasPrefix("# EBOOKLOAD") || message.hasPrefix("# READERLOAD") || message.hasPrefix("MANABI") else {
-            return false
-        }
-        let now = Date()
-        lock.lock()
-        defer { lock.unlock() }
-        recentMessages = recentMessages.filter { now.timeIntervalSince($0.value) <= window }
-        if let previous = recentMessages[message],
-           now.timeIntervalSince(previous) <= window {
-            return true
-        }
-        recentMessages[message] = now
-        return false
-    }
-}
-
-private let readerLoadVerboseLoggingEnabled =
-    ProcessInfo.processInfo.environment["MANABI_READERLOAD_VERBOSE_LOGS"] == "1"
-
-private func readerLoadStage(from message: String) -> String? {
-    guard let range = message.range(of: "stage=") else { return nil }
-    let tail = message[range.upperBound...]
-    return tail.split(separator: " ", maxSplits: 1).first?
-        .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-}
-
-private func shouldPrintReaderLoadMessage(_ message: String) -> Bool {
-    if readerLoadVerboseLoggingEnabled { return true }
-    let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmedMessage.hasPrefix("# READERLOAD")
-        || trimmedMessage.hasPrefix("\"# READERLOAD")
-        || trimmedMessage.contains("# READERLOAD stage=") else {
-        return true
-    }
-    guard let stage = readerLoadStage(from: message) else { return true }
-    if stage.localizedCaseInsensitiveContains("error")
-        || stage.localizedCaseInsensitiveContains("fail")
-        || stage.localizedCaseInsensitiveContains("invalid")
-        || stage.localizedCaseInsensitiveContains("watchdog")
-        || stage.localizedCaseInsensitiveContains("slow") {
-        return true
-    }
-    if stage == "paginator.pageTurn.contentOffset" { return true }
-    if stage == "paginator.pageTurn.visualSnapshot" { return true }
-    if stage == "paginator.pageTurn.ignoreLocked" { return true }
-    if stage == "paginator.pageTurn.queued" { return true }
-    if stage == "paginator.pageTurn.dequeue" { return true }
-    if stage == "paginator.pageTurn.noMove" { return true }
-    if stage == "paginator.pageTurn.anomaly" { return true }
-    if stage == "paginator.display.lifecycle" { return true }
-    if stage == "paginator.view.lifecycle" { return true }
-    if stage == "paginator.loading.state" { return true }
-    if stage == "paginator.display.visualSnapshot" { return true }
-    if stage == "paginator.mediaVisual.followUp" { return true }
-    if stage == "paginator.mediaVisual.event" { return true }
-    if stage == "readerLayout.inlineSegmentSnapshot" { return true }
-    if stage == "ebook.updateReadingProgress.dropStale" { return true }
-    if stage == "ebook.updateReadingProgress.skipBlankViewport" { return true }
-    if stage.hasPrefix("pageTurn."), stage.hasSuffix(".finish") || stage.hasSuffix(".error") { return true }
-    switch stage {
-    case "viewer.renderReady.marked",
-        "viewer.initialDisplay.firstSection.finish",
-        "viewer.initialDisplay.restoreNotSatisfied",
-        "viewer.initialRestore.finalized",
-        "viewer.loadEBook.readerOpen.finish",
-        "ebookViewerInitialized.loadEBook.dispatch":
-        return true
-    case "view.document.load":
-        return message.contains("styleWritingMode=horizontal-tb")
-            && (
-                message.contains("foliateWritingMode=vertical")
-                || message.contains("reader-vertical-writing")
-            )
-    default:
-        return false
-    }
-}
-
 private struct ReaderEBookInitialRestoreBridgeRequest {
     let requestID: String
     let cfi: String
@@ -602,11 +518,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 """,
                 in: frameInfo
             )
-            if let result = result as? String {
-                let line = "# HIGHLIGHT ebook.swiftDOM \(result)"
-                print(line)
-                Logger.shared.logger.info("\(line)")
-            }
+            _ = result as? String
         } catch {
         }
     }
@@ -638,10 +550,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 let renderedMessage = result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)"
-                if !readerLoadVerboseLoggingEnabled,
-                   renderedMessage.contains("# READERLOAD") || renderedMessage.contains("# EBOOKLOAD") {
-                    return
-                }
                 Logger.shared.logger.log(
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
                     "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(renderedMessage)"
@@ -650,20 +558,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
                 if let logMessage = message.body as? String {
-                    if ReaderPrintDeduper.shouldSuppress(logMessage) {
-                        return
-                    }
-                    if logMessage.contains("# READERLOAD") && !readerLoadVerboseLoggingEnabled {
-                        return
-                    }
-                    if logMessage.contains("# EBOOKLOAD") || logMessage.contains("# READERLOAD") {
-                        guard shouldPrintReaderLoadMessage(logMessage) else { return }
-                        print(logMessage)
-                    } else if logMessage.hasPrefix("# CAROUSEL")
-                        || logMessage.hasPrefix("# HIGHLIGHT") {
-                        print(logMessage)
-                        Logger.shared.logger.info("\(logMessage)")
-                    }
                     if logMessage.contains("\"module:posting-initialized\"") {
                         scheduleEbookViewerInitializationFallback(in: message.frameInfo)
                     }
@@ -681,35 +575,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
 
                 let logMessage = payload["message"] as? String ?? "SwiftReadability.print"
-                var components: [String] = []
-                if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
-                    components.append("windowURL=\(windowURL)")
-                }
-                if let pageURL = payload["pageURL"] as? String, !pageURL.isEmpty {
-                    components.append("pageURL=\(pageURL)")
-                }
-                for (key, value) in payload where key != "message" && key != "windowURL" && key != "pageURL" {
-                    let printable: String
-                    if value is NSNull {
-                        printable = "null"
-                    } else {
-                        printable = String(describing: value)
-                    }
-                    components.append("\(key)=\(printable)")
-                }
-                if components.isEmpty {
-                } else {
-                }
-                if logMessage.hasPrefix("# READER") || logMessage.hasPrefix("# CAROUSEL") || logMessage.hasPrefix("# HIGHLIGHT")
-                {
-                    let line = components.isEmpty
-                        ? logMessage
-                        : "\(logMessage) \(components.joined(separator: " "))"
-                    if line.hasPrefix("# CAROUSEL") {
-                        print(line)
-                    }
-                    Logger.shared.logger.info("\(line)")
-                }
+                _ = logMessage
             }),
             ("readerDocState", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -851,11 +717,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let source = result.source.absoluteString
                 let messageText = result.message ?? "unknown message"
                 let errorText = result.error ?? "n/a"
-                let sanitizedMessageText = messageText.replacingOccurrences(of: "\n", with: " ")
-                let sanitizedErrorText = errorText.replacingOccurrences(of: "\n", with: " ")
-                let ebookLoadLine = "# EBOOKLOAD swift.message.readerOnError source=\(source) message=\(sanitizedMessageText) error=\(sanitizedErrorText)"
-                print(ebookLoadLine)
-                Logger.shared.logger.error("\(ebookLoadLine)")
                 Logger.shared.logger.error("[JS] Error: \(messageText) @ \(source):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(errorText)")
             }),
             ("ebookNavigationVisibility", { @MainActor [weak self] message in
@@ -866,9 +727,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 let source = payload["source"] as? String
                 let direction = payload["direction"] as? String
-                if readerLoadVerboseLoggingEnabled {
-                    ()
-                }
                 if source == "toolbar.blankTap" {
                     navigationVisibilityWillChangeHandler?(
                         ReaderNavigationVisibilityChange(
@@ -1080,7 +938,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 } ?? result.outputHTML
                 if publicationDateFallback != nil {
-                    ()
                 }
                 let shouldPreserveFullContentOriginal = content.rssContainsFullContent && !content.isReaderModeByDefault
                 if shouldPreserveFullContentOriginal {
@@ -1266,7 +1123,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
                         loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
                         loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
-                        ()
                         do {
                             _ = try await scriptCaller.evaluateJavaScript(
                                 """
@@ -1367,9 +1223,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     ) {
         let previousValue = hideNavigationDueToScroll.wrappedValue
         let isPageTurnVisibilityChange = source?.contains("page-turn") == true
-        if readerLoadVerboseLoggingEnabled {
-            ()
-        }
         guard previousValue != shouldHide else {
             if isPageTurnVisibilityChange {
                 navigationVisibilityWillChangeHandler?(
@@ -1380,9 +1233,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         direction: direction
                     )
                 )
-            }
-            if readerLoadVerboseLoggingEnabled {
-                ()
             }
             return
         }
@@ -1400,9 +1250,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             withAnimation(.easeInOut(duration: 0.2)) {
                 hideNavigationDueToScroll.wrappedValue = shouldHide
             }
-        }
-        if readerLoadVerboseLoggingEnabled {
-            ()
         }
     }
 
@@ -1422,13 +1269,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                let recentPageMotionHide,
                recentPageMotionHide.age >= 0,
                recentPageMotionHide.age < 5.0 {
-                if readerLoadVerboseLoggingEnabled {
-                    ()
-                }
                 return
-            }
-            if readerLoadVerboseLoggingEnabled {
-                ()
             }
             setHideNavigationDueToScroll(
                 false,
@@ -1547,7 +1388,6 @@ extension ReaderMessageHandlersViewModifier {
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
             if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
-                ()
             }
             return
         }
@@ -1557,7 +1397,6 @@ extension ReaderMessageHandlersViewModifier {
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
             if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
-                ()
             }
         } catch {
             // Ignore boot timing races.
