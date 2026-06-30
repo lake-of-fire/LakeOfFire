@@ -22,13 +22,14 @@ final class ReaderMediaMetadataTests: XCTestCase {
         return configuration
     }
 
-    func testHasContentAudioRecognizesRecordedAudioAndContentSubtitles() {
-        let audioEntry = FeedEntry()
-        XCTAssertFalse(audioEntry.hasContentAudio)
+    func testHasContentAudioRecognizesAudioURLListsAndContentSubtitles() {
+        let listOnlyEntry = FeedEntry()
+        XCTAssertFalse(listOnlyEntry.hasContentAudio)
 
-        audioEntry.voiceAudioURL = URL(string: "https://example.com/audio-1.m4a")!
-        XCTAssertTrue(audioEntry.hasContentAudio)
-        XCTAssertTrue(audioEntry.hasAudio)
+        let audioURL = URL(string: "https://example.com/audio-1.m4a")!
+        listOnlyEntry.voiceAudioURLs.append(audioURL)
+        XCTAssertTrue(listOnlyEntry.hasContentAudio)
+        XCTAssertTrue(listOnlyEntry.hasAudio)
 
         let subtitleOnlyEntry = FeedEntry()
         subtitleOnlyEntry.audioSubtitlesURL = URL(string: "https://example.com/subtitles.vtt")!
@@ -44,14 +45,16 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(mediaSubtitleEntry.mediaSubtitleURL, URL(string: "https://example.com/media-subtitles.vtt")!)
     }
 
-    func testCopyReaderMediaStateCopiesRecordedAudioAndSubtitles() {
+    func testCopyReaderMediaStatePromotesFirstListAudioURLAndCopiesSubtitles() {
         let source = FeedEntry()
         let voiceFrameURL = URL(string: "https://example.com/frame")!
-        let audioURL = URL(string: "https://example.com/audio-1.m4a")!
+        let firstAudioURL = URL(string: "https://example.com/audio-1.m4a")!
+        let secondAudioURL = URL(string: "https://example.com/audio-2.m4a")!
         let subtitleURL = URL(string: "https://example.com/subtitles.vtt")!
 
         source.voiceFrameUrl = voiceFrameURL
-        source.voiceAudioURL = audioURL
+        source.voiceAudioURLs.append(firstAudioURL)
+        source.voiceAudioURLs.append(secondAudioURL)
         source.audioSubtitlesURL = subtitleURL
 
         let bookmark = Bookmark()
@@ -62,7 +65,8 @@ final class ReaderMediaMetadataTests: XCTestCase {
         )
 
         XCTAssertEqual(bookmark.voiceFrameUrl, voiceFrameURL)
-        XCTAssertEqual(bookmark.voiceAudioURL, audioURL)
+        XCTAssertEqual(bookmark.voiceAudioURL, firstAudioURL)
+        XCTAssertEqual(Array(bookmark.voiceAudioURLs), [firstAudioURL, secondAudioURL])
         XCTAssertEqual(bookmark.audioSubtitlesURL, subtitleURL)
         XCTAssertEqual(bookmark.audioSubtitlesRole, .content)
         XCTAssertEqual(bookmark.contentSubtitleURL, subtitleURL)
@@ -109,6 +113,22 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(historyRecord.feedEntryCollectionTitle, "Issue 38")
     }
 
+    func testResolvedVoiceAudioURLsPreservesVoiceAudioURLAndAdditionalListEntries() {
+        let entry = FeedEntry()
+        let primaryAudioURL = URL(string: "https://example.com/audio-primary.m4a")!
+        let fallbackAudioURL = URL(string: "https://example.com/audio-fallback.m4a")!
+        let alternateAudioURL = URL(string: "https://example.com/audio-alt.m4a")!
+
+        entry.voiceAudioURL = primaryAudioURL
+        entry.voiceAudioURLs.append(fallbackAudioURL)
+        entry.voiceAudioURLs.append(alternateAudioURL)
+
+        XCTAssertEqual(
+            entry.resolvedVoiceAudioURLs,
+            [primaryAudioURL, fallbackAudioURL, alternateAudioURL]
+        )
+    }
+
     @MainActor
     func testAddBookmarkCopiesMediaMetadataForManagedFeedEntry() async throws {
         let configuration = makeRealmConfiguration()
@@ -130,6 +150,8 @@ final class ReaderMediaMetadataTests: XCTestCase {
         entry.updateCompoundKey()
         entry.voiceFrameUrl = URL(string: "https://example.com/frame")!
         entry.voiceAudioURL = URL(string: "https://example.com/audio-1.m4a")!
+        entry.voiceAudioURLs.append(URL(string: "https://example.com/audio-1.m4a")!)
+        entry.voiceAudioURLs.append(URL(string: "https://example.com/audio-2.m4a")!)
         entry.audioSubtitlesURL = URL(string: "https://example.com/subtitles.vtt")!
         entry.audioSubtitlesRoleRawValue = AudioSubtitlesRole.content.rawValue
 
@@ -146,19 +168,63 @@ final class ReaderMediaMetadataTests: XCTestCase {
         let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
         XCTAssertEqual(bookmark.voiceFrameUrl, entry.voiceFrameUrl)
         XCTAssertEqual(bookmark.voiceAudioURL, entry.voiceAudioURL)
+        XCTAssertEqual(
+            Array(bookmark.voiceAudioURLs),
+            [
+                URL(string: "https://example.com/audio-1.m4a")!,
+                URL(string: "https://example.com/audio-2.m4a")!,
+            ]
+        )
         XCTAssertEqual(bookmark.audioSubtitlesURL, entry.audioSubtitlesURL)
         XCTAssertEqual(bookmark.audioSubtitlesRole, .content)
         XCTAssertEqual(bookmark.rssContainsFullContent, false)
     }
 
     @MainActor
-    func testHasPlayableMediaForCurrentSourceRecognizesContentVoiceAudioURL() {
+    func testAddBookmarkCopiesMediaMetadataForUnmanagedContent() async throws {
+        let configuration = makeRealmConfiguration()
+        let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = previousBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
+        }
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+
+        let entry = FeedEntry()
+        entry.url = URL(string: "https://example.com/articles/unmanaged-test")!
+        entry.updateCompoundKey()
+        entry.voiceFrameUrl = URL(string: "https://example.com/frame")!
+        entry.voiceAudioURLs.append(URL(string: "https://example.com/audio-1.m4a")!)
+        entry.voiceAudioURLs.append(URL(string: "https://example.com/audio-2.m4a")!)
+        entry.audioSubtitlesURL = URL(string: "https://example.com/subtitles.vtt")!
+
+        try await entry.addBookmark(realmConfiguration: configuration)
+
+        let realm = try await Realm(configuration: configuration)
+        let bookmark = try XCTUnwrap(realm.objects(Bookmark.self).first)
+        XCTAssertEqual(bookmark.voiceFrameUrl, entry.voiceFrameUrl)
+        XCTAssertEqual(bookmark.voiceAudioURL, URL(string: "https://example.com/audio-1.m4a")!)
+        XCTAssertEqual(
+            Array(bookmark.voiceAudioURLs),
+            [
+                URL(string: "https://example.com/audio-1.m4a")!,
+                URL(string: "https://example.com/audio-2.m4a")!,
+            ]
+        )
+        XCTAssertEqual(bookmark.audioSubtitlesURL, URL(string: "https://example.com/subtitles.vtt")!)
+        XCTAssertEqual(bookmark.audioSubtitlesRole, AudioSubtitlesRole.content)
+    }
+
+    @MainActor
+    func testHasPlayableMediaForCurrentSourceRecognizesResolvedVoiceAudioURLLists() {
         let viewModel = ReaderMediaPlayerViewModel()
         viewModel.playbackSource = .recordedAudio
 
         XCTAssertTrue(
             viewModel.hasPlayableMediaForCurrentSource(
-                contentVoiceAudioURLs: [URL(string: "https://example.com/audio-only.m4a")!],
+                contentVoiceAudioURLs: [URL(string: "https://example.com/audio-only-in-list.m4a")!],
                 hasLoadedRecordedMedia: false,
                 currentRecordedMediaURL: nil
             )
@@ -229,6 +295,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
         content.updateCompoundKey()
         content.rssContainsFullContent = true
         content.voiceAudioURL = URL(string: "https://example.com/old-audio.m4a")!
+        content.voiceAudioURLs.append(URL(string: "https://example.com/old-audio.m4a")!)
         content.audioSubtitlesRoleRawValue = AudioSubtitlesRole.content.rawValue
         try await realm.asyncWrite {
             realm.add(content, update: .modified)
@@ -238,6 +305,9 @@ final class ReaderMediaMetadataTests: XCTestCase {
 
         try await realm.asyncWrite {
             content.voiceAudioURL = URL(string: "https://example.com/new-audio-1.m4a")!
+            content.voiceAudioURLs.removeAll()
+            content.voiceAudioURLs.append(URL(string: "https://example.com/new-audio-1.m4a")!)
+            content.voiceAudioURLs.append(URL(string: "https://example.com/new-audio-2.m4a")!)
             content.audioSubtitlesURL = URL(string: "https://example.com/new-subtitles.vtt")!
             content.audioSubtitlesRoleRawValue = AudioSubtitlesRole.content.rawValue
         }
@@ -247,6 +317,13 @@ final class ReaderMediaMetadataTests: XCTestCase {
         await realm.asyncRefresh()
         let historyRecord = try XCTUnwrap(realm.objects(HistoryRecord.self).first)
         XCTAssertEqual(historyRecord.voiceAudioURL, URL(string: "https://example.com/new-audio-1.m4a")!)
+        XCTAssertEqual(
+            Array(historyRecord.voiceAudioURLs),
+            [
+                URL(string: "https://example.com/new-audio-1.m4a")!,
+                URL(string: "https://example.com/new-audio-2.m4a")!,
+            ]
+        )
         XCTAssertEqual(historyRecord.audioSubtitlesURL, URL(string: "https://example.com/new-subtitles.vtt")!)
         XCTAssertEqual(historyRecord.audioSubtitlesRole, AudioSubtitlesRole.content)
     }
