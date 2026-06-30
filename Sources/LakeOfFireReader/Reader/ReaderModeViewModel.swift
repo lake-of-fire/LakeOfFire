@@ -271,6 +271,12 @@ private struct ReaderContentPublicationDateSnapshot: Sendable {
     let contentType: String
 }
 
+private struct ReaderContentRenderSnapshot: Sendable {
+    let url: URL
+    let title: String
+    let isTitlePrefixOfContent: Bool
+}
+
 private func formattedReaderContentPublicationDate(_ snapshot: ReaderContentPublicationDateSnapshot) -> String {
     if snapshot.displayAbsolutePublicationDate {
         return ReaderDateFormatter.absoluteString(from: snapshot.publicationDate, dateFormatter: readerContentPublicationDateFallbackFormatter)
@@ -826,14 +832,6 @@ internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
         "baseURL=\(doc.getBaseUri())",
         "hasBody=\(doc.body() != nil)"
     )
-}
-
-internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document) {
-    guard let body = doc.body(),
-          ((try? body.hasAttr("data-mnb-subscription-is-active")) ?? false) == false else {
-        return
-    }
-    try? body.attr("data-mnb-subscription-is-active", "false")
 }
 
 internal func markReaderSubscriptionInactiveByDefault(in doc: SwiftSoup.Document) {
@@ -2640,6 +2638,18 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     @MainActor
     func readerModeRouteForTesting(readerContent: ReaderContent) async -> String {
         await resolveReaderModeRoute(readerContent: readerContent).rawValue
+    }
+
+    @MainActor
+    private func readerContentRenderSnapshot(readerContent: ReaderContent) async throws -> ReaderContentRenderSnapshot? {
+        guard let content = try await readerContent.getContent() else {
+            return nil
+        }
+        return ReaderContentRenderSnapshot(
+            url: content.url,
+            title: content.title,
+            isTitlePrefixOfContent: content.isTitlePrefixOfContent
+        )
     }
 
     @MainActor

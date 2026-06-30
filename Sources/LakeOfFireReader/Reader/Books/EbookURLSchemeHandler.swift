@@ -202,6 +202,26 @@ actor EBookProcessingActor {
         self.processHTML = processHTML
     }
 
+    func prewarm(
+        contentURL: URL,
+        sectionHref: String,
+        source: ReaderPackageEntrySource
+    ) async throws -> EBookNativeSectionPrewarmResult {
+        let entryData = try source.readEntry(subpath: sectionHref)
+        let entryText = String(decoding: entryData, as: UTF8.self)
+        let processedText = try await process(
+            contentURL: contentURL,
+            location: sectionHref,
+            text: entryText,
+            isCacheWarmer: true
+        )
+        return EBookNativeSectionPrewarmResult(
+            sectionHref: sectionHref,
+            requestBytes: entryData.count,
+            responseBytes: processedText.utf8.count
+        )
+    }
+
     func process(
         contentURL: URL,
         location: String,
