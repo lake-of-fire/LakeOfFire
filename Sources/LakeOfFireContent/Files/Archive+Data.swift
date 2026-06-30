@@ -99,9 +99,9 @@ public struct ReaderPackageEntrySource: Sendable {
 
     public func mimeType(subpath rawSubpath: String) throws -> ReaderPackageEntryResponseMetadata {
         let subpath = try Self.sanitizeSubpath(rawSubpath)
-        let extensionValue = (subpath as NSString).pathExtension
-        let type = extensionValue.isEmpty ? nil : UTType(filenameExtension: extensionValue)
-        let mimeType = type?.preferredMIMEType ?? Self.fallbackMimeType(forExtension: extensionValue)
+        let fileExtension = (subpath as NSString).pathExtension
+        let type = fileExtension.isEmpty ? nil : UTType(filenameExtension: fileExtension)
+        let mimeType = type?.preferredMIMEType ?? Self.fallbackMimeType(forExtension: fileExtension)
         let textEncodingName = Self.isUTF8TextType(utType: type, mimeType: mimeType) ? "utf-8" : nil
         return ReaderPackageEntryResponseMetadata(mimeType: mimeType, textEncodingName: textEncodingName)
     }
@@ -150,11 +150,25 @@ public struct ReaderPackageEntrySource: Sendable {
         while let fileURL = enumerator?.nextObject() as? URL {
             let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true else { continue }
-            let relativePath = fileURL.path.replacingOccurrences(of: standardizedRootURL.path + "/", with: "")
+            let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
             let subpath = try Self.sanitizeSubpath(relativePath)
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
         }
         return entries.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    static func relativeSubpath(fileURL: URL, rootURL: URL) throws -> String {
+        let standardizedRootURL = rootURL.standardizedFileURL
+        let standardizedFileURL = fileURL.standardizedFileURL
+        let rootComponents = standardizedRootURL.pathComponents
+        let fileComponents = standardizedFileURL.pathComponents
+
+        guard fileComponents.count > rootComponents.count,
+              Array(fileComponents.prefix(rootComponents.count)) == rootComponents else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     private func enumerateArchiveEntries(fileURL: URL) throws -> [ReaderPackageEntryMetadata] {
@@ -221,7 +235,6 @@ public struct ReaderPackageEntrySource: Sendable {
 
 public actor ReaderPackageEntrySourceCache {
     public static let shared = ReaderPackageEntrySourceCache()
-    private static let diagnosticLocalFilePathQueryItemName = "diagnosticLocalFilePath"
     private static let expandedArchiveCacheRootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         .appendingPathComponent("lakeoffire-expanded-archives", isDirectory: true)
 
@@ -250,8 +263,22 @@ public actor ReaderPackageEntrySourceCache {
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> CachedSource {
-        let cacheKey = readerFileURL.absoluteString
-        let localURL = try await Self.resolvedLocalURL(forPackageURL: readerFileURL, readerFileManager: readerFileManager)
+        let diagnosticLocalURL = Self.diagnosticLocalFileURL(forPackageURL: readerFileURL)
+        let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
+        let cacheKey = diagnosticLocalURL.map { "diagnosticLocalFilePath:\($0.standardizedFileURL.path)" }
+            ?? canonicalReaderBackingURL.absoluteString
+        if let cached = freshCachedSource(forKey: cacheKey) {
+            return cached
+        }
+        let localURL: URL
+        if let diagnosticLocalURL {
+            localURL = diagnosticLocalURL
+        } else {
+            localURL = try await Self.resolvedLocalURL(
+                forPackageURL: canonicalReaderBackingURL,
+                readerFileManager: readerFileManager
+            )
+        }
         let freshnessToken = try Self.freshnessToken(for: localURL)
 
         if let cached = cachedSources[cacheKey],
@@ -260,7 +287,7 @@ public actor ReaderPackageEntrySourceCache {
             return CachedSource(source: cached.source, entries: cached.entries)
         }
 
-        let source = try Self.preparedSource(for: localURL, freshnessToken: freshnessToken)
+        let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
         cachedSources[cacheKey] = CacheRecord(
             source: source,
@@ -271,43 +298,54 @@ public actor ReaderPackageEntrySourceCache {
         return CachedSource(source: source, entries: entries)
     }
 
+    private func freshCachedSource(forKey cacheKey: String) -> CachedSource? {
+        guard let cached = cachedSources[cacheKey],
+              let freshnessToken = try? Self.freshnessToken(for: cached.localURL),
+              cached.freshnessToken == freshnessToken else {
+            return nil
+        }
+        return CachedSource(source: cached.source, entries: cached.entries)
+    }
+
     private static func resolvedLocalURL(
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> URL {
-        if let diagnosticLocalURL = diagnosticLocalURL(forPackageURL: readerFileURL) {
-            return diagnosticLocalURL
-        }
-        if try await readerFileManager.directoryExists(directoryURL: readerFileURL) {
-            return try readerFileManager.localDirectoryURL(forReaderFileURL: readerFileURL)
-        }
-        return try readerFileManager.localFileURL(forReaderFileURL: readerFileURL)
-    }
-
-    private static func diagnosticLocalURL(forPackageURL readerFileURL: URL) -> URL? {
-        guard let components = URLComponents(url: readerFileURL, resolvingAgainstBaseURL: false),
-              let encodedPath = components.queryItems?.first(where: { $0.name == diagnosticLocalFilePathQueryItemName })?.value,
-              !encodedPath.isEmpty
-        else {
-            return nil
-        }
-
-        let localURL = URL(fileURLWithPath: encodedPath).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: localURL.path) else {
-            return nil
+        let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
+        let localURL = try await readerFileManager.resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
+        var isDirectory = ObjCBool(false)
+        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return localURL
         }
         return localURL
     }
 
-    private static func preparedSource(for localURL: URL, freshnessToken: String) throws -> ReaderPackageEntrySource {
+    private static func diagnosticLocalFileURL(forPackageURL readerFileURL: URL) -> URL? {
+#if DEBUG
+        guard let components = URLComponents(url: readerFileURL, resolvingAgainstBaseURL: false),
+              let path = components.queryItems?.first(where: { $0.name == "diagnosticLocalFilePath" })?.value,
+              !path.isEmpty else {
+            return nil
+        }
+
+        let localURL = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            return nil
+        }
+        return localURL
+#else
+        return nil
+#endif
+    }
+
+    private static func preparedSource(for localURL: URL) throws -> ReaderPackageEntrySource {
         var isDirectory = ObjCBool(false)
         if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
            isDirectory.boolValue {
             return try ReaderPackageEntrySource(localURL: localURL)
         }
 
-        let extractedRootURL = try expandedArchiveDirectory(for: localURL, freshnessToken: freshnessToken)
-        return try ReaderPackageEntrySource(localURL: extractedRootURL)
+        return try ReaderPackageEntrySource(localURL: localURL)
     }
 
     private static func expandedArchiveDirectory(for localURL: URL, freshnessToken: String) throws -> URL {
@@ -368,16 +406,38 @@ public actor ReaderPackageEntrySourceCache {
     }
 
     private static func directoryDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        let trimmed = rawEntryPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !trimmed.isEmpty else {
+        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
             return rootURL
         }
-        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: trimmed)
+        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
     }
 
     private static func fileDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        let subpath = try ReaderPackageEntrySource.sanitizeSubpath(rawEntryPath)
+        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
         return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
+    }
+
+    private static func archiveEntrySubpath(_ rawEntryPath: String) throws -> String? {
+        let trimmed = rawEntryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains("\\") else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        let components = trimmed
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.isEmpty && $0 != "." }
+
+        guard !components.isEmpty else {
+            return nil
+        }
+        guard !components.contains("..") else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+        return components.joined(separator: "/")
     }
 
     private static func freshnessToken(for localURL: URL) throws -> String {
