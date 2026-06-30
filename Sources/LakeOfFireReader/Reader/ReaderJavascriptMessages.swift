@@ -2,6 +2,27 @@ import Foundation
 import SwiftUIWebView
 import RealmSwift
 
+internal func readabilityMessageCanRepresentTopLevelDocument(
+    pageURL: URL?,
+    windowURL: URL?,
+    isMainFrame: Bool
+) -> Bool {
+    if isMainFrame {
+        return true
+    }
+    guard let pageURL, let windowURL else {
+        return false
+    }
+    if pageURL == windowURL {
+        return true
+    }
+    var pageComponents = URLComponents(url: pageURL, resolvingAgainstBaseURL: false)
+    var windowComponents = URLComponents(url: windowURL, resolvingAgainstBaseURL: false)
+    pageComponents?.fragment = nil
+    windowComponents?.fragment = nil
+    return pageComponents?.url == windowComponents?.url
+}
+
 public struct NestedDOMRootSelector {
     public let layer0FrameSelector: String?
     public let layer1ShadowRootSelector: String?

@@ -752,6 +752,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       url == readerViewModel.state.pageURL else {
                     return
                 }
+                guard readabilityMessageCanRepresentTopLevelDocument(
+                    pageURL: result.pageURL,
+                    windowURL: result.windowURL,
+                    isMainFrame: message.frameInfo.isMainFrame
+                ) else {
+                    return
+                }
                 debugPrint(
                     "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableEvaluating",
                     "windowURL=\(url.absoluteString)",
@@ -863,6 +870,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let url = result.windowURL,
                       url == readerViewModel.state.pageURL,
                       let content = try? await contentForWindowURL(url, source: "readabilityParsed") else {
+                    return
+                }
+                guard readabilityMessageCanRepresentTopLevelDocument(
+                    pageURL: result.pageURL,
+                    windowURL: result.windowURL,
+                    isMainFrame: message.frameInfo.isMainFrame
+                ) else {
                     return
                 }
                 if ReaderHTTPErrorRecoveryPolicy.shouldPreserveReaderState(
