@@ -42,6 +42,10 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var isPlaying = false
     @Published public private(set) var hasStartedPlaybackForCurrentContent = false
     @Published public var isTemporarilySuspendedForLoading = false
+    @Published public private(set) var isRecordedAudioSuspendedForLookup = false
+    @Published public private(set) var shouldResumeRecordedAudioAfterLookupDismissal = false
+    @Published public private(set) var isAITTSSuspendedForLookup = false
+    @Published public private(set) var shouldResumeAITTSAfterLookupDismissal = false
     @Published public var playbackSource: ReaderPlaybackSource = .recordedAudio
     @Published public var autoplayRequestToken: UUID?
     @Published public private(set) var ttsProgressValue: Double = 0
@@ -77,6 +81,48 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     public var hasRecordedAudio: Bool {
         !audioURLs.isEmpty
+    }
+
+    @MainActor
+    public func recordLookupRecordedAudioSuspension(wasPlaying: Bool) {
+        guard !isRecordedAudioSuspendedForLookup else { return }
+        isRecordedAudioSuspendedForLookup = true
+        shouldResumeRecordedAudioAfterLookupDismissal = wasPlaying
+    }
+
+    @MainActor
+    public func consumeLookupRecordedAudioResumeRequest() -> Bool {
+        let shouldResume = isRecordedAudioSuspendedForLookup && shouldResumeRecordedAudioAfterLookupDismissal
+        isRecordedAudioSuspendedForLookup = false
+        shouldResumeRecordedAudioAfterLookupDismissal = false
+        return shouldResume
+    }
+
+    @MainActor
+    public func cancelLookupRecordedAudioSuspension() {
+        isRecordedAudioSuspendedForLookup = false
+        shouldResumeRecordedAudioAfterLookupDismissal = false
+    }
+
+    @MainActor
+    public func recordLookupAITTSSuspension(wasPlaying: Bool) {
+        guard !isAITTSSuspendedForLookup else { return }
+        isAITTSSuspendedForLookup = true
+        shouldResumeAITTSAfterLookupDismissal = wasPlaying
+    }
+
+    @MainActor
+    public func consumeLookupAITTSResumeRequest() -> Bool {
+        let shouldResume = isAITTSSuspendedForLookup && shouldResumeAITTSAfterLookupDismissal
+        isAITTSSuspendedForLookup = false
+        shouldResumeAITTSAfterLookupDismissal = false
+        return shouldResume
+    }
+
+    @MainActor
+    public func cancelLookupAITTSSuspension() {
+        isAITTSSuspendedForLookup = false
+        shouldResumeAITTSAfterLookupDismissal = false
     }
 
     public func hasPlayableMediaForCurrentSource(
@@ -588,6 +634,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private func resetPlaybackStateForIncomingContent() {
         hasStartedPlaybackForCurrentContent = false
         isTemporarilySuspendedForLoading = false
+        cancelLookupRecordedAudioSuspension()
+        cancelLookupAITTSSuspension()
         playbackSource = .recordedAudio
         autoplayRequestToken = nil
         stopAITTSPlayback(clearQueue: true)

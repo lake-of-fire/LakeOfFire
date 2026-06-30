@@ -255,6 +255,29 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
+    func testLookupRecordedAudioSuspensionConsumesResumeRequestOnce() {
+        let viewModel = ReaderMediaPlayerViewModel()
+
+        viewModel.recordLookupRecordedAudioSuspension(wasPlaying: true)
+
+        XCTAssertTrue(viewModel.isRecordedAudioSuspendedForLookup)
+        XCTAssertTrue(viewModel.consumeLookupRecordedAudioResumeRequest())
+        XCTAssertFalse(viewModel.isRecordedAudioSuspendedForLookup)
+        XCTAssertFalse(viewModel.consumeLookupRecordedAudioResumeRequest())
+    }
+
+    @MainActor
+    func testLookupRecordedAudioSuspensionDoesNotResumeWhenAudioWasPaused() {
+        let viewModel = ReaderMediaPlayerViewModel()
+
+        viewModel.recordLookupRecordedAudioSuspension(wasPlaying: false)
+
+        XCTAssertTrue(viewModel.isRecordedAudioSuspendedForLookup)
+        XCTAssertFalse(viewModel.consumeLookupRecordedAudioResumeRequest())
+        XCTAssertFalse(viewModel.isRecordedAudioSuspendedForLookup)
+    }
+
+    @MainActor
     func testPresentAITTSPreparesQueueWithoutStartingPlayback() {
         let viewModel = ReaderMediaPlayerViewModel()
         viewModel.shouldEnqueueSpeechSynthesizerUtterances = false
