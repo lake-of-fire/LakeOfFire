@@ -11,6 +11,7 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
+import Perception
 #if os(iOS)
 import UIKit
 #endif
@@ -121,6 +122,7 @@ private extension View {
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
 private var ebookChromeInsetRevision: Int = 0
+private var lastSyncedEbookChromeInsets: (pageURL: URL, top: CGFloat, toolbarBottom: CGFloat, bottom: CGFloat)?
 
 @MainActor
 func readerPaginationTrackingSettingsKey(
@@ -468,6 +470,19 @@ func syncEbookViewerChromeInsets(
     let obscuredTopInset = max(0, obscuredTopInset)
     let toolbarBottomOffset = max(0, toolbarBottomOffset)
     let obscuredBottomInset = max(0, obscuredBottomInset)
+    if let lastSyncedEbookChromeInsets,
+       lastSyncedEbookChromeInsets.pageURL == pageURL,
+       lastSyncedEbookChromeInsets.top == obscuredTopInset,
+       lastSyncedEbookChromeInsets.toolbarBottom == toolbarBottomOffset,
+       lastSyncedEbookChromeInsets.bottom == obscuredBottomInset {
+        return
+    }
+    lastSyncedEbookChromeInsets = (
+        pageURL: pageURL,
+        top: obscuredTopInset,
+        toolbarBottom: toolbarBottomOffset,
+        bottom: obscuredBottomInset
+    )
     let obscuredTopInsetCSS = "\(obscuredTopInset)px"
     let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
     let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
@@ -925,7 +940,6 @@ public extension WebViewNavigator {
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                     let isLoading = content.isReaderModeByDefault || url.isReaderURLLoaderURL
                     readerModeViewModel.readerModeLoading(isLoading)
-//                    debugPrint("# WebViewNavigator load", isLoading)
                 } else {
                 }
             } else {
@@ -1077,7 +1091,6 @@ public struct Reader: View {
             obscuredBottomInset: toolbarReferenceBottomInset,
             additionalBottomSafeAreaInset: additionalBottomInset
         )
-        let viewerLoadedProbeSummary = readerViewModel.ebookViewerLoadedProbeSummary ?? "nil"
         let chromeInsetsTaskID = [
             pageURL.absoluteString,
             "\(effectiveTopInset)",
@@ -1088,27 +1101,6 @@ public struct Reader: View {
             "\(readerViewModel.state.hasReaderRenderReady)",
             "\(readerViewModel.ebookChromeInsetsResyncID)",
         ].joined(separator: "|")
-        let safeAreaBottomSignature = [
-            "stage=lakeReader.computeBottom",
-            "pageURL=\(pageURL.absoluteString)",
-            "readerContentPageURL=\(readerContent.pageURL.absoluteString)",
-            "sampledBottom=\(sampledBottomInset)",
-            "sampledTop=\(sampledTopInset)",
-            "sampledLeading=\(obscuredInsets?.leading ?? 0)",
-            "sampledTrailing=\(obscuredInsets?.trailing ?? 0)",
-            "additionalTop=\(effectiveTopInset)",
-            "additionalLeading=\(additionalLeadingInset)",
-            "additionalBottom=\(additionalBottomInset)",
-            "ebookChromeBottom=\(ebookChromeBottomInset)",
-            "ebookChromeExtraBottom=\(ebookChromeExtraBottomInset)",
-            "effectiveTop=\(effectiveObscuredInsets?.top ?? 0)",
-            "effectiveLeading=\(effectiveObscuredInsets?.leading ?? 0)",
-            "effectiveTrailing=\(effectiveObscuredInsets?.trailing ?? 0)",
-            "effectiveBottom=\(effectiveBottomInset)",
-            "toolbarReferenceBottom=\(toolbarReferenceBottomInset)",
-            "toolbarBottomOffset=\(effectiveToolbarBottomOffset)",
-            "isEBook=\(pageURL.isEBookURL)"
-        ].joined(separator: " ")
         //            VStack(spacing: 0) {
         ReaderWebView(
             persistentWebViewID: persistentWebViewID,
@@ -1137,61 +1129,62 @@ public struct Reader: View {
 #endif
         .background {
             GeometryReader { geometry in
-                let geometrySize = geometry.size
-                let geometrySafeAreaInsets = geometry.safeAreaInsets
-                Color.clear
-                    .onAppear {
-                        var sampledInsets = EdgeInsets(
-                            top: max(0, geometrySafeAreaInsets.top),
-                            leading: max(0, geometrySafeAreaInsets.leading),
-                            bottom: max(0, geometrySafeAreaInsets.bottom),
-                            trailing: max(0, geometrySafeAreaInsets.trailing)
-                        )
-                        if pageURL.isEBookURL {
-                            sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
-                                current: sampledInsets.top,
-                                previous: obscuredInsets?.top,
-                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
+                WithPerceptionTracking {
+                    let geometrySize = geometry.size
+                    let geometrySafeAreaInsets = geometry.safeAreaInsets
+                    let currentPageURL = pageURL
+                    let currentObscuredInsets = obscuredInsets
+                    let currentHideNavigationDueToScroll = hideNavigationDueToScroll
+                    Color.clear
+                        .onAppear {
+                            var sampledInsets = EdgeInsets(
+                                top: max(0, geometrySafeAreaInsets.top),
+                                leading: max(0, geometrySafeAreaInsets.leading),
+                                bottom: max(0, geometrySafeAreaInsets.bottom),
+                                trailing: max(0, geometrySafeAreaInsets.trailing)
                             )
-                        } else if explicitTopInset > 0,
-                                  sampledInsets.top > explicitTopInset {
-                            sampledInsets.top = explicitTopInset
-                        }
-                        if pageURL.isEBookURL {
-                        }
-                        obscuredGeometrySize = geometrySize
-                        obscuredInsets = sampledInsets
-                    }
-                    .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
-                        var sampledInsets = EdgeInsets(
-                            top: max(0, safeAreaInsets.top),
-                            leading: max(0, safeAreaInsets.leading),
-                            bottom: max(0, safeAreaInsets.bottom),
-                            trailing: max(0, safeAreaInsets.trailing)
-                        )
-                        let previousInsets = obscuredInsets
-                        if pageURL.isEBookURL {
-                            sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
-                                current: sampledInsets.top,
-                                previous: previousInsets?.top,
-                                preservesPreviousWhenDecreasing: hideNavigationDueToScroll
-                            )
-                        } else {
-                            if explicitTopInset > 0,
-                               sampledInsets.top > explicitTopInset {
+                            if currentPageURL.isEBookURL {
+                                sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
+                                    current: sampledInsets.top,
+                                    previous: currentObscuredInsets?.top,
+                                    preservesPreviousWhenDecreasing: currentHideNavigationDueToScroll
+                                )
+                            } else if explicitTopInset > 0,
+                                      sampledInsets.top > explicitTopInset {
                                 sampledInsets.top = explicitTopInset
                             }
-                            if let previousInsets,
-                               previousInsets.top > 0,
-                               sampledInsets.top > previousInsets.top {
-                                sampledInsets.top = previousInsets.top
+                            obscuredGeometrySize = geometrySize
+                            obscuredInsets = sampledInsets
+                        }
+                        .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
+                            var sampledInsets = EdgeInsets(
+                                top: max(0, safeAreaInsets.top),
+                                leading: max(0, safeAreaInsets.leading),
+                                bottom: max(0, safeAreaInsets.bottom),
+                                trailing: max(0, safeAreaInsets.trailing)
+                            )
+                            let previousInsets = obscuredInsets
+                            if currentPageURL.isEBookURL {
+                                sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
+                                    current: sampledInsets.top,
+                                    previous: previousInsets?.top,
+                                    preservesPreviousWhenDecreasing: currentHideNavigationDueToScroll
+                                )
+                            } else {
+                                if explicitTopInset > 0,
+                                   sampledInsets.top > explicitTopInset {
+                                    sampledInsets.top = explicitTopInset
+                                }
+                                if let previousInsets,
+                                   previousInsets.top > 0,
+                                   sampledInsets.top > previousInsets.top {
+                                    sampledInsets.top = previousInsets.top
+                                }
                             }
+                            obscuredGeometrySize = geometrySize
+                            obscuredInsets = sampledInsets
                         }
-                        if pageURL.isEBookURL {
-                        }
-                        obscuredGeometrySize = geometrySize
-                        obscuredInsets = sampledInsets
-                    }
+                }
             }
         }
         //            }
@@ -1209,10 +1202,6 @@ public struct Reader: View {
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
-        .task(id: safeAreaBottomSignature) {
-            if pageURL.isEBookURL {
-            }
-        }
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
             let retryDelaysInNanoseconds: [UInt64] = [
@@ -1230,12 +1219,6 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1",
-                   (
-                       attempt == retryDelaysInNanoseconds.startIndex
-                       || attempt == retryDelaysInNanoseconds.index(before: retryDelaysInNanoseconds.endIndex)
-                   ) {
-                }
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
                     obscuredTopInset: effectiveTopInset,

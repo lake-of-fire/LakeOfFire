@@ -2670,12 +2670,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 navigator.load(URLRequest(url: committedURL))
             }
-//        } else {
-//            debugPrint("# nav commit mid 2..", newState.pageURL, content.isReaderModeAvailable)
-//            if content.isReaderModeByDefault, !content.isReaderModeAvailable {
-//                debugPrint("# on commit, read mode NOT avail, loading false")
-//                readerModeLoading(false)
-//            }
         }
     }
     

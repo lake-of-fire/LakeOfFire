@@ -111,7 +111,8 @@ const safeRound = (value, digits = 1) =>
 
 const readerNavLoadLog = (stage, payload = {}) => {
     try {
-        ();
+        void stage;
+        void payload;
     } catch (_error) {}
 };
 

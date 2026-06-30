@@ -275,10 +275,29 @@ const coerceRestoreFraction = (...values) => {
     return numbers.find((value) => value > 0) ?? numbers[0] ?? null;
 };
 
-const visiblePrimeSignatureForIndex = (index) => {
-    const visibleElementIDs = Array.isArray(index?.visibleElementIDs) ? index.visibleElementIDs : [];
-    const entryIDs = index?.idsByEntryID instanceof Map ? Array.from(index.idsByEntryID.keys()) : [];
-    return `${visibleElementIDs.join(',')}|${entryIDs.join(',')}`;
+const visiblePrimeEntryIDsForIndex = (index, visibleElementIDs) => {
+    if (!(index?.byElementID instanceof Map)) {
+        return [];
+    }
+    const entryIDs = [];
+    const seen = new Set();
+    for (const elementID of visibleElementIDs || []) {
+        const metadata = index.byElementID.get(elementID);
+        const ids = Array.isArray(metadata?.j) ? metadata.j : [];
+        for (const rawEntryID of ids) {
+            const entryID = Number(rawEntryID);
+            if (!Number.isFinite(entryID) || seen.has(entryID)) {
+                continue;
+            }
+            seen.add(entryID);
+            entryIDs.push(entryID);
+        }
+    }
+    return entryIDs;
+};
+
+const visiblePrimeSignatureForIndex = (visibleElementIDs, entryIDs) => {
+    return `${(visibleElementIDs || []).join(',')}|${(entryIDs || []).join(',')}`;
 };
 
 const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-prime') => {
@@ -289,20 +308,18 @@ const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-pri
     const visibleElementIDs = Array.isArray(index.visibleElementIDs)
         ? Array.from(new Set(index.visibleElementIDs.filter((elementID) => typeof elementID === 'string' && elementID.length > 0)))
         : [];
-    if (visibleElementIDs.length === 0 || !(index.idsByEntryID instanceof Map) || index.idsByEntryID.size === 0) {
+    if (visibleElementIDs.length === 0 || !(index.byElementID instanceof Map)) {
         return false;
     }
-    const signature = visiblePrimeSignatureForIndex(index);
+    const entryIDs = visiblePrimeEntryIDsForIndex(index, visibleElementIDs);
+    if (entryIDs.length === 0) {
+        return false;
+    }
+    const signature = visiblePrimeSignatureForIndex(visibleElementIDs, entryIDs);
     if (view.__manabiLastNativeVisiblePrimeSignature === signature) {
         return false;
     }
     view.__manabiLastNativeVisiblePrimeSignature = signature;
-    const entryIDs = Array.from(index.idsByEntryID.keys())
-        .map((entryID) => Number(entryID))
-        .filter((entryID) => Number.isFinite(entryID));
-    if (entryIDs.length === 0) {
-        return false;
-    }
     try {
         view.webkit?.messageHandlers?.manabiSegmentsReady?.postMessage?.({
             windowURL: window.top.location.href,
@@ -2862,20 +2879,6 @@ const isDocumentLike = (value) =>
     && typeof value.querySelectorAll === 'function'
     && !!value.documentElement;
 
-const parseEntryIDs = (rawValue) => {
-    if (typeof rawValue !== 'string' || rawValue.length === 0) {
-        return [];
-    }
-    try {
-        const parsed = JSON.parse(rawValue);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (_error) {
-        return [];
-    }
-};
-
-// Mirrors manabi_reader.js sidecar expansion. The HTML sidecar stores table-compressed
-// segment tuples so EPUB sections do not repeat large lookup attrs thousands of times.
 const emptySegmentMetadataBootstrap = () => ({
     byID: new Map(),
     idsByEntryID: new Map(),
@@ -2884,150 +2887,6 @@ const emptySegmentMetadataBootstrap = () => ({
     sentenceArchive: new Map(),
 });
 
-const segmentMetadataSidecarSignature = (sidecarTexts) => (
-    sidecarTexts.map((text) => {
-        let hash = 2166136261;
-        for (let index = 0; index < text.length; index += 1) {
-            hash ^= text.charCodeAt(index);
-            hash = Math.imul(hash, 16777619);
-        }
-        return `${text.length}:${(hash >>> 0).toString(36)}`;
-    }).join('|')
-);
-
-const segmentMetadataSidecarNodesMatch = (sidecars, cachedSidecars) => (
-    Array.isArray(cachedSidecars)
-    && cachedSidecars.length === sidecars.length
-    && sidecars.every((sidecar, index) => sidecar === cachedSidecars[index])
-);
-
-const segmentMetadataSidecarSnapshot = (doc) => {
-    const startedAt = performanceNowMs();
-    const primarySidecar = typeof doc?.getElementById === 'function'
-        ? doc.getElementById('mnb-segment-metadata')
-        : null;
-    const sidecars = primarySidecar
-        ? [primarySidecar]
-        : Array.from(doc?.getElementsByTagName?.('script') || [])
-            .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta'));
-    const sidecarTexts = sidecars.map((sidecar) => sidecar.textContent || '');
-    const cachedSnapshot = doc?.manabiSegmentMetadataSidecarSnapshot;
-    if (
-        cachedSnapshot
-        && segmentMetadataSidecarNodesMatch(sidecars, cachedSnapshot.sidecars)
-        && Array.isArray(cachedSnapshot.sidecarTexts)
-        && cachedSnapshot.sidecarTexts.length === sidecarTexts.length
-        && sidecarTexts.every((text, index) => text === cachedSnapshot.sidecarTexts[index])
-    ) {
-        cachedSnapshot.reusedCachedSidecars = true;
-        manabiTimelineMeasure('segmentMetadata.sidecarSnapshot.cached', startedAt, {
-            sidecarCount: sidecars.length,
-        }, 25);
-        return cachedSnapshot;
-    }
-    const sidecarSignature = segmentMetadataSidecarSignature(sidecarTexts);
-    const sidecarBytes = sidecarTexts.reduce((total, text) => total + text.length, 0);
-    manabiTimelineMeasure('segmentMetadata.sidecarSnapshot.fresh', startedAt, {
-        sidecarCount: sidecars.length,
-        sidecarBytes,
-        primarySidecar: !!primarySidecar,
-    }, 25);
-    return { sidecars, sidecarTexts, sidecarSignature, reusedCachedSidecars: false };
-};
-
-const segmentMetadataAggregateSidecarSnapshot = (doc) => {
-    const startedAt = performanceNowMs();
-    const primarySidecar = typeof doc?.getElementById === 'function'
-        ? doc.getElementById('mnb-segment-metadata-aggregate')
-        : null;
-    const sidecars = primarySidecar
-        ? [primarySidecar]
-        : Array.from(doc?.getElementsByTagName?.('script') || [])
-            .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta-aggregate'));
-    const sidecarTexts = sidecars.map((sidecar) => sidecar.textContent || '');
-    const sidecarSignature = segmentMetadataSidecarSignature(sidecarTexts);
-    const sidecarBytes = sidecarTexts.reduce((total, text) => total + text.length, 0);
-    manabiTimelineMeasure('segmentMetadata.aggregateSidecarSnapshot.fresh', startedAt, {
-        sidecarCount: sidecars.length,
-        sidecarBytes,
-        primarySidecar: !!primarySidecar,
-    }, 25);
-    return { sidecars, sidecarTexts, sidecarSignature, reusedCachedSidecars: false };
-};
-
-const segmentMetadataSidecarsMatchCache = (doc, snapshot) => {
-    if (snapshot?.reusedCachedSidecars === true) return true;
-    const cachedSidecars = doc.manabiSegmentMetadataSidecars || [];
-    const cachedSidecarTexts = doc.manabiSegmentMetadataSidecarTexts || [];
-    return (
-        cachedSidecars.length === snapshot.sidecars.length
-        && snapshot.sidecars.every((sidecar, index) => (
-            sidecar === cachedSidecars[index]
-            && snapshot.sidecarTexts[index] === cachedSidecarTexts[index]
-        ))
-    );
-};
-
-const cacheSegmentMetadataSidecarSnapshot = (doc, snapshot) => {
-    doc.manabiSegmentMetadataSidecars = snapshot.sidecars;
-    doc.manabiSegmentMetadataSidecarTexts = snapshot.sidecarTexts;
-    doc.manabiSegmentMetadataSidecarSignature = snapshot.sidecarSignature;
-    doc.manabiSegmentMetadataSidecarSnapshot = snapshot;
-};
-
-const segmentMetadataPayloadsForSnapshot = (doc, snapshot) => {
-    const startedAt = performanceNowMs();
-    const hasMatchingSidecars =
-        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot);
-    if (hasMatchingSidecars && Array.isArray(doc.manabiSegmentMetadataSidecarPayloads)) {
-        manabiTimelineMeasure('segmentMetadata.payloads.cached', startedAt, {
-            payloadCount: doc.manabiSegmentMetadataSidecarPayloads.length,
-            sidecarCount: snapshot.sidecars.length,
-        }, 25);
-        return doc.manabiSegmentMetadataSidecarPayloads;
-    }
-    const payloads = snapshot.sidecars.map((sidecar) => {
-        try {
-            return JSON.parse(sidecar.textContent || '{}');
-        } catch (_error) {
-            return null;
-        }
-    });
-    doc.manabiSegmentMetadataSidecarPayloads = payloads;
-    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-    manabiTimelineMeasure('segmentMetadata.payloads.parsed', startedAt, {
-        payloadCount: payloads.length,
-        sidecarCount: snapshot.sidecars.length,
-        reusedCachedSidecars: snapshot.reusedCachedSidecars === true,
-    }, 25);
-    return payloads;
-};
-
-const resetSegmentMetadataCachesForSnapshot = (doc, snapshot) => {
-    doc.manabiSegmentMetadataByID = new Map();
-    doc.manabiSegmentIDsByEntryID = new Map();
-    doc.manabiSegmentMetadataSegments = [];
-    doc.manabiSegmentMetadataAggregates = null;
-    doc.manabiSegmentMetadataSentenceArchive = new Map();
-    doc.manabiSegmentMetadataSidecarPayloads = null;
-    doc.manabiSegmentMetadataFullyBootstrapped = false;
-    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-};
-
-const segmentMetadataTableValue = (table, index, fallback = null) => (
-    Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
-        ? table[index]
-        : fallback
-);
-
-const expandSegmentIDToken = (token, version) => {
-    if (typeof token !== 'string' || token.length === 0) return null;
-    if (version >= 5 && token.startsWith('~')) return `_m${token.slice(1)}`;
-    if (version >= 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
-    return token;
-};
-
 const stableSegmentID = (sentenceID, segmentHash) => (
     typeof sentenceID === 'string' && sentenceID.length > 0
     && typeof segmentHash === 'string' && segmentHash.length > 0
@@ -3035,413 +2894,9 @@ const stableSegmentID = (sentenceID, segmentHash) => (
         : null
 );
 
-const segmentMetadataTableArray = (tables, shortKey, longKey) => (
-    Array.isArray(tables?.[shortKey])
-        ? tables[shortKey]
-        : (Array.isArray(tables?.[longKey]) ? tables[longKey] : [])
-);
-
-const compactSegmentMetadataTables = (compactTables) => ({
-    h: segmentMetadataTableArray(compactTables, 'h', 'segmentHashes'),
-    j: segmentMetadataTableArray(compactTables, 'j', 'jmdictEntryIDs'),
-    n: segmentMetadataTableArray(compactTables, 'n', 'jmnedictEntryIDs'),
-    s: segmentMetadataTableArray(compactTables, 's', 'jmdictSearchStrings'),
-    ns: segmentMetadataTableArray(compactTables, 'ns', 'jmnedictSearchStrings'),
-    p: segmentMetadataTableArray(compactTables, 'p', 'partsOfSpeech'),
-    x: segmentMetadataTableArray(compactTables, 'x', 'surfaceTexts'),
-    sid: segmentMetadataTableArray(compactTables, 'sid', 'sentenceIdentifiers'),
-    pid: segmentMetadataTableArray(compactTables, 'pid', 'paragraphIdentifiers'),
-});
-
-const segmentMetadataFromCompactTuple = (segment, tables, version) => {
-    const segmentHash = version >= 3
-        ? segmentMetadataTableValue(tables.h, segment?.[1], null)
-        : segment?.[1];
-    const sentenceID = version >= 3
-        ? segmentMetadataTableValue(tables.sid, segment?.[9], null)
-        : null;
-    const paragraphID = version >= 6
-        ? segmentMetadataTableValue(tables.pid, segment?.[10], null)
-        : null;
-    const hasRubyIndex = version >= 6 ? 11 : 10;
-    return {
-        i: expandSegmentIDToken(segment?.[0], version), // segment element ID
-        h: segmentHash,
-        sid: stableSegmentID(sentenceID, segmentHash),
-        j: segmentMetadataTableValue(tables.j, segment?.[2], []), // JMDict entry IDs from table index
-        n: segmentMetadataTableValue(tables.n, segment?.[3], []), // JMNEDict entry IDs from table index
-        s: segmentMetadataTableValue(tables.s, segment?.[4], null), // JMDict lookup string from table index
-        ns: segmentMetadataTableValue(tables.ns, segment?.[5], null), // JMNEDict lookup string from table index
-        p: segmentMetadataTableValue(tables.p, segment?.[6], null), // part-of-speech from table index
-        l: segment?.[7], // JLPT level, 1..5
-        x: segmentMetadataTableValue(tables.x, segment?.[8], null), // surface text from table index
-        sentenceID, // sentence identifier from table index
-        paragraphID, // paragraph identifier from table index
-        pid: paragraphID,
-        r: typeof segment?.[hasRubyIndex] === 'boolean' ? segment[hasRubyIndex] : null, // contains ruby
-    };
-};
-
-const segmentMetadataFromLegacyEntry = (segment) => {
-    const paragraphID = typeof segment?.paragraphID === 'string'
-        ? segment.paragraphID
-        : (typeof segment?.pid === 'string' ? segment.pid : null);
-    return {
-        i: typeof segment?.i === 'string' ? segment.i : null,
-        h: typeof segment?.h === 'string' ? segment.h : null,
-        sid: typeof segment?.sid === 'string' ? segment.sid : null,
-        j: Array.isArray(segment?.j) ? segment.j : [],
-        n: Array.isArray(segment?.n) ? segment.n : [],
-        s: typeof segment?.s === 'string' ? segment.s : null,
-        ns: typeof segment?.ns === 'string' ? segment.ns : null,
-        p: typeof segment?.p === 'string' ? segment.p : null,
-        l: Number.isInteger(segment?.l) ? segment.l : null,
-        x: typeof segment?.x === 'string' ? segment.x : null,
-        sentenceID: typeof segment?.sentenceID === 'string' ? segment.sentenceID : null,
-        paragraphID,
-        pid: paragraphID,
-    };
-};
-
-const sentenceArchiveEntriesFromPayload = (payload) => (
-    Array.isArray(payload?.e) ? payload.e
-        : (Array.isArray(payload?.sentenceArchive) ? payload.sentenceArchive : [])
-);
-
-const expandSegmentMetadataPayload = (payload) => {
-    const version = payload?.v ?? payload?.version;
-    const compactTables = payload?.t ?? payload?.tables;
-    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
-    if (version >= 2 && version <= 6 && compactTables && Array.isArray(compactSegments)) {
-        const tables = compactSegmentMetadataTables(compactTables);
-        return compactSegments.map((segment) => segmentMetadataFromCompactTuple(segment, tables, version));
-    }
-    if (Array.isArray(payload)) {
-        return payload.map(segmentMetadataFromLegacyEntry);
-    }
-    return [];
-};
-
-const segmentMetadataAliases = (metadata) => {
-    const aliases = [];
-    const add = (identifier) => {
-        if (typeof identifier !== 'string' || identifier.length === 0) return;
-        if (!aliases.includes(identifier)) aliases.push(identifier);
-    };
-    add(metadata?.i);
-    add(metadata?.sid);
-    add(stableSegmentID(metadata?.sentenceID, metadata?.h));
-    return aliases;
-};
-
-const segmentMetadataPayloadLookupState = (payload) => {
-    if (!payload || typeof payload !== 'object') return null;
-    if (payload.__manabiSegmentMetadataLookupState) {
-        return payload.__manabiSegmentMetadataLookupState;
-    }
-    const state = {
-        byID: new Map(),
-        scannedThrough: -1,
-        complete: false,
-    };
-    try {
-        Object.defineProperty(payload, '__manabiSegmentMetadataLookupState', {
-            value: state,
-            configurable: true,
-        });
-    } catch (_error) {
-        payload.__manabiSegmentMetadataLookupState = state;
-    }
-    return state;
-};
-
-const findSegmentMetadataInPayload = (payload, segmentID) => {
-    const version = payload?.v ?? payload?.version;
-    const compactTables = payload?.t ?? payload?.tables;
-    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
-    if (version >= 2 && version <= 6 && compactTables && Array.isArray(compactSegments)) {
-        const tables = compactSegmentMetadataTables(compactTables);
-        const state = segmentMetadataPayloadLookupState(payload);
-        if (state?.byID?.has(segmentID)) {
-            const cachedIndex = state.byID.get(segmentID);
-            const cachedSegment = compactSegments[cachedIndex];
-            return cachedSegment ? segmentMetadataFromCompactTuple(cachedSegment, tables, version) : null;
-        }
-        if (state?.complete === true) {
-            return null;
-        }
-        for (let index = (state?.scannedThrough ?? -1) + 1; index < compactSegments.length; index += 1) {
-            const segment = compactSegments[index];
-            const metadata = segmentMetadataFromCompactTuple(segment, tables, version);
-            let matched = false;
-            for (const alias of segmentMetadataAliases(metadata)) {
-                if (state?.byID && !state.byID.has(alias)) {
-                    state.byID.set(alias, index);
-                }
-                if (alias === segmentID) {
-                    matched = true;
-                }
-            }
-            if (state) state.scannedThrough = index;
-            if (!matched) continue;
-            return metadata;
-        }
-        if (state) state.complete = true;
-        return null;
-    }
-    if (Array.isArray(payload)) {
-        const state = segmentMetadataPayloadLookupState(payload);
-        if (state?.byID?.has(segmentID)) {
-            const cachedIndex = state.byID.get(segmentID);
-            const cachedSegment = payload[cachedIndex];
-            return cachedSegment ? segmentMetadataFromLegacyEntry(cachedSegment) : null;
-        }
-        if (state?.complete === true) {
-            return null;
-        }
-        for (let index = (state?.scannedThrough ?? -1) + 1; index < payload.length; index += 1) {
-            const metadata = segmentMetadataFromLegacyEntry(payload[index]);
-            let matched = false;
-            for (const alias of segmentMetadataAliases(metadata)) {
-                if (state?.byID && !state.byID.has(alias)) {
-                    state.byID.set(alias, index);
-                }
-                if (alias === segmentID) {
-                    matched = true;
-                }
-            }
-            if (state) state.scannedThrough = index;
-            if (!matched) continue;
-            return metadata;
-        }
-        if (state) state.complete = true;
-    }
-    return null;
-};
-
-const lazySegmentMetadataByID = (doc, snapshot) => {
-    const hasMatchingSidecars =
-        doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot);
-    if (!hasMatchingSidecars) {
-        resetSegmentMetadataCachesForSnapshot(doc, snapshot);
-    } else if (!(doc.manabiSegmentMetadataByID instanceof Map)) {
-        doc.manabiSegmentMetadataByID = new Map();
-    }
-    return doc.manabiSegmentMetadataByID;
-};
-
-const segmentMetadataBootstrap = (doc) => {
-    const startedAt = performanceNowMs();
-    if (!doc) {
-        return emptySegmentMetadataBootstrap();
-    }
-    const snapshot = segmentMetadataSidecarSnapshot(doc);
-    const sidecarsMatchCache = segmentMetadataSidecarsMatchCache(doc, snapshot);
-    if (
-        doc.manabiSegmentMetadataFullyBootstrapped === true
-        && doc.manabiSegmentMetadataByID
-        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && sidecarsMatchCache
-    ) {
-        manabiTimelineMeasure('segmentMetadata.bootstrap.cached', startedAt, {
-            sidecarCount: snapshot.sidecars.length,
-            segmentCount: doc.manabiSegmentMetadataSegments?.length ?? 0,
-        }, 25);
-        return {
-            byID: doc.manabiSegmentMetadataByID,
-            idsByEntryID: doc.manabiSegmentIDsByEntryID || new Map(),
-            segments: doc.manabiSegmentMetadataSegments || [],
-            aggregates: doc.manabiSegmentMetadataAggregates || null,
-            sentenceArchive: doc.manabiSegmentMetadataSentenceArchive || new Map(),
-        };
-    }
-    const readerBootstrap = doc.defaultView?.manabi_bootstrapSegmentMetadata;
-    if (typeof readerBootstrap === 'function') {
-        try {
-            const bootstrap = readerBootstrap(doc);
-            if (bootstrap?.byID instanceof Map) {
-                doc.manabiSegmentMetadataByID = bootstrap.byID;
-                doc.manabiSegmentIDsByEntryID = bootstrap.idsByEntryID instanceof Map ? bootstrap.idsByEntryID : new Map();
-                doc.manabiSegmentMetadataSegments = Array.isArray(bootstrap.segments) ? bootstrap.segments : [];
-                doc.manabiSegmentMetadataAggregates = bootstrap.aggregates || null;
-                doc.manabiSegmentMetadataSentenceArchive = bootstrap.sentenceArchive instanceof Map ? bootstrap.sentenceArchive : new Map();
-                doc.manabiSegmentMetadataFullyBootstrapped = true;
-                cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-                manabiTimelineMeasure('segmentMetadata.bootstrap.readerScript', startedAt, {
-                    sidecarCount: snapshot.sidecars.length,
-                    segmentCount: doc.manabiSegmentMetadataSegments.length,
-                    entryIDKeyCount: doc.manabiSegmentIDsByEntryID.size,
-                    sentenceArchiveCount: doc.manabiSegmentMetadataSentenceArchive.size,
-                    reusedCachedSidecars: snapshot.reusedCachedSidecars === true,
-                }, 25);
-                return {
-                    byID: doc.manabiSegmentMetadataByID,
-                    idsByEntryID: doc.manabiSegmentIDsByEntryID,
-                    segments: doc.manabiSegmentMetadataSegments,
-                    aggregates: doc.manabiSegmentMetadataAggregates,
-                    sentenceArchive: doc.manabiSegmentMetadataSentenceArchive,
-                };
-            }
-        } catch (_error) {}
-    }
-    const byID = new Map();
-    const idsByEntryID = new Map();
-    const segments = [];
-    const sentenceArchive = new Map();
-    const aggregateParts = {
-        hasExplicitAggregate: false,
-        segmentCount: 0,
-        expressions: new Set(),
-        primaryEntryIDs: new Set(),
-        jmnedictEntryIDs: new Set(),
-        kanji: new Set(),
-        sentenceIdentifiers: new Set(),
-    };
-    const indexEntryIDs = (segmentID, entryIDs) => {
-        for (const entryID of entryIDs || []) {
-            if (typeof entryID !== 'number' || !Number.isFinite(entryID)) continue;
-            const key = String(entryID);
-            if (!idsByEntryID.has(key)) idsByEntryID.set(key, new Set());
-            idsByEntryID.get(key).add(segmentID);
-        }
-    };
-    const isKanjiCodePoint = (codePoint) => (
-        (codePoint >= 0x4E00 && codePoint <= 0x9FFF)
-        || (codePoint >= 0x3400 && codePoint <= 0x4DBF)
-        || (codePoint >= 0x20000 && codePoint <= 0x2A6DF)
-        || (codePoint >= 0x2A700 && codePoint <= 0x2B73F)
-        || (codePoint >= 0x2B740 && codePoint <= 0x2B81F)
-        || (codePoint >= 0x2B820 && codePoint <= 0x2CEAF)
-        || (codePoint >= 0xF900 && codePoint <= 0xFAFF)
-        || (codePoint >= 0x2F800 && codePoint <= 0x2FA1F)
-    );
-    const addValues = (target, values) => {
-        if (!Array.isArray(values)) return;
-        for (const value of values) {
-            if (typeof value === 'string' && value.length > 0) {
-                target.add(value);
-            } else if (typeof value === 'number' && Number.isFinite(value)) {
-                target.add(value);
-            }
-        }
-    };
-    const addExplicitAggregate = (aggregate) => {
-        if (!aggregate || typeof aggregate !== 'object') return;
-        aggregateParts.hasExplicitAggregate = true;
-        const segmentCount = aggregate.c ?? aggregate.segmentCount;
-        if (Number.isFinite(segmentCount)) {
-            aggregateParts.segmentCount += segmentCount;
-        }
-        addValues(aggregateParts.expressions, aggregate.e ?? aggregate.expressions);
-        addValues(aggregateParts.primaryEntryIDs, aggregate.j ?? aggregate.primaryEntryIDs);
-        addValues(aggregateParts.jmnedictEntryIDs, aggregate.n ?? aggregate.jmnedictEntryIDs);
-        addValues(aggregateParts.kanji, aggregate.k ?? aggregate.kanji);
-        addValues(aggregateParts.sentenceIdentifiers, aggregate.sid ?? aggregate.sentenceIdentifiers);
-    };
-    const deriveAggregatesFromSegments = () => {
-        aggregateParts.segmentCount = segments.length;
-        for (const segment of segments) {
-            const expression = segment?.s || segment?.ns || null;
-            if (expression) aggregateParts.expressions.add(expression);
-            const primaryEntryID = Array.isArray(segment?.j) && segment.j.length > 0
-                ? segment.j[0]
-                : (Array.isArray(segment?.n) && segment.n.length > 0 ? segment.n[0] : null);
-            if (Number.isFinite(primaryEntryID)) aggregateParts.primaryEntryIDs.add(primaryEntryID);
-            addValues(aggregateParts.jmnedictEntryIDs, segment?.n);
-            const kanjiSource = typeof segment?.x === 'string'
-                ? segment.x
-                : (typeof expression === 'string' ? expression : null);
-            if (kanjiSource) {
-                for (const char of kanjiSource) {
-                    if (isKanjiCodePoint(char.codePointAt(0))) aggregateParts.kanji.add(char);
-                }
-            }
-            if (typeof segment?.sentenceID === 'string' && segment.sentenceID.length > 0) {
-                aggregateParts.sentenceIdentifiers.add(segment.sentenceID);
-            }
-        }
-    };
-    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
-        for (const entry of sentenceArchiveEntriesFromPayload(payload)) {
-            const sentenceID = typeof entry?.sid === 'string' ? entry.sid
-                : (typeof entry?.sentenceIdentifier === 'string' ? entry.sentenceIdentifier : null);
-            if (!sentenceID) continue;
-            sentenceArchive.set(sentenceID, {
-                sentenceHTML: typeof entry?.h === 'string' ? entry.h
-                    : (typeof entry?.html === 'string' ? entry.html : null),
-                sentenceJMDictIDs: Array.isArray(entry?.j) ? entry.j
-                    : (Array.isArray(entry?.jmdictEntryIDs) ? entry.jmdictEntryIDs : null),
-                segments: Array.isArray(entry?.s) ? entry.s
-                    : (Array.isArray(entry?.segments) ? entry.segments : []),
-            });
-        }
-        for (const segment of expandSegmentMetadataPayload(payload)) {
-            if (!segment?.i) continue;
-            for (const alias of segmentMetadataAliases(segment)) {
-                byID.set(alias, segment);
-            }
-            segments.push(segment);
-            for (const alias of segmentMetadataAliases(segment)) {
-                indexEntryIDs(alias, segment.j);
-                indexEntryIDs(alias, segment.n);
-            }
-        }
-        addExplicitAggregate(payload?.a ?? payload?.aggregates);
-    }
-    if (!aggregateParts.hasExplicitAggregate) {
-        deriveAggregatesFromSegments();
-    }
-    const aggregates = {
-        segmentCount: aggregateParts.segmentCount,
-        expressions: Array.from(aggregateParts.expressions),
-        primaryEntryIDs: Array.from(aggregateParts.primaryEntryIDs),
-        jmnedictEntryIDs: Array.from(aggregateParts.jmnedictEntryIDs),
-        kanji: Array.from(aggregateParts.kanji),
-        sentenceIdentifiers: Array.from(aggregateParts.sentenceIdentifiers),
-    };
-    doc.manabiSegmentMetadataByID = byID;
-    doc.manabiSegmentIDsByEntryID = idsByEntryID;
-    doc.manabiSegmentMetadataSegments = segments;
-    doc.manabiSegmentMetadataAggregates = aggregates;
-    doc.manabiSegmentMetadataSentenceArchive = sentenceArchive;
-    doc.manabiSegmentMetadataFullyBootstrapped = true;
-    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-    manabiTimelineMeasure('segmentMetadata.bootstrap.built', startedAt, {
-        sidecarCount: snapshot.sidecars.length,
-        segmentCount: segments.length,
-        entryIDKeyCount: idsByEntryID.size,
-        reusedCachedSidecars: snapshot.reusedCachedSidecars === true,
-    }, 25);
-    return { byID, idsByEntryID, segments, aggregates, sentenceArchive };
-};
+const segmentMetadataBootstrap = (_doc) => emptySegmentMetadataBootstrap();
 
 const segmentMetadataForNode = (segmentNode) => {
-    if (!segmentNode) return null;
-    const doc = segmentNode.ownerDocument || document;
-    const segmentID = segmentNode.id;
-    if (typeof segmentID !== 'string' || segmentID.length === 0 || !doc) return null;
-    const snapshot = segmentMetadataSidecarSnapshot(doc);
-    const byID = lazySegmentMetadataByID(doc, snapshot);
-    if (byID.has(segmentID)) {
-        return byID.get(segmentID) || null;
-    }
-    if (
-        doc.manabiSegmentMetadataFullyBootstrapped === true
-        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot)
-    ) {
-        return null;
-    }
-    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
-        const metadata = findSegmentMetadataInPayload(payload, segmentID);
-        if (!metadata?.i) continue;
-        for (const alias of segmentMetadataAliases(metadata)) {
-            byID.set(alias, metadata);
-        }
-        byID.set(segmentID, metadata);
-        return metadata;
-    }
     return null;
 };
 
@@ -3475,50 +2930,31 @@ const sentenceIdentifierForNode = (sentenceNode) => {
 };
 
 const segmentIdentifierForNode = (segmentNode) => {
-    const metadata = segmentMetadataForNode(segmentNode);
-    if (metadata?.sid) {
-        return metadata.sid;
-    }
+    const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
     const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
-    if (sentenceIdentifier && typeof metadata?.h === 'string' && metadata.h.length > 0) {
-        return `${sentenceIdentifier}-${metadata.h}`;
+    const segmentHash = segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
+    if (sentenceIdentifier && typeof segmentHash === 'string' && segmentHash.length > 0) {
+        return `${sentenceIdentifier}-${segmentHash}`;
     }
-    return segmentNode?.id || null;
+    return elementID;
 };
 
 const segmentIdentifierAliasesForNode = (segmentNode) => {
-    const metadata = segmentMetadataForNode(segmentNode);
     const aliases = [];
     const addAlias = (identifier) => {
         if (typeof identifier !== 'string' || identifier.length === 0) return;
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
-    addAlias(metadata?.sid);
     const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
-    if (sentenceIdentifier && typeof metadata?.h === 'string' && metadata.h.length > 0) {
-        addAlias(`${sentenceIdentifier}-${metadata.h}`);
+    const segmentHash = segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
+    if (sentenceIdentifier && typeof segmentHash === 'string' && segmentHash.length > 0) {
+        addAlias(`${sentenceIdentifier}-${segmentHash}`);
     }
-    if (sentenceIdentifier && typeof metadata?.sid === 'string' && !metadata.sid.includes('-')) {
-        addAlias(`${sentenceIdentifier}-${metadata.sid}`);
-    }
-    addAlias(metadata?.i);
     addAlias(segmentNode?.id);
     return aliases;
 };
 
 const buildExampleSentenceForSegment = (segmentNode) => {
-    const doc = segmentNode?.ownerDocument || document;
-    const metadata = segmentMetadataForNode(segmentNode);
-    const sentenceID = metadata?.sentenceID || sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector)) || null;
-    const sidecarSentence = sentenceID
-        ? segmentMetadataBootstrap(doc).sentenceArchive?.get?.(sentenceID)
-        : null;
-    if (sidecarSentence) {
-        return {
-            sentenceHTML: sidecarSentence.sentenceHTML ?? null,
-            sentenceJMDictIDs: sidecarSentence.sentenceJMDictIDs ?? null,
-        };
-    }
     const sentenceNode = segmentNode?.closest?.(manabiReaderSentenceSelector);
     if (!(sentenceNode instanceof Element)) {
         return {
@@ -9906,6 +9342,7 @@ class Reader {
                         postIfCached: true,
                         includeClientRects: true,
                         postLookupTargets: true,
+                        prepareLookupIndex: false,
                         hydrateStatuses: true,
                         finishInitialCritical: true,
                     }

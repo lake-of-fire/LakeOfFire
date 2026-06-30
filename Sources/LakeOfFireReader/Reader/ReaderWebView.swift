@@ -367,24 +367,6 @@ fileprivate struct ReaderWebViewInternal: View {
                 trailing: 0
             )
         )
-        let safeAreaBottomSignature = [
-            "stage=readerWebView.resolveBottom",
-            "stateURL=\(state.pageURL.absoluteString)",
-            "readerContentPageURL=\(readerContentPageURLString)",
-            "usesEBookChromeInsets=\(usesEBookChromeInsets)",
-            "sampledTop=\(obscuredInsets?.top ?? 0)",
-            "sampledLeading=\(obscuredInsets?.leading ?? 0)",
-            "sampledBottom=\(obscuredInsets?.bottom ?? 0)",
-            "sampledTrailing=\(obscuredInsets?.trailing ?? 0)",
-            "additionalTop=\(additionalTopSafeAreaInset ?? 0)",
-            "additionalLeading=\(additionalLeadingSafeAreaInset ?? 0)",
-            "additionalBottom=\(additionalBottomSafeAreaInset ?? 0)",
-            "resolvedPolicy=\(usesEBookChromeInsets ? "ebookMaxSampledAdditional" : "sampledPlusAdditionalWhenNotEBook")",
-            "resolvedTop=\(resolvedObscuredInsets.top)",
-            "resolvedLeading=\(resolvedObscuredInsets.leading)",
-            "resolvedBottom=\(resolvedObscuredInsets.bottom)",
-            "resolvedTrailing=\(resolvedObscuredInsets.trailing)"
-        ].joined(separator: " ")
         WebView(
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
@@ -425,10 +407,6 @@ fileprivate struct ReaderWebViewInternal: View {
             textSelection: $textSelection,
             webViewPrewarmer: webViewPrewarmer
         )
-        .task(id: safeAreaBottomSignature) {
-            if usesEBookChromeInsets {
-            }
-        }
         .onAppear {
         }
         .onDisappear {

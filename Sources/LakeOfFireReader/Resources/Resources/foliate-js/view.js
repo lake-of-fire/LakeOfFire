@@ -243,7 +243,6 @@ export class View extends HTMLElement {
             pageTurnDirection,
         }
         const nextSignature = readerLoadLocationSignature(this.lastLocation)
-        ()
         this.#lastReaderLoadRelocateSignature = nextSignature
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
@@ -255,7 +254,6 @@ export class View extends HTMLElement {
         if (!this.language.isCJK)
             doc.documentElement.dir ||= this.language.direction ?? ''
 
-        ()
         this.#handleLinks(doc, index)
         this.#emit('load', { doc, location, index })
     }
@@ -375,11 +373,9 @@ export class View extends HTMLElement {
     async goTo(target) {
         //        this.#emit('is-loading', true)
         const resolved = this.resolveNavigation(target)
-        ()
         try {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
-            ()
             return resolved
         } catch(e) {
             console.error(e)
@@ -391,19 +387,11 @@ export class View extends HTMLElement {
         //        return resolved
     }
     async goToFraction(frac) {
-        const now = typeof globalThis.__manabiPerformanceNowMs === 'function'
-            ? globalThis.__manabiPerformanceNowMs
-            : () => Date.now();
-        const round = globalThis.__manabiSafeRound ?? ((value) => value);
-        const startedAt = now();
         const [index, anchor] = this.#sectionProgress.getSection(frac)
-        ();
         try {
             await this.renderer.goTo({ index, anchor })
             this.history.pushState({ fraction: frac })
-            ();
         } catch (error) {
-            ();
             throw error;
         }
     }
@@ -475,35 +463,27 @@ export class View extends HTMLElement {
         }
     }
     async prev(distance) {
-        ()
         try {
             const result = await this.renderer.prev(distance)
-            ()
             return result
         } catch (error) {
-            ()
             throw error
         }
     }
     async next(distance) {
-        ()
         try {
             const result = await this.renderer.next(distance)
-            ()
             return result
         } catch (error) {
-            ()
             throw error
         }
     }
     async goLeft() {
         const method = this.book.dir === 'rtl' ? 'next' : 'prev'
-        ()
         return method === 'next' ? await this.next() : await this.prev()
     }
     async goRight() {
         const method = this.book.dir === 'rtl' ? 'prev' : 'next'
-        ()
         return method === 'prev' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {

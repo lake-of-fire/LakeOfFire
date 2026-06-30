@@ -254,7 +254,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     @MainActor
     fileprivate func scheduleEbookViewerInitializationFallback(in frameInfo: WKFrameInfo? = nil) {
         registerEbookViewerFrame(frameInfo)
-        let url = readerViewModel.state.pageURL
+        let stateURL = readerViewModel.state.pageURL
+        let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
         guard let scheme = url.scheme,
               (scheme == "ebook" || scheme == "ebook-url"),
               url.absoluteString.hasPrefix("\(scheme)://"),
@@ -262,6 +263,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
               let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))")
         else {
             return
+        }
+
+        let snapshot = navigator.debugLoadSnapshot
+        let loaderURLString = loaderURL.absoluteString
+        let isCurrentShell = snapshot.currentWebViewURL == loaderURLString
+        let isLoadingShell = snapshot.isLoading && snapshot.lastRequestURL == loaderURLString
+        if !isCurrentShell && !isLoadingShell {
+            navigator.load(URLRequest(url: loaderURL))
         }
 
         if ebookBootstrapFallbackURL == loaderURL, ebookBootstrapFallbackTask != nil {
@@ -446,7 +455,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     @MainActor
     private func registerEbookViewerFrame(_ frameInfo: WKFrameInfo?) {
         guard let frameInfo else { return }
-        let pageURL = readerViewModel.state.pageURL
+        let stateURL = readerViewModel.state.pageURL
+        let pageURL = stateURL.isEBookURL ? stateURL : readerContent.pageURL
         _ = scriptCaller.addMultiTargetFrame(
             frameInfo,
             uuid: "ebook-viewer-frame:\(pageURL.absoluteString)",
@@ -1087,7 +1097,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 ebookBootstrapFallbackTask?.cancel()
                 ebookBootstrapFallbackTask = nil
                 registerEbookViewerFrame(message.frameInfo)
-                let url = readerViewModel.state.pageURL
+                let stateURL = readerViewModel.state.pageURL
+                let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
                 if let scheme = url.scheme,
                    (scheme == "ebook" || scheme == "ebook-url"),
                    url.absoluteString.hasPrefix("\(scheme)://"),
@@ -1359,6 +1370,11 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 }
             }
             .task(id: readerContent.pageURL) {
+                if readerContent.pageURL.isEBookURL {
+                    await MainActor.run {
+                        readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
+                    }
+                }
                 await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
     }
@@ -1387,8 +1403,6 @@ extension ReaderMessageHandlersViewModifier {
             && lastNativeLookupTapAtMs > 0
             && nowMs - lastNativeLookupTapAtMs < 750
         if isRecentNativeLookupHide {
-            if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
-            }
             return
         }
         let boolLiteral = shouldHide ? "true" : "false"
@@ -1396,8 +1410,6 @@ extension ReaderMessageHandlersViewModifier {
             try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral), 'swift.bindingPush');")
             lastPushedHideNavigationDueToScroll = shouldHide
             lastPushedHideNavigationPageURL = pageURL
-            if ProcessInfo.processInfo.environment["MANABI_VERBOSE_LOOKUPPOS_NATIVE"] == "1" {
-            }
         } catch {
             // Ignore boot timing races.
         }

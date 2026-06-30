@@ -304,12 +304,8 @@ const manabiShouldEmitPaginatorFallbackReaderLoadLog = stage => {
 }
 const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
     try {
-        const readerPayload = manabiReaderLoadPayload(payload);
-        if (typeof globalThis.__manabiReaderLoadLog === 'function') {
-            ();
-            return;
-        }
-        if (!manabiShouldEmitPaginatorFallbackReaderLoadLog(stage)) return;
+        void stage;
+        void payload;
     } catch (_error) {}
 };
 const manabiPaginatorVerbosePageTurns = () =>
@@ -2358,7 +2354,6 @@ export class Paginator extends HTMLElement {
         return entry.fulfilled ? entry : null
     }
     async #onBeforeExpand() {
-//        console.log("#onBeforeExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#viewSizePromise = null;
         this.#view.cachedSizes = null;
@@ -2366,7 +2361,6 @@ export class Paginator extends HTMLElement {
         this.#invalidateVisibleRangeCache()
     }
     async #onExpand(expandedMetrics = null) {
-//        console.log("#onExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#viewSizePromise = null;
         this.#view.cachedSizes = null;
@@ -4547,14 +4541,11 @@ export class Paginator extends HTMLElement {
         }
     }
     async #NscrollToAnchor(anchor, reason = 'anchor') {
-        //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
         await this.#awaitDirection();
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                //                console.log("#scrollToAnchor...frames...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
                 this.#anchor = anchor;
-                //                console.log('scrollToAnchor: anchor=', anchor);
                 // Determine anchor target (could be Range or Element)
                 const anchorNode = uncollapse(anchor);
 
@@ -4744,8 +4735,6 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) {
             return;
         }
-        //            console.log("#afterScroll...")
-
         const canUseMetricsOnlyRelocate =
             knownMetrics
             && (reason === 'navigation' || reason === 'anchor' || reason === 'page' || reason === 'blank-correction')
@@ -5031,7 +5020,6 @@ export class Paginator extends HTMLElement {
         }
     }
     async #display(promise) {
-        //            console.log("#display...")
         this.#suspendOnExpandAnchor = false
         this.#setLoading(true, 'display.start')
         const displayStartedAt = manabiPerfNow();
@@ -5087,8 +5075,6 @@ export class Paginator extends HTMLElement {
                 hasAnchor: !!anchor,
             }))
         }
-
-        //            console.log("#display...awaited promise")
         const previousIndex = this.#index
         this.#index = index
         this.#lastRelocateDispatchSignature = null
@@ -5107,13 +5093,11 @@ export class Paginator extends HTMLElement {
                     if (doc.head) {
                         this.#installStyleElementsForDocument(doc)
                     }
-                    //                    console.log("#display... await onLoad")
                     await onLoad?.({
                         doc,
                         location: doc.location.href,
                         index,
                     })
-                    //                    console.log("#display... awaited onLoad")
                 }
             }
 
@@ -5150,8 +5134,6 @@ export class Paginator extends HTMLElement {
                 this.#viewSizePromise = null
                 this.#cachedStart = null
                 this.#invalidateVisibleRangeCache()
-
-                //                console.log("#display... await load")
                 const previousView = this.#view
                 const replacingLoadedDocument = previousIndex !== index && !!previousView?.document?.body
                 const view = this.#createView({ replacement: replacingLoadedDocument })
@@ -5179,8 +5161,6 @@ export class Paginator extends HTMLElement {
                     }
                 }
 
-                if (!this.#isCacheWarmer) {
-                }
                 if (shouldLogReaderLoad) {
                     manabiPaginatorReaderLoadLog('paginator.display.viewLoad.start', {
                         index,
@@ -5257,9 +5237,6 @@ export class Paginator extends HTMLElement {
                     }))
                 }
                 this.#installMediaVisualEventDiagnostics('display.viewLoad.finish')
-                //                console.log("#display... awaited load")
-                if (!this.#isCacheWarmer) {
-                }
 
                 // Reset chevrons when loading new section
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons', {
@@ -5278,12 +5255,7 @@ export class Paginator extends HTMLElement {
                 //                this.style.display = 'block'
             }
         }
-
-        //            console.log("#display... call scroll to anchor")
-
         const scrollToAnchorStartedAt = manabiPerfNow();
-        if (!this.#isCacheWarmer) {
-        }
         if (shouldLogReaderLoad) {
             manabiPaginatorReaderLoadLog('paginator.display.scrollToAnchor.start', {
                 index,
@@ -5436,7 +5408,6 @@ export class Paginator extends HTMLElement {
                 elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
             }))
         }
-        //            console.log("#display... fin")
         } catch (error) {
             displayError = error
             if (shouldLogReaderLoad) {
@@ -5484,7 +5455,6 @@ export class Paginator extends HTMLElement {
         select
     }) {
         const goToStartedAt = manabiPerfNow();
-        //        console.log("#goTo...", this.style.display, index, anchor)
         const currentIndex = this.#index;
         const willLoadNewIndex = index !== this.#index;
         const anchorKind = Number.isFinite(localPage)

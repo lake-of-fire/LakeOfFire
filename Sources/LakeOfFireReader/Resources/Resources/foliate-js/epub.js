@@ -76,9 +76,8 @@ const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
 
 const manabiEpubReaderLoadLog = (stage, payload = {}) => {
     try {
-        if (typeof globalThis.__manabiReaderLoadLog !== 'function') return
-        if (!String(globalThis.__manabiNavigationIntent?.source || '').startsWith('restore')) return
-        ()
+        void stage
+        void payload
     } catch (_error) {}
 }
 
