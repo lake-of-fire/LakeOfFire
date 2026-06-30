@@ -67,21 +67,158 @@ const manabiIsReaderSegmentElement = element => manabiReaderSegmentTagNames.has(
 const manabiIsReaderSurfaceElement = element => manabiReaderSurfaceTagNames.has(manabiReaderTagName(element));
 const manabiIsReaderSentenceElement = element => manabiReaderSentenceTagNames.has(manabiReaderTagName(element));
 
-const MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS = false;
-globalThis.__manabiEbookNativeLookupHitTargetsDisabled = MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS;
+const manabiSegmentSidecarParserVersion = 8;
 
-const popoverDiagnosticLog = (_event, _payload = {}) => {};
+const manabiSidecarTableValue = (table, index, fallback = null) => (
+    Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
+        ? table[index]
+        : fallback
+);
 
-const popoverDiagnosticShouldRedactKey = (key) => {
-    const normalized = String(key ?? '').toLowerCase();
-    return normalized === 'url'
-        || normalized.endsWith('url')
-        || normalized.includes('framekey')
-        || normalized === 'nativelookupframekey'
-        || normalized === 'locationhref';
+const manabiSidecarTableArray = (tables, shortKey) => (
+    Array.isArray(tables?.[shortKey])
+        ? tables[shortKey]
+        : []
+);
+
+const manabiExpandSegmentIDToken = (token) => {
+    if (typeof token !== 'string' || token.length === 0) return null;
+    if (token.startsWith('!')) return token.slice(1);
+    if (token.startsWith('~')) return `_m${token.slice(1)}`;
+    return `mnb-s${token}`;
 };
 
-const highlightStatusLog = (_stage, _payload = {}) => {};
+const manabiExpandCompactSegmentMetadata = (segment, tables) => {
+    const segmentHash = manabiSidecarTableValue(tables.h, segment?.[1], null);
+    const sentenceID = manabiSidecarTableValue(tables.sid, segment?.[9], null);
+    const paragraphID = manabiSidecarTableValue(tables.pid, segment?.[10], null);
+    return {
+        i: manabiExpandSegmentIDToken(segment?.[0]),
+        h: segmentHash,
+        sid: stableSegmentID(sentenceID, segmentHash),
+        sentenceID,
+        paragraphID,
+        pid: paragraphID,
+        j: manabiSidecarTableValue(tables.j, segment?.[2], []),
+        n: manabiSidecarTableValue(tables.n, segment?.[3], []),
+        s: manabiSidecarTableValue(tables.s, segment?.[4], null),
+        ns: manabiSidecarTableValue(tables.ns, segment?.[5], null),
+        p: manabiSidecarTableValue(tables.p, segment?.[6], null),
+        l: segment?.[7],
+        x: manabiSidecarTableValue(tables.x, segment?.[8], null),
+        r: typeof segment?.[11] === 'boolean' ? segment[11] : null,
+    };
+};
+
+const manabiExpandSegmentMetadataPayload = (payload) => {
+    if (payload?.v !== manabiSegmentSidecarParserVersion || !payload?.t || !Array.isArray(payload?.s)) {
+        return [];
+    }
+    const tables = {
+        h: manabiSidecarTableArray(payload.t, 'h'),
+        j: manabiSidecarTableArray(payload.t, 'j'),
+        n: manabiSidecarTableArray(payload.t, 'n'),
+        s: manabiSidecarTableArray(payload.t, 's'),
+        ns: manabiSidecarTableArray(payload.t, 'ns'),
+        p: manabiSidecarTableArray(payload.t, 'p'),
+        x: manabiSidecarTableArray(payload.t, 'x'),
+        sid: manabiSidecarTableArray(payload.t, 'sid'),
+        pid: manabiSidecarTableArray(payload.t, 'pid'),
+    };
+    return payload.s.map(segment => manabiExpandCompactSegmentMetadata(segment, tables));
+};
+
+const manabiSegmentMetadataAliases = (segment) => {
+    const aliases = [];
+    const add = (identifier) => {
+        if (typeof identifier !== 'string' || identifier.length === 0) return;
+        if (!aliases.includes(identifier)) aliases.push(identifier);
+    };
+    add(segment?.i);
+    add(segment?.sid);
+    add(stableSegmentID(segment?.sentenceID, segment?.h));
+    return aliases;
+};
+
+const manabiSegmentMetadataSidecarSnapshot = (doc) => {
+    if (!doc) return { sidecars: [], sidecarTexts: [], sidecarSignature: 'none' };
+    const sidecarSelector = 'script#mnb-segment-metadata, script[data-mnb-seg-meta]';
+    const sidecars = typeof doc.getElementsByTagName === 'function'
+        ? Array.from(doc.getElementsByTagName('script') || [])
+            .filter(script => script?.id === 'mnb-segment-metadata' || script?.hasAttribute?.('data-mnb-seg-meta'))
+        : Array.from(doc.querySelectorAll?.(sidecarSelector) || []);
+    const sidecarTexts = sidecars.map(sidecar => sidecar.textContent || '');
+    const sidecarSignature = sidecarTexts.map((text) => {
+        let hash = 2166136261;
+        for (let index = 0; index < text.length; index += 1) {
+            hash ^= text.charCodeAt(index);
+            hash = Math.imul(hash, 16777619);
+        }
+        return `${text.length}:${(hash >>> 0).toString(36)}`;
+    }).join('|');
+    return { sidecars, sidecarTexts, sidecarSignature };
+};
+
+const directSegmentMetadataBootstrap = (doc) => {
+    if (!doc) return emptySegmentMetadataBootstrap();
+    const { sidecars, sidecarTexts, sidecarSignature } = manabiSegmentMetadataSidecarSnapshot(doc);
+    const cachedByID = doc.__manabiFoliateSegmentMetadataByID;
+    if (
+        doc.__manabiFoliateSegmentMetadataParserVersion === manabiSegmentSidecarParserVersion
+        && doc.__manabiFoliateSegmentMetadataSignature === sidecarSignature
+        && cachedByID instanceof Map
+    ) {
+        return {
+            byID: cachedByID,
+            idsByEntryID: doc.__manabiFoliateSegmentIDsByEntryID || new Map(),
+            segments: doc.__manabiFoliateSegmentMetadataSegments || [],
+            aggregates: null,
+            sentenceArchive: new Map(),
+        };
+    }
+    const byID = new Map();
+    const idsByEntryID = new Map();
+    const segments = [];
+    const indexEntryIDs = (segmentID, entryIDs) => {
+        if (typeof segmentID !== 'string' || segmentID.length === 0 || !Array.isArray(entryIDs)) return;
+        for (const entryID of entryIDs) {
+            if (!Number.isFinite(entryID)) continue;
+            const key = String(entryID);
+            if (!idsByEntryID.has(key)) idsByEntryID.set(key, new Set());
+            idsByEntryID.get(key).add(segmentID);
+        }
+    };
+    for (const sidecarText of sidecarTexts) {
+        try {
+            const payload = JSON.parse(sidecarText || '{}');
+            for (const segment of manabiExpandSegmentMetadataPayload(payload)) {
+                if (!segment?.i) continue;
+                const aliases = manabiSegmentMetadataAliases(segment);
+                for (const alias of aliases) {
+                    byID.set(alias, segment);
+                    indexEntryIDs(alias, segment.j);
+                    indexEntryIDs(alias, segment.n);
+                }
+                segments.push(segment);
+            }
+        } catch (_error) {}
+    }
+    doc.__manabiFoliateSegmentMetadataParserVersion = manabiSegmentSidecarParserVersion;
+    doc.__manabiFoliateSegmentMetadataSignature = sidecarSignature;
+    doc.__manabiFoliateSegmentMetadataByID = byID;
+    doc.__manabiFoliateSegmentIDsByEntryID = idsByEntryID;
+    doc.__manabiFoliateSegmentMetadataSegments = segments;
+    return {
+        byID,
+        idsByEntryID,
+        segments,
+        aggregates: null,
+        sentenceArchive: new Map(),
+    };
+};
+
+const MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS = false;
+globalThis.__manabiEbookNativeLookupHitTargetsDisabled = MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS;
 
 const enableInitialRestoreRenderReadyGate = (reason, payload = {}) => {
     globalThis.__manabiInitialRestoreRenderReadyGate = {
@@ -130,6 +267,11 @@ const markReaderRenderReady = (reason = 'unspecified') => {
     if (!wasReady) {
     }
     globalThis.__manabiPostReaderDocStateEvent?.(`renderReady.${reason}`);
+};
+
+const finishInitialRestoreRenderReadyGateWithTerminalResult = (reason = 'initialRestore.terminalResult') => {
+    clearInitialRestoreRenderReadyGate(reason);
+    markReaderRenderReady(reason);
 };
 
 const nextEbookLoadRequestID = (prefix) => {
@@ -275,15 +417,53 @@ const coerceRestoreFraction = (...values) => {
     return numbers.find((value) => value > 0) ?? numbers[0] ?? null;
 };
 
-const visiblePrimeEntryIDsForIndex = (index, visibleElementIDs) => {
+const visibleEntryIDsForMetadata = (metadata) => {
+    const jmdictEntryIDs = Array.isArray(metadata?.j) ? metadata.j : [];
+    const jmnedictEntryIDs = Array.isArray(metadata?.n) ? metadata.n : [];
+    return jmdictEntryIDs.length > 0 ? jmdictEntryIDs : jmnedictEntryIDs;
+};
+
+const visiblePrimeMetadataForElementID = (doc, index, elementID) => {
+    if (typeof elementID !== 'string' || elementID.length === 0) {
+        return null;
+    }
+    const indexedMetadata = index?.byElementID?.get?.(elementID)
+        || index?.bySegmentIdentifier?.get?.(elementID)
+        || null;
+    if (visibleEntryIDsForMetadata(indexedMetadata).length > 0) {
+        return indexedMetadata;
+    }
+    const segment = doc?.getElementById?.(elementID) ?? null;
+    const sidecarMetadata = segmentMetadataForNode(segment)
+        || segmentMetadataBootstrap(doc).byID.get(elementID)
+        || null;
+    if (visibleEntryIDsForMetadata(sidecarMetadata).length > 0) {
+        if (index?.byElementID instanceof Map) {
+            const mergedMetadata = {
+                ...(indexedMetadata || {}),
+                ...sidecarMetadata,
+            };
+            index.byElementID.set(elementID, mergedMetadata);
+            const segmentIdentifier = mergedMetadata.segmentIdentifier || mergedMetadata.i || null;
+            if (typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0 && index.bySegmentIdentifier instanceof Map) {
+                index.bySegmentIdentifier.set(segmentIdentifier, mergedMetadata);
+            }
+            return mergedMetadata;
+        }
+        return sidecarMetadata;
+    }
+    return indexedMetadata;
+};
+
+const visiblePrimeEntryIDsForIndex = (doc, index, visibleElementIDs) => {
     if (!(index?.byElementID instanceof Map)) {
         return [];
     }
     const entryIDs = [];
     const seen = new Set();
     for (const elementID of visibleElementIDs || []) {
-        const metadata = index.byElementID.get(elementID);
-        const ids = Array.isArray(metadata?.j) ? metadata.j : [];
+        const metadata = visiblePrimeMetadataForElementID(doc, index, elementID);
+        const ids = visibleEntryIDsForMetadata(metadata);
         for (const rawEntryID of ids) {
             const entryID = Number(rawEntryID);
             if (!Number.isFinite(entryID) || seen.has(entryID)) {
@@ -300,6 +480,18 @@ const visiblePrimeSignatureForIndex = (visibleElementIDs, entryIDs) => {
     return `${(visibleElementIDs || []).join(',')}|${(entryIDs || []).join(',')}`;
 };
 
+const visibleLookupIndexNeedsSidecarRefresh = (doc, index) => {
+    if (!isDocumentLike(doc) || !index || !(index.byElementID instanceof Map)) {
+        return false;
+    }
+    const visibleElementIDs = Array.isArray(index.visibleElementIDs) ? index.visibleElementIDs : [];
+    if (visibleElementIDs.length === 0 || visiblePrimeEntryIDsForIndex(doc, index, visibleElementIDs).length > 0) {
+        return false;
+    }
+    const bootstrap = segmentMetadataBootstrap(doc);
+    return bootstrap.idsByEntryID instanceof Map && bootstrap.idsByEntryID.size > 0;
+};
+
 const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-prime') => {
     if (!isDocumentLike(doc) || !index || !isEbookContentDocument(doc)) {
         return false;
@@ -311,7 +503,7 @@ const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-pri
     if (visibleElementIDs.length === 0 || !(index.byElementID instanceof Map)) {
         return false;
     }
-    const entryIDs = visiblePrimeEntryIDsForIndex(index, visibleElementIDs);
+    const entryIDs = visiblePrimeEntryIDsForIndex(doc, index, visibleElementIDs);
     if (entryIDs.length === 0) {
         return false;
     }
@@ -2894,9 +3086,70 @@ const stableSegmentID = (sentenceID, segmentHash) => (
         : null
 );
 
-const segmentMetadataBootstrap = (_doc) => emptySegmentMetadataBootstrap();
+const mapLikeOrEmpty = (value) => (
+    value && typeof value.get === 'function' && typeof value.keys === 'function'
+        ? value
+        : new Map()
+);
+
+const normalizeSegmentMetadataBootstrap = (bootstrap) => ({
+    byID: mapLikeOrEmpty(bootstrap?.byID),
+    idsByEntryID: mapLikeOrEmpty(bootstrap?.idsByEntryID),
+    segments: Array.isArray(bootstrap?.segments) ? bootstrap.segments : [],
+    aggregates: bootstrap?.aggregates || null,
+    sentenceArchive: mapLikeOrEmpty(bootstrap?.sentenceArchive),
+});
+
+const segmentMetadataBootstrap = (doc) => {
+    if (!doc) {
+        return emptySegmentMetadataBootstrap();
+    }
+    const readerBootstrap = doc.defaultView?.manabi_bootstrapSegmentMetadata;
+    if (typeof readerBootstrap === 'function') {
+        try {
+            const readerMetadata = normalizeSegmentMetadataBootstrap(readerBootstrap(doc));
+            if (readerMetadata.byID.size > 0) {
+                return readerMetadata;
+            }
+        } catch (_error) {}
+    }
+    if (typeof directSegmentMetadataBootstrap !== 'function') {
+        return emptySegmentMetadataBootstrap();
+    }
+    try {
+        return normalizeSegmentMetadataBootstrap(directSegmentMetadataBootstrap(doc));
+    } catch (_error) {
+        return emptySegmentMetadataBootstrap();
+    }
+};
 
 const segmentMetadataForNode = (segmentNode) => {
+    if (!segmentNode) return null;
+    const doc = segmentNode.ownerDocument || document;
+    const bootstrap = segmentMetadataBootstrap(doc);
+    const byID = bootstrap.byID;
+    if (!byID || typeof byID.get !== 'function' || byID.size === 0) {
+        return null;
+    }
+    const aliases = [];
+    const addAlias = (identifier) => {
+        if (typeof identifier !== 'string' || identifier.length === 0) return;
+        if (!aliases.includes(identifier)) aliases.push(identifier);
+    };
+    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode.closest?.(manabiReaderSentenceSelector));
+    const segmentHash = segmentNode.getAttribute?.('h') || segmentNode.dataset?.mnbSegmentHash || null;
+    addAlias(segmentNode.id);
+    addAlias(segmentNode.getAttribute?.('id'));
+    addAlias(segmentNode.getAttribute?.('data-segment-identifier'));
+    addAlias(segmentNode.getAttribute?.('sid'));
+    addAlias(segmentNode.getAttribute?.('data-sid'));
+    addAlias(stableSegmentID(sentenceIdentifier, segmentHash));
+    for (const alias of aliases) {
+        const metadata = byID.get(alias);
+        if (metadata) {
+            return metadata;
+        }
+    }
     return null;
 };
 
@@ -2930,9 +3183,13 @@ const sentenceIdentifierForNode = (sentenceNode) => {
 };
 
 const segmentIdentifierForNode = (segmentNode) => {
+    const metadata = segmentMetadataForNode(segmentNode);
+    if (metadata?.sid) {
+        return metadata.sid;
+    }
     const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
     const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
-    const segmentHash = segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
+    const segmentHash = metadata?.h || segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
     if (sentenceIdentifier && typeof segmentHash === 'string' && segmentHash.length > 0) {
         return `${sentenceIdentifier}-${segmentHash}`;
     }
@@ -2940,21 +3197,36 @@ const segmentIdentifierForNode = (segmentNode) => {
 };
 
 const segmentIdentifierAliasesForNode = (segmentNode) => {
+    const metadata = segmentMetadataForNode(segmentNode);
     const aliases = [];
     const addAlias = (identifier) => {
         if (typeof identifier !== 'string' || identifier.length === 0) return;
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
+    addAlias(metadata?.sid);
     const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
-    const segmentHash = segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
+    const segmentHash = metadata?.h || segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
     if (sentenceIdentifier && typeof segmentHash === 'string' && segmentHash.length > 0) {
         addAlias(`${sentenceIdentifier}-${segmentHash}`);
     }
+    addAlias(metadata?.i);
     addAlias(segmentNode?.id);
     return aliases;
 };
 
 const buildExampleSentenceForSegment = (segmentNode) => {
+    const doc = segmentNode?.ownerDocument || document;
+    const metadata = segmentMetadataForNode(segmentNode);
+    const sentenceID = metadata?.sentenceID || sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector)) || null;
+    const sidecarSentence = sentenceID
+        ? segmentMetadataBootstrap(doc).sentenceArchive?.get?.(sentenceID)
+        : null;
+    if (sidecarSentence) {
+        return {
+            sentenceHTML: sidecarSentence.sentenceHTML ?? null,
+            sentenceJMDictIDs: sidecarSentence.sentenceJMDictIDs ?? null,
+        };
+    }
     const sentenceNode = segmentNode?.closest?.(manabiReaderSentenceSelector);
     if (!(sentenceNode instanceof Element)) {
         return {
@@ -4021,14 +4293,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
     const visualViewportScale = Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1;
-    const shouldIncludeTargetDiagnostics = globalThis.manabiVerboseLookupPositionTargets === true;
-    const cssInsets = shouldIncludeTargetDiagnostics ? (() => {
-        try {
-            return view?.manabiCSSInsetDiagnostics?.() ?? globalThis.manabiCSSInsetDiagnostics?.() ?? {};
-        } catch (_error) {
-            return {};
-        }
-    })() : {};
     const viewportPayload = {
         visualViewportWidth: viewportWidth,
         visualViewportHeight: viewportHeight,
@@ -4043,19 +4307,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     if (typeof builder !== 'function') {
-        if (globalThis.manabiVerboseLookupPositionTargets === true) {
-            popoverDiagnosticLog('nativeLookup.targets.skipEmptyPost', {
-                reason,
-                nativeLookupFrameKey,
-                builder: false,
-                visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-                visualViewportScale,
-                viewportWidth,
-                viewportHeight,
-                viewportLeft,
-                viewportTop,
-            });
-        }
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: false,
@@ -4072,15 +4323,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
     const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const targets = [];
-    const sampleTargets = [];
-    let minTargetLeft = Infinity;
-    let minTargetTop = Infinity;
-    let maxTargetRight = -Infinity;
-    let maxTargetBottom = -Infinity;
-    let surfaceRectTargetCount = 0;
-    let suppliedRectTargetCount = 0;
-    let suppliedSuspiciousRectCount = 0;
-    let droppedSuspiciousRectCount = 0;
     view?.manabi_resetNativeLookupHitTargets?.();
     for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
         const rects = item?.rects?.length ? item.rects : (item?.rect ? [item.rect] : []);
@@ -4095,67 +4337,9 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         })), viewportPayload);
         if (target) {
             targets.push(target);
-            if (target.rectSource === 'surface-text') {
-                surfaceRectTargetCount += 1;
-            } else if (target.rectSource === 'supplied') {
-                suppliedRectTargetCount += 1;
-            }
-            suppliedSuspiciousRectCount += Number.isFinite(Number(target.suppliedSuspiciousCount))
-                ? Number(target.suppliedSuspiciousCount)
-                : 0;
-            droppedSuspiciousRectCount += Number.isFinite(Number(target.droppedSuspiciousRectCount))
-                ? Number(target.droppedSuspiciousRectCount)
-                : 0;
-            if (sampleTargets.length < 8) {
-                const firstRect = target.rects?.[0] ?? null;
-                sampleTargets.push({
-                    elementId: target.elementId ?? null,
-                    surface: item.node?.querySelector?.('m-t')?.textContent ?? item.node?.textContent ?? null,
-                    rectSource: target.rectSource ?? null,
-                    suppliedRectCount: target.suppliedRectCount ?? null,
-                    surfaceRectCount: target.surfaceRectCount ?? null,
-                    suppliedSuspiciousCount: target.suppliedSuspiciousCount ?? null,
-                    droppedSuspiciousRectCount: target.droppedSuspiciousRectCount ?? null,
-                    rectCount: target.rects?.length ?? 0,
-                    rectLeft: Number.isFinite(Number(firstRect?.left)) ? safeRound(Number(firstRect.left), 2) : null,
-                    rectTop: Number.isFinite(Number(firstRect?.top)) ? safeRound(Number(firstRect.top), 2) : null,
-                    rectWidth: Number.isFinite(Number(firstRect?.width)) ? safeRound(Number(firstRect.width), 2) : null,
-                    rectHeight: Number.isFinite(Number(firstRect?.height)) ? safeRound(Number(firstRect.height), 2) : null,
-                    sourceLeft: Number.isFinite(Number(rects[0]?.left)) ? safeRound(Number(rects[0].left), 2) : null,
-                    sourceTop: Number.isFinite(Number(rects[0]?.top)) ? safeRound(Number(rects[0].top), 2) : null,
-                });
-            }
-            for (const rect of target.rects ?? []) {
-                const left = Number(rect?.left);
-                const top = Number(rect?.top);
-                const width = Number(rect?.width);
-                const height = Number(rect?.height);
-                if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
-                    continue;
-                }
-                minTargetLeft = Math.min(minTargetLeft, left);
-                minTargetTop = Math.min(minTargetTop, top);
-                maxTargetRight = Math.max(maxTargetRight, left + width);
-                maxTargetBottom = Math.max(maxTargetBottom, top + height);
-            }
         }
     }
     if (targets.length === 0) {
-        popoverDiagnosticLog('nativeLookup.targets.skipEmptyPost', {
-            reason,
-            nativeLookupFrameKey,
-            builder: true,
-            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-            segmentSource: visibleSegmentsResult?.segmentCandidateSource ?? null,
-            frameLeft,
-            frameTop,
-            viewportWidth,
-            viewportHeight,
-            viewportLeft,
-            viewportTop,
-            firstVisibleSegmentID: visibleSegmentsResult?.visibleSegments?.[0]?.node?.id ?? null,
-            firstVisibleSurface: visibleSegmentsResult?.visibleSegments?.[0]?.node?.querySelector?.('m-t')?.textContent ?? null,
-        });
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: true,
@@ -4179,40 +4363,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         viewportHeight,
         viewportLeft,
         viewportTop,
-    });
-    popoverDiagnosticLog('nativeLookup.targets.posted', {
-        reason,
-        nativeLookupFrameKey,
-        targetCount: targets.length,
-        visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-        segmentSource: visibleSegmentsResult?.segmentCandidateSource ?? null,
-        viewportSampleCount: visibleSegmentsResult?.viewportSampleCount ?? null,
-        viewportSampleMeasuredCount: visibleSegmentsResult?.viewportSampleMeasuredCount ?? null,
-        viewportSampleMergedCount: visibleSegmentsResult?.viewportSampleMergedCount ?? null,
-        frameLeft,
-        frameTop,
-        viewportWidth,
-        viewportHeight,
-        viewportLeft,
-        viewportTop,
-        visualViewportOffsetLeft: window.visualViewport?.offsetLeft ?? null,
-        visualViewportOffsetTop: window.visualViewport?.offsetTop ?? null,
-        visualViewportPageLeft: window.visualViewport?.pageLeft ?? null,
-        visualViewportPageTop: window.visualViewport?.pageTop ?? null,
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        rootClientWidth: document.documentElement?.clientWidth ?? null,
-        rootClientHeight: document.documentElement?.clientHeight ?? null,
-        ...cssInsets,
-        minLeft: Number.isFinite(minTargetLeft) ? safeRound(minTargetLeft, 2) : null,
-        minTop: Number.isFinite(minTargetTop) ? safeRound(minTargetTop, 2) : null,
-        maxRight: Number.isFinite(maxTargetRight) ? safeRound(maxTargetRight, 2) : null,
-        maxBottom: Number.isFinite(maxTargetBottom) ? safeRound(maxTargetBottom, 2) : null,
-        surfaceRectTargetCount,
-        suppliedRectTargetCount,
-        suppliedSuspiciousRectCount,
-        droppedSuspiciousRectCount,
-        sampleTargets: JSON.stringify(sampleTargets ?? []),
     });
     manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
         reason,
@@ -4372,29 +4522,9 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
         return coverage;
     }
     doc.__manabiLastVisibleStatusHydrationRequestSignature = signature;
-    if (globalThis.__manabiTimelineTraceAll === true) {
-    }
     let coverage = null;
     try {
-        coverage = hydrator(visibleSegments, reason) ?? null;
-        const elapsedMs = performanceNowMs() - startedAt;
-        if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50 || (coverage?.mutatedCount ?? 0) > 0) {
-        }
-        if (
-            (coverage?.mutatedCount ?? 0) > 0
-            || coverage?.didEnableTracking === true
-            || globalThis.__manabiTimelineTraceAll === true
-        ) {
-            highlightStatusLog('visibleStatusHydration.finish', {
-                reason,
-                elapsedMs: safeRound(elapsedMs, 1),
-                visibleSegmentCount: visibleSegments.length,
-                skipped: coverage?.skipped ?? null,
-                mutatedCount: coverage?.mutatedCount ?? null,
-                wouldMutateCount: coverage?.wouldMutateCount ?? null,
-                didEnableTracking: coverage?.didEnableTracking === true,
-            });
-        }
+        coverage = hydrator(visibleSegments, reason, { synchronous: true }) ?? null;
     } catch (error) {
         if (doc) {
             doc.__manabiLastVisibleStatusHydrationRequestSignature = null;
@@ -5400,7 +5530,7 @@ class Reader {
             }, loadingVisualDelayMs);
         }
         body.classList.toggle('loading', nextVisible);
-        if (previousVisible && !nextVisible) {
+        if (!nextVisible) {
             clearTimeout(this.loadingVisualTimer);
             this.loadingVisualTimer = null;
             body.classList.remove('loading-visual');
@@ -6143,10 +6273,15 @@ class Reader {
                 this.initialPaginatorSettleHandle = null;
             }
         }
+        const resetReason = String(sourceReason || 'unspecified');
         const shouldResetNativeLookupTargets =
             sourceReason === 'page-turn-start'
             || sourceReason === 'lookup-navigation-page-turn-start'
-            || sourceReason === 'page-turn-swipe-intent';
+            || sourceReason === 'page-turn-swipe-intent'
+            || resetReason.includes('renderer.goTo')
+            || resetReason.includes('renderer.relocate')
+            || resetReason.startsWith('goTo')
+            || resetReason.startsWith('relocate');
         const contents = this.view?.renderer?.getContents?.() || [];
         for (const content of contents) {
             const doc = content?.doc ?? content?.document ?? null;
@@ -6172,12 +6307,6 @@ class Reader {
                 viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
                 viewportLeft: 0,
                 viewportTop: 0,
-            });
-        } else if (globalThis.manabiVerboseLookupPositionTargets === true) {
-            popoverDiagnosticLog('native.targets.reset.skip', {
-                sourceReason,
-                reason: shouldResetVisibleGeometry ? 'geometry-invalidation' : 'same-document-invalidation',
-                visiblePageCollectionGeneration: this.visiblePageCollectionGeneration,
             });
         }
         if (this.pageTrackingRetryHandle) {
@@ -7212,6 +7341,9 @@ class Reader {
             if (effectivePostLookupTargets && postIfCached) {
                 postNativeLookupHitTargetsForVisibleSegments(doc, snapshot.result, reason);
             }
+            if (prepareLookupIndex && snapshot.lookupIndex && visibleLookupIndexNeedsSidecarRefresh(doc, snapshot.lookupIndex)) {
+                snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:sidecar-refresh`);
+            }
             if (prepareLookupIndex && snapshot.lookupIndex) {
                 doc.manabiVisiblePageLookupIndex = snapshot.lookupIndex;
                 if (doc.defaultView) {
@@ -7247,6 +7379,9 @@ class Reader {
             && snapshot
             && snapshot.doc === doc
             && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
+            if (prepareLookupIndex && snapshot.lookupIndex && visibleLookupIndexNeedsSidecarRefresh(doc, snapshot.lookupIndex)) {
+                snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:sidecar-refresh`);
+            }
             if (prepareLookupIndex && snapshot.lookupIndex) {
                 doc.manabiVisiblePageLookupIndex = snapshot.lookupIndex;
                 if (doc.defaultView) {
@@ -7482,80 +7617,25 @@ class Reader {
             this.#chevronFadeTimers[key] = null;
         }, 180);
     }
-    #mainDocumentTouchPointPayload(touch) {
-        if (!touch) {
-            return {};
-        }
-        return {
-            clientX: touch.clientX ?? null,
-            clientY: touch.clientY ?? null,
-            screenX: touch.screenX ?? null,
-            screenY: touch.screenY ?? null,
-            pageX: touch.pageX ?? null,
-            pageY: touch.pageY ?? null,
-        };
-    }
-    #mainDocumentTouchTargetPayload(target) {
-        const element = target?.nodeType === Node.ELEMENT_NODE
-            ? target
-            : target?.parentElement;
-        const segment = element?.closest?.(manabiReaderSegmentSelector) ?? null;
-        const sentence = element?.closest?.(manabiReaderSentenceSelector) ?? null;
-        return {
-            targetTagName: element?.tagName?.toLowerCase?.() ?? null,
-            targetId: element?.getAttribute?.('id') ?? null,
-            targetClass: String(element?.getAttribute?.('class') ?? '').slice(0, 80),
-            targetSegmentId: segment?.getAttribute?.('id') ?? null,
-            targetSentenceId: sentence?.getAttribute?.('id') ?? null,
-            targetClosestRT: element?.closest?.('rt') != null,
-            targetOwnerIsMainDocument: target?.ownerDocument === document,
-        };
-    }
     #onMainDocumentTouchStart(event) {
         if (window.manabiNativePageTurnOwnsDrag === true) {
             this.#mainDocumentSwipeState = null;
-            popoverDiagnosticLog('gesture.swipe.skip', {
-                reason: 'nativePageTurnOwnsDrag',
-                eventType: event.type,
-            });
             return;
         }
         if (event.touches?.length !== 1) {
             this.#mainDocumentSwipeState = null;
-            popoverDiagnosticLog('gesture.swipe.skip', {
-                reason: 'nonSingleTouch',
-                eventType: event.type,
-                touchCount: event.touches?.length ?? null,
-                changedTouchCount: event.changedTouches?.length ?? null,
-            });
             return;
         }
         const touch = event.changedTouches?.[0];
         const target = event.target;
         if (!touch || !target || target.ownerDocument !== document) {
             this.#mainDocumentSwipeState = null;
-            popoverDiagnosticLog('gesture.swipe.skip', {
-                reason: !touch ? 'missingTouch' : (!target ? 'missingTarget' : 'targetOutsideMainDocument'),
-                eventType: event.type,
-                ...this.#mainDocumentTouchPointPayload(touch),
-                ...this.#mainDocumentTouchTargetPayload(target),
-            });
             return;
         }
         const isExcludedTouchTarget = target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
         const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
         if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
-            popoverDiagnosticLog('gesture.swipe.skip', {
-                reason: isExcludedTouchTarget ? 'excludedTarget' : 'interactiveNavTarget',
-                eventType: event.type,
-                excludedTagName: isExcludedTouchTarget?.tagName?.toLowerCase?.() ?? null,
-                excludedId: isExcludedTouchTarget?.getAttribute?.('id') ?? null,
-                interactiveTagName: isInteractiveNavTarget?.tagName?.toLowerCase?.() ?? null,
-                interactiveId: isInteractiveNavTarget?.getAttribute?.('id') ?? null,
-                ...this.#mainDocumentTouchPointPayload(touch),
-                ...this.#mainDocumentTouchTargetPayload(target),
-            });
             return;
         }
         this.#mainDocumentSwipeState = {
@@ -7567,22 +7647,10 @@ class Reader {
             triggered: false,
             chevronActive: false,
             nativeLookupCancelled: false,
-            loggedIntent: false,
-            targetPayload: this.#mainDocumentTouchTargetPayload(target),
         };
-        popoverDiagnosticLog('gesture.swipe.start', {
-            eventType: event.type,
-            isRTL: this.isRTL,
-            ...this.#mainDocumentTouchPointPayload(touch),
-            ...this.#mainDocumentSwipeState.targetPayload,
-        });
     }
     async #onMainDocumentTouchMove(event) {
         if (window.manabiNativePageTurnOwnsDrag === true) {
-            popoverDiagnosticLog('gesture.swipe.skip', {
-                reason: 'nativePageTurnOwnsDrag.move',
-                eventType: event.type,
-            });
             return;
         }
         const state = this.#mainDocumentSwipeState;
@@ -7609,19 +7677,6 @@ class Reader {
         }
         event.preventDefault();
         const progress = Math.min(1, Math.abs(dx) / minSwipe);
-        if (!state.loggedIntent) {
-            state.loggedIntent = true;
-            popoverDiagnosticLog('gesture.swipe.intent', {
-                eventType: event.type,
-                dx,
-                dy,
-                progress,
-                minSwipe,
-                elapsedMs: Date.now() - state.startAtMs,
-                ...this.#mainDocumentTouchPointPayload(touch),
-                ...state.targetPayload,
-            });
-        }
         const swipedLeft = dx < 0;
         const logicalDirection = this.isRTL
             ? (swipedLeft ? 'backward' : 'forward')
@@ -7646,33 +7701,10 @@ class Reader {
         state.chevronActive = progress > 0;
         if (!state.nativeLookupCancelled && progress >= 0.25) {
             state.nativeLookupCancelled = true;
-            popoverDiagnosticLog('gesture.swipe.lookupTargetsInvalidated', {
-                reason: 'page-turn-swipe-intent',
-                dx,
-                dy,
-                progress,
-                logicalDirection,
-                chevronSide,
-                elapsedMs: Date.now() - state.startAtMs,
-                ...state.targetPayload,
-            });
             this.#invalidateVisiblePageSegmentSnapshot('page-turn-swipe-intent');
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
-        popoverDiagnosticLog('gesture.swipe.pageTurn', {
-            dx,
-            dy,
-            progress,
-            logicalDirection,
-            chevronSide,
-            swipedLeft,
-            isRTL: this.isRTL,
-            elapsedMs: Date.now() - state.startAtMs,
-            nativeLookupCancelled: state.nativeLookupCancelled,
-            ...this.#mainDocumentTouchPointPayload(touch),
-            ...state.targetPayload,
-        });
         this.#flashSideNavChevron(chevronSide);
         await this.#runPageTurn({
             stage: 'pageTurn.mainDocumentSwipe',
@@ -7693,10 +7725,6 @@ class Reader {
     }
     #onMainDocumentTouchEnd(event) {
         if (window.manabiNativePageTurnOwnsDrag === true) {
-            popoverDiagnosticLog('gesture.swipe.end', {
-                reason: 'nativePageTurnOwnsDrag',
-                eventType: event?.type ?? null,
-            });
             this.#mainDocumentSwipeState = null;
             return;
         }
@@ -7707,23 +7735,6 @@ class Reader {
                 composed: true,
                 detail: { leftOpacity: '', rightOpacity: '', source: 'ebook-viewer', reason: 'mainDocumentSwipe.touchend' },
             }));
-        }
-        if (state) {
-            const touch = event?.changedTouches?.[0] ?? null;
-            const dx = touch ? touch.screenX - state.startX : null;
-            const dy = touch ? touch.screenY - state.startY : null;
-            popoverDiagnosticLog('gesture.swipe.end', {
-                eventType: event?.type ?? null,
-                triggered: state.triggered,
-                nativeLookupCancelled: state.nativeLookupCancelled,
-                chevronActive: state.chevronActive,
-                loggedIntent: state.loggedIntent,
-                dx,
-                dy,
-                elapsedMs: Date.now() - state.startAtMs,
-                ...this.#mainDocumentTouchPointPayload(touch),
-                ...state.targetPayload,
-            });
         }
         this.#mainDocumentSwipeState = null;
     }
@@ -9266,6 +9277,7 @@ class Reader {
             return;
         }
         this.#clearVisiblePageReadChrome('goTo');
+        this.#invalidateVisiblePageSegmentSnapshot('renderer.goTo');
         requestLookupCloseForPageMotion('renderer.goTo', {
             willLoadNewIndex: true,
         });
@@ -9347,17 +9359,8 @@ class Reader {
                         finishInitialCritical: true,
                     }
                 );
-                highlightStatusLog('didDisplay.pre-render-ready', {
-                    visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-                    totalSegmentCount: visibleSegmentsResult?.totalSegmentCount ?? 0,
-                    source: visibleSegmentsResult?.segmentCandidateSource ?? null,
-                    bodyTrackingEnabled: doc.body?.dataset?.mnbTrackingEnabled ?? null,
-                });
             }
         } catch (error) {
-            highlightStatusLog('didDisplay.pre-render-ready.error', {
-                error: error?.message || String(error),
-            });
         }
         this.setLoadingIndicator(false, 'didDisplay');
         markReaderRenderReady('didDisplay.loading-cleared');
@@ -9505,14 +9508,6 @@ class Reader {
                 const point = touchPointForBlankPointer(event);
                 const segmentTarget = segmentTargetForBlankPointerEvent(event);
                 if (segmentTarget) {
-                    const payload = {
-                        source,
-                        eventType: event.type,
-                        clientX: point?.clientX ?? null,
-                        clientY: point?.clientY ?? null,
-                        elementID: segmentTarget?.id || segmentTarget?.getAttribute?.('id') || null,
-                    };
-                    popoverDiagnosticLog('nativeLookup.blankTap.segmentSuppressed', payload);
                     return;
                 }
                 if (shouldSuppressSyntheticMouseBlankTap(event, now)) {
@@ -9528,15 +9523,6 @@ class Reader {
                         globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                         || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                         || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-                    const payload = {
-                        source,
-                        eventType: event.type,
-                        clientX: point?.clientX ?? null,
-                        clientY: point?.clientY ?? null,
-                        excludedTarget: excludedTarget?.tagName ?? null,
-                        segmentTarget: segmentTarget?.id ?? null,
-                    };
-                    popoverDiagnosticLog('nativeLookup.blankTap.postNoElement', payload);
                     globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
                     if (event.type === 'touchend') {
                         const point = blankPointerPoint(event);
@@ -9735,6 +9721,7 @@ class Reader {
             cfi,
             reason
         } = detail
+        this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate');
         requestLookupCloseForPageMotion('renderer.relocate', {
             reason: reason ?? null,
             fraction: safeRound(fraction),
@@ -10425,8 +10412,17 @@ window.loadEBook = ({
                         ? postOpenLocation.section.current
                         : (typeof postOpenLocation?.sectionIndex === 'number' ? postOpenLocation.sectionIndex : null),
                     hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
-                    action: 'reportOnly',
+                    action: 'finishTerminalRestoreGate',
                 });
+                finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
+                reader.setLoadingIndicator(false, 'loadEBook.initialRestoreNotHandledAfterOpen');
+            } else if (
+                shouldDeferReaderOpenLoadingClear
+                && !globalThis.__manabiInitialRestoreHandled
+                && globalThis.__manabiInitialRestoreRenderReadyGate?.active === true
+            ) {
+                finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
+                reader.setLoadingIndicator(false, 'loadEBook.initialRestoreDeferredTerminal');
             }
         })
         .then(async () => {
@@ -10463,9 +10459,11 @@ window.loadEBook = ({
             if (globalThis.reader === reader || !globalThis.reader?.view?.renderer) {
                 globalThis.reader = previousReader ?? null;
             }
-            try {
-                reader?.setLoadingIndicator?.(false, 'loadEBook.error');
-            } catch (_error) {}
+            for (const candidateReader of new Set([reader, previousReader, globalThis.reader].filter(Boolean))) {
+                try {
+                    candidateReader?.setLoadingIndicator?.(false, 'loadEBook.error');
+                } catch (_error) {}
+            }
             throw error;
         })
         .finally(() => {
