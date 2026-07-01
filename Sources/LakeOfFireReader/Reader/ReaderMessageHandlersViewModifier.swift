@@ -913,6 +913,30 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.colorScheme = colorScheme
     }
+
+    func update(
+        forceReaderModeWhenAvailable: Bool,
+        scriptCaller: WebViewScriptCaller,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator,
+        hideNavigationDueToScroll: Binding<Bool>,
+        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        colorScheme: ColorScheme
+    ) {
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.scriptCaller = scriptCaller
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerContent = readerContent
+        self.navigator = navigator
+        self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+        self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.colorScheme = colorScheme
+    }
     
     // MARK: Readability
     
@@ -1031,62 +1055,111 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
     @Environment(\.colorScheme) internal var colorScheme
     
-    @State private var readerMessageHandlers: ReaderMessageHandlers?
-    @State private var lastAppendedHandlerKeys: [String] = []
+    func body(content: Content) -> some View {
+        ReaderMessageHandlersInstaller(
+            content: content,
+            forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+            scriptCaller: scriptCaller,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerContent: readerContent,
+            navigator: navigator,
+            hideNavigationDueToScroll: hideNavigationDueToScroll,
+            showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+            navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+            colorScheme: colorScheme,
+            webViewMessageHandlers: webViewMessageHandlers
+        )
+    }
+}
+
+@MainActor
+private struct ReaderMessageHandlersInstaller<Content: View>: View {
+    let content: Content
+    var forceReaderModeWhenAvailable: Bool
+    var scriptCaller: WebViewScriptCaller
+    var readerViewModel: ReaderViewModel
+    var readerModeViewModel: ReaderModeViewModel
+    var readerContent: ReaderContent
+    var navigator: WebViewNavigator
+    var hideNavigationDueToScroll: Binding<Bool>
+    var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
+    var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var colorScheme: ColorScheme
+    var webViewMessageHandlers: WebViewMessageHandlers
+
+    @State private var readerMessageHandlers: ReaderMessageHandlers
     @State private var lastPushedHideNavigationDueToScroll: Bool?
     @State private var lastPushedHideNavigationPageURL: URL?
-    
-    func body(content: Content) -> some View {
+
+    init(
+        content: Content,
+        forceReaderModeWhenAvailable: Bool,
+        scriptCaller: WebViewScriptCaller,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator,
+        hideNavigationDueToScroll: Binding<Bool>,
+        showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        colorScheme: ColorScheme,
+        webViewMessageHandlers: WebViewMessageHandlers
+    ) {
+        self.content = content
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.scriptCaller = scriptCaller
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerContent = readerContent
+        self.navigator = navigator
+        self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
+        self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.colorScheme = colorScheme
+        self.webViewMessageHandlers = webViewMessageHandlers
+        _readerMessageHandlers = State(initialValue: ReaderMessageHandlers(
+            forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+            scriptCaller: scriptCaller,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerContent: readerContent,
+            navigator: navigator,
+            hideNavigationDueToScroll: hideNavigationDueToScroll,
+            showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+            navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+            colorScheme: colorScheme
+        ))
+    }
+
+    var body: some View {
         content
-            .environment(\.webViewMessageHandlers, readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
+            .environment(\.webViewMessageHandlers, readerMessageHandlers.webViewMessageHandlers + webViewMessageHandlers)
             .task { @MainActor in
-                if readerMessageHandlers == nil {
-                    readerMessageHandlers = ReaderMessageHandlers(
-                        forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
-                        scriptCaller: scriptCaller,
-                        readerViewModel: readerViewModel,
-                        readerModeViewModel: readerModeViewModel,
-                        readerContent: readerContent,
-                        navigator: navigator,
-                        hideNavigationDueToScroll: hideNavigationDueToScroll,
-                        showOriginalWillBeginHandler: showOriginalWillBeginHandler,
-                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
-                        colorScheme: colorScheme
-                    )
-                } else if let readerMessageHandlers {
-                    readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
-                    readerMessageHandlers.scriptCaller = scriptCaller
-                    readerMessageHandlers.readerViewModel = readerViewModel
-                    readerMessageHandlers.readerModeViewModel = readerModeViewModel
-                    readerMessageHandlers.readerContent = readerContent
-                    readerMessageHandlers.navigator = navigator
-                    readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
-                    readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
-                    readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
-                    readerMessageHandlers.colorScheme = colorScheme
-                }
-            }
-            .task(id: webViewMessageHandlers.handlers.keys) {
-                let handlerKeys = Array(webViewMessageHandlers.handlers.keys).sorted()
-                guard handlerKeys != lastAppendedHandlerKeys else { return }
-                if let existing = readerMessageHandlers?.webViewMessageHandlers {
-                    readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
-                    lastAppendedHandlerKeys = handlerKeys
-                }
+                readerMessageHandlers.update(
+                    forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+                    scriptCaller: scriptCaller,
+                    readerViewModel: readerViewModel,
+                    readerModeViewModel: readerModeViewModel,
+                    readerContent: readerContent,
+                    navigator: navigator,
+                    hideNavigationDueToScroll: hideNavigationDueToScroll,
+                    showOriginalWillBeginHandler: showOriginalWillBeginHandler,
+                    navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+                    colorScheme: colorScheme
+                )
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)
             }
             .task(id: colorScheme) { @MainActor in
-                readerMessageHandlers?.colorScheme = colorScheme
+                readerMessageHandlers.colorScheme = colorScheme
             }
             .task(id: readerContent.pageURL) {
                 await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
     }
-}
 
-extension ReaderMessageHandlersViewModifier {
     @MainActor
     private func pushHideNavigationStateToWebView(reason: String, force: Bool) async {
         let pageURL = readerContent.pageURL

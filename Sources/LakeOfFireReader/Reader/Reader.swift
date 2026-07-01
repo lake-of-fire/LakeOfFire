@@ -1204,33 +1204,18 @@ public struct Reader: View {
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: chromeInsetsTaskID) {
             guard pageURL.isEBookURL else { return }
-            let retryDelaysInNanoseconds: [UInt64] = [
-                0,
-                80_000_000,
-                250_000_000,
-                600_000_000,
-            ]
-            for (attempt, delay) in retryDelaysInNanoseconds.enumerated() {
-                if delay > 0 {
-                    do {
-                        try await Task.sleep(nanoseconds: delay)
-                    } catch {
-                        return
-                    }
-                }
-                guard !Task.isCancelled else { return }
-                await syncEbookViewerChromeInsets(
-                    pageURL: pageURL,
-                    obscuredTopInset: effectiveTopInset,
-                    toolbarBottomOffset: effectiveToolbarBottomOffset,
-                    obscuredBottomInset: effectiveBottomInset,
-                    hasAsyncCaller: scriptCaller.hasAsyncCaller
-                ) { js, duplicateInMultiTargetFrames in
-                    _ = try await scriptCaller.evaluateJavaScript(
-                        js,
-                        duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
-                    )
-                }
+            guard !Task.isCancelled else { return }
+            await syncEbookViewerChromeInsets(
+                pageURL: pageURL,
+                obscuredTopInset: effectiveTopInset,
+                toolbarBottomOffset: effectiveToolbarBottomOffset,
+                obscuredBottomInset: effectiveBottomInset,
+                hasAsyncCaller: scriptCaller.hasAsyncCaller
+            ) { js, duplicateInMultiTargetFrames in
+                _ = try await scriptCaller.evaluateJavaScript(
+                    js,
+                    duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                )
             }
         }
         .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in

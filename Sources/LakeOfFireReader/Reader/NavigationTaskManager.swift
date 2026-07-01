@@ -5,19 +5,7 @@ import LakeOfFireContentUI
 import LakeOfFireContent
 import LakeOfFireCore
 
-private actor NavigationTaskWaitState {
-    private var didResume = false
-
-    func resume(_ continuation: CheckedContinuation<Void, Never>) {
-        guard !didResume else { return }
-        didResume = true
-        continuation.resume()
-    }
-}
-
 internal class NavigationTaskManager: Identifiable {
-    private static let taskDrainTimeoutNanoseconds: UInt64 = 1_000_000_000
-
     @MainActor
     var onNavigationCommittedTask: Task<Void, Error>?
     @MainActor
@@ -29,20 +17,9 @@ internal class NavigationTaskManager: Identifiable {
     @MainActor
     private var urlChangedGeneration = 0
 
-    private static func waitBrieflyForTask(_ task: Task<Void, Error>?) async {
+    private static func waitForTask(_ task: Task<Void, Error>?) async {
         guard let task else { return }
-
-        await withCheckedContinuation { continuation in
-            let state = NavigationTaskWaitState()
-            Task {
-                _ = try? await task.value
-                await state.resume(continuation)
-            }
-            Task {
-                try? await Task.sleep(nanoseconds: taskDrainTimeoutNanoseconds)
-                await state.resume(continuation)
-            }
-        }
+        _ = try? await task.value
     }
     
     @MainActor
@@ -64,7 +41,7 @@ internal class NavigationTaskManager: Identifiable {
         onNavigationFinishedTask?.cancel()
         let committedTask = onNavigationCommittedTask
         onNavigationFinishedTask = Task { @MainActor in
-            await Self.waitBrieflyForTask(committedTask)
+            await Self.waitForTask(committedTask)
             try Task.checkCancellation()
             await task()
         }
@@ -72,10 +49,8 @@ internal class NavigationTaskManager: Identifiable {
     
     @MainActor
     func startOnNavigationFailed(task: @escaping () async -> Void) {
-        let failedTask = onNavigationFailedTask
-        failedTask?.cancel()
+        onNavigationFailedTask?.cancel()
         onNavigationFailedTask = Task { @MainActor in
-            await Self.waitBrieflyForTask(failedTask)
             try Task.checkCancellation()
             await task()
         }
@@ -83,12 +58,10 @@ internal class NavigationTaskManager: Identifiable {
     
     @MainActor
     func startOnURLChanged(task: @escaping () async -> Void) {
-        let previousURLChangedTask = onURLChangedTask
-        previousURLChangedTask?.cancel()
+        onURLChangedTask?.cancel()
         urlChangedGeneration += 1
         let generation = urlChangedGeneration
         let nextTask = Task { @MainActor in
-            await Self.waitBrieflyForTask(previousURLChangedTask)
             try Task.checkCancellation()
             await task()
         }

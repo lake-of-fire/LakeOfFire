@@ -128,7 +128,6 @@ export const manabiShouldSuppressPostPageTurnDuplicate = ({
         && elapsedMs >= 0
         && elapsedMs < MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS;
 }
-const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
         ?? (typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -6031,7 +6030,6 @@ export class Paginator extends HTMLElement {
                     elapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
                 })
             }
-            if (shouldGo || !this.hasAttribute('animated')) await wait(100)
             if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
             const lockElapsedMs = this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1)

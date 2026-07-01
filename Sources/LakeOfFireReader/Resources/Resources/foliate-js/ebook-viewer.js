@@ -3524,6 +3524,29 @@ const visibleBoundsCollectionSignature = (visibleBounds) => {
         visibleBounds.height,
     ].map((value) => Number.isFinite(value) ? Math.round(value) : 'nil').join(':');
 };
+const visibleDocumentViewportCollectionSignature = (doc) => {
+    const view = doc?.defaultView ?? null;
+    const frameElement = view?.frameElement ?? null;
+    const viewElement = frameElement?.parentElement ?? null;
+    const paginatorContainer = viewElement?.parentElement ?? null;
+    const frameRect = frameElement?.getBoundingClientRect?.() ?? null;
+    const viewRect = viewElement?.getBoundingClientRect?.() ?? null;
+    const containerRect = paginatorContainer?.getBoundingClientRect?.() ?? null;
+    return [
+        paginatorContainer?.scrollLeft ?? null,
+        paginatorContainer?.scrollTop ?? null,
+        doc?.scrollingElement?.scrollLeft ?? null,
+        doc?.scrollingElement?.scrollTop ?? null,
+        frameRect?.left ?? null,
+        frameRect?.top ?? null,
+        frameRect?.right ?? null,
+        frameRect?.bottom ?? null,
+        viewRect?.left ?? null,
+        viewRect?.top ?? null,
+        containerRect?.left ?? null,
+        containerRect?.top ?? null,
+    ].map((value) => Number.isFinite(value) ? Math.round(value) : 'nil').join(':');
+};
 const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, { includeClientRects = true } = {}) => {
     const view = doc?.defaultView ?? null;
     return [
@@ -3532,6 +3555,7 @@ const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, { in
         includeClientRects ? 'rects' : 'bounds',
         visibleRangeCollectionSignature(visibleRange),
         visibleBoundsCollectionSignature(visibleBounds),
+        visibleDocumentViewportCollectionSignature(doc),
     ].join('|');
 };
 const shouldInvalidateVisibleSegmentGeometryForReason = (sourceReason = 'unspecified') => {
@@ -5596,6 +5620,7 @@ class Reader {
     pageTrackingRetryHandle = null;
     pageTrackingDeferredHandle = null;
     pageTrackingDeferredFrameHandle = null;
+    pageTrackingDeferredReadyCleanup = null;
     pageTrackingDeferredRequest = null;
     nativeMarkReadStateRefreshHandle = null;
     pageReadMarkerDeferredHandle = null;
@@ -7268,26 +7293,45 @@ class Reader {
             this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1).catch((error) => console.error(error));
         });
     }
-    #schedulePageTrackingSync(reason = 'unspecified', explicitDoc = null, retryCount = 0, delayMs = 0) {
+    #schedulePageTrackingSync(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
         if (!MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS) {
             this.#scheduleNativeMarkReadStateRefresh(reason, explicitDoc);
             return;
         }
         if (this.pageTrackingDeferredHandle) {
-            clearTimeout(this.pageTrackingDeferredHandle);
+            cancelAnimationFrame(this.pageTrackingDeferredHandle);
             this.pageTrackingDeferredHandle = null;
         }
         if (this.pageTrackingDeferredFrameHandle) {
             cancelAnimationFrame(this.pageTrackingDeferredFrameHandle);
             this.pageTrackingDeferredFrameHandle = null;
         }
-        this.pageTrackingDeferredHandle = setTimeout(() => {
-            this.pageTrackingDeferredHandle = null;
-            this.pageTrackingDeferredFrameHandle = requestAnimationFrame(() => {
-                this.pageTrackingDeferredFrameHandle = null;
-                this.#syncPageTrackingButtons(reason, explicitDoc, retryCount).catch((error) => console.error(error));
+        if (this.pageTrackingDeferredReadyCleanup) {
+            this.pageTrackingDeferredReadyCleanup();
+            this.pageTrackingDeferredReadyCleanup = null;
+        }
+        const targetDoc = explicitDoc ?? document;
+        const runOnStableFrame = () => {
+            this.pageTrackingDeferredHandle = requestAnimationFrame(() => {
+                this.pageTrackingDeferredHandle = null;
+                this.pageTrackingDeferredFrameHandle = requestAnimationFrame(() => {
+                    this.pageTrackingDeferredFrameHandle = null;
+                    this.#syncPageTrackingButtons(reason, explicitDoc, retryCount).catch((error) => console.error(error));
+                });
             });
-        }, Math.max(0, Number(delayMs) || 0));
+        };
+        if (targetDoc?.readyState === 'loading') {
+            const onReady = () => {
+                this.pageTrackingDeferredReadyCleanup = null;
+                runOnStableFrame();
+            };
+            targetDoc.addEventListener('DOMContentLoaded', onReady, { once: true });
+            this.pageTrackingDeferredReadyCleanup = () => {
+                targetDoc.removeEventListener('DOMContentLoaded', onReady);
+            };
+            return;
+        }
+        runOnStableFrame();
     }
     #scheduleNativeMarkReadStateRefresh(reason = 'unspecified', explicitDoc = null) {
         if (this.nativeMarkReadStateRefreshHandle) {
@@ -8893,7 +8937,7 @@ class Reader {
                 hasNextSection,
             });
         }
-        this.#schedulePageTrackingSync('nav-buttons', null, 1, 96);
+        this.#schedulePageTrackingSync('nav-buttons', null, 1);
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -9174,10 +9218,12 @@ class Reader {
                 visibleLookupReadinessSamples: readinessResult?.samples ?? [],
             };
         }
+        const refreshResults = this.#refreshLookupNavigationVisibleTargets('lookup-navigation.visible-target-open');
         const result = await this.#openVisibleLookupTargetAfterPageTurn(request);
         if (result && typeof result === 'object') {
             result.visibleLookupReadiness = readiness;
             result.visibleLookupReadinessSamples = readinessResult?.samples ?? [];
+            result.visibleLookupOpenRefreshResults = refreshResults;
         }
         return result;
     }
@@ -9335,12 +9381,6 @@ class Reader {
             const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
             try {
                 turnResult = await this.#turnLookupNavigationPage(direction);
-                if (
-                    turnResult?.moved !== false
-                    && this.displaySettledSequence === displaySettledSequenceBeforeTurn
-                ) {
-                    turnResult.displaySettled = await this.waitForNextDisplaySettled('lookup-navigation.page-turn');
-                }
             } catch (error) {
                 turnResult = {
                     moved: false,
@@ -9360,12 +9400,23 @@ class Reader {
                 });
                 break;
             }
+            let positionAfterTurn = this.#lookupNavigationPositionSnapshot();
+            const crossedSection =
+                positionBeforeTurn?.sectionIndex !== positionAfterTurn?.sectionIndex
+                || positionBeforeTurn?.rendererCurrentIndex !== positionAfterTurn?.rendererCurrentIndex;
+            if (
+                crossedSection
+                && this.displaySettledSequence === displaySettledSequenceBeforeTurn
+            ) {
+                turnResult.displaySettled = await this.waitForNextDisplaySettled('lookup-navigation.page-turn');
+                positionAfterTurn = this.#lookupNavigationPositionSnapshot();
+            }
             const navigationSettledResult = this.#settleAfterLookupPageTurn('lookup-navigation.page-turn-settled');
-            const positionAfterTurn = this.#lookupNavigationPositionSnapshot();
             const positionChanged = this.#lookupNavigationPositionChanged(positionBeforeTurn, positionAfterTurn);
             if (turnResult) {
                 turnResult.positionAfter = positionAfterTurn;
                 turnResult.positionChanged = positionChanged;
+                turnResult.crossedSection = crossedSection;
                 turnResult.navigationSettled = navigationSettledResult;
             }
             if (!positionChanged) {
@@ -10028,7 +10079,7 @@ class Reader {
             currentPageURL: doc.location.href,
         })
         if (MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS) {
-            this.#schedulePageTrackingSync('document-load', doc, 2, isCacheWarmerDocument(doc) ? 0 : 128);
+            this.#schedulePageTrackingSync('document-load', doc, 2);
         }
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
@@ -10700,15 +10751,7 @@ window.loadEBook = ({
     globalThis.__manabiLiveProcessedSectionHrefs = new Set();
     globalThis.__manabiLiveSettledSectionHrefs = new Set();
     globalThis.__manabiFirstLiveSectionHref = null;
-    let loadSettled = false;
-    const loadWatchdogTimers = [1000, 3000, 8000, 20000, 45000].map(delayMs =>
-        setTimeout(() => {
-            if (loadSettled) return;
-        }, delayMs)
-    );
     const finishLoadWatchdogs = () => {
-        loadSettled = true;
-        for (const timer of loadWatchdogTimers) clearTimeout(timer);
     };
     globalThis.__manabiFinishEPUBLoadWatchdogs = finishLoadWatchdogs;
     const previousReader = globalThis.reader?.view?.renderer ? globalThis.reader : null;
@@ -11026,12 +11069,6 @@ window.loadLastPosition = async ({
             throwOnError = true,
         } = {},
     ) => {
-        const startedAt = performanceNowMs();
-        const watchdogDelaysMs = Number.isFinite(timeoutMs) && timeoutMs > 0
-            ? []
-            : [10000, 30000, 60000, 120000];
-        const watchdogHandles = watchdogDelaysMs.map((delayMs) => setTimeout(() => {
-        }, delayMs));
         try {
             const result = await runWithNavigationIntent(intent, operation, { timeoutMs });
             return {
@@ -11046,8 +11083,6 @@ window.loadLastPosition = async ({
                 ok: false,
                 error,
             };
-        } finally {
-            watchdogHandles.forEach((handle) => clearTimeout(handle));
         }
     };
     const waitForFrames = async (count = 2) => {
