@@ -5607,8 +5607,8 @@ class Reader {
     unstableCFIs = new Set();
     visiblePageCollectionGeneration = 0;
     visiblePageSegmentSnapshot = null;
-    nativeLookupHitTargetRefreshTimeout = null;
     nativeLookupHitTargetRefreshHandle = null;
+    nativeLookupHitTargetRefreshGeneration = 0;
     pendingNativeLookupHitTargetRefresh = null;
     appliedBookContentHideNavigationDueToScroll = null;
     pendingBookContentHideNavigationDueToScroll = null;
@@ -6328,10 +6328,7 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
-        if (this.nativeLookupHitTargetRefreshTimeout) {
-            clearTimeout(this.nativeLookupHitTargetRefreshTimeout);
-            this.nativeLookupHitTargetRefreshTimeout = null;
-        }
+        this.nativeLookupHitTargetRefreshGeneration += 1;
         if (this.hasLoadedLastPosition === true && !shouldResetNativeLookupTargets) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         } else if (shouldResetNativeLookupTargets && globalThis.__manabiTimelineTraceAll === true) {
@@ -7465,37 +7462,53 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
-        if (this.nativeLookupHitTargetRefreshTimeout) {
-            clearTimeout(this.nativeLookupHitTargetRefreshTimeout);
-            this.nativeLookupHitTargetRefreshTimeout = null;
-        }
+        const generation = (this.nativeLookupHitTargetRefreshGeneration || 0) + 1;
+        this.nativeLookupHitTargetRefreshGeneration = generation;
         const scheduledAt = performanceNowMs();
-        const settleDelayMs = reason === 'manual' ? 0 : 180;
         if (globalThis.__manabiTimelineTraceAll === true) {
         }
-        this.nativeLookupHitTargetRefreshTimeout = setTimeout(() => {
-            this.nativeLookupHitTargetRefreshTimeout = null;
+        const waitForRefreshPrerequisites = async (docs) => {
+            if (reason !== 'manual') {
+                await Promise.all(
+                    docs
+                        .map((doc) => doc?.fonts?.ready)
+                        .filter((promise) => promise?.then)
+                        .map((promise) => Promise.resolve(promise).catch(() => null))
+                );
+            }
+            await this.#waitForAnimationFrames(reason === 'manual' ? 1 : 2);
+        };
+        const runRefresh = async () => {
+            const docs = isDocumentLike(explicitDoc)
+                ? [explicitDoc]
+                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+            await waitForRefreshPrerequisites(docs);
+            if (generation !== this.nativeLookupHitTargetRefreshGeneration) {
+                return;
+            }
             this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
-                this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
-                    const startedAt = performanceNowMs();
-                    this.nativeLookupHitTargetRefreshHandle = null;
-                    if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
-                        this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
-                        return;
-                    }
-                    const docs = isDocumentLike(explicitDoc)
-                        ? [explicitDoc]
-                        : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-                    for (const doc of docs) {
-                        const visibleRange = this.#visibleRangeForDocument(doc);
-                        this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
-                    }
-                    const elapsedMs = performanceNowMs() - startedAt;
-                    if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
-                    }
-                });
+                const startedAt = performanceNowMs();
+                this.nativeLookupHitTargetRefreshHandle = null;
+                if (generation !== this.nativeLookupHitTargetRefreshGeneration) {
+                    return;
+                }
+                if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
+                    this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
+                    return;
+                }
+                const currentDocs = isDocumentLike(explicitDoc)
+                    ? [explicitDoc]
+                    : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+                for (const doc of currentDocs) {
+                    const visibleRange = this.#visibleRangeForDocument(doc);
+                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+                }
+                const elapsedMs = performanceNowMs() - startedAt;
+                if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
+                }
             });
-        }, settleDelayMs);
+        };
+        void runRefresh();
     }
     #shouldDeferNativeLookupHitTargetRefresh(reason = 'unspecified') {
         if (reason === 'manual') {
