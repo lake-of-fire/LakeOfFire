@@ -1616,6 +1616,9 @@ const recordPageTurnNavigationIntent = (direction, source, details = {}) => {
 };
 
 const requestLookupCloseForPageMotion = (reason, details = {}) => {
+    if (globalThis.reader?.lookupNavigationPageTurnActive === true) {
+        return;
+    }
     try {
         window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
             touchedEntryWithElementId: null,
@@ -5610,6 +5613,7 @@ class Reader {
     nativeLookupHitTargetRefreshHandle = null;
     nativeLookupHitTargetRefreshGeneration = 0;
     pendingNativeLookupHitTargetRefresh = null;
+    lookupNavigationPageTurnActive = false;
     appliedBookContentHideNavigationDueToScroll = null;
     pendingBookContentHideNavigationDueToScroll = null;
     style = {
@@ -8961,6 +8965,10 @@ class Reader {
             this.#visiblePageSegmentResult(doc, visibleRange, reason, { postIfCached: true });
         }
     }
+    refreshLookupNavigationVisibleTargetsForRelocate(reason = 'lookup-navigation.relocate') {
+        this.#refreshLookupNavigationVisibleTargets(reason);
+        this.#resolveLookupNavigationSettledWaiters(reason);
+    }
     async #visibleLookupNavigationReadiness(request) {
         const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
         const direction = request?.direction === 'previous' ? 'previous' : 'next';
@@ -9194,11 +9202,13 @@ class Reader {
     async performLookupNavigationPageTurn(request = {}) {
         const token = (this.lookupNavigationPageTurnToken ?? 0) + 1;
         this.lookupNavigationPageTurnToken = token;
+        this.lookupNavigationPageTurnActive = true;
         const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
         const direction = request?.direction === 'previous' ? 'previous' : 'next';
         const maxPageTurns = Math.max(1, Math.min(12, Number.isFinite(request?.maxPageTurns) ? Math.round(request.maxPageTurns) : 8));
         const startedAt = performance.now();
         const attempts = [];
+        try {
         for (let pageTurnIndex = 0; pageTurnIndex < maxPageTurns; pageTurnIndex += 1) {
             if (this.lookupNavigationPageTurnToken !== token) {
                 return {
@@ -9300,6 +9310,11 @@ class Reader {
             attempts,
             elapsedMs: Math.round(performance.now() - startedAt),
         };
+        } finally {
+            if (this.lookupNavigationPageTurnToken === token) {
+                this.lookupNavigationPageTurnActive = false;
+            }
+        }
     }
     #installVisibleRendererGoToGuard() {
         const renderer = this.view?.renderer;
@@ -9901,15 +9916,21 @@ class Reader {
             reason
         } = detail
         this.#invalidateVisiblePageSegmentSnapshot('renderer.relocate');
-        requestLookupCloseForPageMotion('renderer.relocate', {
-            reason: reason ?? null,
-            fraction: safeRound(fraction),
-            currentLocation: location?.current ?? null,
-            totalLocation: location?.total ?? null,
-        });
+        const isLookupNavigationPageTurn = this.lookupNavigationPageTurnActive === true;
+        if (!isLookupNavigationPageTurn) {
+            requestLookupCloseForPageMotion('renderer.relocate', {
+                reason: reason ?? null,
+                fraction: safeRound(fraction),
+                currentLocation: location?.current ?? null,
+                totalLocation: location?.total ?? null,
+            });
+        }
         await this.navHUD?.handleRelocate(detail);
-        this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
-        this.#resolveLookupNavigationSettledWaiters('relocate');
+        if (isLookupNavigationPageTurn) {
+            this.refreshLookupNavigationVisibleTargetsForRelocate('lookup-navigation.relocate');
+        } else {
+            this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
+        }
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFractionDiagnostics = getAuthoritativeReaderFractionDiagnostics({
             navHUD: this.navHUD,
