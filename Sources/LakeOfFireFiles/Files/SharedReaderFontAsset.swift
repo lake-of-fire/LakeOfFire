@@ -2,21 +2,6 @@ import Foundation
 import LakeOfFireContent
 import LakeOfFireCore
 
-private func sharedReaderFontLog(
-    _ stage: String,
-    _ metadata: [String: String] = [:]
-) {
-#if DEBUG
-    let payload = metadata
-        .sorted { $0.key < $1.key }
-        .map { "\($0.key)=\($0.value)" }
-        .joined(separator: " ")
-    if payload.isEmpty {
-    } else {
-    }
-#endif
-}
-
 public struct SharedReaderFontAsset: Equatable, Sendable {
     public let localFileURL: URL
     public let mimeType: String
@@ -216,45 +201,12 @@ public func sharedReaderFontResponse(
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontServedResponse? {
     guard let route = sharedReaderFontRoute(for: requestURL, asset: asset) else { return nil }
-    let routeDescription: String
-    let requestedFamilyName: String
-    switch route {
-    case .stylesheet(let familyName):
-        routeDescription = "stylesheet"
-        requestedFamilyName = familyName
-    case .font:
-        routeDescription = "font"
-        requestedFamilyName = ""
-    }
-
-    let baseMetadata: [String: String] = [
-        "requestURL": requestURL.absoluteString,
-        "scheme": requestURL.scheme ?? "nil",
-        "route": routeDescription,
-        "family": requestedFamilyName.isEmpty ? "nil" : requestedFamilyName,
-        "assetPresent": asset == nil ? "0" : "1",
-        "assetFilename": asset?.publicFilename ?? "nil",
-        "assetFormat": asset?.format ?? "nil",
-        "assetMimeType": asset?.mimeType ?? "nil",
-        "supportedFamilies": asset?.supportedFamilyNames.joined(separator: "|") ?? "nil",
-    ]
     guard let asset else {
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
             statusCode: 404,
             contentType: "text/plain",
             textEncodingName: "utf-8"
-        )
-        sharedReaderFontLog(
-            "response",
-            baseMetadata.merging(
-                [
-                    "status": "404",
-                    "reason": "missingAsset",
-                    "byteCount": "0",
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
         )
         return SharedReaderFontServedResponse(response: response, data: Data())
     }
@@ -270,19 +222,6 @@ public func sharedReaderFontResponse(
                 statusCode: 404,
                 contentType: "text/plain",
                 textEncodingName: "utf-8"
-            )
-            sharedReaderFontLog(
-                "response",
-                baseMetadata.merging(
-                    [
-                        "status": "404",
-                        "reason": supportsFamily ? "missingFontURL" : "unsupportedFamily",
-                        "supportsFamily": supportsFamily ? "1" : "0",
-                        "fontURL": fontURL?.absoluteString ?? "nil",
-                        "byteCount": "0",
-                    ],
-                    uniquingKeysWith: { _, new in new }
-                )
             )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
@@ -315,21 +254,6 @@ public func sharedReaderFontResponse(
             contentType: "text/css",
             textEncodingName: "utf-8"
         )
-        sharedReaderFontLog(
-            "response",
-            baseMetadata.merging(
-                [
-                    "status": "200",
-                    "reason": "ok",
-                    "supportsFamily": "1",
-                    "fontURL": fontURL.absoluteString,
-                    "byteCount": String(data.count),
-                    "containsAtFontFace": css.contains("@font-face") ? "1" : "0",
-                    "containsFontFamilyApplyRule": css.contains("font-family: '\\(familyName)' !important") ? "1" : "0",
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
-        )
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
@@ -340,18 +264,6 @@ public func sharedReaderFontResponse(
                 contentType: "text/plain",
                 textEncodingName: "utf-8"
             )
-            sharedReaderFontLog(
-                "response",
-                baseMetadata.merging(
-                    [
-                        "status": "404",
-                        "reason": "fontFileReadFailed",
-                        "assetLocalPath": asset.localFileURL.path,
-                        "byteCount": "0",
-                    ],
-                    uniquingKeysWith: { _, new in new }
-                )
-            )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
         let response = sharedReaderFontHTTPResponse(
@@ -359,18 +271,6 @@ public func sharedReaderFontResponse(
             statusCode: 200,
             contentType: asset.mimeType,
             extraHeaders: ["Access-Control-Allow-Origin": "*"]
-        )
-        sharedReaderFontLog(
-            "response",
-            baseMetadata.merging(
-                [
-                    "status": "200",
-                    "reason": "ok",
-                    "assetLocalPath": asset.localFileURL.path,
-                    "byteCount": String(data.count),
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
         )
         return SharedReaderFontServedResponse(response: response, data: data)
     }

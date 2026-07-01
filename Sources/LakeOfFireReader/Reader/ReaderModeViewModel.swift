@@ -1207,7 +1207,6 @@ public class ReaderModeViewModel: ObservableObject {
             return sharedFontCSSBase64
         }
         if let sharedFontCSSBase64Provider {
-            let startedAt = CFAbsoluteTimeGetCurrent()
             let base64 = await sharedFontCSSBase64Provider()
             guard let base64, !base64.isEmpty else {
                 return nil
@@ -1215,38 +1214,6 @@ public class ReaderModeViewModel: ObservableObject {
             return base64
         }
         return nil
-    }
-
-    private func logSharedReaderFontInjectionDecision(
-        mode: SharedReaderFontInjectionMode,
-        pageURL: URL,
-        stylesheetURLTemplate: String? = nil,
-        base64: String? = nil,
-        skippedReason: String? = nil
-    ) {
-        let desiredFamily = UserDefaults.standard.string(forKey: "readerFont") ?? "nil"
-        var metadata: [String: String] = [
-            "mode": mode.rawValue,
-            "pageURL": pageURL.absoluteString,
-            "desiredFamily": desiredFamily,
-            "fontAssetPresent": sharedReaderFontAsset == nil ? "0" : "1",
-            "fontAssetFilename": sharedReaderFontAsset?.publicFilename ?? "nil",
-            "fontAssetFamilies": sharedReaderFontAsset?.supportedFamilyNames.joined(separator: "|") ?? "nil",
-            "fontCSSBase64Present": {
-                guard let base64 else { return "0" }
-                return base64.isEmpty ? "0" : "1"
-            }(),
-        ]
-        if let stylesheetURLTemplate {
-            metadata["stylesheetURLTemplate"] = stylesheetURLTemplate
-        }
-        if let skippedReason {
-            metadata["skippedReason"] = skippedReason
-        }
-        if let base64, !base64.isEmpty {
-            metadata["fontCSSBase64Length"] = String(base64.count)
-            metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
-        }
     }
 
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
@@ -1260,35 +1227,15 @@ public class ReaderModeViewModel: ObservableObject {
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard pageURL.absoluteString != "about:blank" else {
-            logSharedReaderFontInjectionDecision(
-                mode: sharedReaderFontInjectionMode(for: pageURL),
-                pageURL: pageURL,
-                skippedReason: "about-blank"
-            )
             return
         }
         guard !pageURL.isReaderURLLoaderURL else {
-            logSharedReaderFontInjectionDecision(
-                mode: sharedReaderFontInjectionMode(for: pageURL),
-                pageURL: pageURL,
-                skippedReason: "reader-url-loader"
-            )
             return
         }
         guard #available(iOS 16.4, macOS 14, *) else {
-            logSharedReaderFontInjectionDecision(
-                mode: sharedReaderFontInjectionMode(for: pageURL),
-                pageURL: pageURL,
-                skippedReason: "unsupported-os"
-            )
             return
         }
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
-            logSharedReaderFontInjectionDecision(
-                mode: .localScheme,
-                pageURL: pageURL,
-                stylesheetURLTemplate: stylesheetURLTemplate
-            )
             let js = """
             (function() {
                 const postLog = (_message) => {};
@@ -1423,18 +1370,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         guard let base64 = await resolveSharedReaderFontCSSBase64() else {
-            logSharedReaderFontInjectionDecision(
-                mode: .blob,
-                pageURL: pageURL,
-                skippedReason: "missing-base64-css"
-            )
             return
         }
-        logSharedReaderFontInjectionDecision(
-            mode: .blob,
-            pageURL: pageURL,
-            base64: base64
-        )
         let fontHash = readerFontPayloadHash(base64)
         let js = """
             (function() {
