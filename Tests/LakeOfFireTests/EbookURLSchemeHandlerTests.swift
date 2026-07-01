@@ -1,9 +1,63 @@
 import XCTest
 import ZIPFoundation
+import SwiftSoup
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
+        let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
+        let css = """
+        @font-face {
+          font-family: 'YuKyokasho';
+          src: url("data:font/woff2;base64,AAAA") format("woff2");
+        }
+        """
+
+        try upsertInlineSharedReaderFontCSS(css, in: doc)
+
+        let style = try XCTUnwrap(doc.getElementById("mnb-custom-fonts-inline"))
+        let script = try XCTUnwrap(doc.getElementById("mnb-custom-fonts-inline-bootstrap"))
+        let styleText = try style.html()
+        let scriptText = try script.html()
+
+        XCTAssertTrue(styleText.contains("font-family: 'YuKyokasho';"))
+        XCTAssertTrue(styleText.contains("font-family: 'YuKyokasho Yoko';"))
+        XCTAssertTrue(scriptText.contains("manabiReaderFontCSSText"))
+        XCTAssertTrue(scriptText.contains("manabiReaderFontInjectionMode"))
+        XCTAssertTrue(scriptText.contains("manabiHorizontalFontFamilyName"))
+        XCTAssertTrue(scriptText.contains("manabiVerticalFontFamilyName"))
+        XCTAssertEqual(try doc.getElementsByTag("html").first()?.attr("data-mnb-horizontal-font-family"), "YuKyokasho")
+        XCTAssertEqual(try doc.getElementsByTag("html").first()?.attr("data-mnb-vertical-font-family"), "YuKyokasho Yoko")
+        XCTAssertTrue((try doc.getElementsByTag("html").first()?.attr("style") ?? "").contains("--mnb-content-font: 'YuKyokasho';"))
+        XCTAssertTrue((try doc.body()?.attr("style") ?? "").contains("--mnb-content-vertical-font: 'YuKyokasho Yoko';"))
+    }
+
+    func testPresentationHintsInjectBodyAttributesWithoutReserializingDocument() throws {
+        let html = "<!doctype html><html><head><title>T</title></head><body class=\"p-text\"><p>本文</p></body></html>"
+        let result = ebookHTMLWithInjectedPresentationHints(
+            html,
+            writingHint: EBookProcessedSectionWritingHint(direction: "vertical", writingMode: "vertical-rl")
+        )
+
+        XCTAssertEqual(
+            result,
+            "<!doctype html><html><head><title>T</title></head><body class=\"p-text\" data-mnb-writing-direction=\"vertical\" data-mnb-writing-mode=\"vertical-rl\" data-mnb-foliate-writing-direction=\"vertical\" data-mnb-foliate-writing-mode=\"vertical-rl\"><p>本文</p></body></html>"
+        )
+    }
+
+    func testPresentationHintsLeaveBodylessFragmentUnchanged() throws {
+        let html = "<section><p>本文</p></section>"
+
+        XCTAssertEqual(
+            ebookHTMLWithInjectedPresentationHints(
+                html,
+                writingHint: EBookProcessedSectionWritingHint(direction: "vertical", writingMode: "vertical-rl")
+            ),
+            html
+        )
+    }
+
     func testNativeSectionPrewarmReadsEntryAndRunsCacheWarmerProcessor() async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

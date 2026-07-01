@@ -124,7 +124,7 @@ fileprivate func ebookHTMLWithInjectedBase(_ html: String, baseURL: String) -> S
     return "<!doctype html><html><head>\(baseTag)</head><body>\(html)</body></html>"
 }
 
-fileprivate struct EBookProcessedSectionWritingHint {
+struct EBookProcessedSectionWritingHint {
     let direction: String
     let writingMode: String
 }
@@ -146,19 +146,26 @@ fileprivate func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcess
     return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: writingMode)
 }
 
-fileprivate func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
+func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
     guard let writingHint else { return html }
-    do {
-        let doc = try SwiftSoup.parse(html)
-        guard let body = doc.body() else { return html }
-        try body.attr("data-mnb-writing-direction", writingHint.direction)
-        try body.attr("data-mnb-writing-mode", writingHint.writingMode)
-        try body.attr("data-mnb-foliate-writing-direction", writingHint.direction)
-        try body.attr("data-mnb-foliate-writing-mode", writingHint.writingMode)
-        return try doc.outerHtml()
-    } catch {
-        return html
+    guard let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]) else { return html }
+    let afterBodyName = bodyTagRange.upperBound
+    if afterBodyName < html.endIndex {
+        let nextCharacter = html[afterBodyName]
+        guard nextCharacter == ">" || nextCharacter == "/" || nextCharacter.isWhitespace else { return html }
     }
+    guard let tagEnd = html[afterBodyName...].firstIndex(of: ">") else { return html }
+
+    let attributes = [
+        "data-mnb-writing-direction=\"\(writingHint.direction)\"",
+        "data-mnb-writing-mode=\"\(writingHint.writingMode)\"",
+        "data-mnb-foliate-writing-direction=\"\(writingHint.direction)\"",
+        "data-mnb-foliate-writing-mode=\"\(writingHint.writingMode)\""
+    ].joined(separator: " ")
+
+    var result = html
+    result.insert(contentsOf: " \(attributes)", at: tagEnd)
+    return result
 }
 func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
     if isCacheWarmer {

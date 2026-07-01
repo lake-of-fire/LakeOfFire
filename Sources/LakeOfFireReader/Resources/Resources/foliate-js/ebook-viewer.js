@@ -4431,7 +4431,7 @@ const hydrationItemForSegmentNode = (segmentNode) => {
 };
 
 const expandedVisibleSegmentsResultForStatusHydration = (doc, visibleSegmentsResult, {
-    adjacentSegmentCount = 96,
+    adjacentSegmentCount = 0,
 } = {}) => {
     const visibleSegments = visibleSegmentsResult?.visibleSegments ?? [];
     if (!isDocumentLike(doc) || visibleSegments.length === 0 || adjacentSegmentCount <= 0) {
@@ -8908,6 +8908,123 @@ class Reader {
         }
         await new Promise((resolve) => requestAnimationFrame(resolve));
     }
+    #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.visible-target-readiness') {
+        const docs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+        for (const doc of docs) {
+            const visibleRange = this.#visibleRangeForDocument(doc);
+            this.visiblePageSegmentSnapshot = null;
+            this.#visiblePageSegmentResult(doc, visibleRange, reason, { postIfCached: true });
+        }
+    }
+    async #visibleLookupNavigationReadiness(request) {
+        const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
+        const direction = request?.direction === 'previous' ? 'previous' : 'next';
+        const functionName = 'manabi_visibleLookupNavigationReadiness';
+        await this.#waitForLookupContentFunction(functionName, 600);
+        const contentWindows = this.#lookupContentWindows()
+            .filter((view) => typeof view?.[functionName] === 'function');
+        const orderedContentWindows = direction === 'previous'
+            ? contentWindows.slice().reverse()
+            : contentWindows;
+        if (orderedContentWindows.length === 0) {
+            return {
+                ready: false,
+                failureReason: 'missingVisibleLookupReadiness',
+                kind,
+                direction,
+                contentWindowAttempts: [],
+            };
+        }
+        const attempts = [];
+        for (const contentWindow of orderedContentWindows) {
+            let result = null;
+            try {
+                result = contentWindow[functionName]({
+                    ...(request && typeof request === 'object' ? request : {}),
+                    kind,
+                    direction,
+                });
+            } catch (error) {
+                result = {
+                    ready: false,
+                    failureReason: 'visibleLookupReadinessError',
+                    error: error?.message || String(error),
+                };
+            }
+            const attempt = {
+                windowURL: contentWindow.location?.href ?? null,
+                ready: result?.ready === true,
+                failureReason: result?.failureReason ?? null,
+                targetElementID: result?.target?.id ?? null,
+                visibleSegmentCount: result?.visibleSegmentCount ?? null,
+                visibleElementIDCount: result?.visibleElementIDCount ?? null,
+                preparedVisibleElementIDCount: result?.preparedVisibleElementIDCount ?? null,
+                hitTargetCount: result?.hitTargetCount ?? null,
+            };
+            attempts.push(attempt);
+            if (result?.ready === true) {
+                return {
+                    ...(result ?? {}),
+                    ready: true,
+                    kind,
+                    direction,
+                    contentWindowURL: contentWindow.location?.href ?? null,
+                    contentWindowAttempts: attempts,
+                };
+            }
+        }
+        return {
+            ready: false,
+            failureReason: 'noVisibleTargetAfterPageTurn',
+            kind,
+            direction,
+            contentWindowAttempts: attempts,
+        };
+    }
+    async #waitForVisibleLookupNavigationReadiness(request, timeoutMs = 900) {
+        const startedAt = performance.now();
+        const samples = [];
+        let readiness = null;
+        do {
+            this.#refreshLookupNavigationVisibleTargets('lookup-navigation.visible-target-readiness');
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            readiness = await this.#visibleLookupNavigationReadiness(request);
+            samples.push({
+                elapsedMs: Math.round(performance.now() - startedAt),
+                ready: readiness?.ready === true,
+                failureReason: readiness?.failureReason ?? null,
+                targetElementID: readiness?.target?.id ?? null,
+                contentWindowAttempts: readiness?.contentWindowAttempts ?? [],
+            });
+            if (readiness?.ready === true) {
+                break;
+            }
+        } while (performance.now() - startedAt < timeoutMs);
+        return {
+            readiness,
+            samples,
+        };
+    }
+    async #openVisibleLookupTargetAfterPageTurnWhenReady(request) {
+        const readinessResult = await this.#waitForVisibleLookupNavigationReadiness(request);
+        const readiness = readinessResult?.readiness ?? null;
+        if (readiness?.ready !== true) {
+            return {
+                opened: false,
+                failureReason: readiness?.failureReason ?? 'noVisibleTargetAfterPageTurn',
+                kind: request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word',
+                direction: request?.direction === 'previous' ? 'previous' : 'next',
+                visibleLookupReadiness: readiness,
+                visibleLookupReadinessSamples: readinessResult?.samples ?? [],
+            };
+        }
+        const result = await this.#openVisibleLookupTargetAfterPageTurn(request);
+        if (result && typeof result === 'object') {
+            result.visibleLookupReadiness = readiness;
+            result.visibleLookupReadinessSamples = readinessResult?.samples ?? [];
+        }
+        return result;
+    }
     #lookupNavigationPositionSnapshot() {
         const renderer = this.view?.renderer ?? null;
         const relocateDetail = this.navHUD?.lastRelocateDetail ?? null;
@@ -9093,7 +9210,7 @@ class Reader {
             attempts.push(attempt);
             let visibleTargetResult = null;
             try {
-                visibleTargetResult = await this.#openVisibleLookupTargetAfterPageTurn({
+                visibleTargetResult = await this.#openVisibleLookupTargetAfterPageTurnWhenReady({
                     ...(request && typeof request === 'object' ? request : {}),
                     kind,
                     direction,
@@ -9368,6 +9485,14 @@ class Reader {
             initialSettleResult,
             postFrameSettleResult,
         });
+        try {
+            const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+            if (isDocumentLike(doc)) {
+                this.#scheduleNativeLookupHitTargetRefreshSettle('didDisplay.render-ready', doc);
+            }
+        } catch (error) {
+            console.error(error);
+        }
         globalThis.__manabiPostReaderDocStateEvent?.('didDisplay.loadingCleared');
         this.#resolveInitialDisplaySettled('didDisplay.loading-cleared');
         this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');

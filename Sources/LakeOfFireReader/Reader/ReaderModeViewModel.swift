@@ -72,7 +72,33 @@ private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
     return rawValue == "YuKyokasho"
 }
 
+private func currentReaderFontCSSValues() -> (
+    horizontalFamily: String,
+    verticalFamily: String,
+    horizontalCSSValue: String,
+    verticalCSSValue: String
+) {
+    let horizontalFamily = UserDefaults.standard.string(forKey: "readerFont") ?? "YuKyokasho"
+    let verticalFamily = horizontalFamily == "YuKyokasho" ? "YuKyokasho Yoko" : horizontalFamily
+    return (
+        horizontalFamily,
+        verticalFamily,
+        "'\(horizontalFamily)'",
+        "'\(verticalFamily)'"
+    )
+}
+
 private let readerModeReadabilityCSS = Readability.shared.css
+
+private func readerModeJSONStringLiteral(_ string: String) -> String {
+    guard let data = try? JSONSerialization.data(withJSONObject: [string], options: []),
+          let json = String(data: data, encoding: .utf8),
+          json.first == "[",
+          json.last == "]" else {
+        return "\"\""
+    }
+    return String(json.dropFirst().dropLast())
+}
 
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
     let gateCSS = """
@@ -108,6 +134,115 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
     }
 
     try doc.appendChild(styleElement)
+}
+
+internal func upsertInlineSharedReaderFontCSS(_ css: String, in doc: SwiftSoup.Document) throws {
+    guard !css.isEmpty else { return }
+    let fontValues = currentReaderFontCSSValues()
+    let yokoCSS = css.replacingOccurrences(
+        of: #"font-family:\s*['"]YuKyokasho['"]\s*;"#,
+        with: "font-family: 'YuKyokasho Yoko';",
+        options: .regularExpression
+    )
+    let combinedCSS = yokoCSS == css ? css : css + "\n" + yokoCSS
+    let bootstrapScript = """
+    globalThis.manabiReaderFontCSSText = \(readerModeJSONStringLiteral(combinedCSS));
+    globalThis.manabiReaderFontInjectionMode = 'inline';
+    globalThis.manabiHorizontalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.horizontalFamily));
+    globalThis.manabiVerticalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.verticalFamily));
+    """
+
+    let head: Element
+    if let existingHead = doc.head() {
+        head = existingHead
+    } else if let html = try doc.getElementsByTag("html").first() {
+        try html.prepend("<head></head>")
+        if let insertedHead = doc.head() {
+            head = insertedHead
+        } else {
+            head = try doc.appendElement("head")
+        }
+    } else {
+        head = try doc.appendElement("head")
+    }
+
+    let styleElement: Element
+    if let existingStyle = try doc.getElementById("mnb-custom-fonts-inline") {
+        styleElement = existingStyle
+    } else {
+        styleElement = try doc.createElement("style")
+        try styleElement.attr("id", "mnb-custom-fonts-inline")
+        try head.appendChild(styleElement)
+    }
+    try styleElement.attr("data-mnb-font-source", "inline")
+    try styleElement.text(combinedCSS)
+
+    let scriptElement: Element
+    if let existingScript = try doc.getElementById("mnb-custom-fonts-inline-bootstrap") {
+        scriptElement = existingScript
+    } else {
+        scriptElement = try doc.createElement("script")
+        try scriptElement.attr("id", "mnb-custom-fonts-inline-bootstrap")
+        try head.appendChild(scriptElement)
+    }
+    try scriptElement.text(bootstrapScript)
+
+    if let htmlElement = try doc.getElementsByTag("html").first() {
+        try htmlElement.attr("data-mnb-horizontal-font-family", fontValues.horizontalFamily)
+        try htmlElement.attr("data-mnb-vertical-font-family", fontValues.verticalFamily)
+        try htmlElement.attr("data-mnb-injected-font-family", fontValues.horizontalFamily)
+        try htmlElement.attr("data-mnb-font-injected", "1")
+        let existingStyle = (try? htmlElement.attr("style")) ?? ""
+        try htmlElement.attr("style", readerModeStyleDeclaration(
+            existingStyle,
+            additions: [
+                "--mnb-content-font": fontValues.horizontalCSSValue,
+                "--mnb-content-vertical-font": fontValues.verticalCSSValue,
+            ]
+        ))
+    }
+    if let bodyElement = doc.body() {
+        let existingStyle = (try? bodyElement.attr("style")) ?? ""
+        try bodyElement.attr("style", readerModeStyleDeclaration(
+            existingStyle,
+            additions: [
+                "--mnb-content-font": fontValues.horizontalCSSValue,
+                "--mnb-content-vertical-font": fontValues.verticalCSSValue,
+            ]
+        ))
+    }
+}
+
+private func readerModeStyleDeclaration(
+    _ style: String,
+    additions: [String: String]
+) -> String {
+    var declarations: [(String, String)] = []
+    let existingDeclarations = style
+        .split(separator: ";")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    let additionKeys = Set(additions.keys.map { $0.lowercased() })
+    for declaration in existingDeclarations {
+        guard let separator = declaration.firstIndex(of: ":") else {
+            declarations.append((declaration, ""))
+            continue
+        }
+        let name = declaration[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+        if additionKeys.contains(name.lowercased()) {
+            continue
+        }
+        let value = declaration[declaration.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        declarations.append((name, value))
+    }
+    for (name, value) in additions.sorted(by: { $0.key < $1.key }) {
+        declarations.append((name, value))
+    }
+    return declarations
+        .map { name, value in
+            value.isEmpty ? "\(name);" : "\(name): \(value);"
+        }
+        .joined(separator: " ")
 }
 
 private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
@@ -2074,9 +2209,6 @@ public class ReaderModeViewModel: ObservableObject {
             && !url.isReaderFileURL
             && (content.content?.isEmpty ?? true)
         let resolvedStoredHTML = shouldStoreReaderHTML ? stripRuntimeReadabilityAssets(from: readabilityContent) : nil
-        if url.host?.lowercased().contains("hypebeast.com") == true {
-            ()
-        }
         let resolvedTitleIfNeeded: String? = {
             guard content.title.isEmpty else { return nil }
             return (resolvedStoredHTML ?? content.html)?
@@ -2249,6 +2381,15 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
             }()
+            if !url.isEBookURL,
+               currentReaderFontNeedsDeferredSharedCSS(),
+               let fontCSSBase64 = await resolveSharedReaderFontCSSBase64(),
+               let fontCSSData = Data(base64Encoded: fontCSSBase64),
+               let fontCSS = String(data: fontCSSData, encoding: .utf8),
+               !fontCSS.isEmpty {
+                try? upsertInlineSharedReaderFontCSS(fontCSS, in: doc)
+            }
+
             if await shouldUseDeferredSharedReaderFontGate(for: url) {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
@@ -2332,8 +2473,8 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedHTMLData = Data(transformedHTMLBytes)
             let mainActorHandoffStartedAt = CFAbsoluteTimeGetCurrent()
             try await { @MainActor in
-                ()
-                guard url.matchesReaderURL(readerContent.pageURL) else {                    cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
+                guard url.matchesReaderURL(readerContent.pageURL) else {
+                    cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
@@ -2386,11 +2527,7 @@ public class ReaderModeViewModel: ObservableObject {
                             try {
                                 new Function(readerModeScript)()
                             } catch (error) {
-                                const message = '# CAROUSEL script-error ' + String(error && error.message ? error.message : error)
-                                console.log(message)
-                                try {
-                                    window.webkit?.messageHandlers?.print?.postMessage?.(message)
-                                } catch (_error) {}
+                                console.error(error)
                             }
                         }
                         """,
@@ -2406,7 +2543,6 @@ public class ReaderModeViewModel: ObservableObject {
                     self?.markSyntheticLoadIssued(for: renderBaseURL)
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedHTMLData.count)")
-                    ()
                     navigator?.load(
                         transformedHTMLData,
                         mimeType: "text/html",
