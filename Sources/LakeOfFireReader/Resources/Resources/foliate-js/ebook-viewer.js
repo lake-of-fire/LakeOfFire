@@ -8949,8 +8949,11 @@ class Reader {
             }
         });
     }
+    #lookupNavigationDocuments() {
+        return this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+    }
     #settleAfterLookupPageTurn() {
-        const docs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+        const docs = this.#lookupNavigationDocuments();
         for (const doc of docs) {
             const visibleRange = this.#visibleRangeForDocument(doc);
             this.visiblePageSegmentSnapshot = null;
@@ -8958,12 +8961,51 @@ class Reader {
         }
     }
     #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.visible-target-readiness') {
-        const docs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+        const docs = this.#lookupNavigationDocuments();
+        const results = [];
         for (const doc of docs) {
             const visibleRange = this.#visibleRangeForDocument(doc);
             this.visiblePageSegmentSnapshot = null;
-            this.#visiblePageSegmentResult(doc, visibleRange, reason, { postIfCached: true });
+            const result = this.#visiblePageSegmentResult(doc, visibleRange, reason, { postIfCached: true });
+            results.push({
+                href: doc?.location?.href ?? null,
+                visibleSegmentCount: result?.visibleSegments?.length ?? 0,
+                firstVisibleSegmentID: result?.visibleSegments?.[0]?.node?.id ?? null,
+                fontStatus: doc?.fonts?.status ?? null,
+            });
         }
+        return results;
+    }
+    async #refreshLookupNavigationVisibleTargetsAfterFonts(reason = 'lookup-navigation.visible-target-readiness.fonts') {
+        const docs = this.#lookupNavigationDocuments();
+        const pendingFontDocs = docs.filter((doc) => doc?.fonts?.status === 'loading' && doc?.fonts?.ready?.then);
+        if (pendingFontDocs.length === 0) {
+            return { advanced: false, reason: 'fonts-ready-or-unavailable', refreshResults: [] };
+        }
+        await Promise.all(
+            pendingFontDocs.map((doc) => Promise.resolve(doc.fonts.ready).catch(() => null))
+        );
+        return {
+            advanced: true,
+            reason: 'fonts-ready',
+            refreshResults: this.#refreshLookupNavigationVisibleTargets(reason),
+        };
+    }
+    async #refreshLookupNavigationVisibleTargetsAfterRendererSettle(reason = 'lookup-navigation.visible-target-readiness.renderer') {
+        const renderer = this.view?.renderer;
+        if (!renderer || typeof renderer.renderIfContainerSizeChanged !== 'function') {
+            return { advanced: false, reason: 'renderer-unavailable', refreshResults: [] };
+        }
+        const renderResult = await renderer.renderIfContainerSizeChanged(reason);
+        if (renderResult?.rendered !== true) {
+            return { advanced: false, reason: renderResult?.reason ?? 'renderer-did-not-render', renderResult, refreshResults: [] };
+        }
+        return {
+            advanced: true,
+            reason: 'renderer-rendered',
+            renderResult,
+            refreshResults: this.#refreshLookupNavigationVisibleTargets(reason),
+        };
     }
     refreshLookupNavigationVisibleTargetsForRelocate(reason = 'lookup-navigation.relocate') {
         this.#refreshLookupNavigationVisibleTargets(reason);
@@ -9036,16 +9078,70 @@ class Reader {
     async #waitForVisibleLookupNavigationReadiness(request) {
         const startedAt = performance.now();
         const samples = [];
-        this.#refreshLookupNavigationVisibleTargets('lookup-navigation.visible-target-readiness');
-        const readiness = await this.#visibleLookupNavigationReadiness(request);
+        const initialRefreshResults = this.#refreshLookupNavigationVisibleTargets('lookup-navigation.visible-target-readiness');
+        let readiness = await this.#visibleLookupNavigationReadiness(request);
         samples.push({
             attempt: 0,
             elapsedMs: Math.round(performance.now() - startedAt),
             ready: readiness?.ready === true,
             failureReason: readiness?.failureReason ?? null,
             targetElementID: readiness?.target?.id ?? null,
+            refreshResults: initialRefreshResults,
             contentWindowAttempts: readiness?.contentWindowAttempts ?? [],
         });
+        if (readiness?.ready !== true) {
+            const fontResult = await this.#refreshLookupNavigationVisibleTargetsAfterFonts('lookup-navigation.visible-target-readiness.fonts');
+            if (fontResult.advanced === true) {
+                readiness = await this.#visibleLookupNavigationReadiness(request);
+                samples.push({
+                    attempt: samples.length,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                    ready: readiness?.ready === true,
+                    failureReason: readiness?.failureReason ?? null,
+                    targetElementID: readiness?.target?.id ?? null,
+                    refreshStage: fontResult.reason,
+                    refreshResults: fontResult.refreshResults,
+                    contentWindowAttempts: readiness?.contentWindowAttempts ?? [],
+                });
+            } else {
+                samples.push({
+                    attempt: samples.length,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                    ready: false,
+                    failureReason: readiness?.failureReason ?? null,
+                    targetElementID: readiness?.target?.id ?? null,
+                    refreshStage: fontResult.reason,
+                    contentWindowAttempts: readiness?.contentWindowAttempts ?? [],
+                });
+            }
+        }
+        if (readiness?.ready !== true) {
+            const rendererResult = await this.#refreshLookupNavigationVisibleTargetsAfterRendererSettle('lookup-navigation.visible-target-readiness.renderer');
+            if (rendererResult.advanced === true) {
+                readiness = await this.#visibleLookupNavigationReadiness(request);
+                samples.push({
+                    attempt: samples.length,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                    ready: readiness?.ready === true,
+                    failureReason: readiness?.failureReason ?? null,
+                    targetElementID: readiness?.target?.id ?? null,
+                    refreshStage: rendererResult.reason,
+                    refreshResults: rendererResult.refreshResults,
+                    contentWindowAttempts: readiness?.contentWindowAttempts ?? [],
+                });
+            } else {
+                samples.push({
+                    attempt: samples.length,
+                    elapsedMs: Math.round(performance.now() - startedAt),
+                    ready: false,
+                    failureReason: readiness?.failureReason ?? null,
+                    targetElementID: readiness?.target?.id ?? null,
+                    refreshStage: rendererResult.reason,
+                    renderResult: rendererResult.renderResult ?? null,
+                    contentWindowAttempts: readiness?.contentWindowAttempts ?? [],
+                });
+            }
+        }
         return {
             readiness,
             samples,
@@ -9428,6 +9524,59 @@ class Reader {
                 waiter?.resolve?.(result);
             }
         });
+    }
+    clearLoadingForRelocatedVisibleContent(reason = 'unspecified') {
+        if (!document.body?.classList?.contains?.('loading')) {
+            return { cleared: false, reason: 'not-loading' };
+        }
+        const content = this.view?.renderer?.getContents?.()?.[0] ?? null;
+        const doc = content?.doc ?? content?.document ?? null;
+        if (!isDocumentLike(doc)) {
+            return { cleared: false, reason: 'missing-document' };
+        }
+        const visibleRange = this.#visibleRangeForDocument(doc);
+        const visibleSegmentsResult = this.#visiblePageSegmentResult(
+            doc,
+            visibleRange,
+            `relocate.visible-content:${reason}`,
+            {
+                postIfCached: true,
+                includeClientRects: true,
+                postLookupTargets: true,
+                prepareLookupIndex: true,
+                hydrateStatuses: true,
+                finishInitialCritical: true,
+            }
+        );
+        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(
+            this.view?.renderer,
+            visibleRange,
+            visibleSegmentsResult
+        );
+        if (visibleJapaneseTextState.hasVisibleJapaneseText !== true) {
+            return {
+                cleared: false,
+                reason: 'no-visible-text',
+                visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
+                observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
+            };
+        }
+        const clearReason = `relocate.visible-content:${reason}`;
+        this.setLoadingIndicator(false, clearReason);
+        markReaderRenderReady(clearReason);
+        globalThis.__manabiPostReaderDocStateEvent?.(clearReason);
+        this.#resolveInitialDisplaySettled(clearReason);
+        this.#resolveDisplaySettledWaiters(clearReason);
+        this.#resolveLookupNavigationSettledWaiters(clearReason);
+        try {
+            globalThis.__manabiFinishEPUBLoadWatchdogs?.(clearReason);
+        } catch (_error) {}
+        return {
+            cleared: true,
+            reason: clearReason,
+            visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
+            observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
+        };
     }
     async waitForNextDisplaySettled(reason = 'unspecified', {
         timeoutMs = null,
@@ -9931,6 +10080,7 @@ class Reader {
         } else {
             this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
         }
+        this.clearLoadingForRelocatedVisibleContent?.(reason ?? 'relocate');
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFractionDiagnostics = getAuthoritativeReaderFractionDiagnostics({
             navHUD: this.navHUD,
