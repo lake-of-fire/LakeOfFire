@@ -85,6 +85,7 @@ public class ReaderFileManager: ObservableObject {
     public let objectWillChange = ObservableObjectPublisher()
     
     public static let readerBackingStatusRefreshRequestedNotification = Notification.Name("ReaderFileManager.readerBackingStatusRefreshRequested")
+    public static let driveAvailabilityDidChangeNotification = Notification.Name("ReaderFileManager.driveAvailabilityDidChange")
 
     private enum ReaderBackingStorageLocation: String {
         case local
@@ -177,6 +178,7 @@ public class ReaderFileManager: ObservableObject {
         //        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
         localDrive?.observer = self
+        NotificationCenter.default.post(name: Self.driveAvailabilityDidChangeNotification, object: self)
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
