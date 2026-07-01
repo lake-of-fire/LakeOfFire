@@ -8481,25 +8481,73 @@ class Reader {
             || hasSpineOnlyInitialRestore
             || hasInitialRestoreCFI
             || hasInitialRestoreFraction;
-        const initialNavigationTimeoutMs = hasInitialRestoreTarget ? 120000 : 3000;
-        const initialDisplaySettleTimeoutMs = hasInitialRestoreTarget ? 120000 : 3000;
         const runInitialDisplayNavigation = async (intent, operation) => {
             const navigationStartedAt = performanceNowMs();
+            const previousIntent = globalThis.__manabiNavigationIntent ?? null;
+            const activeIntent = {
+                timestamp: Date.now(),
+                ...intent,
+            };
+            globalThis.__manabiNavigationIntent = activeIntent;
             try {
-                const result = await runWithNavigationIntent(intent, operation, {
-                    timeoutMs: initialNavigationTimeoutMs,
+                const operationResult = operation();
+                const operationPromise = Promise.resolve(operationResult);
+                const displaySettledPromise = this.initialDisplaySettledPromise
+                    ? this.initialDisplaySettledPromise.then((settled) => ({
+                        settledBy: 'display',
+                        result: settled,
+                    }))
+                    : null;
+                operationPromise
+                    .then((result) => {
+                        this.initialDisplayNavigationPending = false;
+                        this.#settleInitialDisplayFromVisibleContent(`${reason}.initialDisplay.operationComplete`);
+                        return {
+                            settledBy: 'operation',
+                            result,
+                        };
+                    })
+                    .catch((error) => {
+                        this.initialDisplayNavigationPending = false;
+                        globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.navigation.asyncError', {
+                            reason,
+                            restoreLocatorKind,
+                            source: intent?.source ?? null,
+                            target: intent?.target ?? null,
+                            error: error?.message || String(error),
+                        });
+                    });
+                const restoreIntentWhenSettled = displaySettledPromise
+                    ? Promise.race([
+                        operationPromise.catch(() => null),
+                        displaySettledPromise.catch(() => null),
+                    ])
+                    : operationPromise.catch(() => null);
+                Promise.resolve(restoreIntentWhenSettled).finally(() => {
+                    if (globalThis.__manabiNavigationIntent === activeIntent) {
+                        globalThis.__manabiNavigationIntent = previousIntent;
+                    }
                 });
+                if (operationResult && typeof operationResult.then !== 'function') {
+                    this.initialDisplayNavigationPending = false;
+                    this.#settleInitialDisplayFromVisibleContent(`${reason}.initialDisplay.operationComplete`);
+                } else {
+                    this.initialDisplayNavigationPending = true;
+                }
                 return {
                     ok: true,
-                    result,
+                    result: operationResult,
+                    pending: operationResult && typeof operationResult.then === 'function',
                 };
             } catch (error) {
+                if (globalThis.__manabiNavigationIntent === activeIntent) {
+                    globalThis.__manabiNavigationIntent = previousIntent;
+                }
                 globalThis.__manabiRestoreDebugLog?.('ebook.initialDisplay.navigation.error', {
                     reason,
                     restoreLocatorKind,
                     source: intent?.source ?? null,
                     target: intent?.target ?? null,
-                    timeoutMs: initialNavigationTimeoutMs,
                     error: error?.message || String(error),
                     requestedFraction: hasInitialRestoreFraction ? safeRound(initialRestoreFraction, 6) : null,
                 });
@@ -8596,9 +8644,7 @@ class Reader {
                 rawFractionValue: initialRestore?.fractionalCompletion ?? null,
             });
             const navigationResult = await runInitialDisplayNavigation(intent, operation);
-            const displaySettled = await this.waitForInitialDisplaySettled(`${reason}.initialDisplay`, {
-                timeoutMs: initialDisplaySettleTimeoutMs,
-            });
+            let displaySettled = this.#settleInitialDisplayFromVisibleContent(`${reason}.initialDisplay.navigationComplete`);
             const location = this.view?.lastLocation ?? null;
             const settledSectionIndex = typeof location?.section?.current === 'number'
                 ? location.section.current
@@ -8606,17 +8652,21 @@ class Reader {
             const settledFraction = typeof location?.fraction === 'number' ? location.fraction : null;
             const initialRestoreRequested = hasInitialRestoreTarget;
             const initialRestoreFractionTolerance = 0.003;
+            const pendingNavigationHasVisibleContent = navigationResult?.pending === true
+                ? displaySettled?.settled === true
+                : true;
             const initialRestoreFractionSatisfied = hasInitialRestoreFraction && !syntheticInitialRestore
                 ? (
                     typeof settledFraction === 'number'
                     && Math.abs(settledFraction - initialRestoreFraction) <= initialRestoreFractionTolerance
                 )
-                : navigationResult?.ok === true;
+                : (navigationResult?.ok === true && pendingNavigationHasVisibleContent);
             const spineOnlyRestoreIsPreciseEnough =
                 !hasSpineOnlyInitialRestore || hasInitialRestoreFraction;
             const initialRestoreWillBeMarkedHandled =
                 initialRestoreRequested
                 && initialRestoreFractionSatisfied
+                && pendingNavigationHasVisibleContent
                 && spineOnlyRestoreIsPreciseEnough;
             const initialRestoreFractionDelta = hasInitialRestoreFraction && typeof settledFraction === 'number'
                 ? Math.abs(settledFraction - initialRestoreFraction)
@@ -8679,6 +8729,7 @@ class Reader {
                 }
             );
             if (initialRestoreWillBeMarkedHandled) {
+                this.initialDisplayNavigationPending = false;
                 this.hasLoadedLastPosition = true;
                 clearInitialRestoreRenderReadyGate('initialDisplay.restoreSatisfied');
                 markReaderRenderReady('initialDisplay.restoreSatisfied');
@@ -9281,8 +9332,15 @@ class Reader {
             }
             let turnResult = null;
             const positionBeforeTurn = this.#lookupNavigationPositionSnapshot();
+            const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
             try {
                 turnResult = await this.#turnLookupNavigationPage(direction);
+                if (
+                    turnResult?.moved !== false
+                    && this.displaySettledSequence === displaySettledSequenceBeforeTurn
+                ) {
+                    turnResult.displaySettled = await this.waitForNextDisplaySettled('lookup-navigation.page-turn');
+                }
             } catch (error) {
                 turnResult = {
                     moved: false,
@@ -9465,6 +9523,69 @@ class Reader {
             }
         }
     }
+    #settleInitialDisplayFromVisibleContent(reason = 'unspecified') {
+        if (this.initialDisplaySettled) {
+            return {
+                settled: true,
+                reason: 'already-settled',
+            };
+        }
+        const renderer = this.view?.renderer ?? null;
+        const contents = renderer?.getContents?.() || [];
+        const currentIndex = getPrimaryRendererContentIndex(renderer);
+        const activeContents = typeof currentIndex === 'number'
+            ? contents.filter((content) => typeof content?.index !== 'number' || content.index === currentIndex)
+            : contents;
+        let observedSegmentCount = 0;
+        let visibleSegmentCount = 0;
+        for (const content of activeContents) {
+            const doc = content?.doc || content?.document || null;
+            if (!isDocumentLike(doc)) { continue; }
+            const visibleRange = this.#visibleRangeForDocument(doc);
+            const visibleSegmentsResult = this.#visiblePageSegmentResult(
+                doc,
+                visibleRange,
+                `initialDisplay.visible-content:${reason}`,
+                {
+                    postIfCached: true,
+                    includeClientRects: true,
+                    postLookupTargets: true,
+                    prepareLookupIndex: true,
+                    hydrateStatuses: true,
+                    finishInitialCritical: true,
+                }
+            );
+            const visibleJapaneseTextState = visibleJapaneseTextStateForVisibleSegmentsResult(visibleSegmentsResult);
+            observedSegmentCount += visibleJapaneseTextState.observedSegmentCount;
+            visibleSegmentCount += visibleJapaneseTextState.visibleSegmentCount;
+            if (visibleJapaneseTextState.hasVisibleJapaneseText === true) {
+                const clearReason = `initialDisplay.visible-content:${reason}`;
+                this.setLoadingIndicator(false, clearReason);
+                markReaderRenderReady(clearReason);
+                globalThis.__manabiPostReaderDocStateEvent?.(clearReason);
+                this.#resolveInitialDisplaySettled(clearReason);
+                this.#resolveDisplaySettledWaiters(clearReason);
+                try {
+                    globalThis.__manabiFinishEPUBLoadWatchdogs?.(clearReason);
+                } catch (_error) {}
+                return {
+                    settled: true,
+                    reason: clearReason,
+                    visibleSegmentCount,
+                    observedSegmentCount,
+                };
+            }
+        }
+        return {
+            settled: false,
+            reason: 'no-visible-text',
+            visibleSegmentCount,
+            observedSegmentCount,
+        };
+    }
+    settleInitialDisplayFromVisibleContent(reason = 'unspecified') {
+        return this.#settleInitialDisplayFromVisibleContent(reason);
+    }
     #resolveDisplaySettledWaiters(reason = 'unspecified') {
         this.displaySettledSequence += 1;
         const waiters = this.displaySettledWaiters.splice(0);
@@ -9483,6 +9604,9 @@ class Reader {
                 waiter?.resolve?.(result);
             }
         });
+    }
+    resolveDisplaySettledWaiters(reason = 'unspecified') {
+        this.#resolveDisplaySettledWaiters(reason);
     }
     clearLoadingForRelocatedVisibleContent(reason = 'unspecified') {
         if (!document.body?.classList?.contains?.('loading')) {
@@ -10034,6 +10158,7 @@ class Reader {
         await this.navHUD?.handleRelocate(detail);
         if (isLookupNavigationPageTurn) {
             this.refreshLookupNavigationVisibleTargetsForRelocate('lookup-navigation.relocate');
+            this.resolveDisplaySettledWaiters('relocate.lookup-navigation');
         } else {
             this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
         }
@@ -10699,6 +10824,13 @@ window.loadEBook = ({
                         && !!globalThis.__manabiInitialRestoreHandled;
                 } catch (error) {
                 }
+                if (shouldDeferReaderOpenLoadingClear) {
+                    const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.pendingRestoreAfterApply');
+                    if (settled?.settled === true || reader.initialDisplayNavigationPending !== true) {
+                        finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.pendingRestoreAfterApply');
+                        reader.setLoadingIndicator(false, 'loadEBook.pendingRestoreAfterApply');
+                    }
+                }
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.finish', {
                     loadToken,
                     restored: pendingRestoreSucceeded,
@@ -10722,15 +10854,21 @@ window.loadEBook = ({
                     hasLoadedLastPosition: reader?.hasLoadedLastPosition === true,
                     action: 'finishTerminalRestoreGate',
                 });
-                finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
-                reader.setLoadingIndicator(false, 'loadEBook.initialRestoreNotHandledAfterOpen');
+                const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreNotHandledAfterOpen');
+                if (settled?.settled === true || reader.initialDisplayNavigationPending !== true) {
+                    finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
+                    reader.setLoadingIndicator(false, 'loadEBook.initialRestoreNotHandledAfterOpen');
+                }
             } else if (
                 shouldDeferReaderOpenLoadingClear
                 && !globalThis.__manabiInitialRestoreHandled
                 && globalThis.__manabiInitialRestoreRenderReadyGate?.active === true
             ) {
-                finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
-                reader.setLoadingIndicator(false, 'loadEBook.initialRestoreDeferredTerminal');
+                const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreDeferredTerminal');
+                if (settled?.settled === true || reader.initialDisplayNavigationPending !== true) {
+                    finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
+                    reader.setLoadingIndicator(false, 'loadEBook.initialRestoreDeferredTerminal');
+                }
             }
         })
         .then(async () => {
@@ -10978,21 +11116,34 @@ window.loadLastPosition = async ({
             locationTotal: state?.locationTotal ?? null,
             renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
         });
-        let waitResult = null;
-        if (typeof globalThis.reader?.waitForNextDisplaySettled === 'function') {
-            try {
-                waitResult = await globalThis.reader.waitForNextDisplaySettled(reason, { timeoutMs });
-            } catch (error) {
-            }
-        }
         await waitForPaintAfterNavigation();
-        const waitedState = captureRestoreState(stage, {
-            waitedForDisplay: !!waitResult,
+        const visibleSettleResult = typeof globalThis.reader?.settleInitialDisplayFromVisibleContent === 'function'
+            ? globalThis.reader.settleInitialDisplayFromVisibleContent(`loadLastPosition.${reason}`)
+            : null;
+        let waitedState = captureRestoreState(stage, {
+            waitedForDisplay: false,
+            visibleContentSettled: visibleSettleResult?.settled === true,
         });
+        let displaySettledResult = null;
+        if (
+            (!restoreStateHasUsableLocation(waitedState)
+                || (requireFractionSatisfied && !restoreStateFractionSatisfied(waitedState)))
+            && typeof globalThis.reader?.waitForNextDisplaySettled === 'function'
+        ) {
+            displaySettledResult = await globalThis.reader.waitForNextDisplaySettled(
+                `loadLastPosition.${reason}`,
+                { timeoutMs }
+            );
+            waitedState = captureRestoreState(stage, {
+                waitedForDisplay: true,
+                visibleContentSettled: visibleSettleResult?.settled === true,
+                displaySettledReason: displaySettledResult?.reason ?? null,
+            });
+        }
         globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.restoreState.wait.finish', {
             reason,
             stage,
-            settledReason: waitResult?.reason ?? null,
+            settledReason: displaySettledResult?.reason ?? visibleSettleResult?.reason ?? null,
             requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
             currentFraction: typeof waitedState.currentFraction === 'number' ? safeRound(waitedState.currentFraction, 6) : null,
             currentSectionIndex: waitedState.sectionIndex ?? null,
