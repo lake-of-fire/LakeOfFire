@@ -5572,7 +5572,6 @@ class Reader {
     initialDisplaySettledResolve = null;
     displaySettledSequence = 0;
     displaySettledWaiters = [];
-    lookupNavigationSettledWaiters = [];
     hasLoadedLastPosition = false
     markedAsFinished = false;
     showingCompletionButtons = false;
@@ -7471,7 +7470,10 @@ class Reader {
         const scheduledAt = performanceNowMs();
         if (globalThis.__manabiTimelineTraceAll === true) {
         }
-        const waitForRefreshPrerequisites = async (docs) => {
+        const runRefresh = async () => {
+            const docs = isDocumentLike(explicitDoc)
+                ? [explicitDoc]
+                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
             if (reason !== 'manual') {
                 await Promise.all(
                     docs
@@ -7480,37 +7482,25 @@ class Reader {
                         .map((promise) => Promise.resolve(promise).catch(() => null))
                 );
             }
-            await this.#waitForAnimationFrames(reason === 'manual' ? 1 : 2);
-        };
-        const runRefresh = async () => {
-            const docs = isDocumentLike(explicitDoc)
-                ? [explicitDoc]
-                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-            await waitForRefreshPrerequisites(docs);
             if (generation !== this.nativeLookupHitTargetRefreshGeneration) {
                 return;
             }
-            this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
-                const startedAt = performanceNowMs();
-                this.nativeLookupHitTargetRefreshHandle = null;
-                if (generation !== this.nativeLookupHitTargetRefreshGeneration) {
-                    return;
-                }
-                if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
-                    this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
-                    return;
-                }
-                const currentDocs = isDocumentLike(explicitDoc)
-                    ? [explicitDoc]
-                    : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-                for (const doc of currentDocs) {
-                    const visibleRange = this.#visibleRangeForDocument(doc);
-                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
-                }
-                const elapsedMs = performanceNowMs() - startedAt;
-                if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
-                }
-            });
+            const startedAt = performanceNowMs();
+            this.nativeLookupHitTargetRefreshHandle = null;
+            if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
+                this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
+                return;
+            }
+            const currentDocs = isDocumentLike(explicitDoc)
+                ? [explicitDoc]
+                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+            for (const doc of currentDocs) {
+                const visibleRange = this.#visibleRangeForDocument(doc);
+                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+            }
+            const elapsedMs = performanceNowMs() - startedAt;
+            if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
+            }
         };
         void runRefresh();
     }
@@ -8912,53 +8902,27 @@ class Reader {
             .map((content) => content?.doc?.defaultView || content?.document?.defaultView || null)
             .filter((view) => view && !isCacheWarmerDocument(view.document));
     }
-    #createNextLookupNavigationSettledWaiter(reason = 'unspecified') {
-        let waiter = null;
-        let completed = false;
-        const promise = new Promise((resolve) => {
-            waiter = {
-                resolve: (result) => {
-                    completed = true;
-                    resolve(result);
-                },
-            };
-            this.lookupNavigationSettledWaiters.push(waiter);
-        });
-        const cancel = () => {
-            if (completed || !waiter) return;
-            completed = true;
-            this.lookupNavigationSettledWaiters = this.lookupNavigationSettledWaiters.filter((item) => item !== waiter);
-        };
-        return { promise, cancel, reason };
-    }
-    #resolveLookupNavigationSettledWaiters(reason = 'unspecified') {
-        const waiters = this.lookupNavigationSettledWaiters.splice(0);
-        if (!waiters.length) return;
-        const result = {
-            reason,
-            sequence: this.displaySettledSequence,
-            bodyLoading: !!document.body?.classList?.contains?.('loading'),
-            hasReaderContent: !!document.querySelector?.('foliate-view'),
-            renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-        };
-        waiters.forEach((waiter) => {
-            if (typeof waiter === 'function') {
-                waiter(result);
-            } else {
-                waiter?.resolve?.(result);
-            }
-        });
-    }
     #lookupNavigationDocuments() {
         return this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
     }
-    #settleAfterLookupPageTurn() {
+    #settleAfterLookupPageTurn(reason = 'lookup-navigation.page-turn-settled') {
         const docs = this.#lookupNavigationDocuments();
+        const refreshResults = [];
         for (const doc of docs) {
             const visibleRange = this.#visibleRangeForDocument(doc);
             this.visiblePageSegmentSnapshot = null;
-            this.#visiblePageSegmentResult(doc, visibleRange, 'lookup-navigation.page-turn-settled');
+            const result = this.#visiblePageSegmentResult(doc, visibleRange, reason);
+            refreshResults.push({
+                href: doc?.location?.href ?? null,
+                visibleSegmentCount: result?.visibleSegments?.length ?? 0,
+                firstVisibleSegmentID: result?.visibleSegments?.[0]?.node?.id ?? null,
+                fontStatus: doc?.fonts?.status ?? null,
+            });
         }
+        return {
+            reason,
+            refreshResults,
+        };
     }
     #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.visible-target-readiness') {
         const docs = this.#lookupNavigationDocuments();
@@ -9008,8 +8972,7 @@ class Reader {
         };
     }
     refreshLookupNavigationVisibleTargetsForRelocate(reason = 'lookup-navigation.relocate') {
-        this.#refreshLookupNavigationVisibleTargets(reason);
-        this.#resolveLookupNavigationSettledWaiters(reason);
+        return this.#refreshLookupNavigationVisibleTargets(reason);
     }
     async #visibleLookupNavigationReadiness(request) {
         const kind = request?.kind === 'sentence' || request?.kind === 'section' ? request.kind : 'word';
@@ -9318,11 +9281,9 @@ class Reader {
             }
             let turnResult = null;
             const positionBeforeTurn = this.#lookupNavigationPositionSnapshot();
-            const navigationSettledWaiter = this.#createNextLookupNavigationSettledWaiter('lookup-navigation.page-turn');
             try {
                 turnResult = await this.#turnLookupNavigationPage(direction);
             } catch (error) {
-                navigationSettledWaiter.cancel();
                 turnResult = {
                     moved: false,
                     failureReason: 'pageTurnError',
@@ -9333,7 +9294,6 @@ class Reader {
                 turnResult.positionBefore = positionBeforeTurn;
             }
             if (turnResult?.moved === false) {
-                navigationSettledWaiter.cancel();
                 attempts.push({
                     pageTurnIndex,
                     turnResult,
@@ -9342,7 +9302,7 @@ class Reader {
                 });
                 break;
             }
-            const navigationSettledResult = await navigationSettledWaiter.promise;
+            const navigationSettledResult = this.#settleAfterLookupPageTurn('lookup-navigation.page-turn-settled');
             const positionAfterTurn = this.#lookupNavigationPositionSnapshot();
             const positionChanged = this.#lookupNavigationPositionChanged(positionBeforeTurn, positionAfterTurn);
             if (turnResult) {
@@ -9366,7 +9326,6 @@ class Reader {
                 visibleTargetFailureReason: null,
             };
             attempts.push(attempt);
-            this.#settleAfterLookupPageTurn();
             let visibleTargetResult = null;
             try {
                 visibleTargetResult = await this.#openVisibleLookupTargetAfterPageTurnWhenReady({
@@ -9567,7 +9526,6 @@ class Reader {
         globalThis.__manabiPostReaderDocStateEvent?.(clearReason);
         this.#resolveInitialDisplaySettled(clearReason);
         this.#resolveDisplaySettledWaiters(clearReason);
-        this.#resolveLookupNavigationSettledWaiters(clearReason);
         try {
             globalThis.__manabiFinishEPUBLoadWatchdogs?.(clearReason);
         } catch (_error) {}
@@ -9713,7 +9671,6 @@ class Reader {
         globalThis.__manabiPostReaderDocStateEvent?.('didDisplay.loadingCleared');
         this.#resolveInitialDisplaySettled('didDisplay.loading-cleared');
         this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');
-        this.#resolveLookupNavigationSettledWaiters('didDisplay.loading-cleared');
         setTimeout(() => {
             this.#postBookInsetSnapshot('didDisplay.loading-cleared.plus-250ms', {
                 initialSettleResult,
