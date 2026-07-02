@@ -72,8 +72,10 @@ public func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
+    contentFingerprint: String? = nil,
     isCacheWarmer: Bool,
     processReadabilityContent: EbookReadabilityContentProcessor?,
+    processHTMLDocument: EbookHTMLDocumentProcessor?,
     processHTMLBytes: EbookHTMLBytesProcessor?,
     processHTML: EbookHTMLProcessor?
 ) async throws -> String {
@@ -101,6 +103,7 @@ public func ebookTextProcessor(
                 sectionLocationURL,
                 isCacheWarmer,
                 true,
+                contentFingerprint,
                 { $0 }
             )
             readabilityProcessElapsedMs = ebookProcessorElapsedMilliseconds(since: readabilityProcessStartedAt)
@@ -143,7 +146,15 @@ public func ebookTextProcessor(
         preprocessEbookElapsedMs = ebookProcessorElapsedMilliseconds(since: preprocessEbookStartedAt)
 
         let serializeStartedAt = collectTiming ? Date() : nil
-        var htmlBytes = try doc.outerHtmlUTF8()
+        let usedDocumentPostprocessor = processHTMLDocument != nil
+        var htmlBytes: [UInt8]
+        if let processHTMLDocument {
+            htmlBytes = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                try await processHTMLDocument(doc, isCacheWarmer)
+            }
+        } else {
+            htmlBytes = try doc.outerHtmlUTF8()
+        }
         serializeElapsedMs = ebookProcessorElapsedMilliseconds(since: serializeStartedAt)
         if ebookTextProcessorDetailedLoggingEnabled {
             print(
@@ -157,7 +168,7 @@ public func ebookTextProcessor(
             )
         }
 
-        if let processHTMLBytes {
+        if !usedDocumentPostprocessor, let processHTMLBytes {
             let processHTMLBytesStartedAt = collectTiming ? Date() : nil
             htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTMLBytes(

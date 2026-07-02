@@ -43,6 +43,58 @@ fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> Str
     return String(value.prefix(limit))
 }
 
+fileprivate func ebookHTMLAttributeEscaped(_ string: String) -> String {
+    string
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+}
+
+struct EBookProcessedSectionWritingHint {
+    let direction: String
+    let writingMode: String
+}
+
+fileprivate func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcessedSectionWritingHint? {
+    let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    let direction = queryItems
+        .first(where: { $0.name == "mnbWritingDirection" })?
+        .value?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    guard direction == "vertical" else { return nil }
+    let requestedWritingMode = queryItems
+        .first(where: { $0.name == "mnbWritingMode" })?
+        .value?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    let writingMode = requestedWritingMode == "vertical-lr" ? "vertical-lr" : "vertical-rl"
+    return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: writingMode)
+}
+
+func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
+    guard let writingHint else { return html }
+    guard let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]) else { return html }
+    let afterBodyName = bodyTagRange.upperBound
+    if afterBodyName < html.endIndex {
+        let nextCharacter = html[afterBodyName]
+        guard nextCharacter == ">" || nextCharacter == "/" || nextCharacter.isWhitespace else { return html }
+    }
+    guard let tagEnd = html[afterBodyName...].firstIndex(of: ">") else { return html }
+
+    let attributes = [
+        "data-mnb-writing-direction=\"\(ebookHTMLAttributeEscaped(writingHint.direction))\"",
+        "data-mnb-writing-mode=\"\(ebookHTMLAttributeEscaped(writingHint.writingMode))\"",
+        "data-mnb-foliate-writing-direction=\"\(ebookHTMLAttributeEscaped(writingHint.direction))\"",
+        "data-mnb-foliate-writing-mode=\"\(ebookHTMLAttributeEscaped(writingHint.writingMode))\""
+    ].joined(separator: " ")
+
+    var result = html
+    result.insert(contentsOf: " \(attributes)", at: tagEnd)
+    return result
+}
+
 @inline(__always)
 fileprivate func ebookLoadElapsedMs(since startedAt: Date) -> Int {
     Int(Date().timeIntervalSince(startedAt) * 1000)
@@ -183,21 +235,30 @@ public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
 
 actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    let ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
+    let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     let ebookTextProcessor: EbookTextProcessor?
     let processReadabilityContent: EbookReadabilityContentProcessor?
+    let processHTMLDocument: EbookHTMLDocumentProcessor?
     let processHTMLBytes: EbookHTMLBytesProcessor?
     let processHTML: EbookHTMLProcessor?
 
     init(
         ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
+        ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil,
+        ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
         processReadabilityContent: EbookReadabilityContentProcessor?,
+        processHTMLDocument: EbookHTMLDocumentProcessor? = nil,
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
+        self.ebookProcessedTextCacheReader = ebookProcessedTextCacheReader
+        self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
+        self.processHTMLDocument = processHTMLDocument
         self.processHTMLBytes = processHTMLBytes
         self.processHTML = processHTML
     }
@@ -231,6 +292,17 @@ actor EBookProcessingActor {
         let startedAt = Date()
         if ebookReplaceTextDetailedLoggingEnabled {
         }
+        let resolvedContentFingerprint = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: location,
+            isCacheWarmer: isCacheWarmer,
+            text: text
+        ).textFingerprint
+        if !isCacheWarmer,
+           let ebookProcessedTextCacheReader,
+           let cachedResult = try await ebookProcessedTextCacheReader(contentURL, location, text, resolvedContentFingerprint) {
+            return cachedResult
+        }
         guard let ebookTextProcessor else {
             return text
         }
@@ -239,11 +311,19 @@ actor EBookProcessingActor {
             contentURL,
             location,
             text,
+            resolvedContentFingerprint,
             isCacheWarmer,
             processReadabilityContent,
+            processHTMLDocument,
             processHTMLBytes,
             processHTML
         )
+        if !isCacheWarmer,
+           let ebookProcessedTextCacheWriter {
+            Task(priority: .utility) {
+                await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
+            }
+        }
         let elapsedMs = ebookLoadElapsedMs(since: startedAt)
         return result
     }
@@ -334,18 +414,24 @@ public actor EbookURLSchemeActor {
 }
 
 public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
-public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
+public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, String?, EbookDocumentTransform) async throws -> SwiftSoup.Document
+public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> [UInt8]
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-public typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
+public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
 public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
+public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> String?
+public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, String) async -> Void
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    nonisolated(unsafe) var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
+    nonisolated(unsafe) var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
     public var readerFileManager: ReaderFileManager?
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
+    nonisolated(unsafe) var processHTMLDocument: EbookHTMLDocumentProcessor?
     nonisolated(unsafe) var processHTMLBytes: EbookHTMLBytesProcessor?
     nonisolated(unsafe) var processHTML: EbookHTMLProcessor?
     nonisolated(unsafe) public var sharedFontCSSBase64: String?
@@ -395,8 +481,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
+        let ebookProcessedTextCacheReader = self.ebookProcessedTextCacheReader
+        let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
         let processReadabilityContent = self.processReadabilityContent
+        let processHTMLDocument = self.processHTMLDocument
         let processHTMLBytes = self.processHTMLBytes
         let processHTML = self.processHTML
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
@@ -415,6 +504,31 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: isCacheWarmer,
                             text: text
                         )
+                        if !isCacheWarmer,
+                           let ebookProcessedTextCacheReader,
+                           let cachedText = try? await ebookProcessedTextCacheReader(
+                            contentURL,
+                            replacedTextLocation,
+                            text,
+                            processRequestKey.textFingerprint
+                           ),
+                           let cachedData = ebookProcessTextResponseData(processedText: cachedText, isCacheWarmer: false) {
+                            let resp = HTTPURLResponse(
+                                url: url,
+                                mimeType: nil,
+                                expectedContentLength: cachedData.count,
+                                textEncodingName: "utf-8"
+                            )
+                            await { @MainActor in
+                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                    urlSchemeTask.didReceive(resp)
+                                    urlSchemeTask.didReceive(cachedData)
+                                    urlSchemeTask.didFinish()
+                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                }
+                            }()
+                            return
+                        }
                         if ebookReplaceTextDetailedLoggingEnabled {
                         }
                         let respText: String
@@ -425,8 +539,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             ) {
                                 let processingActor = EBookProcessingActor(
                                     ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
+                                    ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
+                                    ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                     ebookTextProcessor: ebookTextProcessor,
                                     processReadabilityContent: processReadabilityContent,
+                                    processHTMLDocument: processHTMLDocument,
                                     processHTMLBytes: processHTMLBytes,
                                     processHTML: processHTML
                                 )

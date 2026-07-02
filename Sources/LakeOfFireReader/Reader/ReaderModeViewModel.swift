@@ -1215,8 +1215,11 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler? = nil
+    @Published public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil
+    @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
     @Published public var nativeEbookSectionPrewarmer: (@Sendable (URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: EbookReadabilityContentProcessor? = nil
+    @Published public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil
     @Published public var processHTMLBytes: EbookHTMLBytesProcessor? = nil
     @Published public var processHTML: EbookHTMLProcessor? = nil
     public var navigator: WebViewNavigator?
@@ -3079,6 +3082,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                     nil,
                     false,
                     tracksReadingProgress,
+                    nil,
                     { doc in
                         do {
                             return try await preprocessWebContentForReaderMode(

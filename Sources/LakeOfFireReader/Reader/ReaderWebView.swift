@@ -201,7 +201,10 @@ public struct ReaderWebView: View {
     private var ebookSchemeBindingState: String {
         [
             readerModeViewModel.ebookTextProcessorCacheHits != nil ? "cacheHits=1" : "cacheHits=0",
+            readerModeViewModel.ebookProcessedTextCacheReader != nil ? "processedTextRead=1" : "processedTextRead=0",
+            readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "processedTextWrite=1" : "processedTextWrite=0",
             readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
+            readerModeViewModel.processHTMLDocument != nil ? "htmlDocument=1" : "htmlDocument=0",
             readerModeViewModel.processHTMLBytes != nil ? "htmlBytes=1" : "htmlBytes=0",
             readerModeViewModel.processHTML != nil ? "html=1" : "html=0",
             readerModeViewModel.sharedFontCSSBase64 == nil ? "fontCSS=0" : "fontCSS=1",
@@ -288,8 +291,11 @@ public struct ReaderWebView: View {
         .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
             ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
+            ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
+            ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
+            ebookURLSchemeHandler.processHTMLDocument = readerModeViewModel.processHTMLDocument
             ebookURLSchemeHandler.processHTMLBytes = readerModeViewModel.processHTMLBytes
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
             ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64
