@@ -36,8 +36,103 @@ const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
 const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = true;
 const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
+const MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION = true;
 const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
+const MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180;
+const MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240;
+const manabiLockedPageTurnQueueDecision = ({
+    pendingQueueAllowed,
+    pendingRequestedPage,
+    pendingPageCount,
+    pendingDirection,
+    queuedDirection,
+    queuedStep,
+    lockedElapsedMs,
+    distance,
+}) => {
+    const sameDirectionAsPending = pendingDirection === queuedDirection;
+    if (
+        sameDirectionAsPending
+        && lockedElapsedMs != null
+        && lockedElapsedMs < MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS
+        && distance == null
+    ) {
+        return { shouldQueue: false, reason: 'pageTurnDuplicateDuringLock' };
+    }
+    if (!pendingQueueAllowed) {
+        return { shouldQueue: false, reason: 'pageTurnQueueOutsideSection' };
+    }
+    if (
+        !Number.isFinite(pendingRequestedPage)
+        || !Number.isFinite(pendingPageCount)
+        || !Number.isFinite(queuedStep)
+    ) {
+        return { shouldQueue: false, reason: 'pageTurnQueueUnknownSection' };
+    }
+    const projectedQueuedPage = pendingRequestedPage + queuedStep;
+    const crossesSection = queuedStep < 0
+        ? projectedQueuedPage <= 0
+        : projectedQueuedPage >= pendingPageCount - 1;
+    return crossesSection
+        ? { shouldQueue: false, reason: 'pageTurnQueueWouldCrossSection', projectedQueuedPage }
+        : { shouldQueue: true, reason: 'pageTurnQueueWithinSection', projectedQueuedPage };
+};
+const manabiPageTurnBoundaryDecision = ({
+    currentPage,
+    pageCount,
+    step,
+    adjacentIndex,
+}) => {
+    const requestedPage = Number.isFinite(currentPage) && Number.isFinite(step)
+        ? currentPage + step
+        : null;
+    const crossesSection = Number.isFinite(requestedPage) && Number.isFinite(pageCount)
+        ? (step < 0 ? requestedPage <= 0 : requestedPage >= pageCount - 1)
+        : false;
+    const hasAdjacentSection = adjacentIndex != null;
+    return {
+        requestedPage,
+        crossesSection,
+        hasAdjacentSection,
+        shouldGoToAdjacentSection: crossesSection && hasAdjacentSection,
+        shouldScrollWithinSection: !(crossesSection && hasAdjacentSection),
+    };
+};
+export const manabiShouldSuppressPostPageTurnDuplicate = ({
+    lastDirection,
+    direction,
+    distance = null,
+    navigationSource = null,
+    elapsedMs,
+} = {}) => {
+    if (distance != null || navigationSource != null) return false;
+    if (lastDirection == null || direction == null || lastDirection !== direction) return false;
+    return Number.isFinite(elapsedMs)
+        && elapsedMs >= 0
+        && elapsedMs < MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS;
+};
+export const manabiNormalizeSingleMediaPageTarget = ({ page, pages, isSingleMedia = false } = {}) => {
+    if (
+        !MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
+        || !isSingleMedia
+        || !Number.isFinite(page)
+        || !Number.isFinite(pages)
+    ) return page;
+    const maxPage = Math.max(0, pages - 1);
+    const normalized = Math.max(0, Math.min(maxPage, Math.trunc(page)));
+    if (maxPage <= 1) return normalized;
+    if (normalized <= 1) return 1;
+    if (normalized >= maxPage - 1) return maxPage - 1;
+    return normalized;
+};
+export const manabiPaginatorAnchorForLocalPage = ({ localPage, textPageCount } = {}) => {
+    if (!Number.isFinite(textPageCount) || textPageCount <= 1) return 0;
+    const normalizedLocalPage = Number.isFinite(localPage)
+        ? Math.max(0, Math.round(localPage))
+        : 0;
+    return Math.max(0, Math.min(1, normalizedLocalPage / Math.max(1, textPageCount - 1)));
+};
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
@@ -880,6 +975,11 @@ export class Paginator extends HTMLElement {
     #prefetchCache = new Map()
     #pendingPageTurnDirection = null
     #queuedPageTurn = null
+    #lockedAt = null
+    #pendingPageTurnQueueAllowed = false
+    #pendingPageTurnRequestedPage = null
+    #pendingPageTurnPageCount = null
+    #lastSettledPageTurn = null
 
     #cachedSizes = null
     #cachedStart = null
@@ -2062,7 +2162,7 @@ export class Paginator extends HTMLElement {
     }
     #normalizePages(rawPages) {
         if (
-            MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
+            MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
             && rawPages > 3
             && this.#isSingleMediaElementWithoutText()
         ) {
@@ -2130,9 +2230,14 @@ export class Paginator extends HTMLElement {
         const page = Math.floor(
             Math.max(min, Math.min(max, (start + end) / 2 +
                 (isNaN(d) ? 0 : d))) / size)
+        const targetPage = manabiNormalizeSingleMediaPageTarget({
+            page,
+            pages,
+            isSingleMedia: this.#isSingleMediaElementWithoutText(),
+        })
 
-        await this.#scrollToPage(page, 'snap', undefined, metrics).then(async () => {
-            const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
+        await this.#scrollToPage(targetPage, 'snap', undefined, metrics).then(async () => {
+            const dir = targetPage <= 0 ? -1 : targetPage >= pages - 1 ? 1 : null
             if (dir) return await this.#goTo({
                 index: this.#adjacentIndex(dir),
                 anchor: dir < 0 ? () => 1 : () => 0,
@@ -2453,7 +2558,12 @@ export class Paginator extends HTMLElement {
     }
     async #scrollToPage(page, reason, smooth, knownMetrics = null) {
         const metrics = knownMetrics || await this.pageMetrics()
-        const offset = metrics.size * (this.#rtl ? -page : page)
+        const targetPage = manabiNormalizeSingleMediaPageTarget({
+            page,
+            pages: metrics.pages,
+            isSingleMedia: this.#isSingleMediaElementWithoutText(),
+        })
+        const offset = metrics.size * (this.#rtl ? -targetPage : targetPage)
         return await this.#scrollTo(offset, reason, smooth, metrics)
     }
     async scrollToAnchor(anchor, select) {
@@ -2799,6 +2909,7 @@ export class Paginator extends HTMLElement {
                 index,
                 src,
                 anchor,
+                localPage,
                 onLoad,
                 select
             } = await promise
@@ -2884,8 +2995,31 @@ export class Paginator extends HTMLElement {
         const scrollToAnchorStartedAt = manabiPerfNow();
         if (!this.#isCacheWarmer) {
         }
-        await this.scrollToAnchor((typeof anchor === 'function' ?
-            anchor(this.#view.document) : anchor) ?? 0, select)
+        const normalizedLocalPage = Number.isFinite(localPage)
+            ? Math.max(0, Math.round(localPage))
+            : null
+        if (normalizedLocalPage !== null && !this.scrolled) {
+            const metrics = await this.pageMetrics()
+            const textPageCount = Math.max(1, metrics.pages - 2)
+            const targetPage = Math.min(textPageCount - 1, normalizedLocalPage) + 1
+            const targetLocalPage = Math.max(0, targetPage - 1)
+            this.#anchor = manabiPaginatorAnchorForLocalPage({
+                localPage: targetLocalPage,
+                textPageCount,
+            })
+            const targetStart = metrics.size * (this.#rtl ? -targetPage : targetPage)
+            const alreadyAtTargetPage =
+                Math.abs((metrics.start ?? 0) - Math.abs(targetStart)) < 0.5
+                && metrics.page === targetPage
+            if (alreadyAtTargetPage) {
+                await this.#afterScroll('navigation')
+            } else {
+                await this.#scrollToPage(targetPage, 'navigation', undefined, metrics)
+            }
+        } else {
+            await this.scrollToAnchor((typeof anchor === 'function' ?
+                anchor(this.#view.document) : anchor) ?? 0, select)
+        }
         if (!this.#isCacheWarmer && typeof anchor === 'number' && !this.scrolled) {
             const metrics = await this.pageMetrics().catch(() => null)
             const pageCurrent = metrics?.page ?? null
@@ -2928,14 +3062,17 @@ export class Paginator extends HTMLElement {
     async #goTo({
         index,
         anchor,
+        localPage,
         select
     }) {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const willLoadNewIndex = index !== this.#index;
-        const anchorKind = typeof anchor === 'function'
-            ? 'function'
-            : (anchor instanceof Range ? 'range' : typeof anchor);
-        if (!willLoadNewIndex && anchor == null && !select) {
+        const anchorKind = Number.isFinite(localPage)
+            ? 'localPage'
+            : (typeof anchor === 'function'
+                ? 'function'
+                : (anchor instanceof Range ? 'range' : typeof anchor));
+        if (!willLoadNewIndex && anchor == null && !Number.isFinite(localPage) && !select) {
             return
         }
         this.dispatchEvent(new CustomEvent('goTo', {
@@ -2952,6 +3089,7 @@ export class Paginator extends HTMLElement {
                 await this.#display({
                     index,
                     anchor,
+                    localPage,
                     select
                 })
             } catch (error) {
@@ -3004,6 +3142,7 @@ export class Paginator extends HTMLElement {
                         index,
                         src,
                         anchor,
+                        localPage,
                         onLoad,
                         select
                     }))
@@ -3040,9 +3179,17 @@ export class Paginator extends HTMLElement {
             }
             return true;
         }
-        if (this.#adjacentIndex(-1) == null && metrics.page <= 1) return
-        const page = await this.#resolveBlankPageTarget(metrics.page - 1, -1, 'page-turn.prev')
-        return await this.#scrollToPage(page, 'page', true, metrics).then(() => page <= 0)
+        const previousSectionIndex = this.#adjacentIndex(-1)
+        if (previousSectionIndex == null && metrics.page <= 1) return false
+        const boundaryDecision = manabiPageTurnBoundaryDecision({
+            currentPage: metrics.page,
+            pageCount: metrics.pages,
+            step: -1,
+            adjacentIndex: previousSectionIndex,
+        })
+        if (boundaryDecision.shouldGoToAdjacentSection) return true
+        const page = await this.#resolveBlankPageTarget(boundaryDecision.requestedPage, -1, 'page-turn.prev')
+        return await this.#scrollToPage(page, 'page', false, metrics).then(() => boundaryDecision.crossesSection || page <= 0)
     }
     async #scrollNext(distance) {
         if (!this.#view) return true
@@ -3058,9 +3205,17 @@ export class Paginator extends HTMLElement {
             }
             return true;
         }
-        if (this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2) return
-        const page = await this.#resolveBlankPageTarget(metrics.page + 1, 1, 'page-turn.next')
-        return await this.#scrollToPage(page, 'page', true, metrics).then(() => page >= metrics.pages - 1)
+        const nextSectionIndex = this.#adjacentIndex(1)
+        if (nextSectionIndex == null && metrics.page >= metrics.pages - 2) return false
+        const boundaryDecision = manabiPageTurnBoundaryDecision({
+            currentPage: metrics.page,
+            pageCount: metrics.pages,
+            step: 1,
+            adjacentIndex: nextSectionIndex,
+        })
+        if (boundaryDecision.shouldGoToAdjacentSection) return true
+        const page = await this.#resolveBlankPageTarget(boundaryDecision.requestedPage, 1, 'page-turn.next')
+        return await this.#scrollToPage(page, 'page', false, metrics).then(() => boundaryDecision.crossesSection || page >= metrics.pages - 1)
     }
     async atStart() {
         const metrics = await this.pageMetrics()
@@ -3074,31 +3229,109 @@ export class Paginator extends HTMLElement {
         for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
             if (this.sections[index]?.linear !== 'no') return index
     }
-    async #turnPage(dir, distance) {
+    #shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, now = manabiPerfNow()) {
+        const lastPageTurn = this.#lastSettledPageTurn
+        if (!lastPageTurn) return false
+        return manabiShouldSuppressPostPageTurnDuplicate({
+            lastDirection: lastPageTurn.direction,
+            direction: dir > 0 ? 'forward' : 'backward',
+            distance,
+            navigationSource,
+            elapsedMs: Number.isFinite(lastPageTurn.settledAt) ? now - lastPageTurn.settledAt : null,
+        })
+    }
+    async #turnPage(dir, distance, options = {}) {
+        const navigationSource = globalThis.__manabiNavigationIntent?.source ?? null
+        const turnStartedAt = manabiPerfNow()
+        if (
+            !options.bypassPostTurnDuplicateSuppression
+            && this.#shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, turnStartedAt)
+        ) {
+            return { ignored: true, reason: 'pageTurnDuplicateAfterSettle' }
+        }
         if (this.#locked) {
-            this.#queuedPageTurn = { dir, distance }
-            return
+            const queueDecision = manabiLockedPageTurnQueueDecision({
+                pendingQueueAllowed: this.#pendingPageTurnQueueAllowed === true,
+                pendingRequestedPage: this.#pendingPageTurnRequestedPage,
+                pendingPageCount: this.#pendingPageTurnPageCount,
+                pendingDirection: this.#pendingPageTurnDirection,
+                queuedDirection: dir > 0 ? 'forward' : 'backward',
+                queuedStep: dir,
+                lockedElapsedMs: this.#lockedAt == null ? null : manabiPerfNow() - this.#lockedAt,
+                distance,
+            })
+            if (!queueDecision.shouldQueue) {
+                return { ignored: true, reason: queueDecision.reason }
+            }
+            const previousQueuedPageTurn = this.#queuedPageTurn
+            previousQueuedPageTurn?.resolve?.({ superseded: true })
+            return await new Promise((resolve, reject) => {
+                this.#queuedPageTurn = { dir, distance, resolve, reject }
+            })
         }
 
         this.#locked = true
+        this.#lockedAt = manabiPerfNow()
         this.#pendingPageTurnDirection = dir > 0 ? 'forward' : 'backward'
+        this.#pendingPageTurnQueueAllowed = false
+        this.#pendingPageTurnRequestedPage = null
+        this.#pendingPageTurnPageCount = null
+        const beforeMetrics = await this.pageMetrics().catch(() => null)
+        const beforeIndex = this.#index
+        const beforeAdjacentIndex = this.#adjacentIndex(dir)
+        const boundaryDecision = manabiPageTurnBoundaryDecision({
+            currentPage: beforeMetrics?.page,
+            pageCount: beforeMetrics?.pages,
+            step: dir,
+            adjacentIndex: beforeAdjacentIndex,
+        })
+        this.#pendingPageTurnRequestedPage = boundaryDecision.requestedPage
+        this.#pendingPageTurnPageCount = Number.isFinite(beforeMetrics?.pages) ? beforeMetrics.pages : null
+        this.#pendingPageTurnQueueAllowed =
+            Number.isFinite(boundaryDecision.requestedPage)
+            && Number.isFinite(beforeMetrics?.pages)
+            && !boundaryDecision.crossesSection
         try {
             const prev = dir === -1
-            const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+            const shouldGo = !!(await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance)))
             if (shouldGo) await this.#goTo({
-                index: this.#adjacentIndex(dir),
+                index: beforeAdjacentIndex,
                 anchor: prev ? () => 1 : () => 0,
             })
+            const finalMetrics = await this.pageMetrics().catch(() => null)
+            const didMove =
+                shouldGo
+                || this.#index !== beforeIndex
+                || finalMetrics?.page !== beforeMetrics?.page
+                || Math.abs((finalMetrics?.start ?? NaN) - (beforeMetrics?.start ?? NaN)) >= 1
+            if (didMove) {
+                this.#lastSettledPageTurn = {
+                    direction: dir > 0 ? 'forward' : 'backward',
+                    settledAt: manabiPerfNow(),
+                    index: this.#index,
+                    page: finalMetrics?.page ?? null,
+                }
+            }
             if (shouldGo || !this.hasAttribute('animated')) await wait(100)
             if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
             this.#pendingPageTurnDirection = null
+            this.#pendingPageTurnQueueAllowed = false
+            this.#pendingPageTurnRequestedPage = null
+            this.#pendingPageTurnPageCount = null
             this.#locked = false
+            this.#lockedAt = null
             const queuedPageTurn = this.#queuedPageTurn
             this.#queuedPageTurn = null
             if (queuedPageTurn) {
                 queueMicrotask(() => {
-                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance)
+                    this.#turnPage(
+                        queuedPageTurn.dir,
+                        queuedPageTurn.distance,
+                        { bypassPostTurnDuplicateSuppression: true }
+                    )
+                        .then(value => queuedPageTurn.resolve?.(value))
+                        .catch(error => queuedPageTurn.reject?.(error))
                 })
             }
         }

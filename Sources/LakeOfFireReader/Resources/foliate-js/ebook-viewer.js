@@ -4224,7 +4224,7 @@ class Reader {
                 pageItemKey: descriptor.pageItemKey ?? null,
             }, () => this.view.renderer.goTo({
                 index: Math.max(0, Math.round(descriptor.sectionIndex)),
-                anchor: fractionInSection,
+                localPage: clampedLocalSectionIndex,
             })).catch((error) => console.error(error));
             return;
         }
