@@ -862,7 +862,7 @@ public class ReaderFileManager: ObservableObject {
             throw ReaderFileManagerError.invalidFileURL
         }
 
-        let localRootURL = try localDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
+        let localRootURL = try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory())
         let cloudRootURL = try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
         let activeRootURL: URL?
         switch storageLocation {
@@ -880,7 +880,7 @@ public class ReaderFileManager: ObservableObject {
             localRootURL: localRootURL,
             cloudRootURL: cloudRootURL,
             activeRootURL: activeRootURL,
-            localRootExists: localRootURL.map(Self.fileSystemEntryExists(at:)) ?? false,
+            localRootExists: Self.fileSystemEntryExists(at: localRootURL),
             cloudRootExists: cloudRootURL.map(Self.fileSystemEntryExists(at:)) ?? false
         )
     }

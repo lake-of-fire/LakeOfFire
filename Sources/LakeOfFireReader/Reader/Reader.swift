@@ -1137,6 +1137,38 @@ public struct Reader: View {
             textSelection: $textSelection,
             buildMenu: buildMenu
         )
+        .onAppear {
+            print(
+                "# JUL6 reader.bridge.appear",
+                "pageURL=\(pageURL.absoluteString)",
+                "sampledTop=\((Double(sampledTopInset) * 10).rounded() / 10)",
+                "sampledBottom=\((Double(sampledBottomInset) * 10).rounded() / 10)",
+                "additionalTop=\((Double(explicitTopInset) * 10).rounded() / 10)",
+                "additionalLeading=\((Double(additionalLeadingInset) * 10).rounded() / 10)",
+                "additionalBottom=\((Double(additionalBottomInset) * 10).rounded() / 10)",
+                "ebookChromeBottom=\((Double(ebookChromeBottomInset) * 10).rounded() / 10)",
+                "ebookChromeExtraBottom=\((Double(ebookChromeExtraBottomInset) * 10).rounded() / 10)",
+                "effectiveBottom=\((Double(effectiveBottomInset) * 10).rounded() / 10)",
+                "toolbarBottom=\((Double(effectiveToolbarBottomOffset) * 10).rounded() / 10)",
+                "usesEBook=\(pageURL.isEBookURL)"
+            )
+        }
+        .onChange(of: chromeInsetsTaskID) { _ in
+            print(
+                "# JUL6 reader.bridge.change",
+                "pageURL=\(pageURL.absoluteString)",
+                "sampledTop=\((Double(sampledTopInset) * 10).rounded() / 10)",
+                "sampledBottom=\((Double(sampledBottomInset) * 10).rounded() / 10)",
+                "additionalTop=\((Double(explicitTopInset) * 10).rounded() / 10)",
+                "additionalLeading=\((Double(additionalLeadingInset) * 10).rounded() / 10)",
+                "additionalBottom=\((Double(additionalBottomInset) * 10).rounded() / 10)",
+                "ebookChromeBottom=\((Double(ebookChromeBottomInset) * 10).rounded() / 10)",
+                "ebookChromeExtraBottom=\((Double(ebookChromeExtraBottomInset) * 10).rounded() / 10)",
+                "effectiveBottom=\((Double(effectiveBottomInset) * 10).rounded() / 10)",
+                "toolbarBottom=\((Double(effectiveToolbarBottomOffset) * 10).rounded() / 10)",
+                "usesEBook=\(pageURL.isEBookURL)"
+            )
+        }
 #if os(iOS)
         .readerStatusBarFadeForCurrentDevice(
             top: effectiveSampledTopInset,//    + 8 + 2)
@@ -1160,6 +1192,15 @@ public struct Reader: View {
                                 bottom: max(0, geometrySafeAreaInsets.bottom),
                                 trailing: max(0, geometrySafeAreaInsets.trailing)
                             )
+                            print(
+                                "# JUL6 reader.geometrySafeArea.appear",
+                                "pageURL=\(currentPageURL.absoluteString)",
+                                "top=\((Double(sampledInsets.top) * 10).rounded() / 10)",
+                                "leading=\((Double(sampledInsets.leading) * 10).rounded() / 10)",
+                                "bottom=\((Double(sampledInsets.bottom) * 10).rounded() / 10)",
+                                "trailing=\((Double(sampledInsets.trailing) * 10).rounded() / 10)",
+                                "size=\((Double(geometrySize.width) * 10).rounded() / 10)x\((Double(geometrySize.height) * 10).rounded() / 10)"
+                            )
                             if currentPageURL.isEBookURL {
                                 sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
                                     current: sampledInsets.top,
@@ -1179,6 +1220,15 @@ public struct Reader: View {
                                 leading: max(0, safeAreaInsets.leading),
                                 bottom: max(0, safeAreaInsets.bottom),
                                 trailing: max(0, safeAreaInsets.trailing)
+                            )
+                            print(
+                                "# JUL6 reader.geometrySafeArea.change",
+                                "pageURL=\(currentPageURL.absoluteString)",
+                                "top=\((Double(sampledInsets.top) * 10).rounded() / 10)",
+                                "leading=\((Double(sampledInsets.leading) * 10).rounded() / 10)",
+                                "bottom=\((Double(sampledInsets.bottom) * 10).rounded() / 10)",
+                                "trailing=\((Double(sampledInsets.trailing) * 10).rounded() / 10)",
+                                "size=\((Double(geometrySize.width) * 10).rounded() / 10)x\((Double(geometrySize.height) * 10).rounded() / 10)"
                             )
                             let previousInsets = obscuredInsets
                             if currentPageURL.isEBookURL {

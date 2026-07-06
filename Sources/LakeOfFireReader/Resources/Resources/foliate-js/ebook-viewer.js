@@ -3190,9 +3190,14 @@ const sentenceIdentifierForNode = (sentenceNode) => {
         : null;
 };
 
-const segmentIdentityForNode = (segmentNode, bootstrap = null, metadata = null) => {
-    metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
+const segmentElementIDForNode = (segmentNode) => {
     const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
+    return typeof elementID === 'string' && elementID.length > 0 ? elementID : null;
+};
+
+// Reader segment identity contract mirrors manabi_reader.js: the DOM id is compact
+// and runtime-scoped, while sidecar sid is the durable content identity.
+const segmentIdentityFromParts = (elementID, metadata = null) => {
     const stableID = typeof metadata?.sid === 'string' && metadata.sid.length > 0
         ? metadata.sid
         : null;
@@ -3203,9 +3208,14 @@ const segmentIdentityForNode = (segmentNode, bootstrap = null, metadata = null) 
         elementID,
         metadataElementID,
         stableID,
-        segmentIdentifier: stableID,
+        segmentIdentifier: stableID || elementID,
         hasSidecarStableID: !!stableID,
     };
+};
+
+const segmentIdentityForNode = (segmentNode, bootstrap = null, metadata = null) => {
+    metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
+    return segmentIdentityFromParts(segmentElementIDForNode(segmentNode), metadata);
 };
 
 const segmentIdentifierForNode = (segmentNode, bootstrap = null, metadata = null) => {
@@ -3220,6 +3230,8 @@ const segmentIdentifierAliasesForNode = (segmentNode, bootstrap = null, metadata
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
     addAlias(identity.stableID);
+    addAlias(identity.elementID);
+    addAlias(identity.metadataElementID);
     return aliases;
 };
 
@@ -3685,6 +3697,12 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
                 }
                 appendNearbySegment(allSegments[index + offset] ?? null);
             }
+        }
+    }
+    if (isEbookDoc && candidateSegments.length === 0) {
+        const orderedSegments = orderedSegmentNodesForDocument(doc);
+        for (const segment of orderedSegments.nodes.slice(0, candidateLimit)) {
+            appendSegment(segment);
         }
     }
     candidateSegments.sort((first, second) => {
@@ -6413,7 +6431,7 @@ class Reader {
             this.nativeLookupHitTargetRefreshHandle = null;
         }
         this.nativeLookupHitTargetRefreshGeneration += 1;
-        if (this.hasLoadedLastPosition === true && !shouldResetNativeLookupTargets) {
+        if (this.hasLoadedLastPosition === true) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         } else if (shouldResetNativeLookupTargets && globalThis.__manabiTimelineTraceAll === true) {
         }
