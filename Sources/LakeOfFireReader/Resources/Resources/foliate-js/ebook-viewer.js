@@ -3190,25 +3190,38 @@ const sentenceIdentifierForNode = (sentenceNode) => {
         : null;
 };
 
-const segmentIdentifierForNode = (segmentNode, bootstrap = null, metadata = null) => {
+const segmentIdentityForNode = (segmentNode, bootstrap = null, metadata = null) => {
     metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
-    if (metadata?.sid) {
-        return metadata.sid;
-    }
     const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
-    return elementID;
+    const stableID = typeof metadata?.sid === 'string' && metadata.sid.length > 0
+        ? metadata.sid
+        : null;
+    const metadataElementID = typeof metadata?.i === 'string' && metadata.i.length > 0
+        ? metadata.i
+        : null;
+    return {
+        elementID,
+        metadataElementID,
+        stableID,
+        segmentIdentifier: stableID || elementID,
+        hasSidecarStableID: !!stableID,
+    };
+};
+
+const segmentIdentifierForNode = (segmentNode, bootstrap = null, metadata = null) => {
+    return segmentIdentityForNode(segmentNode, bootstrap, metadata).segmentIdentifier;
 };
 
 const segmentIdentifierAliasesForNode = (segmentNode, bootstrap = null, metadata = null) => {
-    metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
+    const identity = segmentIdentityForNode(segmentNode, bootstrap, metadata);
     const aliases = [];
     const addAlias = (identifier) => {
         if (typeof identifier !== 'string' || identifier.length === 0) return;
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
-    addAlias(metadata?.sid);
-    addAlias(metadata?.i);
-    addAlias(segmentNode?.id);
+    addAlias(identity.stableID);
+    addAlias(identity.metadataElementID);
+    addAlias(identity.elementID);
     return aliases;
 };
 
