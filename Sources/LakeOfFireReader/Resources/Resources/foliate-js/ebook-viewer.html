@@ -1504,16 +1504,12 @@
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .side-nav.suppress-hover-chevron:hover .icon,
-                    #nav-bar:hover ~ .side-nav.suppress-hover-chevron .icon,
-                    html.suppress-side-nav-hover-chevron .side-nav:hover .icon,
-                    html.suppress-side-nav-hover-chevron #nav-bar:hover ~ .side-nav .icon {
+                    #nav-bar:hover ~ .side-nav.suppress-hover-chevron .icon {
                         visibility: hidden;
                         opacity: 0;
                     }
                     .side-nav.suppress-hover-chevron:hover .icon.chevron-swipe-fade,
-                    #nav-bar:hover ~ .side-nav.suppress-hover-chevron .icon.chevron-swipe-fade,
-                    html.suppress-side-nav-hover-chevron .side-nav:hover .icon.chevron-swipe-fade,
-                    html.suppress-side-nav-hover-chevron #nav-bar:hover ~ .side-nav .icon.chevron-swipe-fade {
+                    #nav-bar:hover ~ .side-nav.suppress-hover-chevron .icon.chevron-swipe-fade {
                         visibility: visible;
                         animation: side-nav-chevron-swipe-fade 0.26s ease-out forwards;
                     }
