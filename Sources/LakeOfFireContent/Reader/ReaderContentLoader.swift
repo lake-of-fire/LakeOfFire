@@ -745,15 +745,6 @@ public struct ReaderContentLoader {
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
 
-        if contentURL.isReaderBookURL,
-           !contentURL.isEBookURL,
-           let loaderURL = readerLoaderURL(for: contentURL) {
-            logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=readerBookLoaderDeferred elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-            )
-            return loaderURL
-        }
-
         let htmlProbeStartedAt = Date()
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
@@ -762,6 +753,20 @@ public struct ReaderContentLoader {
         logReaderLoad(
             "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlProbeStartedAt)))"
         )
+
+        if contentURL.isReaderBookURL, !contentURL.isEBookURL {
+            guard contentHasLocallyRetrievableHTML,
+                  let loaderURL = readerLoaderURL(for: contentURL) else {
+                logReaderLoad(
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=<nil> reason=readerBookMissingLocalHTML elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                )
+                return nil
+            }
+            logReaderLoad(
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=readerBookLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+            )
+            return loaderURL
+        }
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
