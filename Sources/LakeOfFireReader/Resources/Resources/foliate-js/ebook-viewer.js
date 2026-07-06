@@ -3568,7 +3568,6 @@ const cacheVisibleSegmentCollection = (doc, key, result) => {
     if (!key || !isDocumentLike(doc)) return;
     doc.__manabiVisibleSegmentCollectionCache = { key, result };
 };
-
 const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
     sampleDensity = 'normal',
 } = {}) => {
@@ -8283,7 +8282,13 @@ class Reader {
             };
         };
         const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event, now) => {
-            if (event.type !== 'mousedown' || !lastPostedMainDocumentBlankTouchTap) {
+            if (event.type !== 'mousedown') {
+                return false;
+            }
+            if (event.sourceCapabilities?.firesTouchEvents === true) {
+                return true;
+            }
+            if (!lastPostedMainDocumentBlankTouchTap) {
                 return false;
             }
             const ageMs = now - lastPostedMainDocumentBlankTouchTap.postedAtMs;
@@ -10168,7 +10173,13 @@ class Reader {
             };
             const shouldSuppressSyntheticMouseBlankTap = (event, now) => {
                 const lastTouchTap = lastPostedBlankTouchTap || lastBlankTouchEnd;
-                if (event.type !== 'mousedown' || !lastTouchTap) {
+                if (event.type !== 'mousedown') {
+                    return false;
+                }
+                if (event.sourceCapabilities?.firesTouchEvents === true) {
+                    return true;
+                }
+                if (!lastTouchTap) {
                     return false;
                 }
                 const ageMs = now - lastTouchTap.postedAtMs;
