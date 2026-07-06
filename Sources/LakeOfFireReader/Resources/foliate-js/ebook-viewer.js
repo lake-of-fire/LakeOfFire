@@ -2543,28 +2543,43 @@ const sentenceIdentifierForNode = (sentenceNode) => {
         : null;
 };
 
-const segmentIdentifierForNode = (segmentNode) => {
+const segmentIdentityForNode = (segmentNode) => {
     const metadata = segmentMetadataForNode(segmentNode);
-    if (metadata?.sid) {
-        return metadata.sid;
-    }
-    return segmentNode?.id || null;
+    const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
+    const stableID = typeof metadata?.sid === 'string' && metadata.sid.length > 0
+        ? metadata.sid
+        : (typeof metadata?.h === 'string' && metadata.h.length > 0 ? metadata.h : null);
+    const metadataElementID = typeof metadata?.i === 'string' && metadata.i.length > 0
+        ? metadata.i
+        : null;
+    return {
+        elementID,
+        metadataElementID,
+        stableID,
+        segmentIdentifier: stableID || elementID,
+        hasSidecarStableID: !!stableID,
+    };
+};
+
+const segmentIdentifierForNode = (segmentNode) => {
+    return segmentIdentityForNode(segmentNode).segmentIdentifier;
 };
 
 const segmentIdentifierAliasesForNode = (segmentNode) => {
     const metadata = segmentMetadataForNode(segmentNode);
+    const identity = segmentIdentityForNode(segmentNode);
     const aliases = [];
     const addAlias = (identifier) => {
         if (typeof identifier !== 'string' || identifier.length === 0) return;
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
-    addAlias(metadata?.sid);
+    addAlias(identity.stableID);
     const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
-    if (sentenceIdentifier && typeof metadata?.sid === 'string' && !metadata.sid.includes('-')) {
-        addAlias(`${sentenceIdentifier}-${metadata.sid}`);
+    if (sentenceIdentifier && typeof identity.stableID === 'string' && !identity.stableID.includes('-')) {
+        addAlias(`${sentenceIdentifier}-${identity.stableID}`);
     }
-    addAlias(metadata?.i);
-    addAlias(segmentNode?.id);
+    addAlias(identity.metadataElementID);
+    addAlias(identity.elementID);
     return aliases;
 };
 
