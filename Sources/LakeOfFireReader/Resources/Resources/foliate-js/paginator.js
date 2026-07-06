@@ -5608,21 +5608,21 @@ export class Paginator extends HTMLElement {
         const resolved = await target
         if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
     }
-    async #scrollPrev(distance) {
+    async #scrollPrev(distance, knownMetrics = null) {
         if (!this.#view) return true
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
             const lineAdvance = this.#vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
-            const metrics = await this.pageMetrics()
+            const metrics = knownMetrics || await this.pageMetrics()
             const scrollDistance = distance ?? (metrics.size - lineAdvance);
             if (metrics.start > 0) {
                 return await this.#scrollTo(Math.max(0, metrics.start - scrollDistance), null, true, metrics);
             }
             return true;
         }
-        const metrics = await this.pageMetrics()
+        const metrics = knownMetrics || await this.pageMetrics()
         const previousSectionIndex = this.#adjacentIndex(-1)
         const blockedAtBookStart = previousSectionIndex == null && metrics.page <= 1
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
@@ -5659,21 +5659,21 @@ export class Paginator extends HTMLElement {
         if (boundaryDecision.shouldGoToAdjacentSection) return true
         return await this.#scrollToPage(page, 'page', false, metrics).then(() => boundaryDecision.crossesSection)
     }
-    async #scrollNext(distance) {
+    async #scrollNext(distance, knownMetrics = null) {
         if (!this.#view) return true
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
             const lineAdvance = this.#vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
-            const metrics = await this.pageMetrics()
+            const metrics = knownMetrics || await this.pageMetrics()
             const scrollDistance = distance ?? (metrics.size - lineAdvance);
             if (metrics.viewSize - metrics.end > 2) {
                 return await this.#scrollTo(Math.min(metrics.viewSize, metrics.start + scrollDistance), null, true, metrics);
             }
             return true;
         }
-        const metrics = await this.pageMetrics()
+        const metrics = knownMetrics || await this.pageMetrics()
         const nextSectionIndex = this.#adjacentIndex(1)
         const blockedAtBookEnd = nextSectionIndex == null && metrics.page >= metrics.pages - 2
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
@@ -5852,12 +5852,24 @@ export class Paginator extends HTMLElement {
             && !expectedCrossSection
         try {
             const prev = dir === -1
-            const shouldGo = !!(await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance)))
+            const shouldGo = !!(await (prev
+                ? await this.#scrollPrev(distance, beforeMetrics)
+                : await this.#scrollNext(distance, beforeMetrics)))
             if (shouldGo) await this.#goTo({
                 index: beforeAdjacentIndex,
                 anchor: prev ? () => 1 : () => 0,
             })
-            const finalMetrics = await this.pageMetrics().catch(() => null)
+            const cachedFinalMetrics = this.#pageMetricsCache
+            const canReuseCachedFinalMetrics =
+                !shouldGo
+                && cachedFinalMetrics
+                && cachedFinalMetrics.index === this.#index
+                && cachedFinalMetrics.scrolled === this.scrolled
+                && cachedFinalMetrics.vertical === this.#vertical
+                && cachedFinalMetrics.rtl === this.#rtl
+            const finalMetrics = canReuseCachedFinalMetrics
+                ? cachedFinalMetrics
+                : await this.pageMetrics().catch(() => null)
             const didMove =
                 shouldGo
                 || this.#index !== beforeIndex
