@@ -1,4 +1,3 @@
-// Global timers for side-nav chevron fades
 import './view.js'
 import {
 createTOCView
@@ -136,7 +135,6 @@ const manabiSegmentMetadataAliases = (segment) => {
     };
     add(segment?.i);
     add(segment?.sid);
-    add(stableSegmentID(segment?.sentenceID, segment?.h));
     return aliases;
 };
 
@@ -246,6 +244,7 @@ const markReaderRenderReady = (reason = 'unspecified') => {
         const allowedByRestore =
             reasonString.startsWith('initialDisplay.restoreSatisfied')
             || reasonString.startsWith('loadEBook.initialRestoreHandled')
+            || reasonString.startsWith('initialDisplay.visible-content')
             || reasonString.startsWith('loadLastPosition.initialRestoreAlreadyHandled')
             || reasonString.startsWith('loadLastPosition.syntheticNavigationSettled')
             || reasonString.startsWith('loadLastPosition.done')
@@ -1025,6 +1024,30 @@ const visibleJapaneseTextStateForVisibleSegmentsResult = (visibleSegmentsResult 
     };
 };
 
+const visibleRenderableContentStateForDocument = (doc, visibleSegmentsResult = null) => {
+    const textState = visibleJapaneseTextStateForVisibleSegmentsResult(visibleSegmentsResult);
+    const body = doc?.body ?? null;
+    let hasVisibleSingleMedia = false;
+    if (body?.classList?.contains?.('reader-is-single-media-element-without-text') === true) {
+        const media = body.querySelector?.('img, svg, image, picture, video, object') ?? null;
+        const rect = media?.getBoundingClientRect?.() ?? null;
+        const style = media && doc?.defaultView?.getComputedStyle
+            ? doc.defaultView.getComputedStyle(media)
+            : null;
+        hasVisibleSingleMedia = !!rect
+            && rect.width > 1
+            && rect.height > 1
+            && style?.display !== 'none'
+            && style?.visibility !== 'hidden'
+            && Number.parseFloat(style?.opacity || '1') > 0.01;
+    }
+    return {
+        ...textState,
+        hasVisibleSingleMedia,
+        hasRenderableContent: textState.hasVisibleJapaneseText === true || hasVisibleSingleMedia,
+    };
+};
+
 const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null, visibleSegmentsResult = null) => {
     if (visibleSegmentsResult) {
         return visibleJapaneseTextStateForVisibleSegmentsResult(visibleSegmentsResult);
@@ -1170,76 +1193,12 @@ const manabiAdjacentElementSibling = (node, direction) => {
     return null;
 };
 
-const manabiInterSegmentWhitespaceText = (previousSegment, nextSegment) => {
-    let node = previousSegment?.nextSibling ?? null;
-    let value = '';
-    let count = 0;
-    while (node && node !== nextSegment) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            value += node.nodeValue ?? '';
-            count += 1;
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-            break;
-        }
-        node = node.nextSibling;
-    }
-    return { count, value };
-};
-
-const logManabiVisibleSegmentGaps = (doc, reason, extra = {}) => {
-    try {
-        const body = doc?.body;
-        const win = doc?.defaultView ?? window;
-        if (!body?.classList?.contains?.('reader-vertical-writing')) return;
-        if (body?.dataset?.isEbook !== 'true') return;
-        const viewportTop = win?.visualViewport?.offsetTop ?? 0;
-        const viewportLeft = win?.visualViewport?.offsetLeft ?? 0;
-        const viewportWidth = win?.visualViewport?.width ?? win?.innerWidth ?? 0;
-        const viewportHeight = win?.visualViewport?.height ?? win?.innerHeight ?? 0;
-        const viewportRight = viewportLeft + viewportWidth;
-        const viewportBottom = viewportTop + viewportHeight;
-        const segments = Array.from(doc.querySelectorAll?.('m-m') ?? []);
-        const visible = [];
-        for (const segment of segments) {
-            if (visible.length >= 36) break;
-            const rect = segment.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) continue;
-            if (rect.right < viewportLeft || rect.left > viewportRight || rect.bottom < viewportTop || rect.top > viewportBottom) continue;
-            visible.push({
-                node: segment,
-                rect,
-                surface: (segment.querySelector?.('m-t')?.textContent ?? segment.textContent ?? '').trim().replace(/\s+/g, ' '),
-            });
-        }
-        const pairs = [];
-        for (let index = 0; index + 1 < visible.length && pairs.length < 12; index += 1) {
-            const current = visible[index];
-            const next = visible[index + 1];
-            const sameColumn = Math.abs(current.rect.left - next.rect.left) < 4 || Math.abs(current.rect.right - next.rect.right) < 4;
-            if (!sameColumn) continue;
-            const gap = next.rect.top - current.rect.bottom;
-            const whitespace = manabiInterSegmentWhitespaceText(current.node, next.node);
-            pairs.push({
-                surfaces: `${current.surface}>${next.surface}`,
-                gap: roundLayoutNumber(gap),
-                wsCount: whitespace.count,
-                wsLength: whitespace.value.length,
-                ws: JSON.stringify(whitespace.value.slice(0, 24)),
-                prevBottom: roundLayoutNumber(current.rect.bottom),
-                nextTop: roundLayoutNumber(next.rect.top),
-            });
-        }
-    } catch (error) {
-    }
-};
-
 const normalizeManabiSegmentWhitespace = (doc) => {
     try {
         if (!doc?.body || isCacheWarmerDocument(doc)) return;
         const shouldRemoveInterSegmentWhitespace =
             doc.body.classList?.contains?.('reader-vertical-writing') === true
             && doc.body.dataset?.isEbook === 'true';
-        let removedInterSegmentWhitespaceCount = 0;
         if (shouldRemoveInterSegmentWhitespace) {
             const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
             const removableNodes = [];
@@ -1255,7 +1214,6 @@ const normalizeManabiSegmentWhitespace = (doc) => {
             }
             for (const node of removableNodes) {
                 node.remove();
-                removedInterSegmentWhitespaceCount += 1;
             }
         }
         for (const segment of doc.querySelectorAll?.('m-m') ?? []) {
@@ -1276,11 +1234,6 @@ const normalizeManabiSegmentWhitespace = (doc) => {
                     }
                 }
             }
-        }
-        if (shouldRemoveInterSegmentWhitespace) {
-            logManabiVisibleSegmentGaps(doc, 'normalizeManabiSegmentWhitespace.after', {
-                removedInterSegmentWhitespaceCount,
-            });
         }
     } catch (_error) {}
 };
@@ -3074,6 +3027,15 @@ const isDocumentLike = (value) =>
     && typeof value.querySelectorAll === 'function'
     && !!value.documentElement;
 
+const visibleRangeForNavigationHUDDocument = (navHUD, doc) => {
+    const range = navHUD?.lastRelocateDetail?.range ?? null;
+    return range?.commonAncestorContainer?.ownerDocument === doc
+        || range?.startContainer?.ownerDocument === doc
+        || range?.endContainer?.ownerDocument === doc
+        ? range
+        : null;
+};
+
 const emptySegmentMetadataBootstrap = () => ({
     byID: new Map(),
     idsByEntryID: new Map(),
@@ -3126,11 +3088,11 @@ const segmentMetadataBootstrap = (doc) => {
     }
 };
 
-const segmentMetadataForNode = (segmentNode) => {
+const segmentMetadataForNode = (segmentNode, bootstrap = null) => {
     if (!segmentNode) return null;
     const doc = segmentNode.ownerDocument || document;
-    const bootstrap = segmentMetadataBootstrap(doc);
-    const byID = bootstrap.byID;
+    const resolvedBootstrap = bootstrap || segmentMetadataBootstrap(doc);
+    const byID = resolvedBootstrap.byID;
     if (!byID || typeof byID.get !== 'function' || byID.size === 0) {
         return null;
     }
@@ -3139,14 +3101,11 @@ const segmentMetadataForNode = (segmentNode) => {
         if (typeof identifier !== 'string' || identifier.length === 0) return;
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
-    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode.closest?.(manabiReaderSentenceSelector));
-    const segmentHash = segmentNode.getAttribute?.('h') || segmentNode.dataset?.mnbSegmentHash || null;
     addAlias(segmentNode.id);
     addAlias(segmentNode.getAttribute?.('id'));
     addAlias(segmentNode.getAttribute?.('data-segment-identifier'));
     addAlias(segmentNode.getAttribute?.('sid'));
     addAlias(segmentNode.getAttribute?.('data-sid'));
-    addAlias(stableSegmentID(sentenceIdentifier, segmentHash));
     for (const alias of aliases) {
         const metadata = byID.get(alias);
         if (metadata) {
@@ -3156,14 +3115,63 @@ const segmentMetadataForNode = (segmentNode) => {
     return null;
 };
 
-const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
-    const metadata = segmentMetadataForNode(segmentNode);
+const segmentEntryIDsForNode = (segmentNode, kind = 'primary', bootstrap = null, metadata = null) => {
+    const resolvedMetadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
+    const jmdictEntryIds = Array.isArray(resolvedMetadata?.j) ? resolvedMetadata.j : [];
+    const jmnedictEntryIds = Array.isArray(resolvedMetadata?.n) ? resolvedMetadata.n : [];
+    if (kind === 'jmdict') return jmdictEntryIds;
+    if (kind === 'jmnedict') return jmnedictEntryIds;
+    return jmdictEntryIds.length ? jmdictEntryIds : jmnedictEntryIds;
+};
+
+const segmentEntryIDsForMetadata = (metadata, kind = 'primary') => {
     const jmdictEntryIds = Array.isArray(metadata?.j) ? metadata.j : [];
     const jmnedictEntryIds = Array.isArray(metadata?.n) ? metadata.n : [];
     if (kind === 'jmdict') return jmdictEntryIds;
     if (kind === 'jmnedict') return jmnedictEntryIds;
     return jmdictEntryIds.length ? jmdictEntryIds : jmnedictEntryIds;
 };
+
+const prepareVisibleSegmentItem = (item, bootstrap = null) => {
+    const node = item?.node ?? null;
+    if (!node) return item;
+    const metadata = item.segmentMetadata || segmentMetadataForNode(node, bootstrap) || {};
+    const jmdictEntryIDs = segmentEntryIDsForMetadata(metadata, 'jmdict');
+    const jmnedictEntryIDs = segmentEntryIDsForMetadata(metadata, 'jmnedict');
+    const primaryEntryIDs = jmdictEntryIDs.length ? jmdictEntryIDs : jmnedictEntryIDs;
+    item.segmentMetadata = metadata;
+    item.jmdictEntryIDs = jmdictEntryIDs;
+    item.jmnedictEntryIDs = jmnedictEntryIDs;
+    item.primaryEntryIDs = primaryEntryIDs;
+    item.lookupIdentity = {
+        jmdictEntryIDs,
+        jmnedictEntryIDs,
+        primaryEntryIDs,
+        jmdictSearchString: typeof metadata.s === 'string' ? metadata.s : null,
+        jmnedictSearchString: typeof metadata.ns === 'string' ? metadata.ns : null,
+    };
+    return item;
+};
+
+const prepareVisibleSegmentsResult = (visibleSegmentsResult, doc = null) => {
+    const visibleSegments = visibleSegmentsResult?.visibleSegments;
+    if (!Array.isArray(visibleSegments) || visibleSegments.length === 0) {
+        return visibleSegmentsResult;
+    }
+    const bootstrap = visibleSegmentsResult?.segmentMetadataBootstrap || segmentMetadataBootstrap(doc || visibleSegments[0]?.node?.ownerDocument);
+    for (const item of visibleSegments) {
+        prepareVisibleSegmentItem(item, bootstrap);
+    }
+    visibleSegmentsResult.segmentMetadataBootstrap = bootstrap;
+    visibleSegmentsResult.preparedVisiblePayload = true;
+    return visibleSegmentsResult;
+};
+
+const visibleSegmentPreparedEntrySignature = (visibleSegments = []) => (
+    visibleSegments
+        .map((item) => `${item?.node?.id || item?.segmentIdentifier || ''}:${(item?.primaryEntryIDs || []).join(',')}`)
+        .join(';')
+);
 
 const normalizeArticleReadingProgress = (articleReadingProgress = {}) => ({
     sentenceIdentifiersRead: Array.isArray(articleReadingProgress?.sentenceIdentifiersRead)
@@ -3179,50 +3187,41 @@ const normalizeArticleReadingProgress = (articleReadingProgress = {}) => ({
 });
 
 const sentenceIdentifierForNode = (sentenceNode) => {
-    const sentenceIdentifier = sentenceNode?.getAttribute?.('sid') || sentenceNode?.getAttribute?.('h');
+    const sentenceIdentifier = sentenceNode?.getAttribute?.('sid');
     return typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0
         ? sentenceIdentifier
         : null;
 };
 
-const segmentIdentifierForNode = (segmentNode) => {
-    const metadata = segmentMetadataForNode(segmentNode);
+const segmentIdentifierForNode = (segmentNode, bootstrap = null, metadata = null) => {
+    metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
     if (metadata?.sid) {
         return metadata.sid;
     }
     const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
-    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
-    const segmentHash = metadata?.h || segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
-    if (sentenceIdentifier && typeof segmentHash === 'string' && segmentHash.length > 0) {
-        return `${sentenceIdentifier}-${segmentHash}`;
-    }
     return elementID;
 };
 
-const segmentIdentifierAliasesForNode = (segmentNode) => {
-    const metadata = segmentMetadataForNode(segmentNode);
+const segmentIdentifierAliasesForNode = (segmentNode, bootstrap = null, metadata = null) => {
+    metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
     const aliases = [];
     const addAlias = (identifier) => {
         if (typeof identifier !== 'string' || identifier.length === 0) return;
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
     addAlias(metadata?.sid);
-    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector));
-    const segmentHash = metadata?.h || segmentNode?.getAttribute?.('h') || segmentNode?.dataset?.mnbSegmentHash || null;
-    if (sentenceIdentifier && typeof segmentHash === 'string' && segmentHash.length > 0) {
-        addAlias(`${sentenceIdentifier}-${segmentHash}`);
-    }
     addAlias(metadata?.i);
     addAlias(segmentNode?.id);
     return aliases;
 };
 
-const buildExampleSentenceForSegment = (segmentNode) => {
+const buildExampleSentenceForSegment = (segmentNode, bootstrap = null, metadata = null) => {
     const doc = segmentNode?.ownerDocument || document;
-    const metadata = segmentMetadataForNode(segmentNode);
+    const resolvedBootstrap = bootstrap || segmentMetadataBootstrap(doc);
+    metadata = metadata || segmentMetadataForNode(segmentNode, resolvedBootstrap);
     const sentenceID = metadata?.sentenceID || sentenceIdentifierForNode(segmentNode?.closest?.(manabiReaderSentenceSelector)) || null;
     const sidecarSentence = sentenceID
-        ? segmentMetadataBootstrap(doc).sentenceArchive?.get?.(sentenceID)
+        ? resolvedBootstrap.sentenceArchive?.get?.(sentenceID)
         : null;
     if (sidecarSentence) {
         return {
@@ -3239,7 +3238,7 @@ const buildExampleSentenceForSegment = (segmentNode) => {
     }
     const sentenceJMDictIDs = new Set();
     for (const nestedSegment of sentenceNode.querySelectorAll(manabiReaderSegmentSelector)) {
-        for (const entryID of segmentEntryIDsForNode(nestedSegment, 'jmdict')) {
+        for (const entryID of segmentEntryIDsForNode(nestedSegment, 'jmdict', resolvedBootstrap)) {
             sentenceJMDictIDs.add(entryID);
         }
     }
@@ -3524,29 +3523,6 @@ const visibleBoundsCollectionSignature = (visibleBounds) => {
         visibleBounds.height,
     ].map((value) => Number.isFinite(value) ? Math.round(value) : 'nil').join(':');
 };
-const visibleDocumentViewportCollectionSignature = (doc) => {
-    const view = doc?.defaultView ?? null;
-    const frameElement = view?.frameElement ?? null;
-    const viewElement = frameElement?.parentElement ?? null;
-    const paginatorContainer = viewElement?.parentElement ?? null;
-    const frameRect = frameElement?.getBoundingClientRect?.() ?? null;
-    const viewRect = viewElement?.getBoundingClientRect?.() ?? null;
-    const containerRect = paginatorContainer?.getBoundingClientRect?.() ?? null;
-    return [
-        paginatorContainer?.scrollLeft ?? null,
-        paginatorContainer?.scrollTop ?? null,
-        doc?.scrollingElement?.scrollLeft ?? null,
-        doc?.scrollingElement?.scrollTop ?? null,
-        frameRect?.left ?? null,
-        frameRect?.top ?? null,
-        frameRect?.right ?? null,
-        frameRect?.bottom ?? null,
-        viewRect?.left ?? null,
-        viewRect?.top ?? null,
-        containerRect?.left ?? null,
-        containerRect?.top ?? null,
-    ].map((value) => Number.isFinite(value) ? Math.round(value) : 'nil').join(':');
-};
 const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, { includeClientRects = true } = {}) => {
     const view = doc?.defaultView ?? null;
     return [
@@ -3555,7 +3531,6 @@ const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, { in
         includeClientRects ? 'rects' : 'bounds',
         visibleRangeCollectionSignature(visibleRange),
         visibleBoundsCollectionSignature(visibleBounds),
-        visibleDocumentViewportCollectionSignature(doc),
     ].join('|');
 };
 const shouldInvalidateVisibleSegmentGeometryForReason = (sourceReason = 'unspecified') => {
@@ -3722,6 +3697,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
 const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBounds, {
     assumeInVisibleRange = false,
     includeClientRects = true,
+    bootstrap = null,
 } = {}) => {
     const visibleSegments = [];
     let hiddenTooltipCount = 0;
@@ -3737,7 +3713,8 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             hiddenTooltipCount += 1;
             continue;
         }
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+        const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
         if (!segmentIdentifier) {
             missingIdentifierCount += 1;
             continue;
@@ -3745,9 +3722,12 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         const rectStartedAt = performance.now();
         const boundingRect = positiveBoundingClientRectForNode(segmentNode);
         const rects = includeClientRects
-            ? visibleClientRectsForNode(segmentNode, visibleBounds, boundingRect)
+            ? (assumeInVisibleRange
+                ? positiveClientRectsForNode(segmentNode)
+                : visibleClientRectsForNode(segmentNode, visibleBounds, boundingRect))
             : [];
-        const boundingIntersects = (!!boundingRect && rectIntersectsBounds(boundingRect, visibleBounds))
+        const boundingIntersects = (assumeInVisibleRange && !!boundingRect)
+            || (!!boundingRect && rectIntersectsBounds(boundingRect, visibleBounds))
             || rects.length > 0;
         const rect = rects[0] ?? (boundingIntersects ? boundingRect : null);
         rectMeasureCount += 1;
@@ -3775,8 +3755,9 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             rect,
             rects,
             segmentIdentifier,
-            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
+            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode, bootstrap, segmentMetadata),
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
+            segmentMetadata,
         });
     }
     return {
@@ -3818,11 +3799,13 @@ const mergeMeasuredVisibleSegments = (baseSegments, measuredSegments) => {
 
 const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds, {
     includeClientRects = true,
+    bootstrap = null,
 } = {}) => {
     if (!visibleRange || visibleRange.collapsed === true) {
         return null;
     }
     const isEbookDoc = isEbookContentDocument(doc);
+    bootstrap = bootstrap || segmentMetadataBootstrap(doc);
     const rangeCommonAncestor = visibleRange.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
         ? visibleRange.commonAncestorContainer
         : visibleRange.commonAncestorContainer?.parentElement;
@@ -3834,6 +3817,7 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds, {
             ...measureVisibleSegmentsInWindow(rangeSegmentNodes, visibleRange, visibleBounds, {
                 assumeInVisibleRange: true,
                 includeClientRects,
+                bootstrap,
             }),
             segmentNodes: rangeSegmentNodes,
             segmentCandidateSource: 'sentinel-range',
@@ -3867,6 +3851,7 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds, {
         const measured = measureVisibleSegmentsInWindow(segmentNodes, visibleRange, visibleBounds, {
             assumeInVisibleRange: isEbookDoc,
             includeClientRects,
+            bootstrap,
         });
         const visibleIndexes = measured.visibleSegments
             .map((item) => orderedSegments.indexByNode.get(item.node))
@@ -3951,8 +3936,9 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }, 50);
         return cachedCollection;
     }
+    const bootstrap = segmentMetadataBootstrap(doc);
     const expandedRangeResult = useVisibleRange && (!isEbookDoc || !isBroadEbookRangeAncestor)
-        ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects })
+        ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects, bootstrap })
         : null;
     let viewportSample = null;
     const shouldSampleEbookViewport =
@@ -4014,6 +4000,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const viewportMeasured = measureVisibleSegmentsInWindow(viewportSampleSegmentNodes, visibleRange, visibleBounds, {
             assumeInVisibleRange: true,
             includeClientRects,
+            bootstrap,
         });
         viewportSampleMeasuredCount = viewportMeasured.visibleSegments.length;
         totalSegmentCount += viewportSampleSegmentNodes.length;
@@ -4036,7 +4023,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             hiddenTooltipCount += 1;
             continue;
         }
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+        const segmentMetadata = segmentMetadataForNode(segmentNode, bootstrap);
+        const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, segmentMetadata);
         if (!segmentIdentifier) {
             missingIdentifierCount += 1;
             continue;
@@ -4044,9 +4032,12 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         const rectStartedAt = performance.now();
         const boundingRect = positiveBoundingClientRectForNode(segmentNode);
         const rects = includeClientRects
-            ? visibleClientRectsForNode(segmentNode, visibleBounds, boundingRect)
+            ? (shouldTrustEbookViewportSample
+                ? positiveClientRectsForNode(segmentNode)
+                : visibleClientRectsForNode(segmentNode, visibleBounds, boundingRect))
             : [];
-        const boundingIntersects = (!!boundingRect && rectIntersectsBounds(boundingRect, visibleBounds))
+        const boundingIntersects = (shouldTrustEbookViewportSample && !!boundingRect)
+            || (!!boundingRect && rectIntersectsBounds(boundingRect, visibleBounds))
             || rects.length > 0;
         const rect = rects[0] ?? (boundingIntersects ? boundingRect : null);
         rectMeasureCount += 1;
@@ -4078,8 +4069,9 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             rect,
             rects,
             segmentIdentifier,
-            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
+            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode, bootstrap, segmentMetadata),
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
+            segmentMetadata,
         });
     }
     const completedAt = performance.now();
@@ -4126,6 +4118,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         missingIdentifierCount,
         outOfViewportCount,
         includeClientRects,
+        segmentMetadataBootstrap: bootstrap,
     };
     cacheVisibleSegmentCollection(doc, collectionCacheKey, result);
     return result;
@@ -4133,9 +4126,11 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
 
 const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const startedAt = performanceNowMs();
+    prepareVisibleSegmentsResult(visibleSegmentsResult, doc);
     const byElementID = new Map();
     const bySegmentIdentifier = new Map();
     const idsByEntryID = new Map();
+    const trackingPayloadByElementID = new Map();
     const visibleElementIDs = [];
     const visibleSegments = Array.isArray(visibleSegmentsResult?.visibleSegments)
         ? visibleSegmentsResult.visibleSegments
@@ -4166,7 +4161,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         if (!node || indexedNodes.has(node)) return;
         indexedNodes.add(node);
         const elementID = node.id || node.getAttribute?.('id') || null;
-        const sourceMetadata = segmentMetadataForNode(node) || {};
+        const sourceMetadata = item?.segmentMetadata || segmentMetadataForNode(node, visibleSegmentsResult?.segmentMetadataBootstrap) || {};
         if (sourceMetadata.r === true) {
             rubyPresenceMarkedCount += 1;
         }
@@ -4180,10 +4175,9 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         }
         const stableSegmentIdentifier = sourceMetadata.sid
             || item?.segmentIdentifier
-            || stableSegmentID(sourceMetadata.sentenceID || sentenceIdentifier, sourceMetadata.h)
             || null;
         const segmentIdentifier = item?.segmentIdentifier
-            || segmentIdentifierForNode(node)
+            || segmentIdentifierForNode(node, visibleSegmentsResult?.segmentMetadataBootstrap, sourceMetadata)
             || sourceMetadata.i
             || elementID
             || null;
@@ -4208,10 +4202,24 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             addMetadataAlias(metadata, alias);
         }
         const entryIndexID = metadata.i || elementID || segmentIdentifier;
-        addEntryIDs(entryIndexID, metadata.j);
-        addEntryIDs(entryIndexID, metadata.n);
-        addEntryIDs(metadata.sid, metadata.j);
-        addEntryIDs(metadata.sid, metadata.n);
+        const jmdictEntryIDs = item?.jmdictEntryIDs || segmentEntryIDsForMetadata(metadata, 'jmdict');
+        const jmnedictEntryIDs = item?.jmnedictEntryIDs || segmentEntryIDsForMetadata(metadata, 'jmnedict');
+        const primaryEntryIDs = item?.primaryEntryIDs || (jmdictEntryIDs.length ? jmdictEntryIDs : jmnedictEntryIDs);
+        addEntryIDs(entryIndexID, jmdictEntryIDs);
+        addEntryIDs(entryIndexID, jmnedictEntryIDs);
+        addEntryIDs(metadata.sid, jmdictEntryIDs);
+        addEntryIDs(metadata.sid, jmnedictEntryIDs);
+        if (elementID) {
+            trackingPayloadByElementID.set(elementID, {
+                elementID,
+                segmentIdentifier,
+                sentenceIdentifier,
+                metadata,
+                jmdictEntryIDs,
+                jmnedictEntryIDs,
+                primaryEntryIDs,
+            });
+        }
     };
     for (const item of visibleSegments) {
         const node = item?.node ?? null;
@@ -4225,6 +4233,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         byElementID,
         bySegmentIdentifier,
         idsByEntryID,
+        trackingPayloadByElementID,
         reason,
         visibleSegmentCount: visibleSegments.length,
         indexedSegmentCount: byElementID.size,
@@ -4433,38 +4442,44 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
 const visibleTrackingSignatureForResult = (doc, visibleSegmentsResult, extraParts = []) => {
     const visibleSegments = visibleSegmentsResult?.visibleSegments ?? [];
     const progress = doc?.manabi_articleReadingProgress || {};
+    const isEbookDoc = isEbookContentDocument(doc);
+    const trackingEnabledForSignature = doc?.body?.dataset?.mnbTrackingEnabled === 'true'
+        || (isEbookDoc && doc?.manabi_trackedWordsInitialized === true);
     return [
         visibleSegments
             .map((item) => item?.node?.id || item?.segmentIdentifier || item?.node?.getAttribute?.('id') || '')
             .join(','),
         `trackedInit=${doc?.manabi_trackedWordsInitialized === true}`,
-        `ebookTrackedInit=${isEbookContentDocument(doc) ? doc?.manabi_ebookTrackingInitialized === true : 'n/a'}`,
-        `trackingEnabled=${doc?.body?.dataset?.mnbTrackingEnabled === 'true'}`,
+        `ebookTrackedInit=${isEbookDoc ? doc?.manabi_ebookTrackingInitialized === true : 'n/a'}`,
+        `trackingEnabled=${trackingEnabledForSignature}`,
         `tracking=${doc?.manabi_trackingModelVersion || 0}`,
         `readSeg=${Array.isArray(progress.readSegmentIdentifiers) ? progress.readSegmentIdentifiers.length : 0}`,
         `readSen=${Array.isArray(progress.sentenceIdentifiersRead) ? progress.sentenceIdentifiersRead.length : 0}`,
         `finished=${progress.articleMarkedAsFinished === true}`,
+        `entry=${visibleSegmentPreparedEntrySignature(visibleSegments)}`,
         ...extraParts,
     ].join('|');
 };
 
-const hydrationItemForSegmentNode = (segmentNode) => {
+const hydrationItemForSegmentNode = (segmentNode, bootstrap = null) => {
     if (segmentNode?.tagName?.toLowerCase?.() !== 'm-m' || segmentNode.closest?.('.tippy-box')) {
         return null;
     }
-    const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+    const metadata = segmentMetadataForNode(segmentNode, bootstrap);
+    const segmentIdentifier = segmentIdentifierForNode(segmentNode, bootstrap, metadata);
     if (!segmentIdentifier) {
         return null;
     }
     const sentenceNode = segmentNode.closest(manabiReaderSentenceSelector);
-    return {
+    return prepareVisibleSegmentItem({
         node: segmentNode,
         rect: null,
         rects: [],
         segmentIdentifier,
-        segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
+        segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode, bootstrap, metadata),
         sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
-    };
+        segmentMetadata: metadata,
+    }, bootstrap);
 };
 
 const expandedVisibleSegmentsResultForStatusHydration = (doc, visibleSegmentsResult, {
@@ -4472,8 +4487,11 @@ const expandedVisibleSegmentsResultForStatusHydration = (doc, visibleSegmentsRes
 } = {}) => {
     const visibleSegments = visibleSegmentsResult?.visibleSegments ?? [];
     if (!isDocumentLike(doc) || visibleSegments.length === 0 || adjacentSegmentCount <= 0) {
+        prepareVisibleSegmentsResult(visibleSegmentsResult, doc);
         return visibleSegmentsResult;
     }
+    const bootstrap = visibleSegmentsResult?.segmentMetadataBootstrap || segmentMetadataBootstrap(doc);
+    prepareVisibleSegmentsResult(visibleSegmentsResult, doc);
     const orderedSegments = orderedSegmentNodesForDocument(doc);
     const indexByNode = orderedSegments.indexByNode;
     const visibleIndexes = visibleSegments
@@ -4501,7 +4519,7 @@ const expandedVisibleSegmentsResultForStatusHydration = (doc, visibleSegmentsRes
         if (!node || seenNodes.has(node)) {
             continue;
         }
-        const item = hydrationItemForSegmentNode(node);
+        const item = hydrationItemForSegmentNode(node, bootstrap);
         if (!item) {
             continue;
         }
@@ -4523,6 +4541,8 @@ const expandedVisibleSegmentsResultForStatusHydration = (doc, visibleSegmentsRes
     return {
         ...visibleSegmentsResult,
         visibleSegments: expandedSegments,
+        segmentMetadataBootstrap: bootstrap,
+        preparedVisiblePayload: true,
         hydrationStrictVisibleSegmentCount: visibleSegments.length,
         hydrationExpandedSegmentCount: expandedSegments.length,
         hydrationAdjacentAddedSegmentCount: addedCount,
@@ -4537,7 +4557,10 @@ const hydrateVisibleTrackingStatusesForVisibleSegments = (doc, visibleSegmentsRe
     if (typeof hydrator !== 'function') {
         return null;
     }
-    const hydrationResult = expandedVisibleSegmentsResultForStatusHydration(doc, visibleSegmentsResult);
+    const hydrationResult = prepareVisibleSegmentsResult(
+        expandedVisibleSegmentsResultForStatusHydration(doc, visibleSegmentsResult),
+        doc
+    );
     const visibleSegments = hydrationResult?.visibleSegments ?? [];
     const signature = visibleTrackingSignatureForResult(doc, hydrationResult);
     if (doc.__manabiLastVisibleStatusHydrationRequestSignature === signature) {
@@ -4586,6 +4609,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     const readSentenceIdentifiers = new Set(normalizedProgress.sentenceIdentifiersRead);
     const hasAnyMarkedReadContent = readSegmentIdentifiers.size > 0
         || normalizedProgress.sentenceIdentifiersRead.length > 0;
+    const resolvedVisibleSegmentsResult = visibleSegmentsResult || collectVisibleSegmentNodesFromRange(doc, visibleRange);
     const {
         visibleSegments,
         viewportWidth,
@@ -4594,7 +4618,8 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
         hiddenTooltipCount,
         missingIdentifierCount,
         outOfViewportCount,
-    } = visibleSegmentsResult || collectVisibleSegmentNodesFromRange(doc, visibleRange);
+    } = resolvedVisibleSegmentsResult;
+    const bootstrap = resolvedVisibleSegmentsResult?.segmentMetadataBootstrap || segmentMetadataBootstrap(doc);
     const clusterAxis = !!doc?.body?.classList?.contains?.('reader-vertical-writing') ? 'block' : 'inline';
     let recoveredTextSearchStringCount = 0;
     let skippedMissingSearchStringCount = 0;
@@ -4687,7 +4712,7 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
     const sentencesByIdentifier = new Map();
     for (const item of visibleSegments) {
         if (!dedupedSegments.has(item.segmentIdentifier)) {
-            const metadata = segmentMetadataForNode(item.node);
+            const metadata = item.segmentMetadata || segmentMetadataForNode(item.node, bootstrap);
             let searchString = metadata?.s || metadata?.ns;
             if (typeof searchString !== 'string' || searchString.length === 0) {
                 const textSearchString = item.node.textContent?.trim?.() || '';
@@ -4698,10 +4723,10 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
                 searchString = textSearchString;
                 recoveredTextSearchStringCount += 1;
             }
-            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node);
+            const { sentenceHTML, sentenceJMDictIDs } = buildExampleSentenceForSegment(item.node, bootstrap, metadata);
             dedupedSegments.set(item.segmentIdentifier, {
-                jmdictEntryIds: segmentEntryIDsForNode(item.node, 'jmdict'),
-                jmnedictEntryIds: segmentEntryIDsForNode(item.node, 'jmnedict'),
+                jmdictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmdict'),
+                jmnedictEntryIds: segmentEntryIDsForMetadata(metadata, 'jmnedict'),
                 searchString,
                 displayText: item.node.textContent?.trim?.() || searchString,
                 segmentIdentifier: item.segmentIdentifier,
@@ -4712,7 +4737,12 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
         if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
             const sentenceNode = item.node.closest(manabiReaderSentenceSelector);
             const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('m-m') || [])
-                .map((segmentNode) => segmentIdentifierAliasesForNode(segmentNode))
+                .map((segmentNode) => {
+                    const metadata = segmentNode === item.node
+                        ? (item.segmentMetadata || null)
+                        : segmentMetadataForNode(segmentNode, bootstrap);
+                    return segmentIdentifierAliasesForNode(segmentNode, bootstrap, metadata);
+                })
                 .filter((aliases) => aliases.length > 0);
             sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifierAliasSets);
         }
@@ -5045,7 +5075,7 @@ const getView = async (source) => {
     view.style.width = '100%';
     view.style.height = '100%';
     view.style.overflow = 'hidden';
-    view.style.contain = 'strict';
+    view.style.contain = 'none';
     view.style.pointerEvents = 'auto';
     const readerStage = document.getElementById('reader-stage');
     (readerStage || document.body).append(view);
@@ -5340,10 +5370,14 @@ const getCSSForBookContent = ({
         background: transparent !important;
         transition: none !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk > m-t,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam > m-t,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn > m-t,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know > m-t {
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) ruby > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam:not(.mnb-selected) ruby > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) ruby > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know:not(.mnb-selected) ruby > m-t {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
@@ -5353,17 +5387,21 @@ const getCSSForBookContent = ({
             --word-tracking-learning-highlight-nav-conditional 350ms ease,
             --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) ruby > m-t {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%) !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m.mnb-fam > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m.mnb-fam:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m.mnb-fam:not(.mnb-selected) ruby > m-t {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%) !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) ruby > m-t {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%) !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m.mnb-know > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m.mnb-know:not(.mnb-selected) > m-t,
+    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m.mnb-know:not(.mnb-selected) ruby > m-t {
+        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%) !important;
     }
     body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected,
     body.reader-vertical-writing:not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected,
@@ -5584,7 +5622,11 @@ class Reader {
     #bookForSidebarCover = null
     #sidebarCoverLoadPromise = null
     #sidebarCoverObjectURL = null
-    #chevronFadeTimers = {
+    #chevronFadeAnimationFrames = {
+        l: null,
+        r: null
+    }
+    #chevronFadeAnimationCleanup = {
         l: null,
         r: null
     }
@@ -7349,12 +7391,58 @@ class Reader {
         });
     }
     #visibleRangeForDocument(doc) {
-        const range = this.navHUD?.lastRelocateDetail?.range ?? null;
-        return range?.commonAncestorContainer?.ownerDocument === doc
-            || range?.startContainer?.ownerDocument === doc
-            || range?.endContainer?.ownerDocument === doc
-            ? range
-            : null;
+        return visibleRangeForNavigationHUDDocument(this.navHUD, doc);
+    }
+    #collectVisiblePageSegmentGeometry(doc, visibleRange = null, reason = 'visible-page-segment-result', {
+        includeClientRects = true,
+    } = {}) {
+        const result = collectVisibleSegmentNodesFromRange(doc, visibleRange, {
+            includeClientRects,
+            reason,
+        });
+        return prepareVisibleSegmentsResult(result, doc);
+    }
+    #prepareVisiblePageLookupIndex(doc, result, reason = 'unspecified', prepareLookupIndex = true) {
+        return prepareLookupIndex ? buildVisiblePageLookupIndex(doc, result, reason) : null;
+    }
+    #restoreVisiblePageLookupIndex(doc, snapshot, reason = 'unspecified', prepareLookupIndex = true) {
+        if (!prepareLookupIndex || !snapshot) {
+            return null;
+        }
+        if (snapshot.lookupIndex && visibleLookupIndexNeedsSidecarRefresh(doc, snapshot.lookupIndex)) {
+            snapshot.lookupIndex = this.#prepareVisiblePageLookupIndex(doc, snapshot.result, `${reason}:sidecar-refresh`, true);
+        }
+        if (snapshot.lookupIndex) {
+            doc.manabiVisiblePageLookupIndex = snapshot.lookupIndex;
+            if (doc.defaultView) {
+                doc.defaultView.__manabiVisiblePageLookupIndex = snapshot.lookupIndex;
+            }
+            return snapshot.lookupIndex;
+        }
+        snapshot.lookupIndex = this.#prepareVisiblePageLookupIndex(doc, snapshot.result, reason, true);
+        return snapshot.lookupIndex;
+    }
+    #postVisiblePageLookupTargets(doc, result, reason = 'unspecified', shouldPost = true) {
+        if (shouldPost) {
+            postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
+        }
+    }
+    #hydrateVisiblePageTracking(doc, result, reason = 'unspecified', hydrateStatuses = true) {
+        if (hydrateStatuses && (result?.visibleSegments?.length ?? 0) > 0) {
+            hydrateVisibleTrackingStatusesForVisibleSegments(doc, result, reason);
+        }
+    }
+    #finishVisiblePageSegmentCritical(reason = 'unspecified', finishInitialCritical = true) {
+        if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
+            finishForegroundCriticalSection(
+                globalThis.__manabiInitialForegroundCriticalSectionToken,
+                reason
+            );
+            globalThis.__manabiInitialForegroundCriticalSectionToken = null;
+        }
+    }
+    visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', options = {}) {
+        return this.#visiblePageSegmentResult(doc, visibleRange, reason, options);
     }
     #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', {
         postIfCached = false,
@@ -7394,34 +7482,15 @@ class Reader {
                 firstVisibleSegmentID: snapshot.result?.visibleSegments?.[0]?.node?.id ?? null,
             }, 50);
             if (effectivePostLookupTargets && postIfCached) {
-                postNativeLookupHitTargetsForVisibleSegments(doc, snapshot.result, reason);
+                this.#postVisiblePageLookupTargets(doc, snapshot.result, reason, true);
             }
-            if (prepareLookupIndex && snapshot.lookupIndex && visibleLookupIndexNeedsSidecarRefresh(doc, snapshot.lookupIndex)) {
-                snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:sidecar-refresh`);
-            }
-            if (prepareLookupIndex && snapshot.lookupIndex) {
-                doc.manabiVisiblePageLookupIndex = snapshot.lookupIndex;
-                if (doc.defaultView) {
-                    doc.defaultView.__manabiVisiblePageLookupIndex = snapshot.lookupIndex;
-                }
-            } else if (prepareLookupIndex) {
-                snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:cached`);
-            }
-            if (hydrateStatuses && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
-                hydrateVisibleTrackingStatusesForVisibleSegments(doc, snapshot.result, `${reason}:cached`);
-            }
-            if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
-                finishForegroundCriticalSection(
-                    globalThis.__manabiInitialForegroundCriticalSectionToken,
-                    `visible-segments-cached:${reason}`
-                );
-                globalThis.__manabiInitialForegroundCriticalSectionToken = null;
-            }
+            this.#restoreVisiblePageLookupIndex(doc, snapshot, `${reason}:cached`, prepareLookupIndex);
+            this.#hydrateVisiblePageTracking(doc, snapshot.result, `${reason}:cached`, hydrateStatuses);
+            this.#finishVisiblePageSegmentCritical(`visible-segments-cached:${reason}`, finishInitialCritical);
             return snapshot.result;
         }
-        const result = collectVisibleSegmentNodesFromRange(doc, collectionVisibleRange, {
+        const result = this.#collectVisiblePageSegmentGeometry(doc, collectionVisibleRange, reason, {
             includeClientRects: effectiveIncludeClientRects,
-            reason,
         });
         const isEmptyBroadEbookResult =
             isEbookContentDocument(doc)
@@ -7434,27 +7503,9 @@ class Reader {
             && snapshot
             && snapshot.doc === doc
             && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
-            if (prepareLookupIndex && snapshot.lookupIndex && visibleLookupIndexNeedsSidecarRefresh(doc, snapshot.lookupIndex)) {
-                snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:sidecar-refresh`);
-            }
-            if (prepareLookupIndex && snapshot.lookupIndex) {
-                doc.manabiVisiblePageLookupIndex = snapshot.lookupIndex;
-                if (doc.defaultView) {
-                    doc.defaultView.__manabiVisiblePageLookupIndex = snapshot.lookupIndex;
-                }
-            } else if (prepareLookupIndex) {
-                snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, `${reason}:preserved`);
-            }
-            if (hydrateStatuses && (snapshot.result?.visibleSegments?.length ?? 0) > 0) {
-                hydrateVisibleTrackingStatusesForVisibleSegments(doc, snapshot.result, `${reason}:preserved`);
-            }
-            if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
-                finishForegroundCriticalSection(
-                    globalThis.__manabiInitialForegroundCriticalSectionToken,
-                    `visible-segments-preserved:${reason}`
-                );
-                globalThis.__manabiInitialForegroundCriticalSectionToken = null;
-            }
+            this.#restoreVisiblePageLookupIndex(doc, snapshot, `${reason}:preserved`, prepareLookupIndex);
+            this.#hydrateVisiblePageTracking(doc, snapshot.result, `${reason}:preserved`, hydrateStatuses);
+            this.#finishVisiblePageSegmentCritical(`visible-segments-preserved:${reason}`, finishInitialCritical);
             return snapshot.result;
         }
         this.visiblePageSegmentSnapshot = {
@@ -7463,7 +7514,7 @@ class Reader {
             visibleRange: collectionVisibleRange,
             includeClientRects: effectiveIncludeClientRects,
             result,
-            lookupIndex: prepareLookupIndex ? buildVisiblePageLookupIndex(doc, result, reason) : null,
+            lookupIndex: this.#prepareVisiblePageLookupIndex(doc, result, reason, prepareLookupIndex),
         };
         manabiTimelineMeasure('visibleSegments.snapshot', collectionStartedAt, {
             reason,
@@ -7485,19 +7536,9 @@ class Reader {
             hasExpectedPaginatorContainer: result?.hasExpectedPaginatorContainer === true,
             firstVisibleSegmentID: result?.visibleSegments?.[0]?.node?.id ?? null,
         }, 50);
-        if (effectivePostLookupTargets) {
-            postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
-        }
-        if (hydrateStatuses && (result?.visibleSegments?.length ?? 0) > 0) {
-            hydrateVisibleTrackingStatusesForVisibleSegments(doc, result, reason);
-        }
-        if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
-            finishForegroundCriticalSection(
-                globalThis.__manabiInitialForegroundCriticalSectionToken,
-                `visible-segments:${reason}`
-            );
-            globalThis.__manabiInitialForegroundCriticalSectionToken = null;
-        }
+        this.#postVisiblePageLookupTargets(doc, result, reason, effectivePostLookupTargets);
+        this.#hydrateVisiblePageTracking(doc, result, reason, hydrateStatuses);
+        this.#finishVisiblePageSegmentCritical(`visible-segments:${reason}`, finishInitialCritical);
         return result;
     }
     #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
@@ -7661,23 +7702,90 @@ class Reader {
             await this.view?.goRight?.();
         }
     }
-    #flashSideNavChevron(direction) {
+    #resetSideNavChevronAnimation(icon, key) {
+        if (this.#chevronFadeAnimationFrames[key] !== null) {
+            cancelAnimationFrame(this.#chevronFadeAnimationFrames[key]);
+            this.#chevronFadeAnimationFrames[key] = null;
+        }
+        this.#chevronFadeAnimationCleanup[key]?.();
+        this.#chevronFadeAnimationCleanup[key] = null;
+        icon?.classList?.remove?.('chevron-swipe-fade');
+        icon?.closest?.('.side-nav')?.classList?.remove?.('suppress-hover-chevron');
+        document.documentElement?.classList?.remove?.('suppress-side-nav-hover-chevron');
+    }
+    #showSideNavChevron(icon, key) {
+        if (!icon) return;
+        this.#resetSideNavChevronAnimation(icon, key);
+        icon.style.removeProperty('opacity');
+        icon.style.removeProperty('visibility');
+        icon.classList.add('chevron-visible');
+    }
+    #hideSideNavChevron(icon, key) {
+        if (!icon) return;
+        this.#resetSideNavChevronAnimation(icon, key);
+        icon.classList.remove('chevron-visible');
+        icon.style.removeProperty('opacity');
+        icon.style.removeProperty('visibility');
+    }
+    #fadeSideNavChevronAfterFullOpacity(direction) {
         const key = direction === 'left' ? 'l' : 'r';
         const icon = document.querySelector(`#btn-scroll-${direction} .icon`);
         if (!icon) {
             return;
         }
-        clearTimeout(this.#chevronFadeTimers[key]);
-        this.#chevronFadeTimers[key] = null;
+        const button = icon.closest?.('.side-nav') ?? null;
+        const clearHoverSuppression = (event = null) => {
+            if (event?.type === 'pointermove' && button) {
+                const hoveredElement = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+                    ? document.elementFromPoint(event.clientX, event.clientY)
+                    : null;
+                const hoveredNavigation = hoveredElement?.closest?.('.side-nav, #nav-bar') ?? null;
+                if (hoveredNavigation === button || hoveredNavigation?.id === 'nav-bar') {
+                    return;
+                }
+            }
+            button?.classList?.remove?.('suppress-hover-chevron');
+            document.documentElement?.classList?.remove?.('suppress-side-nav-hover-chevron');
+            button?.removeEventListener?.('pointerleave', clearHoverSuppression);
+            button?.removeEventListener?.('mouseleave', clearHoverSuppression);
+            button?.removeEventListener?.('blur', clearHoverSuppression);
+            document.removeEventListener?.('pointermove', clearHoverSuppression, true);
+        };
+        this.#resetSideNavChevronAnimation(icon, key);
+        button?.classList?.add?.('suppress-hover-chevron');
+        document.documentElement?.classList?.add?.('suppress-side-nav-hover-chevron');
         icon.style.removeProperty('opacity');
         icon.style.removeProperty('visibility');
         icon.classList.add('chevron-visible');
-        this.#chevronFadeTimers[key] = setTimeout(() => {
+
+        this.#chevronFadeAnimationFrames[key] = requestAnimationFrame(() => {
+            this.#chevronFadeAnimationFrames[key] = null;
+            if (!icon.isConnected) {
+                return;
+            }
+            const finish = event => {
+                if (event.target !== icon || event.animationName !== 'side-nav-chevron-swipe-fade') {
+                    return;
+                }
+                icon.removeEventListener('animationend', finish);
+                if (this.#chevronFadeAnimationCleanup[key] === cleanup) {
+                    this.#chevronFadeAnimationCleanup[key] = null;
+                }
+                icon.classList.remove('chevron-swipe-fade');
+                icon.classList.remove('chevron-visible');
+                icon.style.removeProperty('opacity');
+                icon.style.visibility = 'hidden';
+                button?.addEventListener?.('pointerleave', clearHoverSuppression, { once: true });
+                button?.addEventListener?.('mouseleave', clearHoverSuppression, { once: true });
+                button?.addEventListener?.('blur', clearHoverSuppression, { once: true });
+                document.addEventListener?.('pointermove', clearHoverSuppression, true);
+            };
+            const cleanup = () => icon.removeEventListener('animationend', finish);
+            this.#chevronFadeAnimationCleanup[key] = cleanup;
+            icon.addEventListener('animationend', finish);
             icon.classList.remove('chevron-visible');
-            icon.style.removeProperty('opacity');
-            icon.style.removeProperty('visibility');
-            this.#chevronFadeTimers[key] = null;
-        }, 180);
+            icon.classList.add('chevron-swipe-fade');
+        });
     }
     #onMainDocumentTouchStart(event) {
         if (window.manabiNativePageTurnOwnsDrag === true) {
@@ -7767,7 +7875,7 @@ class Reader {
         }
         if (Math.abs(dx) <= minSwipe) return;
         state.triggered = true;
-        this.#flashSideNavChevron(chevronSide);
+        this.#fadeSideNavChevronAfterFullOpacity(chevronSide);
         await this.#runPageTurn({
             stage: 'pageTurn.mainDocumentSwipe',
             markInputSource: `pageTurn.mainDocumentSwipe.${logicalDirection}`,
@@ -7916,6 +8024,9 @@ class Reader {
             if (button?.disabled || compactDisabled) {
                 return;
             }
+            if (side === 'left' || side === 'right') {
+                this.#fadeSideNavChevronAfterFullOpacity(side);
+            }
             const viewSnapshot = () => {
                 const renderer = this.view?.renderer ?? null;
                 const location = this.view?.lastLocation ?? null;
@@ -7995,20 +8106,16 @@ class Reader {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
 
-            const FADER_DELAY = 180;
-            const fadeWithHold = (elem, value, key) => {
+            const applyChevronOpacity = (elem, value, key) => {
                 if (!elem) {
                     return;
                 }
 
-                clearTimeout(this.#chevronFadeTimers[key]);
-                this.#chevronFadeTimers[key] = null;
+                this.#resetSideNavChevronAnimation(elem, key);
 
                 // Show chevron at full opacity
                 if (Number(value) >= 1) {
-                    elem.style.removeProperty('opacity');
-                    elem.style.removeProperty('visibility');
-                    elem.classList.add('chevron-visible');
+                    this.#showSideNavChevron(elem, key);
                     return;
                 }
 
@@ -8020,24 +8127,24 @@ class Reader {
                     return;
                 }
 
-                // Hide chevron, but only after a delay and only if currently visible
-                if (elem.classList.contains('chevron-visible')) {
-                    this.#chevronFadeTimers[key] = setTimeout(() => {
-                        elem.classList.remove('chevron-visible');
-                        elem.style.removeProperty('opacity');
-                        elem.style.removeProperty('visibility');
-                        this.#chevronFadeTimers[key] = null;
-                    }, FADER_DELAY);
-                } else {
-                    // Already hidden: do nothing
-                    elem.style.removeProperty('opacity');
-                    elem.style.removeProperty('visibility');
-                    elem.classList.remove('chevron-visible');
-                }
+                this.#hideSideNavChevron(elem, key);
             };
 
-            fadeWithHold(l, e.detail.leftOpacity, 'l');
-            fadeWithHold(r, e.detail.rightOpacity, 'r');
+            if (e.detail.fadeOutAfterFullOpacity === true) {
+                const chevronSide = e.detail.chevronSide === 'left' || e.detail.chevronSide === 'right'
+                    ? e.detail.chevronSide
+                    : (Number(e.detail.leftOpacity) > 0 ? 'left' : (Number(e.detail.rightOpacity) > 0 ? 'right' : null));
+                if (chevronSide) {
+                    this.#fadeSideNavChevronAfterFullOpacity(chevronSide);
+                } else {
+                    applyChevronOpacity(l, e.detail.leftOpacity, 'l');
+                    applyChevronOpacity(r, e.detail.rightOpacity, 'r');
+                }
+                return;
+            }
+
+            applyChevronOpacity(l, e.detail.leftOpacity, 'l');
+            applyChevronOpacity(r, e.detail.rightOpacity, 'r');
         });
         // Listen for resetSideNavChevrons custom event to reset chevrons
         document.addEventListener('resetSideNavChevrons', e => {
@@ -8469,22 +8576,27 @@ class Reader {
         const requestedLocatorFromBridge = typeof initialRestore?.requestedLocator === 'string'
             ? initialRestore.requestedLocator
             : null;
-        const syntheticInitialRestore = parseSyntheticRestoreLocator(initialRestore?.cfi);
-        const spineOnlyInitialRestoreSectionIndex = !syntheticInitialRestore
+        const initialRestoreFraction = coerceRestoreFraction(initialRestore?.fractionalCompletion);
+        const hasInitialRestoreFraction = initialRestoreFraction != null && initialRestoreFraction > 0;
+        const syntheticInitialRestore = hasInitialRestoreFraction ? null : parseSyntheticRestoreLocator(initialRestore?.cfi);
+        const spineOnlyInitialRestoreSectionIndex = !syntheticInitialRestore && !hasInitialRestoreFraction
             ? parseSpineOnlyEpubCFI(initialRestore?.cfi)
             : null;
         const hasSpineOnlyInitialRestore = Number.isInteger(spineOnlyInitialRestoreSectionIndex);
         const initialRestoreCFI = !syntheticInitialRestore
             && !hasSpineOnlyInitialRestore
+            && !hasInitialRestoreFraction
             && typeof initialRestore?.cfi === 'string'
             ? initialRestore.cfi
             : '';
         const hasInitialRestoreCFI = initialRestoreCFI.length > 0;
-        const initialRestoreFraction = coerceRestoreFraction(initialRestore?.fractionalCompletion);
-        const hasInitialRestoreFraction = initialRestoreFraction != null && initialRestoreFraction > 0;
         const restoreLocatorKind = syntheticInitialRestore
             ? 'synthetic'
-            : (hasSpineOnlyInitialRestore ? 'spine-cfi' : (hasInitialRestoreCFI ? 'cfi' : (hasInitialRestoreFraction ? 'fraction' : 'none')));
+            : (
+                hasSpineOnlyInitialRestore
+                    ? 'spine-cfi'
+                    : (hasInitialRestoreFraction ? 'fraction' : (hasInitialRestoreCFI ? 'cfi' : 'none'))
+            );
         const publishInitialRestoreResult = (terminalState, details = {}) => {
             const location = details.location ?? this.view?.lastLocation ?? null;
             return manabiPublishInitialRestoreResult(manabiCreateInitialRestoreResult({
@@ -8650,23 +8762,23 @@ class Reader {
                         index: spineOnlyInitialRestoreSectionIndex,
                     });
                 }
-            } else if (hasInitialRestoreCFI) {
-                intent = {
-                    source: `${reason}.initialRestoreCFI`,
-                    target: 'view.goTo',
-                    cfiLength: initialRestoreCFI.length,
-                    fraction: hasInitialRestoreFraction ? initialRestoreFraction : null,
-                };
-                operation = async () => {
-                    return await this.view.goTo(initialRestoreCFI);
-                };
             } else if (hasInitialRestoreFraction) {
                 intent = {
                     source: `${reason}.initialRestoreFraction`,
                     target: 'view.goToFraction',
                     fraction: initialRestoreFraction,
+                    cfiAvailable: hasInitialRestoreCFI,
                 };
                 operation = () => this.view.goToFraction(initialRestoreFraction);
+            } else if (hasInitialRestoreCFI) {
+                intent = {
+                    source: `${reason}.initialRestoreCFI`,
+                    target: 'view.goTo',
+                    cfiLength: initialRestoreCFI.length,
+                };
+                operation = async () => {
+                    return await this.view.goTo(initialRestoreCFI);
+                };
             } else {
                 intent = {
                     source: reason,
@@ -9000,6 +9112,51 @@ class Reader {
     #lookupNavigationDocuments() {
         return this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
     }
+    #lookupNavigationVisibleSegmentSummary(doc, result) {
+        const visibleSegments = Array.isArray(result?.visibleSegments)
+            ? result.visibleSegments
+            : [];
+        const firstID = visibleSegments[0]?.node?.id ?? null;
+        const lastID = visibleSegments[visibleSegments.length - 1]?.node?.id ?? null;
+        const href = doc?.location?.href ?? null;
+        return {
+            href,
+            visibleSegmentCount: visibleSegments.length,
+            firstVisibleSegmentID: firstID,
+            lastVisibleSegmentID: lastID,
+            signature: `${href ?? ''}|${visibleSegments.length}|${firstID ?? ''}|${lastID ?? ''}`,
+        };
+    }
+    #lookupNavigationVisibleSegmentSignatureFromRefreshResults(refreshResults = []) {
+        if (!Array.isArray(refreshResults) || refreshResults.length === 0) {
+            return '';
+        }
+        return refreshResults
+            .map((result) => result?.signature ?? `${result?.href ?? ''}|${result?.visibleSegmentCount ?? 0}|${result?.firstVisibleSegmentID ?? ''}|${result?.lastVisibleSegmentID ?? ''}`)
+            .join('||');
+    }
+    #lookupNavigationVisibleSegmentSnapshot(reason = 'lookup-navigation.visible-snapshot') {
+        const docs = this.#lookupNavigationDocuments();
+        const refreshResults = [];
+        for (const doc of docs) {
+            const visibleRange = this.#visibleRangeForDocument(doc);
+            const result = this.#visiblePageSegmentResult(doc, visibleRange, reason, {
+                postLookupTargets: false,
+                prepareLookupIndex: false,
+                hydrateStatuses: false,
+                finishInitialCritical: false,
+            });
+            refreshResults.push({
+                ...this.#lookupNavigationVisibleSegmentSummary(doc, result),
+                fontStatus: doc?.fonts?.status ?? null,
+            });
+        }
+        return {
+            reason,
+            refreshResults,
+            signature: this.#lookupNavigationVisibleSegmentSignatureFromRefreshResults(refreshResults),
+        };
+    }
     #settleAfterLookupPageTurn(reason = 'lookup-navigation.page-turn-settled') {
         const docs = this.#lookupNavigationDocuments();
         const refreshResults = [];
@@ -9007,16 +9164,16 @@ class Reader {
             const visibleRange = this.#visibleRangeForDocument(doc);
             this.visiblePageSegmentSnapshot = null;
             const result = this.#visiblePageSegmentResult(doc, visibleRange, reason);
+            const summary = this.#lookupNavigationVisibleSegmentSummary(doc, result);
             refreshResults.push({
-                href: doc?.location?.href ?? null,
-                visibleSegmentCount: result?.visibleSegments?.length ?? 0,
-                firstVisibleSegmentID: result?.visibleSegments?.[0]?.node?.id ?? null,
+                ...summary,
                 fontStatus: doc?.fonts?.status ?? null,
             });
         }
         return {
             reason,
             refreshResults,
+            signature: this.#lookupNavigationVisibleSegmentSignatureFromRefreshResults(refreshResults),
         };
     }
     #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.visible-target-readiness') {
@@ -9026,10 +9183,9 @@ class Reader {
             const visibleRange = this.#visibleRangeForDocument(doc);
             this.visiblePageSegmentSnapshot = null;
             const result = this.#visiblePageSegmentResult(doc, visibleRange, reason, { postIfCached: true });
+            const summary = this.#lookupNavigationVisibleSegmentSummary(doc, result);
             results.push({
-                href: doc?.location?.href ?? null,
-                visibleSegmentCount: result?.visibleSegments?.length ?? 0,
-                firstVisibleSegmentID: result?.visibleSegments?.[0]?.node?.id ?? null,
+                ...summary,
                 fontStatus: doc?.fonts?.status ?? null,
             });
         }
@@ -9378,6 +9534,7 @@ class Reader {
             }
             let turnResult = null;
             const positionBeforeTurn = this.#lookupNavigationPositionSnapshot();
+            const visiblePositionBeforeTurn = this.#lookupNavigationVisibleSegmentSnapshot('lookup-navigation.page-turn-before');
             const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
             try {
                 turnResult = await this.#turnLookupNavigationPage(direction);
@@ -9412,10 +9569,22 @@ class Reader {
                 positionAfterTurn = this.#lookupNavigationPositionSnapshot();
             }
             const navigationSettledResult = this.#settleAfterLookupPageTurn('lookup-navigation.page-turn-settled');
-            const positionChanged = this.#lookupNavigationPositionChanged(positionBeforeTurn, positionAfterTurn);
+            const visiblePositionAfterTurn = {
+                reason: navigationSettledResult.reason,
+                refreshResults: navigationSettledResult.refreshResults,
+                signature: navigationSettledResult.signature,
+            };
+            const visiblePositionChanged =
+                (visiblePositionBeforeTurn.signature || '') !== (visiblePositionAfterTurn.signature || '');
+            const positionChanged =
+                this.#lookupNavigationPositionChanged(positionBeforeTurn, positionAfterTurn)
+                || visiblePositionChanged;
             if (turnResult) {
                 turnResult.positionAfter = positionAfterTurn;
                 turnResult.positionChanged = positionChanged;
+                turnResult.visiblePositionBefore = visiblePositionBeforeTurn;
+                turnResult.visiblePositionAfter = visiblePositionAfterTurn;
+                turnResult.visiblePositionChanged = visiblePositionChanged;
                 turnResult.crossedSection = crossedSection;
                 turnResult.navigationSettled = navigationSettledResult;
             }
@@ -9454,6 +9623,7 @@ class Reader {
             if (visibleTargetResult?.opened === true) {
                 return {
                     opened: true,
+                    pageTurnRequested: true,
                     kind,
                     direction,
                     pageTurnIndex,
@@ -9606,10 +9776,10 @@ class Reader {
                     finishInitialCritical: true,
                 }
             );
-            const visibleJapaneseTextState = visibleJapaneseTextStateForVisibleSegmentsResult(visibleSegmentsResult);
-            observedSegmentCount += visibleJapaneseTextState.observedSegmentCount;
-            visibleSegmentCount += visibleJapaneseTextState.visibleSegmentCount;
-            if (visibleJapaneseTextState.hasVisibleJapaneseText === true) {
+            const visibleContentState = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult);
+            observedSegmentCount += visibleContentState.observedSegmentCount;
+            visibleSegmentCount += visibleContentState.visibleSegmentCount;
+            if (visibleContentState.hasRenderableContent === true) {
                 const clearReason = `initialDisplay.visible-content:${reason}`;
                 this.setLoadingIndicator(false, clearReason);
                 markReaderRenderReady(clearReason);
@@ -9624,6 +9794,7 @@ class Reader {
                     reason: clearReason,
                     visibleSegmentCount,
                     observedSegmentCount,
+                    hasVisibleSingleMedia: visibleContentState.hasVisibleSingleMedia === true,
                 };
             }
         }
@@ -9682,17 +9853,14 @@ class Reader {
                 finishInitialCritical: true,
             }
         );
-        const visibleJapaneseTextState = getVisibleJapaneseTextStateForRenderer(
-            this.view?.renderer,
-            visibleRange,
-            visibleSegmentsResult
-        );
-        if (visibleJapaneseTextState.hasVisibleJapaneseText !== true) {
+        const visibleContentState = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult);
+        if (visibleContentState.hasRenderableContent !== true) {
             return {
                 cleared: false,
                 reason: 'no-visible-text',
-                visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
-                observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
+                visibleSegmentCount: visibleContentState.visibleSegmentCount,
+                observedSegmentCount: visibleContentState.observedSegmentCount,
+                hasVisibleSingleMedia: visibleContentState.hasVisibleSingleMedia === true,
             };
         }
         const clearReason = `relocate.visible-content:${reason}`;
@@ -9707,8 +9875,9 @@ class Reader {
         return {
             cleared: true,
             reason: clearReason,
-            visibleSegmentCount: visibleJapaneseTextState.visibleSegmentCount,
-            observedSegmentCount: visibleJapaneseTextState.observedSegmentCount,
+            visibleSegmentCount: visibleContentState.visibleSegmentCount,
+            observedSegmentCount: visibleContentState.observedSegmentCount,
+            hasVisibleSingleMedia: visibleContentState.hasVisibleSingleMedia === true,
         };
     }
     async waitForNextDisplaySettled(reason = 'unspecified', {
@@ -9809,6 +9978,7 @@ class Reader {
             };
             console.error(error);
         }
+        let didDisplayVisibleContentState = null;
         try {
             const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
             if (isDocumentLike(doc)) {
@@ -9826,14 +9996,25 @@ class Reader {
                         finishInitialCritical: true,
                     }
                 );
+                const visibleContentState = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult);
+                didDisplayVisibleContentState = visibleContentState;
+                if (
+                    globalThis.__manabiInitialRestoreRenderReadyGate?.active === true
+                    && visibleContentState.hasRenderableContent === true
+                ) {
+                    this.#settleInitialDisplayFromVisibleContent('didDisplay.pre-render-ready');
+                }
             }
         } catch (error) {
         }
         this.setLoadingIndicator(false, 'didDisplay');
-        markReaderRenderReady('didDisplay.loading-cleared');
+        if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+            markReaderRenderReady('didDisplay.loading-cleared');
+        }
         this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
             initialSettleResult,
             postFrameSettleResult,
+            visibleContentState: didDisplayVisibleContentState,
         });
         try {
             const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
@@ -9844,8 +10025,12 @@ class Reader {
             console.error(error);
         }
         globalThis.__manabiPostReaderDocStateEvent?.('didDisplay.loadingCleared');
-        this.#resolveInitialDisplaySettled('didDisplay.loading-cleared');
-        this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');
+        if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+            this.#resolveInitialDisplaySettled('didDisplay.loading-cleared');
+            this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');
+        } else {
+            this.#resolveDisplaySettledWaiters('didDisplay.no-visible-text');
+        }
         setTimeout(() => {
             this.#postBookInsetSnapshot('didDisplay.loading-cleared.plus-250ms', {
                 initialSettleResult,
@@ -9883,6 +10068,7 @@ class Reader {
             ? classifySingleMediaDocumentForInitialLayout(doc, 'document-load')
             : { applied: false, reason: 'cache-warmer-document' };
         if (!isCacheWarmerDocument(doc)) {
+            this.#settleInitialDisplayFromVisibleContent('document-load');
         }
         try {
             window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
@@ -10087,9 +10273,6 @@ class Reader {
     }
 
     #resetSideNavChevrons() {
-        // Clear any fade timers
-        clearTimeout(this.#chevronFadeTimers.l);
-        clearTimeout(this.#chevronFadeTimers.r);
         // Remove visible class & reset opacity immediately
         const leftIcon = document.querySelector('#btn-scroll-left .icon');
         const rightIcon = document.querySelector('#btn-scroll-right .icon');
@@ -10100,6 +10283,7 @@ class Reader {
             if (!icon) {
                 return;
             }
+            this.#resetSideNavChevronAnimation(icon, key);
             icon.classList.remove('chevron-visible');
             icon.style.opacity = '';
             icon.style.visibility = '';
@@ -10212,6 +10396,27 @@ class Reader {
             this.resolveDisplaySettledWaiters('relocate.lookup-navigation');
         } else {
             this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
+            try {
+                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                if (isDocumentLike(doc)) {
+                    const visibleRange = visibleRangeForNavigationHUDDocument(this.navHUD, doc);
+                    this.visiblePageSegmentResult(
+                        doc,
+                        visibleRange,
+                        `relocate.visible-status:${reason ?? 'unknown'}`,
+                        {
+                            postIfCached: false,
+                            includeClientRects: false,
+                            postLookupTargets: false,
+                            prepareLookupIndex: false,
+                            hydrateStatuses: true,
+                            finishInitialCritical: false,
+                        }
+                    );
+                }
+            } catch (error) {
+                console.error(error);
+            }
         }
         this.clearLoadingForRelocatedVisibleContent?.(reason ?? 'relocate');
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
@@ -10869,10 +11074,10 @@ window.loadEBook = ({
                 }
                 if (shouldDeferReaderOpenLoadingClear) {
                     const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.pendingRestoreAfterApply');
-                    if (settled?.settled === true || reader.initialDisplayNavigationPending !== true) {
-                        finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.pendingRestoreAfterApply');
-                        reader.setLoadingIndicator(false, 'loadEBook.pendingRestoreAfterApply');
-                    }
+                    finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.pendingRestoreAfterApply');
+                    reader.setLoadingIndicator(false, settled?.settled === true
+                        ? 'loadEBook.pendingRestoreAfterApply.visibleContent'
+                        : 'loadEBook.pendingRestoreAfterApply.terminal');
                 }
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.finish', {
                     loadToken,
@@ -10898,20 +11103,20 @@ window.loadEBook = ({
                     action: 'finishTerminalRestoreGate',
                 });
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreNotHandledAfterOpen');
-                if (settled?.settled === true || reader.initialDisplayNavigationPending !== true) {
-                    finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
-                    reader.setLoadingIndicator(false, 'loadEBook.initialRestoreNotHandledAfterOpen');
-                }
+                finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
+                reader.setLoadingIndicator(false, settled?.settled === true
+                    ? 'loadEBook.initialRestoreNotHandledAfterOpen.visibleContent'
+                    : 'loadEBook.initialRestoreNotHandledAfterOpen.terminal');
             } else if (
                 shouldDeferReaderOpenLoadingClear
                 && !globalThis.__manabiInitialRestoreHandled
                 && globalThis.__manabiInitialRestoreRenderReadyGate?.active === true
             ) {
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreDeferredTerminal');
-                if (settled?.settled === true || reader.initialDisplayNavigationPending !== true) {
-                    finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
-                    reader.setLoadingIndicator(false, 'loadEBook.initialRestoreDeferredTerminal');
-                }
+                finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
+                reader.setLoadingIndicator(false, settled?.settled === true
+                    ? 'loadEBook.initialRestoreDeferredTerminal.visibleContent'
+                    : 'loadEBook.initialRestoreDeferredTerminal.terminal');
             }
         })
         .then(async () => {
@@ -11025,7 +11230,8 @@ const finalizeInitialRestoreHandledWithoutNativeRestore = (reason = 'loadEBook.i
     globalThis.__manabiSuppressNextRestoreRelocateSave = true;
     globalThis.__manabiRequireUserInputBeforePositionSave = true;
     globalThis.__manabiRestoreInProgress = false;
-    if (document.querySelector?.('foliate-view')) {
+    const visibleSettleResult = globalThis.reader.settleInitialDisplayFromVisibleContent?.(`${reason}.visibleContent`);
+    if (visibleSettleResult?.settled === true) {
         clearInitialRestoreRenderReadyGate(reason);
         markReaderRenderReady(reason);
     }
@@ -11190,13 +11396,14 @@ window.loadLastPosition = async ({
         });
         return waitedState;
     };
-    const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
-    const spineOnlyRestoreSectionIndex = !syntheticRestoreLocator
+    const syntheticRestoreLocator = hasFractionalCompletion ? null : parseSyntheticRestoreLocator(cfi);
+    const spineOnlyRestoreSectionIndex = !syntheticRestoreLocator && !hasFractionalCompletion
         ? parseSpineOnlyEpubCFI(cfi)
         : null;
     const hasPreciseCFI = typeof cfi === 'string'
         && cfi.length > 0
         && !syntheticRestoreLocator
+        && !hasFractionalCompletion
         && !Number.isInteger(spineOnlyRestoreSectionIndex);
     const restoreLocatorKind = syntheticRestoreLocator
         ? 'synthetic'
@@ -11235,7 +11442,10 @@ window.loadLastPosition = async ({
         globalThis.__manabiSuppressNextRestoreRelocateSave = true;
         globalThis.__manabiRequireUserInputBeforePositionSave = true;
         shouldKeepRestoreSaveGuard = true;
-        if (markReadyReason && document.querySelector?.('foliate-view')) {
+        const visibleSettleResult = markReadyReason
+            ? globalThis.reader?.settleInitialDisplayFromVisibleContent?.(`${markReadyReason}.visibleContent`)
+            : null;
+        if (markReadyReason && visibleSettleResult?.settled === true) {
             clearInitialRestoreRenderReadyGate(markReadyReason);
             markReaderRenderReady(markReadyReason);
         }
@@ -11367,14 +11577,16 @@ window.loadLastPosition = async ({
             && initialRestoreCfiMatches
             && initialRestoreFractionMatches
             && initialRestoreCurrentFractionMatches
-            && document.querySelector?.('foliate-view')
         ) {
             globalThis.reader.hasLoadedLastPosition = true;
             globalThis.__manabiSuppressNextRestoreRelocateSave = true;
             globalThis.__manabiRequireUserInputBeforePositionSave = true;
             shouldKeepRestoreSaveGuard = true;
-            clearInitialRestoreRenderReadyGate('loadLastPosition.initialRestoreAlreadyHandled');
-            markReaderRenderReady('loadLastPosition.initialRestoreAlreadyHandled');
+            const visibleSettleResult = globalThis.reader.settleInitialDisplayFromVisibleContent?.('loadLastPosition.initialRestoreAlreadyHandled.visibleContent');
+            if (visibleSettleResult?.settled === true) {
+                clearInitialRestoreRenderReadyGate('loadLastPosition.initialRestoreAlreadyHandled');
+                markReaderRenderReady('loadLastPosition.initialRestoreAlreadyHandled');
+            }
             globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(initialState);
             globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.return', {
                 path: 'initialRestoreAlreadyHandled',
@@ -11403,8 +11615,9 @@ window.loadLastPosition = async ({
             }), {
                 throwOnError: false,
             });
-            syntheticDisplaySettledForRestore = navigationResult?.ok === true || !!document.querySelector?.('foliate-view');
             await waitForPaintAfterNavigation();
+            const visibleSettleResult = globalThis.reader.settleInitialDisplayFromVisibleContent?.('loadLastPosition.syntheticNavigationSettled');
+            syntheticDisplaySettledForRestore = visibleSettleResult?.settled === true;
             releaseDispatchedNavigation('loadLastPosition.syntheticNavigation.release', {
                 markReadyReason: 'loadLastPosition.syntheticNavigationSettled',
             });
@@ -11613,7 +11826,12 @@ window.loadLastPosition = async ({
         const doneHasUsableLocation = restoreStateHasUsableLocation(doneState);
         const doneFractionSatisfied = restoreStateFractionSatisfied(doneState);
         globalThis.reader.hasLoadedLastPosition = !hasExplicitRestoreTarget || doneHasUsableLocation;
-        if (globalThis.reader.hasLoadedLastPosition && (!syntheticRestoreLocator || syntheticDisplaySettledForRestore)) {
+        const doneVisibleSettleResult = globalThis.reader.settleInitialDisplayFromVisibleContent?.('loadLastPosition.done.visibleContent');
+        if (
+            globalThis.reader.hasLoadedLastPosition
+            && doneVisibleSettleResult?.settled === true
+            && (!syntheticRestoreLocator || syntheticDisplaySettledForRestore)
+        ) {
             clearInitialRestoreRenderReadyGate('loadLastPosition.done');
             markReaderRenderReady('loadLastPosition.done');
         }

@@ -1428,7 +1428,7 @@
                 }
                 .side-nav.show-next .icon {
                     visibility: visible;
-                    opacity: 1 !important;
+                    opacity: 1;
                     -webkit-user-select: none;
                     /*pointer-events: auto;*/
                 }
@@ -1450,6 +1450,21 @@
                 .side-nav .icon.chevron-visible {
                     transition: opacity 0.08s ease-in;
                 }
+                .side-nav .icon.chevron-swipe-fade {
+                    visibility: visible;
+                    opacity: 0;
+                    stroke: CanvasText;
+                    transition: none;
+                    animation: side-nav-chevron-swipe-fade 0.26s ease-out forwards;
+                }
+                @keyframes side-nav-chevron-swipe-fade {
+                    0% {
+                        opacity: 1;
+                    }
+                    100% {
+                        opacity: 0;
+                    }
+                }
                 .side-nav:active .icon,
                 .side-nav.pressed .icon,
                 .side-nav:active .icon.chevron-visible,
@@ -1461,8 +1476,16 @@
                 .side-nav.pressed .icon,
                 .side-nav .icon.chevron-visible {
                     visibility: visible;
-                    opacity: 1 !important;
+                    opacity: 1;
                     stroke: CanvasText;
+                }
+                .side-nav:active .icon.chevron-swipe-fade,
+                .side-nav.pressed .icon.chevron-swipe-fade,
+                .side-nav .icon.chevron-swipe-fade {
+                    visibility: visible;
+                    stroke: CanvasText;
+                    transition: none;
+                    animation: side-nav-chevron-swipe-fade 0.26s ease-out forwards;
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .side-nav:hover .icon {
@@ -1477,6 +1500,22 @@
                         visibility: visible;
                         opacity: 1;
                         stroke: CanvasText;
+                    }
+                }
+                @media (hover: hover) and (pointer: fine) {
+                    .side-nav.suppress-hover-chevron:hover .icon,
+                    #nav-bar:hover ~ .side-nav.suppress-hover-chevron .icon,
+                    html.suppress-side-nav-hover-chevron .side-nav:hover .icon,
+                    html.suppress-side-nav-hover-chevron #nav-bar:hover ~ .side-nav .icon {
+                        visibility: hidden;
+                        opacity: 0;
+                    }
+                    .side-nav.suppress-hover-chevron:hover .icon.chevron-swipe-fade,
+                    #nav-bar:hover ~ .side-nav.suppress-hover-chevron .icon.chevron-swipe-fade,
+                    html.suppress-side-nav-hover-chevron .side-nav:hover .icon.chevron-swipe-fade,
+                    html.suppress-side-nav-hover-chevron #nav-bar:hover ~ .side-nav .icon.chevron-swipe-fade {
+                        visibility: visible;
+                        animation: side-nav-chevron-swipe-fade 0.26s ease-out forwards;
                     }
                 }
                 .side-nav[disabled], .side-nav:disabled {

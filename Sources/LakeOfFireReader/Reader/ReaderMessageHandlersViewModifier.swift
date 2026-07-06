@@ -325,7 +325,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let manabiFontPending = body["manabiFontPending"].map { String(describing: $0) } ?? "nil"
                 let bodyVisibility = body["bodyVisibility"] as? String ?? "nil"
                 let bodyOpacity = body["bodyOpacity"].map { String(describing: $0) } ?? "nil"
-
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 readerModeViewModel.logSyntheticDocumentState(
                     pageURL: pageURL,
@@ -850,10 +849,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "writingDirection": "original",
                         ]
                         let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
-                        let hasInitialRestore = initialRestore != nil
-                        let sentInitialRestore = initialRestoreRequest != nil
-                        let hasRestoreCFI = !(initialRestoreRequest?.cfi.isEmpty ?? true)
-                        let restoreFraction = initialRestoreRequest?.fractionalCompletion.map { String($0) } ?? "nil"
                         loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
                         loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
                         loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
@@ -866,6 +861,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 in: message.frameInfo
                             )
                         } catch {
+                            let loaderURLString = loaderURL.absoluteString
+                            Logger.shared.logger.error("Ebook viewer load failed for \(loaderURLString): \(String(describing: error))")
                         }
                     }
                 }

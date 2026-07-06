@@ -1217,19 +1217,16 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
-        guard !pageURL.isReaderURLLoaderURL else { return false }
         if sharedReaderFontUsesLocalScheme(for: pageURL) {
             return true
         }
+        guard !pageURL.isReaderURLLoaderURL else { return false }
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return false }
         return !base64.isEmpty
     }
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard pageURL.absoluteString != "about:blank" else {
-            return
-        }
-        guard !pageURL.isReaderURLLoaderURL else {
             return
         }
         guard #available(iOS 16.4, macOS 14, *) else {
@@ -1239,10 +1236,6 @@ public class ReaderModeViewModel: ObservableObject {
             let js = """
             (function() {
                 const postLog = (_message) => {};
-                const isLoaderShellDocument = () => {
-                    const href = window.location.href || '';
-                    return href.startsWith('internal://local/load/reader');
-                };
                 const setFontPendingState = (pending) => {
                     const root = document.documentElement;
                     if (!root) return;
@@ -1263,10 +1256,6 @@ public class ReaderModeViewModel: ObservableObject {
                     return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
                 };
                 const ensureReaderFontStyle = (desiredFamily) => {
-                    if (isLoaderShellDocument()) {
-                        postLog('skipLoaderShell mode=local-scheme href=' + window.location.href);
-                        return null;
-                    }
                     const root = document.documentElement;
                     if (!root) return null;
                     const family = desiredFamily
@@ -1294,10 +1283,6 @@ public class ReaderModeViewModel: ObservableObject {
                     postLog('stylesheetPrepared mode=local-scheme family=' + family + ' href=' + window.location.href);
                     return style;
                 };
-                if (isLoaderShellDocument()) {
-                    postLog('skipLoaderShell mode=local-scheme href=' + window.location.href);
-                    return;
-                }
                 globalThis.manabiReaderFontInjectionMode = 'local-scheme';
                 globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
@@ -1357,7 +1342,6 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     postLog('error mode=local-scheme href=' + window.location.href + ' error=' + String(e));
                     setFontPendingState(false);
-                    try { console.log('manabi font inject error', e); } catch (_) {}
                 });
             })();
             """
@@ -1369,6 +1353,9 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
 
+        guard !pageURL.isReaderURLLoaderURL else {
+            return
+        }
         guard let base64 = await resolveSharedReaderFontCSSBase64() else {
             return
         }
@@ -1517,7 +1504,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 postLog('error mode=blob href=' + window.location.href + ' error=' + String(e));
                 setFontPendingState(false);
-                try { console.log('manabi font inject error', e); } catch (_) {}
             });
         })();
         """

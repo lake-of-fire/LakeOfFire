@@ -156,6 +156,7 @@ public struct ReaderWebView: View {
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
+    let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -198,6 +199,7 @@ public struct ReaderWebView: View {
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
+        onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
@@ -215,6 +217,7 @@ public struct ReaderWebView: View {
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
         self.onURLChanged = onURLChanged
+        self.onScrollBottomStateChanged = onScrollBottomStateChanged
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -244,6 +247,7 @@ public struct ReaderWebView: View {
             schemeHandlers: schemeHandlers,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
+            onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: buildMenu,
             scriptCaller: scriptCaller,
             userScripts: readerViewModel.allScripts,
@@ -289,6 +293,7 @@ fileprivate struct ReaderWebViewInternal: View {
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
+    let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     var buildMenu: BuildMenuType?
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
@@ -400,6 +405,7 @@ fileprivate struct ReaderWebViewInternal: View {
             onURLChanged: { state in
                 handler.onURLChanged(state: state)
             },
+            onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: { builder in
                 buildMenu?(builder)
             },

@@ -167,6 +167,23 @@ func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookPr
     result.insert(contentsOf: " \(attributes)", at: tagEnd)
     return result
 }
+
+fileprivate func ebookHTTPResponse(url: URL, mimeType: String, byteCount: Int, textEncodingName: String? = nil) -> HTTPURLResponse {
+    var contentType = mimeType
+    if let textEncodingName {
+        contentType += "; charset=\(textEncodingName)"
+    }
+    return HTTPURLResponse(
+        url: url,
+        statusCode: 200,
+        httpVersion: nil,
+        headerFields: [
+            "Content-Type": contentType,
+            "Content-Length": "\(byteCount)"
+        ]
+    )!
+}
+
 func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
     if isCacheWarmer {
         return Data()
@@ -468,11 +485,10 @@ fileprivate actor EBookLoadingActor {
         guard let data = html.data(using: .utf8) else {
             throw EbookLoadingError.fileNotFound
         }
-        let mimeType = "text/html"
-        let response = HTTPURLResponse(
+        let response = ebookHTTPResponse(
             url: originalURL,
-            mimeType: mimeType,
-            expectedContentLength: data.count,
+            mimeType: "text/html",
+            byteCount: data.count,
             textEncodingName: "utf-8"
         )
         return (response, data)
@@ -859,10 +875,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     )
                     let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
                     let data = try JSONEncoder().encode(responseBody)
-                    let response = HTTPURLResponse(
+                    let response = ebookHTTPResponse(
                         url: url,
                         mimeType: "application/json",
-                        expectedContentLength: data.count,
+                        byteCount: data.count,
                         textEncodingName: "utf-8"
                     )
                     await { @MainActor in
@@ -923,10 +939,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     )
                     let data = try cachedSource.source.readEntry(subpath: subpath)
                     let metadata = try cachedSource.source.mimeType(subpath: subpath)
-                    let response = HTTPURLResponse(
+                    let response = ebookHTTPResponse(
                         url: url,
                         mimeType: metadata.mimeType,
-                        expectedContentLength: data.count,
+                        byteCount: data.count,
                         textEncodingName: metadata.textEncodingName
                     )
                     await { @MainActor in
@@ -967,10 +983,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? Data(contentsOf: fileUrl) {
-                    let response = HTTPURLResponse(
+                    let response = ebookHTTPResponse(
                         url: url,
                         mimeType: mimeType,
-                        expectedContentLength: data.count, textEncodingName: nil)
+                        byteCount: data.count,
+                        textEncodingName: mimeType.hasPrefix("text/") ? "utf-8" : nil
+                    )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
                             urlSchemeTask.didReceive(response)

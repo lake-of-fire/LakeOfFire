@@ -753,6 +753,19 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
     }
 }
 
+fileprivate struct ReaderHeaderMediaSyncID: Equatable {
+    let readerPageURL: URL
+    let contentCompoundKey: String?
+    let contentHasAudio: Bool
+    let hasRecordedAudio: Bool
+    let hasPreparedAITTS: Bool
+    let isPlaying: Bool
+    let playbackSource: String
+    let lastRenderedURL: URL?
+    let webViewPageURL: URL
+    let hasReaderRenderReady: Bool
+}
+
 fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
@@ -784,12 +797,12 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
                     await syncReaderHeaderMediaButton(reason: "playbackSource")
                 }
             }
-            .onChange(of: readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil") { _ in
+            .onChange(of: readerModeViewModel.lastRenderedURL) { _ in
                 Task { @MainActor in
                     await syncReaderHeaderMediaButton(reason: "readerModeRendered")
                 }
             }
-            .onChange(of: readerViewModel.state.pageURL.absoluteString) { _ in
+            .onChange(of: readerViewModel.state.pageURL) { _ in
                 Task { @MainActor in
                     await syncReaderHeaderMediaButton(reason: "webViewPageURL")
                 }
@@ -801,19 +814,19 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             }
     }
 
-    private var readerHeaderMediaSyncID: String {
-        [
-            readerContent.pageURL.absoluteString,
-            readerContent.content?.compoundKey ?? "nil",
-            String(readerContent.content?.hasAudio ?? false),
-            String(readerMediaPlayerViewModel.hasRecordedAudio),
-            String(readerMediaPlayerViewModel.hasPreparedAITTS),
-            String(readerMediaPlayerViewModel.isPlaying),
-            readerMediaPlayerViewModel.playbackSource.rawValue,
-            readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil",
-            readerViewModel.state.pageURL.absoluteString,
-            String(readerViewModel.state.hasReaderRenderReady),
-        ].joined(separator: "|")
+    private var readerHeaderMediaSyncID: ReaderHeaderMediaSyncID {
+        ReaderHeaderMediaSyncID(
+            readerPageURL: readerContent.pageURL,
+            contentCompoundKey: readerContent.content?.compoundKey,
+            contentHasAudio: readerContent.content?.hasAudio ?? false,
+            hasRecordedAudio: readerMediaPlayerViewModel.hasRecordedAudio,
+            hasPreparedAITTS: readerMediaPlayerViewModel.hasPreparedAITTS,
+            isPlaying: readerMediaPlayerViewModel.isPlaying,
+            playbackSource: readerMediaPlayerViewModel.playbackSource.rawValue,
+            lastRenderedURL: readerModeViewModel.lastRenderedURL,
+            webViewPageURL: readerViewModel.state.pageURL,
+            hasReaderRenderReady: readerViewModel.state.hasReaderRenderReady
+        )
     }
 
     @MainActor
@@ -988,6 +1001,7 @@ public struct Reader: View {
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
+    let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
@@ -1018,6 +1032,7 @@ public struct Reader: View {
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
+        onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
@@ -1037,6 +1052,7 @@ public struct Reader: View {
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
         self.onURLChanged = onURLChanged
+        self.onScrollBottomStateChanged = onScrollBottomStateChanged
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
@@ -1116,6 +1132,7 @@ public struct Reader: View {
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
             onURLChanged: onURLChanged,
+            onScrollBottomStateChanged: onScrollBottomStateChanged,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
             buildMenu: buildMenu
