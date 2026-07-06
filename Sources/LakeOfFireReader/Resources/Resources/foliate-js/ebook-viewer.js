@@ -3103,9 +3103,6 @@ const segmentMetadataForNode = (segmentNode, bootstrap = null) => {
     };
     addAlias(segmentNode.id);
     addAlias(segmentNode.getAttribute?.('id'));
-    addAlias(segmentNode.getAttribute?.('data-segment-identifier'));
-    addAlias(segmentNode.getAttribute?.('sid'));
-    addAlias(segmentNode.getAttribute?.('data-sid'));
     for (const alias of aliases) {
         const metadata = byID.get(alias);
         if (metadata) {
