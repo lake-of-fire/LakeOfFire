@@ -10449,7 +10449,6 @@ class Reader {
             this.refreshLookupNavigationVisibleTargetsForRelocate('lookup-navigation.relocate');
             this.resolveDisplaySettledWaiters('relocate.lookup-navigation');
         } else {
-            this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
             try {
                 const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
                 if (isDocumentLike(doc)) {
@@ -10471,6 +10470,7 @@ class Reader {
             } catch (error) {
                 console.error(error);
             }
+            this.#scheduleNativeLookupHitTargetRefreshSettle('relocate');
         }
         this.clearLoadingForRelocatedVisibleContent?.(reason ?? 'relocate');
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
