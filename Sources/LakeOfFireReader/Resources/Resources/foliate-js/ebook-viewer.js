@@ -3203,7 +3203,7 @@ const segmentIdentityForNode = (segmentNode, bootstrap = null, metadata = null) 
         elementID,
         metadataElementID,
         stableID,
-        segmentIdentifier: stableID || elementID,
+        segmentIdentifier: stableID,
         hasSidecarStableID: !!stableID,
     };
 };
@@ -3220,8 +3220,6 @@ const segmentIdentifierAliasesForNode = (segmentNode, bootstrap = null, metadata
         if (!aliases.includes(identifier)) aliases.push(identifier);
     };
     addAlias(identity.stableID);
-    addAlias(identity.metadataElementID);
-    addAlias(identity.elementID);
     return aliases;
 };
 
@@ -4192,9 +4190,8 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             || null;
         const segmentIdentifier = item?.segmentIdentifier
             || segmentIdentifierForNode(node, visibleSegmentsResult?.segmentMetadataBootstrap, sourceMetadata)
-            || sourceMetadata.i
-            || elementID
             || null;
+        if (!segmentIdentifier) { return; }
         const metadata = {
             ...sourceMetadata,
             i: sourceMetadata.i || elementID,
