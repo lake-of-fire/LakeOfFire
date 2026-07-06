@@ -3652,8 +3652,10 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
         for (const xFraction of xFractions) {
             const x = Math.min(right - 1, Math.max(left, Math.round(left + width * xFraction)));
             sampledPointCount += 1;
-            appendCaretSegment(x, y);
-            caretSampleCount += 1;
+            if (!isEbookDoc) {
+                appendCaretSegment(x, y);
+                caretSampleCount += 1;
+            }
             for (const element of doc.elementsFromPoint(x, y) || []) {
                 appendSegment(element);
                 appendSegment(element?.closest?.(manabiReaderSegmentSelector));
@@ -7599,7 +7601,10 @@ class Reader {
             if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
             }
         };
-        void runRefresh();
+        this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
+            this.nativeLookupHitTargetRefreshHandle = null;
+            void runRefresh();
+        });
     }
     #shouldDeferNativeLookupHitTargetRefresh(reason = 'unspecified') {
         if (reason === 'manual') {
@@ -10383,7 +10388,6 @@ class Reader {
     async #onRelocate({
         detail
     }) {
-        this.#invalidateVisiblePageSegmentSnapshot();
         const {
             fraction,
             location,
