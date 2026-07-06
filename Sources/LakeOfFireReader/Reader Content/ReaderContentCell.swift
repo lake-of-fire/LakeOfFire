@@ -878,6 +878,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             }
             .menuStyle(.button)
             .menuIndicator(.hidden)
+            .accessibilityLabel("More Options")
         } else if #available(iOS 15, macOS 12, *) {
             Menu {
                 if let customLeadingMenuOptions {
@@ -913,6 +914,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                     .labelStyle(.iconOnly)
             }
             .menuIndicator(.hidden)
+            .accessibilityLabel("More Options")
         } else {
             Menu {
                 if let customLeadingMenuOptions {
@@ -947,6 +949,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                 Label("More Options", systemImage: "ellipsis")
                     .labelStyle(.iconOnly)
             }
+            .accessibilityLabel("More Options")
         }
     }
 
@@ -997,6 +1000,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         HStack(alignment: .center, spacing: 10) {
             if let thumbnailChoice {
                 thumbnailView(for: thumbnailChoice, edgeLength: compactThumbnailEdgeLength)
+                    .accessibilityHidden(true)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1006,6 +1010,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(2)
+            .accessibilityHidden(true)
 
             controlsRow
                 .frame(width: buttonSize, height: buttonSize, alignment: .center)
@@ -1021,6 +1026,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         HStack(alignment: .top, spacing: 12) {
             if let thumbnailChoice {
                 thumbnailView(for: thumbnailChoice)
+                    .accessibilityHidden(true)
             }
 
             Group {
@@ -1067,6 +1073,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                     .frame(height: contentColumnHeight, alignment: .top)
                 }
             }
+            .accessibilityHidden(true)
         }
     }
 
