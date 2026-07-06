@@ -81,7 +81,7 @@ fileprivate struct EditorsPicksView: View {
     var body: some View {
         if let errorMessage = viewModel.errorMessage {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Error: \(errorMessage)")
+                Text(errorMessage)
                     .foregroundColor(.red)
                 Button("Retry") {
                     viewModel.fetchEditorsPicks()
@@ -348,7 +348,9 @@ public class BookLibraryViewModel: ObservableObject {
             let (publications, errorMessage) = await Self.fetchPublications(from: opdsURL)
             await MainActor.run {
                 self.editorsPicks = publications
-                self.errorMessage = errorMessage
+                self.errorMessage = errorMessage.map { _ in
+                    "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
+                }
             }
         }
     }
