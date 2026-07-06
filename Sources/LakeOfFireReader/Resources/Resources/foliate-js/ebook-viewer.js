@@ -3665,7 +3665,9 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
         }
     }
     if (isEbookDoc && candidateSegments.length > 0) {
-        const allSegments = Array.from(doc.querySelectorAll?.(manabiReaderSegmentSelector) ?? []);
+        const orderedSegments = orderedSegmentNodesForDocument(doc);
+        const allSegments = orderedSegments.nodes;
+        const indexByNode = orderedSegments.indexByNode;
         const candidateExpansionLimit = candidateLimit + 48;
         const appendNearbySegment = (segment) => {
             if (candidateSegments.length >= candidateExpansionLimit) {
@@ -3674,8 +3676,8 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
             appendSegment(segment, { allowOverLimit: true });
         };
         for (const segment of [...candidateSegments]) {
-            const index = allSegments.indexOf(segment);
-            if (index < 0) {
+            const index = indexByNode.get(segment);
+            if (!Number.isFinite(index)) {
                 continue;
             }
             for (let offset = -2; offset <= 2; offset += 1) {
