@@ -67,6 +67,14 @@ private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
     return rawValue == "YuKyokasho"
 }
 
+internal func shouldInlineSharedReaderFontCSS(pageURL: URL) -> Bool {
+    guard !pageURL.isEBookURL,
+          currentReaderFontNeedsDeferredSharedCSS() else {
+        return false
+    }
+    return !sharedReaderFontUsesLocalScheme(for: pageURL)
+}
+
 private func currentReaderFontCSSValues() -> (
     horizontalFamily: String,
     verticalFamily: String,
@@ -2498,8 +2506,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
             }()
-            if !url.isEBookURL,
-               currentReaderFontNeedsDeferredSharedCSS(),
+            if shouldInlineSharedReaderFontCSS(pageURL: url),
                let fontCSSBase64 = await resolveSharedReaderFontCSSBase64(),
                let fontCSSData = Data(base64Encoded: fontCSSBase64),
                let fontCSS = String(data: fontCSSData, encoding: .utf8),
