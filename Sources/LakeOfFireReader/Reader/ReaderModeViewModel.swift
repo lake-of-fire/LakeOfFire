@@ -60,21 +60,6 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
-private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
-    guard let rawValue = UserDefaults.standard.string(forKey: "readerFont") else {
-        return true
-    }
-    return rawValue == "YuKyokasho"
-}
-
-internal func shouldInlineSharedReaderFontCSS(pageURL: URL) -> Bool {
-    guard !pageURL.isEBookURL,
-          currentReaderFontNeedsDeferredSharedCSS() else {
-        return false
-    }
-    return !sharedReaderFontUsesLocalScheme(for: pageURL)
-}
-
 private func currentReaderFontCSSValues() -> (
     horizontalFamily: String,
     verticalFamily: String,
@@ -1420,9 +1405,7 @@ public class ReaderModeViewModel: ObservableObject {
         if sharedReaderFontUsesLocalScheme(for: pageURL) {
             return true
         }
-        guard !pageURL.isReaderURLLoaderURL else { return false }
-        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return false }
-        return !base64.isEmpty
+        return false
     }
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
@@ -2379,10 +2362,6 @@ public class ReaderModeViewModel: ObservableObject {
             isReaderMode = true
         }
 
-        if !url.isEBookURL && currentReaderFontNeedsDeferredSharedCSS() {
-            _ = await resolveSharedReaderFontCSSBase64()
-        }
-        
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
@@ -2506,14 +2485,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
             }()
-            if shouldInlineSharedReaderFontCSS(pageURL: url),
-               let fontCSSBase64 = await resolveSharedReaderFontCSSBase64(),
-               let fontCSSData = Data(base64Encoded: fontCSSBase64),
-               let fontCSS = String(data: fontCSSData, encoding: .utf8),
-               !fontCSS.isEmpty {
-                try? upsertInlineSharedReaderFontCSS(fontCSS, in: doc)
-            }
-
             if await shouldUseDeferredSharedReaderFontGate(for: url) {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
