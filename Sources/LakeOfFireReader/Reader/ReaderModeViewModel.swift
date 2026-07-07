@@ -93,20 +93,10 @@ private struct ReaderModeSharedFontBlobPayload {
     var base64CSS: String
     var identity: String
 
-    init?(base64CSS: String?) {
-        guard let base64CSS, !base64CSS.isEmpty else { return nil }
+    init(base64CSS: String, identity: String) {
         self.base64CSS = base64CSS
-        self.identity = Self.identity(for: base64CSS)
+        self.identity = identity
     }
-
-    private static func identity(for payload: String) -> String {
-        ReaderModeSharedFontPayloadIdentity.shortSHA256Hex(for: payload)
-    }
-}
-
-private struct ReaderModeSharedFontInlinePayloadKey: Equatable {
-    var cssIdentity: String
-    var fontValues: ReaderModeSharedFontCSSValues
 }
 
 private enum ReaderModeSharedFontPayloadIdentity {
@@ -126,16 +116,13 @@ private enum ReaderModeSharedFontPayloadIdentity {
 
 private final class ReaderModeSharedFontInlinePayloadCache {
     private let lock = NSLock()
-    private var cachedKey: ReaderModeSharedFontInlinePayloadKey?
+    private var cachedCSS: String?
+    private var cachedFontValues: ReaderModeSharedFontCSSValues?
     private var cachedPayload: ReaderModeSharedFontInlinePayload?
 
     func payload(css: String, fontValues: ReaderModeSharedFontCSSValues) -> ReaderModeSharedFontInlinePayload {
-        let key = ReaderModeSharedFontInlinePayloadKey(
-            cssIdentity: ReaderModeSharedFontPayloadIdentity.shortSHA256Hex(for: css),
-            fontValues: fontValues
-        )
         lock.lock()
-        if cachedKey == key, let cachedPayload {
+        if cachedCSS == css, cachedFontValues == fontValues, let cachedPayload {
             lock.unlock()
             return cachedPayload
         }
@@ -158,7 +145,35 @@ private final class ReaderModeSharedFontInlinePayloadCache {
         )
 
         lock.lock()
-        cachedKey = key
+        cachedCSS = css
+        cachedFontValues = fontValues
+        cachedPayload = payload
+        lock.unlock()
+        return payload
+    }
+}
+
+private final class ReaderModeSharedFontBlobPayloadCache {
+    private let lock = NSLock()
+    private var cachedBase64CSS: String?
+    private var cachedPayload: ReaderModeSharedFontBlobPayload?
+
+    func payload(base64CSS: String?) -> ReaderModeSharedFontBlobPayload? {
+        guard let base64CSS, !base64CSS.isEmpty else { return nil }
+        lock.lock()
+        if cachedBase64CSS == base64CSS, let cachedPayload {
+            lock.unlock()
+            return cachedPayload
+        }
+        lock.unlock()
+
+        let payload = ReaderModeSharedFontBlobPayload(
+            base64CSS: base64CSS,
+            identity: ReaderModeSharedFontPayloadIdentity.shortSHA256Hex(for: base64CSS)
+        )
+
+        lock.lock()
+        cachedBase64CSS = base64CSS
         cachedPayload = payload
         lock.unlock()
         return payload
@@ -167,6 +182,7 @@ private final class ReaderModeSharedFontInlinePayloadCache {
 
 private let readerModeReadabilityCSS = Readability.shared.css
 private let readerModeSharedFontInlinePayloadCache = ReaderModeSharedFontInlinePayloadCache()
+private let readerModeSharedFontBlobPayloadCache = ReaderModeSharedFontBlobPayloadCache()
 private let readerModeSharedFontFamilyRegex = try! NSRegularExpression(
     pattern: #"font-family:\s*['"]YuKyokasho['"]\s*;"#,
     options: []
@@ -1539,7 +1555,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard !pageURL.isReaderURLLoaderURL else {
             return
         }
-        guard let blobPayload = ReaderModeSharedFontBlobPayload(
+        guard let blobPayload = readerModeSharedFontBlobPayloadCache.payload(
             base64CSS: await resolveSharedReaderFontCSSBase64()
         ) else {
             return
