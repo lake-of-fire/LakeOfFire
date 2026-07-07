@@ -60,11 +60,6 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
-private func readerFontPayloadHash(_ payload: String) -> String {
-    let digest = SHA256.hash(data: Data(payload.utf8))
-    return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
-}
-
 private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
     guard let rawValue = UserDefaults.standard.string(forKey: "readerFont") else {
         return true
@@ -101,9 +96,39 @@ private struct ReaderModeSharedFontInlinePayload {
     var fontValues: ReaderModeSharedFontCSSValues
 }
 
+private struct ReaderModeSharedFontBlobPayload {
+    var base64CSS: String
+    var identity: String
+
+    init?(base64CSS: String?) {
+        guard let base64CSS, !base64CSS.isEmpty else { return nil }
+        self.base64CSS = base64CSS
+        self.identity = Self.identity(for: base64CSS)
+    }
+
+    private static func identity(for payload: String) -> String {
+        ReaderModeSharedFontPayloadIdentity.shortSHA256Hex(for: payload)
+    }
+}
+
 private struct ReaderModeSharedFontInlinePayloadKey: Equatable {
-    var css: String
+    var cssIdentity: String
     var fontValues: ReaderModeSharedFontCSSValues
+}
+
+private enum ReaderModeSharedFontPayloadIdentity {
+    private static let hexDigits = Array("0123456789abcdef".utf8)
+
+    static func shortSHA256Hex(for payload: String) -> String {
+        let digest = SHA256.hash(data: Data(payload.utf8))
+        var hex = [UInt8]()
+        hex.reserveCapacity(16)
+        for byte in digest.prefix(8) {
+            hex.append(hexDigits[Int(byte >> 4)])
+            hex.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: hex, as: UTF8.self)
+    }
 }
 
 private final class ReaderModeSharedFontInlinePayloadCache {
@@ -112,7 +137,10 @@ private final class ReaderModeSharedFontInlinePayloadCache {
     private var cachedPayload: ReaderModeSharedFontInlinePayload?
 
     func payload(css: String, fontValues: ReaderModeSharedFontCSSValues) -> ReaderModeSharedFontInlinePayload {
-        let key = ReaderModeSharedFontInlinePayloadKey(css: css, fontValues: fontValues)
+        let key = ReaderModeSharedFontInlinePayloadKey(
+            cssIdentity: ReaderModeSharedFontPayloadIdentity.shortSHA256Hex(for: css),
+            fontValues: fontValues
+        )
         lock.lock()
         if cachedKey == key, let cachedPayload {
             lock.unlock()
@@ -122,10 +150,13 @@ private final class ReaderModeSharedFontInlinePayloadCache {
 
         let combinedCSS = readerModeSharedFontCSSWithVerticalAlias(css)
         let bootstrapScript = """
-        globalThis.manabiReaderFontCSSText = \(readerModeJSONStringLiteral(combinedCSS));
+        {
+        const style = document.getElementById('mnb-custom-fonts-inline');
+        globalThis.manabiReaderFontCSSText = style?.textContent || '';
         globalThis.manabiReaderFontInjectionMode = 'inline';
         globalThis.manabiHorizontalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.horizontalFamily));
         globalThis.manabiVerticalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.verticalFamily));
+        }
         """
         let payload = ReaderModeSharedFontInlinePayload(
             combinedCSS: combinedCSS,
@@ -1517,10 +1548,12 @@ public class ReaderModeViewModel: ObservableObject {
         guard !pageURL.isReaderURLLoaderURL else {
             return
         }
-        guard let base64 = await resolveSharedReaderFontCSSBase64() else {
+        guard let blobPayload = ReaderModeSharedFontBlobPayload(
+            base64CSS: await resolveSharedReaderFontCSSBase64()
+        ) else {
             return
         }
-        let fontHash = readerFontPayloadHash(base64)
+        let fontHash = blobPayload.identity
         let js = """
             (function() {
                 const postLog = (_message) => {};
@@ -1671,7 +1704,7 @@ public class ReaderModeViewModel: ObservableObject {
         try? await scriptCaller.evaluateJavaScript(
             js,
             arguments: [
-                "fontCSSBase64": base64,
+                "fontCSSBase64": blobPayload.base64CSS,
                 "fontHash": fontHash,
             ],
             duplicateInMultiTargetFrames: true
