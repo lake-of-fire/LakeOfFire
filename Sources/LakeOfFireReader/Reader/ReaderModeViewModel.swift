@@ -88,16 +88,179 @@ private func currentReaderFontCSSValues() -> (
     )
 }
 
+private struct ReaderModeSharedFontCSSValues: Equatable {
+    var horizontalFamily: String
+    var verticalFamily: String
+    var horizontalCSSValue: String
+    var verticalCSSValue: String
+}
+
+private struct ReaderModeSharedFontInlinePayload {
+    var combinedCSS: String
+    var bootstrapScript: String
+    var fontValues: ReaderModeSharedFontCSSValues
+}
+
+private struct ReaderModeSharedFontInlinePayloadKey: Equatable {
+    var css: String
+    var fontValues: ReaderModeSharedFontCSSValues
+}
+
+private final class ReaderModeSharedFontInlinePayloadCache {
+    private let lock = NSLock()
+    private var cachedKey: ReaderModeSharedFontInlinePayloadKey?
+    private var cachedPayload: ReaderModeSharedFontInlinePayload?
+
+    func payload(css: String, fontValues: ReaderModeSharedFontCSSValues) -> ReaderModeSharedFontInlinePayload {
+        let key = ReaderModeSharedFontInlinePayloadKey(css: css, fontValues: fontValues)
+        lock.lock()
+        if cachedKey == key, let cachedPayload {
+            lock.unlock()
+            return cachedPayload
+        }
+        lock.unlock()
+
+        let combinedCSS = readerModeSharedFontCSSWithVerticalAlias(css)
+        let bootstrapScript = """
+        globalThis.manabiReaderFontCSSText = \(readerModeJSONStringLiteral(combinedCSS));
+        globalThis.manabiReaderFontInjectionMode = 'inline';
+        globalThis.manabiHorizontalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.horizontalFamily));
+        globalThis.manabiVerticalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.verticalFamily));
+        """
+        let payload = ReaderModeSharedFontInlinePayload(
+            combinedCSS: combinedCSS,
+            bootstrapScript: bootstrapScript,
+            fontValues: fontValues
+        )
+
+        lock.lock()
+        cachedKey = key
+        cachedPayload = payload
+        lock.unlock()
+        return payload
+    }
+}
+
 private let readerModeReadabilityCSS = Readability.shared.css
+private let readerModeSharedFontInlinePayloadCache = ReaderModeSharedFontInlinePayloadCache()
+private let readerModeSharedFontFamilyRegex = try! NSRegularExpression(
+    pattern: #"font-family:\s*['"]YuKyokasho['"]\s*;"#,
+    options: []
+)
+
+private enum ReaderModeJSONStringByte {
+    static let backspace = UInt8(ascii: "\u{08}")
+    static let tab = UInt8(ascii: "\t")
+    static let newline = UInt8(ascii: "\n")
+    static let formFeed = UInt8(ascii: "\u{0C}")
+    static let carriageReturn = UInt8(ascii: "\r")
+    static let doubleQuote = UInt8(ascii: "\"")
+    static let backslash = UInt8(ascii: "\\")
+    static let lowercaseB = UInt8(ascii: "b")
+    static let lowercaseF = UInt8(ascii: "f")
+    static let lowercaseN = UInt8(ascii: "n")
+    static let lowercaseR = UInt8(ascii: "r")
+    static let lowercaseT = UInt8(ascii: "t")
+    static let lowercaseU = UInt8(ascii: "u")
+    static let digit0 = UInt8(ascii: "0")
+    static let digit2 = UInt8(ascii: "2")
+    static let digit8 = UInt8(ascii: "8")
+    static let digit9 = UInt8(ascii: "9")
+    static let utf8LineSeparator0 = UInt8(0xE2)
+    static let utf8LineSeparator1 = UInt8(0x80)
+    static let utf8LineSeparator2 = UInt8(0xA8)
+    static let utf8ParagraphSeparator2 = UInt8(0xA9)
+    static let hexDigits = Array("0123456789ABCDEF".utf8)
+}
 
 private func readerModeJSONStringLiteral(_ string: String) -> String {
-    guard let data = try? JSONSerialization.data(withJSONObject: [string], options: []),
-          let json = String(data: data, encoding: .utf8),
-          json.first == "[",
-          json.last == "]" else {
-        return "\"\""
+    let source = string.utf8
+    var literal = [UInt8]()
+    literal.reserveCapacity(source.count + 2)
+    literal.append(ReaderModeJSONStringByte.doubleQuote)
+
+    var index = source.startIndex
+    while index < source.endIndex {
+        let byte = source[index]
+        switch byte {
+        case ReaderModeJSONStringByte.backspace:
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(ReaderModeJSONStringByte.lowercaseB)
+        case ReaderModeJSONStringByte.tab:
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(ReaderModeJSONStringByte.lowercaseT)
+        case ReaderModeJSONStringByte.newline:
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(ReaderModeJSONStringByte.lowercaseN)
+        case ReaderModeJSONStringByte.formFeed:
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(ReaderModeJSONStringByte.lowercaseF)
+        case ReaderModeJSONStringByte.carriageReturn:
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(ReaderModeJSONStringByte.lowercaseR)
+        case ReaderModeJSONStringByte.doubleQuote, ReaderModeJSONStringByte.backslash:
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(byte)
+        case 0x00...0x1F:
+            appendReaderModeJSONUnicodeEscape(byte, to: &literal)
+        case ReaderModeJSONStringByte.utf8LineSeparator0
+            where readerModeJSONLineOrParagraphSeparatorThirdByte(in: source, at: index) != nil:
+            let separatorThirdByte = readerModeJSONLineOrParagraphSeparatorThirdByte(in: source, at: index)!
+            literal.append(ReaderModeJSONStringByte.backslash)
+            literal.append(ReaderModeJSONStringByte.lowercaseU)
+            literal.append(ReaderModeJSONStringByte.digit2)
+            literal.append(ReaderModeJSONStringByte.digit0)
+            literal.append(ReaderModeJSONStringByte.digit2)
+            literal.append(separatorThirdByte == ReaderModeJSONStringByte.utf8LineSeparator2
+                           ? ReaderModeJSONStringByte.digit8
+                           : ReaderModeJSONStringByte.digit9)
+            index = source.index(index, offsetBy: 2)
+        default:
+            literal.append(byte)
+        }
+        source.formIndex(after: &index)
     }
-    return String(json.dropFirst().dropLast())
+
+    literal.append(ReaderModeJSONStringByte.doubleQuote)
+    return String(decoding: literal, as: UTF8.self)
+}
+
+private func readerModeJSONLineOrParagraphSeparatorThirdByte(
+    in source: String.UTF8View,
+    at index: String.UTF8View.Index
+) -> UInt8? {
+    let secondIndex = source.index(after: index)
+    guard secondIndex < source.endIndex,
+          source[secondIndex] == ReaderModeJSONStringByte.utf8LineSeparator1 else {
+        return nil
+    }
+    let thirdIndex = source.index(after: secondIndex)
+    guard thirdIndex < source.endIndex,
+          source[thirdIndex] == ReaderModeJSONStringByte.utf8LineSeparator2
+            || source[thirdIndex] == ReaderModeJSONStringByte.utf8ParagraphSeparator2 else {
+        return nil
+    }
+    return source[thirdIndex]
+}
+
+private func appendReaderModeJSONUnicodeEscape(_ byte: UInt8, to output: inout [UInt8]) {
+    output.append(ReaderModeJSONStringByte.backslash)
+    output.append(ReaderModeJSONStringByte.lowercaseU)
+    output.append(ReaderModeJSONStringByte.digit0)
+    output.append(ReaderModeJSONStringByte.digit0)
+    output.append(ReaderModeJSONStringByte.hexDigits[Int(byte >> 4)])
+    output.append(ReaderModeJSONStringByte.hexDigits[Int(byte & 0xF)])
+}
+
+private func readerModeSharedFontCSSWithVerticalAlias(_ css: String) -> String {
+    let fullRange = NSRange(css.startIndex..<css.endIndex, in: css)
+    let yokoCSS = readerModeSharedFontFamilyRegex.stringByReplacingMatches(
+        in: css,
+        options: [],
+        range: fullRange,
+        withTemplate: "font-family: 'YuKyokasho Yoko';"
+    )
+    return yokoCSS == css ? css : css + "\n" + yokoCSS
 }
 
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
@@ -138,19 +301,17 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
 
 internal func upsertInlineSharedReaderFontCSS(_ css: String, in doc: SwiftSoup.Document) throws {
     guard !css.isEmpty else { return }
-    let fontValues = currentReaderFontCSSValues()
-    let yokoCSS = css.replacingOccurrences(
-        of: #"font-family:\s*['"]YuKyokasho['"]\s*;"#,
-        with: "font-family: 'YuKyokasho Yoko';",
-        options: .regularExpression
+    let rawFontValues = currentReaderFontCSSValues()
+    let payload = readerModeSharedFontInlinePayloadCache.payload(
+        css: css,
+        fontValues: ReaderModeSharedFontCSSValues(
+            horizontalFamily: rawFontValues.horizontalFamily,
+            verticalFamily: rawFontValues.verticalFamily,
+            horizontalCSSValue: rawFontValues.horizontalCSSValue,
+            verticalCSSValue: rawFontValues.verticalCSSValue
+        )
     )
-    let combinedCSS = yokoCSS == css ? css : css + "\n" + yokoCSS
-    let bootstrapScript = """
-    globalThis.manabiReaderFontCSSText = \(readerModeJSONStringLiteral(combinedCSS));
-    globalThis.manabiReaderFontInjectionMode = 'inline';
-    globalThis.manabiHorizontalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.horizontalFamily));
-    globalThis.manabiVerticalFontFamilyName = \(readerModeJSONStringLiteral(fontValues.verticalFamily));
-    """
+    let fontValues = payload.fontValues
 
     let head: Element
     if let existingHead = doc.head() {
@@ -175,7 +336,7 @@ internal func upsertInlineSharedReaderFontCSS(_ css: String, in doc: SwiftSoup.D
         try head.appendChild(styleElement)
     }
     try styleElement.attr("data-mnb-font-source", "inline")
-    try styleElement.text(combinedCSS)
+    try styleElement.text(payload.combinedCSS)
 
     let scriptElement: Element
     if let existingScript = try doc.getElementById("mnb-custom-fonts-inline-bootstrap") {
@@ -185,7 +346,7 @@ internal func upsertInlineSharedReaderFontCSS(_ css: String, in doc: SwiftSoup.D
         try scriptElement.attr("id", "mnb-custom-fonts-inline-bootstrap")
         try head.appendChild(scriptElement)
     }
-    try scriptElement.text(bootstrapScript)
+    try scriptElement.text(payload.bootstrapScript)
 
     if let htmlElement = try doc.getElementsByTag("html").first() {
         try htmlElement.attr("data-mnb-horizontal-font-family", fontValues.horizontalFamily)
