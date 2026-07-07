@@ -2480,17 +2480,13 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
 
-            let processedSegmentCount = (try? doc.getElementsByTag("m-m").size()) ?? 0
-            let processedBodyExists = doc.body() != nil
             let processedIsEbook = ((try? doc.body()?.attr("data-is-ebook")) ?? "") == "true"
-            let processedContentTextLength = ((try? doc.getElementById("reader-content")?.text()) ?? "").count
             let shouldInjectProcessedStyles = !(processedIsEbook && readerModeDisableInjectedStylingForEbookLayoutDiagnosis)
             let processedBodyClasses = (try? doc.body()?.className()) ?? ""
             let processedBodyClassesForFrameInjection: String = {
                 let trimmed = processedBodyClasses.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? "readability-mode" : trimmed
             }()
-            let processedTitleDisplayStyle = (try? doc.getElementById("reader-title")?.attr("style")) ?? ""
             let processedStyleTextForFrameInjection: String = {
                 guard shouldInjectProcessedStyles else {
                     return ""
