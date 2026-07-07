@@ -171,6 +171,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
+    private var lastNonEBookReaderProgress: (url: URL, fractionalCompletion: Float)?
     private let trackingSizeCache = PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
@@ -1010,6 +1011,30 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 
     private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
         let normalizedReason = result.reason.lowercased()
+        let messageURL = result.mainDocumentURL ?? readerContent.pageURL
+        let isEBookProgressMessage = messageURL.isEBookURL || readerContent.pageURL.isEBookURL
+        if !isEBookProgressMessage,
+           normalizedReason == "navigation" {
+            lastNonEBookReaderProgress = (messageURL, result.fractionalCompletion)
+            return
+        }
+        if !isEBookProgressMessage,
+           normalizedReason == "live-scroll" {
+            let previousProgress = lastNonEBookReaderProgress
+            lastNonEBookReaderProgress = (messageURL, result.fractionalCompletion)
+            if let previousProgress,
+               previousProgress.url == messageURL,
+               previousProgress.fractionalCompletion != result.fractionalCompletion {
+                let isForwardProgress = result.fractionalCompletion > previousProgress.fractionalCompletion
+                setHideNavigationDueToScroll(
+                    isForwardProgress,
+                    reason: normalizedReason,
+                    source: "updateReadingProgress",
+                    direction: isForwardProgress ? "forward" : "backward"
+                )
+            }
+            return
+        }
         if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
             let recentPageMotionHide = lastNavigationVisibilityEvent.flatMap { event -> (age: TimeInterval, source: String?, direction: String?)? in
                 let isPageMotion =
