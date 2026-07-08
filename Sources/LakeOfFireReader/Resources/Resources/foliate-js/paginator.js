@@ -4803,29 +4803,32 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) {
             return;
         }
-        const shouldIncludePageTurnVisibleRange =
+        const shouldProbePageTurnVisibleSentinels =
             reason === 'page'
             && manabiDocumentIsProcessedEbook(this.#view?.document)
+        const pageTurnVisibleSentinelIDs = shouldProbePageTurnVisibleSentinels
+            ? this.#geometryVisibleSentinelIDs()
+            : []
+        const hasPageTurnVisibleSentinelRange = pageTurnVisibleSentinelIDs.length > 0
         const canUseMetricsOnlyRelocate =
             knownMetrics
             && (reason === 'navigation' || reason === 'anchor' || reason === 'page' || reason === 'blank-correction')
-            && !shouldIncludePageTurnVisibleRange
-        const pageTurnVisibleSentinelIDs = shouldIncludePageTurnVisibleRange
-            ? this.#geometryVisibleSentinelIDs()
-            : []
+            && !hasPageTurnVisibleSentinelRange
         const range = canUseMetricsOnlyRelocate
             ? null
-            : (shouldIncludePageTurnVisibleRange
+            : (hasPageTurnVisibleSentinelRange
                 ? this.#rangeForVisibleSentinelIDs(pageTurnVisibleSentinelIDs)
                 : await this.#getVisibleRange())
         const visibleRangeRect = range?.getBoundingClientRect?.() ?? null
         const visibleRangeDiagnostics = {
-            visibleRangeSource: canUseMetricsOnlyRelocate ? 'metrics-only' : (range ? (shouldIncludePageTurnVisibleRange ? 'page-sentinel-geometry-range' : 'range') : 'none'),
+            visibleRangeSource: canUseMetricsOnlyRelocate ? 'metrics-only' : (range ? (hasPageTurnVisibleSentinelRange ? 'page-sentinel-geometry-range' : 'range') : 'none'),
             visibleRangeCollapsed: range?.collapsed ?? null,
             visibleRangeRectLeft: visibleRangeRect ? manabiRound(visibleRangeRect.left, 2) : null,
             visibleRangeRectTop: visibleRangeRect ? manabiRound(visibleRangeRect.top, 2) : null,
             visibleRangeRectWidth: visibleRangeRect ? manabiRound(visibleRangeRect.width, 2) : null,
             visibleRangeRectHeight: visibleRangeRect ? manabiRound(visibleRangeRect.height, 2) : null,
+            pageTurnSentinelProbeEnabled: shouldProbePageTurnVisibleSentinels,
+            pageTurnSentinelRangeAvailable: hasPageTurnVisibleSentinelRange,
             visibleSentinelCount: pageTurnVisibleSentinelIDs.length,
             firstVisibleSentinelID: pageTurnVisibleSentinelIDs[0] ?? null,
             lastVisibleSentinelID: pageTurnVisibleSentinelIDs[pageTurnVisibleSentinelIDs.length - 1] ?? null,
@@ -4839,11 +4842,10 @@ export class Paginator extends HTMLElement {
                 reason,
                 pageTurnDirection: this.#pendingPageTurnDirection,
                 canUseMetricsOnlyRelocate,
-                shouldIncludePageTurnVisibleRange,
                 ...visibleRangeDiagnostics,
             })
         }
-        const anchorRange = shouldIncludePageTurnVisibleRange ? null : range
+        const anchorRange = reason === 'page' ? null : range
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = anchorRange
@@ -4865,7 +4867,7 @@ export class Paginator extends HTMLElement {
             range,
             index
         }
-        if (shouldIncludePageTurnVisibleRange && pageTurnVisibleSentinelIDs.length > 0) {
+        if (hasPageTurnVisibleSentinelRange) {
             detail.visibleSentinelIDs = pageTurnVisibleSentinelIDs
             detail.visibleRangeSource = 'page-sentinel-geometry-range'
         }

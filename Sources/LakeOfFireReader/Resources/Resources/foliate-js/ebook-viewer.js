@@ -141,6 +141,11 @@ const manabiSegmentMetadataSidecarSnapshot = (doc) => {
         ? Array.from(doc.getElementsByTagName('script') || [])
             .filter(script => script?.id === 'mnb-segment-metadata' || script?.hasAttribute?.('data-mnb-seg-meta'))
         : Array.from(doc.querySelectorAll?.(sidecarSelector) || []);
+    const cachedSnapshot = doc.__manabiFoliateSegmentMetadataSidecarSnapshot;
+    if (cachedSnapshot?.sidecars?.length === sidecars.length
+        && sidecars.every((sidecar, index) => cachedSnapshot.sidecars[index] === sidecar)) {
+        return cachedSnapshot;
+    }
     const sidecarTexts = sidecars.map(sidecar => sidecar.textContent || '');
     const sidecarSignature = sidecarTexts.map((text) => {
         let hash = 2166136261;
@@ -150,8 +155,16 @@ const manabiSegmentMetadataSidecarSnapshot = (doc) => {
         }
         return `${text.length}:${(hash >>> 0).toString(36)}`;
     }).join('|');
-    return { sidecars, sidecarTexts, sidecarSignature };
+    const snapshot = { sidecars, sidecarTexts, sidecarSignature };
+    doc.__manabiFoliateSegmentMetadataSidecarSnapshot = snapshot;
+    return snapshot;
 };
+
+const sidecarNumberArray = (value) => Array.isArray(value)
+    ? value.filter(item => typeof item === 'number' && Number.isFinite(item))
+    : [];
+
+const sidecarStringValue = (value) => typeof value === 'string' ? value : '';
 
 const directSegmentMetadataBootstrap = (doc) => {
     if (!doc) return emptySegmentMetadataBootstrap();
@@ -165,13 +178,18 @@ const directSegmentMetadataBootstrap = (doc) => {
         return {
             byID: cachedByID,
             idsByEntryID: doc.__manabiFoliateSegmentIDsByEntryID || new Map(),
+            segmentIDsBySentenceID: doc.__manabiFoliateSegmentIDsBySentenceID || new Map(),
+            segmentIDsByParagraphID: doc.__manabiFoliateSegmentIDsByParagraphID || new Map(),
             segments: doc.__manabiFoliateSegmentMetadataSegments || [],
             aggregates: null,
-            sentenceArchive: new Map(),
+            sentenceArchive: doc.__manabiFoliateSidecarSentenceArchive || new Map(),
         };
     }
     const byID = new Map();
     const idsByEntryID = new Map();
+    const segmentIDsBySentenceID = new Map();
+    const segmentIDsByParagraphID = new Map();
+    const sentenceArchive = new Map();
     const segments = [];
     const indexEntryIDs = (segmentID, entryIDs) => {
         if (typeof segmentID !== 'string' || segmentID.length === 0 || !Array.isArray(entryIDs)) return;
@@ -182,9 +200,44 @@ const directSegmentMetadataBootstrap = (doc) => {
             idsByEntryID.get(key).add(segmentID);
         }
     };
+    const indexScopeID = (target, scopeID, segmentID) => {
+        if (typeof scopeID !== 'string' || scopeID.length === 0) return;
+        if (typeof segmentID !== 'string' || segmentID.length === 0) return;
+        if (!target.has(scopeID)) target.set(scopeID, []);
+        target.get(scopeID).push(segmentID);
+    };
+    const addPrebuiltSentenceArchive = (payload) => {
+        const entries = Array.isArray(payload?.e) ? payload.e : [];
+        if (entries.length === 0) return false;
+        let didAdd = false;
+        for (const rawEntry of entries) {
+            const sentenceID = sidecarStringValue(rawEntry?.sid);
+            if (!sentenceID) continue;
+            const sentenceHTML = sidecarStringValue(rawEntry?.html);
+            const sentenceJMDictIDs = sidecarNumberArray(rawEntry?.j);
+            const segments = Array.isArray(rawEntry?.seg)
+                ? rawEntry.seg.map(rawSegment => ({
+                    jmdictEntryIds: sidecarNumberArray(rawSegment?.j),
+                    jmnedictEntryIds: sidecarNumberArray(rawSegment?.n),
+                    searchString: sidecarStringValue(rawSegment?.s),
+                    segmentIdentifier: sidecarStringValue(rawSegment?.id),
+                    exampleSentence: sentenceHTML,
+                    exampleSentenceJMDictIDs: sentenceJMDictIDs,
+                })).filter(segment => segment.segmentIdentifier.length > 0)
+                : [];
+            sentenceArchive.set(sentenceID, {
+                sentenceHTML,
+                sentenceJMDictIDs,
+                segments,
+            });
+            didAdd = true;
+        }
+        return didAdd;
+    };
     for (const sidecarText of sidecarTexts) {
         try {
             const payload = JSON.parse(sidecarText || '{}');
+            const hasPrebuiltSentenceArchive = addPrebuiltSentenceArchive(payload);
             for (const segment of manabiExpandSegmentMetadataPayload(payload)) {
                 if (!segment?.i) continue;
                 const aliases = manabiSegmentMetadataAliases(segment);
@@ -194,6 +247,15 @@ const directSegmentMetadataBootstrap = (doc) => {
                     indexEntryIDs(alias, segment.n);
                 }
                 segments.push(segment);
+                indexScopeID(segmentIDsBySentenceID, segment.sentenceID, segment.i);
+                indexScopeID(segmentIDsByParagraphID, segment.paragraphID || segment.pid, segment.i);
+                const archiveEntry = hasPrebuiltSentenceArchive && typeof segment.sentenceID === 'string' && segment.sentenceID.length > 0
+                    ? sentenceArchive.get(segment.sentenceID)
+                    : null;
+                if (archiveEntry) {
+                    segment.exampleSentence = archiveEntry.sentenceHTML;
+                    segment.exampleSentenceJMDictIDs = archiveEntry.sentenceJMDictIDs;
+                }
             }
         } catch (_error) {}
     }
@@ -201,13 +263,18 @@ const directSegmentMetadataBootstrap = (doc) => {
     doc.__manabiFoliateSegmentMetadataSignature = sidecarSignature;
     doc.__manabiFoliateSegmentMetadataByID = byID;
     doc.__manabiFoliateSegmentIDsByEntryID = idsByEntryID;
+    doc.__manabiFoliateSegmentIDsBySentenceID = segmentIDsBySentenceID;
+    doc.__manabiFoliateSegmentIDsByParagraphID = segmentIDsByParagraphID;
     doc.__manabiFoliateSegmentMetadataSegments = segments;
+    doc.__manabiFoliateSidecarSentenceArchive = sentenceArchive;
     return {
         byID,
         idsByEntryID,
+        segmentIDsBySentenceID,
+        segmentIDsByParagraphID,
         segments,
         aggregates: null,
-        sentenceArchive: new Map(),
+        sentenceArchive,
     };
 };
 
@@ -1645,29 +1712,33 @@ const getLoadedEbookDocuments = (explicitDoc = null) => {
 
 const applyNavigationHiddenVisualStateToEbookBody = (body, hidden) => {
     if (!body?.style) return false;
-    const automaticLearningVisibility = body.dataset?.mnbLearningStatusVisibility === 'automatic';
-    const shouldDimHighlights = hidden && automaticLearningVisibility;
     const previousState = body.dataset?.mnbNavigationHiddenDueToScroll ?? null;
     const nextState = hidden ? 'true' : 'false';
     let changed = previousState !== nextState;
+    if (body.dataset) {
+        body.dataset.mnbPreviousNavigationHiddenDueToScroll = previousState !== nextState
+            ? (previousState ?? nextState)
+            : nextState;
+    }
     if (body.dataset && previousState !== nextState) {
         body.dataset.mnbNavigationHiddenDueToScroll = nextState;
     }
+    // Keep ebook content navigation state data-driven. Adding nav-hidden classes
+    // to the chapter body makes WebKit re-match broad reader CSS against the
+    // whole section on every page turn; the ebook content body only carries
+    // state, and the content script applies any visual dimming to painted
+    // visible segments.
     for (const className of ['nav-hidden', 'nav-hidden-due-to-scroll']) {
-        if (body.classList?.contains?.(className) !== hidden) {
-            body.classList?.toggle?.(className, hidden);
+        if (body.classList?.contains?.(className)) {
+            body.classList?.remove?.(className);
             changed = true;
         }
     }
-    const desiredValues = shouldDimHighlights
-        ? {
-            '--mnb-highlight-fill-opacity': '0',
-            '--mnb-tracking-highlight-alpha': '0.5',
-            '--mnb-jlpt-underline-alpha': '0.4',
-            '--mnb-overlay-opacity': '1',
-            '--mnb-tracking-highlight-opacity': '0.575',
-        }
-        : null;
+    // Do not drive ebook highlight dimming by changing inherited custom
+    // properties on the chapter body. Those variables are referenced by many
+    // segment gradients and make WebKit recalculate styles across the whole
+    // section on every page turn. Clear old values from previous builds, but
+    // keep steady-state page-turn updates to the dataset above.
     for (const property of [
         '--mnb-highlight-fill-opacity',
         '--mnb-tracking-highlight-alpha',
@@ -1675,17 +1746,17 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden) => {
         '--mnb-overlay-opacity',
         '--mnb-tracking-highlight-opacity',
     ]) {
-        const value = desiredValues?.[property] ?? '';
-        if (value) {
-            if (body.style.getPropertyValue(property) !== value) {
-                body.style.setProperty(property, value);
-                changed = true;
-            }
-        } else if (body.style.getPropertyValue(property)) {
+        if (body.style.getPropertyValue(property)) {
             body.style.removeProperty(property);
             changed = true;
         }
     }
+    try {
+        const refreshResult = body.ownerDocument?.defaultView?.manabi_refreshEbookTrackingPaintNavigationState?.(hidden);
+        if (refreshResult?.mutatedCount > 0) {
+            changed = true;
+        }
+    } catch (_error) {}
     return changed;
 };
 
@@ -3110,6 +3181,8 @@ const mapLikeOrEmpty = (value) => (
 const normalizeSegmentMetadataBootstrap = (bootstrap) => ({
     byID: mapLikeOrEmpty(bootstrap?.byID),
     idsByEntryID: mapLikeOrEmpty(bootstrap?.idsByEntryID),
+    segmentIDsBySentenceID: mapLikeOrEmpty(bootstrap?.segmentIDsBySentenceID),
+    segmentIDsByParagraphID: mapLikeOrEmpty(bootstrap?.segmentIDsByParagraphID),
     segments: Array.isArray(bootstrap?.segments) ? bootstrap.segments : [],
     aggregates: bootstrap?.aggregates || null,
     sentenceArchive: mapLikeOrEmpty(bootstrap?.sentenceArchive),
@@ -3118,6 +3191,14 @@ const normalizeSegmentMetadataBootstrap = (bootstrap) => ({
 const segmentMetadataBootstrap = (doc) => {
     if (!doc) {
         return emptySegmentMetadataBootstrap();
+    }
+    if (doc.body?.dataset?.isEbook === 'true' && typeof directSegmentMetadataBootstrap === 'function') {
+        try {
+            const directMetadata = normalizeSegmentMetadataBootstrap(directSegmentMetadataBootstrap(doc));
+            if (directMetadata.byID.size > 0) {
+                return directMetadata;
+            }
+        } catch (_error) {}
     }
     const readerBootstrap = doc.defaultView?.manabi_bootstrapSegmentMetadata;
     if (typeof readerBootstrap === 'function') {
@@ -4340,12 +4421,15 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects, bootstrap })
         : null;
-    const orderedDocumentWindow = isEbookDoc
+    const orderedDocumentWindowCandidate = isEbookDoc
         && useOrderedDocumentWindow === true
         && !expandedRangeResult
         && normalizedSeedSegmentNodes.length === 0
         && !!visibleBounds
         ? orderedSeedWindowForVisibleBounds(orderedSegmentNodesForDocument(doc).nodes, visibleBounds, { margin: 8 })
+        : null;
+    const orderedDocumentWindow = (orderedDocumentWindowCandidate?.segmentNodes?.length ?? 0) > 0
+        ? orderedDocumentWindowCandidate
         : null;
     let viewportSample = null;
     const shouldSampleEbookViewport =
@@ -5964,63 +6048,15 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn,
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know {
-        background: transparent !important;
-    }
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-unk > m-t,
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-fam > m-t,
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-learn > m-t,
-    body.reader-vertical-writing[data-mnb-tracking-status-applying="true"] m-m.mnb-know > m-t {
-        background: transparent !important;
-        transition: none !important;
-    }
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) ruby > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-fam:not(.mnb-selected) ruby > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) ruby > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-know:not(.mnb-selected) ruby > m-t {
-        border-radius: var(--segment-match-border-radius);
-        box-decoration-break: clone;
-        -webkit-box-decoration-break: clone;
-        transition:
-            --word-tracking-unknown-highlight-nav-conditional 350ms ease,
-            --word-tracking-familiar-highlight-nav-conditional 350ms ease,
-            --word-tracking-learning-highlight-nav-conditional 350ms ease,
-            --word-tracking-known-highlight-nav-conditional 350ms ease;
-    }
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-unk:not(.mnb-selected) ruby > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%) !important;
-    }
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m.mnb-fam:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m.mnb-fam:not(.mnb-selected) ruby > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%) !important;
-    }
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m.mnb-learn:not(.mnb-selected) ruby > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%) !important;
-    }
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m.mnb-know:not(.mnb-selected) > m-t,
-    body[data-is-ebook="true"].reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m.mnb-know:not(.mnb-selected) ruby > m-t {
-        background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%) !important;
-    }
     body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected,
-    body.reader-vertical-writing:not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected,
-    body.reader-vertical-writing m-m:active {
+    body.reader-vertical-writing:not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected {
         background: transparent !important;
         background-color: transparent !important;
         background-image: none !important;
         box-shadow: none !important;
     }
     body.reader-vertical-writing:not([data-mnb-native-lookup-highlight-overlay="true"])[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected m-t,
-    body.reader-vertical-writing:not([data-mnb-native-lookup-highlight-overlay="true"]):not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected m-t,
-    body.reader-vertical-writing:not([data-mnb-native-lookup-highlight-overlay="true"]) m-m:active m-t {
+    body.reader-vertical-writing:not([data-mnb-native-lookup-highlight-overlay="true"]):not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected m-t {
         background: var(--theme-selection-color) !important;
         background-color: var(--theme-selection-color) !important;
         background-image: none !important;
@@ -6029,8 +6065,7 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-native-lookup-highlight-overlay="true"] m-m.mnb-selected m-t,
-    body.reader-vertical-writing[data-mnb-native-lookup-highlight-overlay="true"] m-m:active m-t {
+    body.reader-vertical-writing[data-mnb-native-lookup-highlight-overlay="true"] m-m.mnb-selected m-t {
         background: transparent !important;
         background-color: transparent !important;
         background-image: none !important;
@@ -10575,8 +10610,7 @@ class Reader {
                     prepareLookupIndex: false,
                     hydrateStatuses: true,
                     finishInitialCritical: true,
-                    viewportSampleDensity: 'status',
-                    minimumViewportSampleSegmentCount: 8,
+                    useOrderedDocumentWindow: true,
                 }
             );
             const visibleContentState = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult);
@@ -10814,8 +10848,8 @@ class Reader {
             }
         } catch (error) {
         }
-        this.setLoadingIndicator(false, 'didDisplay');
         if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+            this.setLoadingIndicator(false, 'didDisplay');
             markReaderRenderReady('didDisplay.loading-cleared');
         }
         this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
@@ -10831,7 +10865,9 @@ class Reader {
         } catch (error) {
             console.error(error);
         }
-        globalThis.__manabiPostReaderDocStateEvent?.('didDisplay.loadingCleared');
+        if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+            globalThis.__manabiPostReaderDocStateEvent?.('didDisplay.loadingCleared');
+        }
         if (didDisplayVisibleContentState?.hasRenderableContent === true) {
             this.#resolveInitialDisplaySettled('didDisplay.loading-cleared');
             this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');
@@ -10844,9 +10880,11 @@ class Reader {
                 postFrameSettleResult,
             });
         }, 250);
-        try {
-            globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
-        } catch (_error) {}
+        if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+            try {
+                globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
+            } catch (_error) {}
+        }
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
             this.navHUD?.setHideNavigationDueToScroll?.(true, 'mark-read.didDisplay.preserve-hidden', {
                 stage: 'before-raf',
@@ -11212,11 +11250,12 @@ class Reader {
         const collectRelocatedVisibleTargets = ({
             postLookupTargets = true,
             hydrateStatuses = true,
+            hydrateSynchronously = null,
             markerReason = 'visible-targets',
         } = {}) => {
             const isPageRelocate = reason === 'page';
             const pageTurnHydrationOptions = {
-                synchronous: !isPageRelocate,
+                synchronous: hydrateSynchronously === null ? !isPageRelocate : hydrateSynchronously === true,
                 adjacentSegmentCount: 0,
                 allowPartialTrackedWords: isPageRelocate,
                 retainHiddenEbookStatusClasses: isPageRelocate,
@@ -11326,12 +11365,31 @@ class Reader {
             && reason === 'page'
             && document.body?.classList?.contains?.('loading') !== true;
         const relocateVisibleTargetGeneration = this.visiblePageCollectionGeneration;
-        if (!isLookupNavigationPageTurn && !shouldDeferVisibleTargetCollection) {
-            collectRelocatedVisibleTargets();
+        let postedPageTurnDisplayReady = false;
+        if (!isLookupNavigationPageTurn) {
+            if (shouldDeferVisibleTargetCollection) {
+                postNativeLookupPageTurnDisplayReady(`relocate:${reason ?? 'unknown'}`);
+                postedPageTurnDisplayReady = true;
+                manabiTimelineMark('relocate.visible-targets.immediateLookupOnly', {
+                    reason: reason ?? null,
+                    generation: relocateVisibleTargetGeneration,
+                    pageTurnDirection: detail?.pageTurnDirection ?? null,
+                });
+                collectRelocatedVisibleTargets({
+                    postLookupTargets: true,
+                    hydrateStatuses: false,
+                    markerReason: 'visible-targets-immediate',
+                });
+            } else {
+                collectRelocatedVisibleTargets();
+            }
         }
         await this.navHUD?.handleRelocate(detail);
         if (shouldDeferVisibleTargetCollection) {
-            postNativeLookupPageTurnDisplayReady(`relocate:${reason ?? 'unknown'}`);
+            if (!postedPageTurnDisplayReady) {
+                postNativeLookupPageTurnDisplayReady(`relocate:${reason ?? 'unknown'}`);
+                postedPageTurnDisplayReady = true;
+            }
             const scheduledAt = typeof performanceNowMs === 'function'
                 ? performanceNowMs()
                 : (globalThis.performance?.now?.() ?? Date.now());
@@ -11363,11 +11421,18 @@ class Reader {
                     });
                     return;
                 }
+                const transitionStage = doc.defaultView?.manabi_prepareEbookTrackingPaintNavigationTransition?.({
+                    reason: `relocate.${reason ?? 'unknown'}`,
+                });
                 collectRelocatedVisibleTargets({
                     postLookupTargets: true,
                     hydrateStatuses: true,
+                    hydrateSynchronously: true,
                     markerReason: 'visible-targets',
                 });
+                if (transitionStage?.staged === true) {
+                    doc.defaultView?.manabi_commitEbookTrackingPaintNavigationTransition?.(transitionStage.token);
+                }
             });
         }
         if (isLookupNavigationPageTurn) {
@@ -12006,7 +12071,15 @@ window.loadEBook = ({
                 && (!!initialRestoreForOpen || !!pendingInitialRestoreAfterOpen);
             if (shouldDeferReaderOpenLoadingClear) {
             } else {
-                reader.setLoadingIndicator(false, 'readerOpenResolved');
+                const settled = reader.settleInitialDisplayFromVisibleContent?.('readerOpenResolved');
+                if (settled?.settled !== true) {
+                    globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.readerOpen.loadingRetained', {
+                        loadToken,
+                        reason: settled?.reason ?? 'not-settled',
+                        visibleSegmentCount: settled?.visibleSegmentCount ?? null,
+                        observedSegmentCount: settled?.observedSegmentCount ?? null,
+                    });
+                }
             }
             if (pendingInitialRestoreAfterOpen) {
                 globalThis.__manabiPendingInitialRestore = null;
