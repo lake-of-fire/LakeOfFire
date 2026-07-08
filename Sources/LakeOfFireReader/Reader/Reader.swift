@@ -1076,21 +1076,35 @@ public struct Reader: View {
             return 0
 #endif
         }()
-        let effectiveObscuredInsets = ignoresSampledTopObscuredInset
-            ? EdgeInsets(
+        let rawSampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
+        let sampledBottomInset = pageURL.isEBookURL ? 0 : rawSampledBottomInset
+        let effectiveObscuredInsets: EdgeInsets? = {
+            if ignoresSampledTopObscuredInset {
+                return EdgeInsets(
+                    top: effectiveSampledTopInset,
+                    leading: obscuredInsets?.leading ?? 0,
+                    bottom: sampledBottomInset,
+                    trailing: obscuredInsets?.trailing ?? 0
+                )
+            }
+            guard pageURL.isEBookURL else {
+                return obscuredInsets
+            }
+            return EdgeInsets(
                 top: effectiveSampledTopInset,
                 leading: obscuredInsets?.leading ?? 0,
-                bottom: obscuredInsets?.bottom ?? 0,
+                bottom: sampledBottomInset,
                 trailing: obscuredInsets?.trailing ?? 0
             )
-            : obscuredInsets
+        }()
         let explicitTopInset = max(0, additionalTopSafeAreaInset ?? 0)
         let effectiveTopInset = pageURL.isEBookURL
             ? max(explicitTopInset, effectiveSampledTopInset)
             : explicitTopInset
         let additionalLeadingInset = max(0, additionalLeadingSafeAreaInset ?? 0)
-        let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
-        let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
+        let additionalBottomInset = pageURL.isEBookURL
+            ? 0
+            : max(0, additionalBottomSafeAreaInset ?? 0)
         let ebookChromeBottomInset = max(
             sampledBottomInset,
             additionalBottomInset,
@@ -1125,7 +1139,7 @@ public struct Reader: View {
             bounces: bounces,
             additionalTopSafeAreaInset: effectiveTopInset,
             additionalLeadingSafeAreaInset: additionalLeadingInset,
-            additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+            additionalBottomSafeAreaInset: pageURL.isEBookURL ? 0 : additionalBottomSafeAreaInset,
             hidesTopScrollEdgeEffect: hidesTopScrollEdgeEffect,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
@@ -1137,38 +1151,6 @@ public struct Reader: View {
             textSelection: $textSelection,
             buildMenu: buildMenu
         )
-        .onAppear {
-            print(
-                "# JUL6 reader.bridge.appear",
-                "pageURL=\(pageURL.absoluteString)",
-                "sampledTop=\((Double(sampledTopInset) * 10).rounded() / 10)",
-                "sampledBottom=\((Double(sampledBottomInset) * 10).rounded() / 10)",
-                "additionalTop=\((Double(explicitTopInset) * 10).rounded() / 10)",
-                "additionalLeading=\((Double(additionalLeadingInset) * 10).rounded() / 10)",
-                "additionalBottom=\((Double(additionalBottomInset) * 10).rounded() / 10)",
-                "ebookChromeBottom=\((Double(ebookChromeBottomInset) * 10).rounded() / 10)",
-                "ebookChromeExtraBottom=\((Double(ebookChromeExtraBottomInset) * 10).rounded() / 10)",
-                "effectiveBottom=\((Double(effectiveBottomInset) * 10).rounded() / 10)",
-                "toolbarBottom=\((Double(effectiveToolbarBottomOffset) * 10).rounded() / 10)",
-                "usesEBook=\(pageURL.isEBookURL)"
-            )
-        }
-        .onChange(of: chromeInsetsTaskID) { _ in
-            print(
-                "# JUL6 reader.bridge.change",
-                "pageURL=\(pageURL.absoluteString)",
-                "sampledTop=\((Double(sampledTopInset) * 10).rounded() / 10)",
-                "sampledBottom=\((Double(sampledBottomInset) * 10).rounded() / 10)",
-                "additionalTop=\((Double(explicitTopInset) * 10).rounded() / 10)",
-                "additionalLeading=\((Double(additionalLeadingInset) * 10).rounded() / 10)",
-                "additionalBottom=\((Double(additionalBottomInset) * 10).rounded() / 10)",
-                "ebookChromeBottom=\((Double(ebookChromeBottomInset) * 10).rounded() / 10)",
-                "ebookChromeExtraBottom=\((Double(ebookChromeExtraBottomInset) * 10).rounded() / 10)",
-                "effectiveBottom=\((Double(effectiveBottomInset) * 10).rounded() / 10)",
-                "toolbarBottom=\((Double(effectiveToolbarBottomOffset) * 10).rounded() / 10)",
-                "usesEBook=\(pageURL.isEBookURL)"
-            )
-        }
 #if os(iOS)
         .readerStatusBarFadeForCurrentDevice(
             top: effectiveSampledTopInset,//    + 8 + 2)

@@ -358,20 +358,33 @@ public class BookLibraryViewModel: ObservableObject {
     @MainActor
     public static func refreshDownloadedEditorsPicks(readerFileManager: ReaderFileManager = .shared) async {
         let (publications, _) = await Self.fetchPublications(from: Self.defaultOPDSURL)
+        await refreshDownloadedEditorsPicks(publications: publications, readerFileManager: readerFileManager)
+    }
+
+    @MainActor
+    static func refreshDownloadedEditorsPicks(
+        publications: [Publication],
+        readerFileManager: ReaderFileManager = .shared
+    ) async {
         guard !publications.isEmpty else { return }
 
         var downloads = Set<Downloadable>()
         for publication in publications {
             guard
                 let downloadURL = publication.downloadURL,
-                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
-                await downloadable.existsLocally()
-            else { continue }
+                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title)
+            else {
+                continue
+            }
+            let existsLocally = await downloadable.existsLocally()
+            guard existsLocally else { continue }
             downloads.insert(downloadable)
         }
         if !downloads.isEmpty {
             await DownloadController.shared.ensureDownloaded(downloads)
-            try? await readerFileManager.refreshAllFilesMetadata(force: true)
+            for download in downloads {
+                _ = try? await readerFileManager.ensureImported(downloadable: download)
+            }
         }
     }
 
@@ -432,8 +445,9 @@ public class BookLibraryViewModel: ObservableObject {
         guard let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title) else { return }
 
         let importedURL: URL?
-        if await downloadable.existsLocally() {
-            importedURL = try await readerFileManager.readerFileURL(for: downloadable)
+        let existsLocally = await downloadable.existsLocally()
+        if existsLocally {
+            importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
         } else {
             guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url) else {
                 print("Couldn't import \(publication.title) file URL")
@@ -468,10 +482,14 @@ public class BookLibraryViewModel: ObservableObject {
     ) async throws {
         guard
             let downloadURL = publication.downloadURL,
-            let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
-            await downloadable.existsLocally(),
-            let importedURL = try await readerFileManager.readerFileURL(for: downloadable)
-        else { return }
+            let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title)
+        else {
+            return
+        }
+
+        let existsLocally = await downloadable.existsLocally()
+        guard existsLocally else { return }
+        guard let importedURL = try await readerFileManager.ensureImported(downloadable: downloadable) else { return }
 
         guard let content = try await ReaderContentLoader.load(
             url: importedURL,

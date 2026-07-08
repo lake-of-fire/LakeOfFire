@@ -710,12 +710,13 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
             if showsNewBadge {
                 ReaderNewBadge()
                     .controlSize(.small)
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    .transition(.opacity.animation(.default))
             }
 
             if showsAudioBadge {
                 Image(systemName: "headphones")
                     .imageScale(.small)
+                    .transition(.opacity.animation(.default))
             }
 
             if !usesCompactControlSize, annotationStatus.noteCount > 0 {
@@ -737,7 +738,6 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         }
         .foregroundStyle(.secondary)
         .frame(height: scaledSmallNewBadgeHeight)
-        .animation(.easeInOut(duration: 0.2), value: showsNewBadge)
     }
 
     @ViewBuilder

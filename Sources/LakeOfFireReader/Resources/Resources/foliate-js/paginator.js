@@ -157,6 +157,13 @@ const manabiTimelineMark = (event, payload = {}) => {
     } catch (_error) {}
     return label;
 };
+const manabiJul8PageTurnDiagnostic = (stage, payload = {}) => {
+    const diagnosticPayload = { ...payload, force: true };
+    manabiTimelineMark(`JUL8.${stage}`, diagnosticPayload);
+    try {
+        console.info(`# JUL8 stage=${stage}`, diagnosticPayload);
+    } catch (_error) {}
+};
 const manabiTimelineMeasure = (event, startedAt, payload = {}) => {
     const endedAt = manabiPerfNow();
     const elapsedMs = endedAt - startedAt;
@@ -309,6 +316,8 @@ const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
 };
 const manabiPaginatorVerbosePageTurns = () =>
     globalThis.__manabiPaginatorVerbosePageTurns === true;
+const manabiShouldIncludeLivePaginatorLayoutMetrics = () =>
+    globalThis.__manabiPaginatorVerboseLayoutMetrics === true;
 const manabiClamp01 = value =>
     Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 const manabiRectDiagnostics = (prefix, rect) => {
@@ -902,7 +911,7 @@ class View {
                             href: this.document?.location?.href ?? null,
                         };
                         manabiTimelineMark('paginator.view.iframeLoad', eventPayload);
-                        if (!this.#isCacheWarmer) {
+                        if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'iframeLoad',
                                 elapsedMs: eventPayload.elapsedMs,
@@ -924,7 +933,7 @@ class View {
                             () => afterLoad?.(doc),
                             { logReaderLoad }
                         )
-                        if (!this.#isCacheWarmer) {
+                        if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'afterLoad.finish',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
@@ -994,7 +1003,7 @@ class View {
                         this.#verticalRTL = direction.verticalRTL;
                         this.#rtl = direction.rtl;
                         this.#directionReadyResolve?.();
-                        if (!this.#isCacheWarmer) {
+                        if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'direction.resolved',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
@@ -1033,7 +1042,7 @@ class View {
                             }),
                             { logReaderLoad }
                         )
-                        if (!this.#isCacheWarmer) {
+                        if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'beforeRender.finish',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
@@ -1055,7 +1064,8 @@ class View {
                             () => this.render(layout),
                             { logReaderLoad }
                         )
-                        if (!this.#isCacheWarmer) {
+                        if (logReaderLoad) {
+                            const includeLiveLayoutMetrics = manabiShouldIncludeLivePaginatorLayoutMetrics()
                             manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'render.finish',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
@@ -1064,14 +1074,16 @@ class View {
                                 vertical: this.#vertical,
                                 rtl: this.#rtl,
                                 bodyClass: doc?.body?.className ?? null,
-                                docClientWidth: doc?.documentElement?.clientWidth ?? null,
-                                docClientHeight: doc?.documentElement?.clientHeight ?? null,
-                                docScrollWidth: doc?.documentElement?.scrollWidth ?? null,
-                                docScrollHeight: doc?.documentElement?.scrollHeight ?? null,
-                                bodyClientWidth: doc?.body?.clientWidth ?? null,
-                                bodyClientHeight: doc?.body?.clientHeight ?? null,
-                                bodyScrollWidth: doc?.body?.scrollWidth ?? null,
-                                bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                                ...(includeLiveLayoutMetrics ? {
+                                    docClientWidth: doc?.documentElement?.clientWidth ?? null,
+                                    docClientHeight: doc?.documentElement?.clientHeight ?? null,
+                                    docScrollWidth: doc?.documentElement?.scrollWidth ?? null,
+                                    docScrollHeight: doc?.documentElement?.scrollHeight ?? null,
+                                    bodyClientWidth: doc?.body?.clientWidth ?? null,
+                                    bodyClientHeight: doc?.body?.clientHeight ?? null,
+                                    bodyScrollWidth: doc?.body?.scrollWidth ?? null,
+                                    bodyScrollHeight: doc?.body?.scrollHeight ?? null,
+                                } : null),
                             });
                         }
 
@@ -1098,7 +1110,7 @@ class View {
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         };
                         manabiTimelineMark('paginator.view.load.finish', finishPayload);
-                        if (!this.#isCacheWarmer) {
+                        if (logReaderLoad) {
                             manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'load.finish',
                                 elapsedMs: finishPayload.elapsedMs,
@@ -1174,6 +1186,11 @@ class View {
         }
         this._column = layout.flow !== 'scrolled'
         this.layout = layout
+
+        doc.defaultView?.manabi_seedViewportMetrics?.({
+            width: Number(layout.width) || 0,
+            height: Number(layout.height) || 0,
+        })
 
         const foliateWritingMode = this.#vertical
             ? (this.#verticalRTL ? 'vertical-rl' : 'vertical-lr')
@@ -1631,15 +1648,6 @@ class View {
                                 this.#overlayer.redraw()
                             }
                         }
-                        if (!this.#isCacheWarmer) {
-                            const appliedContentRect = this.#contentRange.getBoundingClientRect()
-                            const appliedContentStart = this.#vertical ? 0 : (() => {
-                                const rootRect = documentElement.getBoundingClientRect()
-                                return this.#rtl ? rootRect.right - appliedContentRect.right : appliedContentRect.left - rootRect.left
-                            })()
-                            const appliedContentSize = appliedContentStart + appliedContentRect[side]
-                            const appliedRemainder = this._size > 0 ? appliedContentSize % this._size : null
-                        }
                     } else {
                         const side = defaultSide
                         const otherSide = defaultOtherSide
@@ -1863,6 +1871,7 @@ export class Paginator extends HTMLElement {
     #visibleRangeCache = null
     #visibleRangeInFlight = null
     #visibleRangeCacheVersion = 0
+    #lastGeometryVisibleSentinelDiagnostics = null
     #pageMetricsCache = null
     #lastRelocateDispatchSignature = null
     #elementVisibilityObserver = null
@@ -2909,6 +2918,130 @@ export class Paginator extends HTMLElement {
             return range
         }
     }
+    #expandedVisibleSentinelIDs(elements, visibleIDSet) {
+        const visibleIndexes = elements
+            .map((element, index) => visibleIDSet.has(element.id) ? index : -1)
+            .filter(index => index >= 0)
+        let expandedSentinelIDs = Array.from(visibleIDSet)
+        if (visibleIndexes.length > 0) {
+            const firstIndex = Math.min(...visibleIndexes)
+            const lastIndex = Math.max(...visibleIndexes)
+            const expandedStart = Math.max(0, firstIndex - 1)
+            const expandedEnd = Math.min(elements.length - 1, lastIndex + 1)
+            expandedSentinelIDs = elements
+                .slice(expandedStart, expandedEnd + 1)
+                .map(element => element.id)
+                .filter(Boolean)
+        }
+        return expandedSentinelIDs
+    }
+    #geometryVisibleSentinelIDs() {
+        const doc = this.#view?.document
+        const body = doc?.body
+        const container = this.#container
+        const diagnostics = {
+            totalSentinelCount: 0,
+            measuredSentinelCount: 0,
+            zeroAreaSentinelCount: 0,
+            visibleSentinelCount: 0,
+        }
+        this.#lastGeometryVisibleSentinelDiagnostics = diagnostics
+        if (!body || !container) return []
+        const containerRect = typeof container.getBoundingClientRect === 'function'
+            ? container.getBoundingClientRect()
+            : null
+        const frameElement = doc.defaultView?.frameElement ?? null
+        const iframeRect = frameElement && typeof frameElement.getBoundingClientRect === 'function'
+            ? frameElement.getBoundingClientRect()
+            : null
+        if (!containerRect || !iframeRect) return []
+        const elements = Array.from(body.getElementsByTagName('reader-sentinel'))
+        diagnostics.totalSentinelCount = elements.length
+        if (elements.length === 0) return []
+        const visibleIDSet = new Set()
+        for (const element of elements) {
+            const rect = element.getBoundingClientRect?.()
+            if (!rect) continue
+            diagnostics.measuredSentinelCount += 1
+            if (rect.width <= 0 || rect.height <= 0) {
+                diagnostics.zeroAreaSentinelCount += 1
+            }
+            const left = Number.isFinite(rect.left) ? rect.left : 0
+            const right = Number.isFinite(rect.right) ? rect.right : left
+            const top = Number.isFinite(rect.top) ? rect.top : 0
+            const bottom = Number.isFinite(rect.bottom) ? rect.bottom : top
+            const epsilon = 0.5
+            const translated = {
+                left: iframeRect.left + Math.min(left, right) - epsilon,
+                right: iframeRect.left + Math.max(left, right) + epsilon,
+                top: iframeRect.top + Math.min(top, bottom) - epsilon,
+                bottom: iframeRect.top + Math.max(top, bottom) + epsilon,
+            }
+            if (
+                translated.right > containerRect.left
+                && translated.left < containerRect.right
+                && translated.bottom > containerRect.top
+                && translated.top < containerRect.bottom
+            ) {
+                visibleIDSet.add(element.id)
+            }
+        }
+        const expandedIDs = this.#expandedVisibleSentinelIDs(elements, visibleIDSet)
+        diagnostics.visibleSentinelCount = expandedIDs.length
+        return expandedIDs
+    }
+    #rangeForVisibleSentinelIDs(visibleSentinelIDs) {
+        const doc = this.#view?.document
+        const range = doc?.createRange?.()
+        if (!doc || !range) return null
+        if (!Array.isArray(visibleSentinelIDs) || visibleSentinelIDs.length === 0) {
+            range.selectNodeContents(doc.body);
+            range.collapse(true);
+            return range
+        }
+
+        const isValid = node => {
+            return (node &&
+                (node.nodeType === Node.TEXT_NODE ||
+                    (node.nodeType === Node.ELEMENT_NODE &&
+                        node.tagName !== 'reader-sentinel')))
+        }
+
+        const visibleSentinels = doc.querySelectorAll(
+            visibleSentinelIDs
+                .map(id => `#${CSS.escape(id)}`)
+                .join(',')
+        );
+        const firstSentinel = visibleSentinels[0];
+        const lastSentinel = visibleSentinels[visibleSentinels.length - 1];
+
+        const findNext = el => {
+            let node = el?.nextSibling;
+            while (node && !isValid(node)) node = node.nextSibling;
+            return node;
+        };
+
+        const findPrev = el => {
+            let node = el?.previousSibling;
+            while (node && !isValid(node)) node = node.previousSibling;
+            return node;
+        };
+
+        const startNode = firstSentinel ? findNext(firstSentinel) : null;
+        const endNode = lastSentinel ? findPrev(lastSentinel) : null;
+
+        if (startNode && endNode) {
+            range.setStartBefore(startNode);
+            range.setEndAfter(endNode);
+        } else {
+            range.selectNodeContents(doc.body);
+            range.collapse(true);
+        }
+        return range;
+    }
+    #visibleRangeFromGeometrySentinels() {
+        return this.#rangeForVisibleSentinelIDs(this.#geometryVisibleSentinelIDs())
+    }
     async #getSentinelVisibilities() {
         //        console.log("trackSentinelVisibilities...")
         await new Promise(r => requestAnimationFrame(r));
@@ -2960,22 +3093,7 @@ export class Paginator extends HTMLElement {
                         visibleSource = 'geometry'
                     }
                 }
-                const visibleIndexes = elements
-                    .map((element, index) => visibleIDSet.has(element.id) ? index : -1)
-                    .filter(index => index >= 0)
-                let expandedSentinelIDs = Array.from(visibleIDSet)
-                if (visibleIndexes.length > 0) {
-                    const firstIndex = Math.min(...visibleIndexes)
-                    const lastIndex = Math.max(...visibleIndexes)
-                    const expandedStart = Math.max(0, firstIndex - 1)
-                    const expandedEnd = Math.min(elements.length - 1, lastIndex + 1)
-                    expandedSentinelIDs = elements
-                        .slice(expandedStart, expandedEnd + 1)
-                        .map(element => element.id)
-                        .filter(Boolean)
-                }
-
-                resolve?.(expandedSentinelIDs)
+                resolve?.(this.#expandedVisibleSentinelIDs(elements, visibleIDSet))
             }, {
                 root: null,
                 threshold: [0],
@@ -4655,61 +4773,7 @@ export class Paginator extends HTMLElement {
         const cacheVersion = this.#visibleRangeCacheVersion
         const computeVisibleRange = async () => {
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
-        const visibleSentinelIDs = await this.#getSentinelVisibilities()
-        //            await new Promise(r => requestAnimationFrame(r));
-
-        //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
-        //            console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
-
-        // Find the first and last visible content node, skipping <reader-sentinel> and mnb-* elements
-
-        const doc = this.#view.document
-        if (visibleSentinelIDs.length === 0) {
-            const range = doc.createRange();
-            range.selectNodeContents(doc.body);
-            range.collapse(true);
-            return range
-        }
-
-        const isValid = node => {
-            return (node &&
-                (node.nodeType === Node.TEXT_NODE ||
-                    (node.nodeType === Node.ELEMENT_NODE &&
-                        node.tagName !== 'reader-sentinel')))
-        }
-
-        const visibleSentinels = doc.querySelectorAll(
-            visibleSentinelIDs
-                .map(id => `#${CSS.escape(id)}`)
-                .join(',')
-        );
-        const firstSentinel = visibleSentinels[0];
-        const lastSentinel = visibleSentinels[visibleSentinels.length - 1];
-
-        const findNext = el => {
-            let node = el?.nextSibling;
-            while (node && !isValid(node)) node = node.nextSibling;
-            return node;
-        };
-
-        const findPrev = el => {
-            let node = el?.previousSibling;
-            while (node && !isValid(node)) node = node.previousSibling;
-            return node;
-        };
-
-        const startNode = firstSentinel ? findNext(firstSentinel) : null;
-        const endNode = lastSentinel ? findPrev(lastSentinel) : null;
-
-        const range = doc.createRange();
-        if (startNode && endNode) {
-            range.setStartBefore(startNode);
-            range.setEndAfter(endNode);
-        } else {
-            range.selectNodeContents(doc.body);
-            range.collapse(true);
-        }
-        return range;
+        return this.#rangeForVisibleSentinelIDs(await this.#getSentinelVisibilities())
         }
         const promise = computeVisibleRange()
         if (cacheKey) {
@@ -4739,22 +4803,50 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) {
             return;
         }
+        const shouldIncludePageTurnVisibleRange =
+            reason === 'page'
+            && manabiDocumentIsProcessedEbook(this.#view?.document)
         const canUseMetricsOnlyRelocate =
             knownMetrics
             && (reason === 'navigation' || reason === 'anchor' || reason === 'page' || reason === 'blank-correction')
-        const range = canUseMetricsOnlyRelocate ? null : await this.#getVisibleRange()
+            && !shouldIncludePageTurnVisibleRange
+        const pageTurnVisibleSentinelIDs = shouldIncludePageTurnVisibleRange
+            ? this.#geometryVisibleSentinelIDs()
+            : []
+        const range = canUseMetricsOnlyRelocate
+            ? null
+            : (shouldIncludePageTurnVisibleRange
+                ? this.#rangeForVisibleSentinelIDs(pageTurnVisibleSentinelIDs)
+                : await this.#getVisibleRange())
         const visibleRangeRect = range?.getBoundingClientRect?.() ?? null
         const visibleRangeDiagnostics = {
-            visibleRangeSource: canUseMetricsOnlyRelocate ? 'metrics-only' : (range ? 'range' : 'none'),
+            visibleRangeSource: canUseMetricsOnlyRelocate ? 'metrics-only' : (range ? (shouldIncludePageTurnVisibleRange ? 'page-sentinel-geometry-range' : 'range') : 'none'),
             visibleRangeCollapsed: range?.collapsed ?? null,
             visibleRangeRectLeft: visibleRangeRect ? manabiRound(visibleRangeRect.left, 2) : null,
             visibleRangeRectTop: visibleRangeRect ? manabiRound(visibleRangeRect.top, 2) : null,
             visibleRangeRectWidth: visibleRangeRect ? manabiRound(visibleRangeRect.width, 2) : null,
             visibleRangeRectHeight: visibleRangeRect ? manabiRound(visibleRangeRect.height, 2) : null,
+            visibleSentinelCount: pageTurnVisibleSentinelIDs.length,
+            firstVisibleSentinelID: pageTurnVisibleSentinelIDs[0] ?? null,
+            lastVisibleSentinelID: pageTurnVisibleSentinelIDs[pageTurnVisibleSentinelIDs.length - 1] ?? null,
+            totalSentinelCount: this.#lastGeometryVisibleSentinelDiagnostics?.totalSentinelCount ?? null,
+            measuredSentinelCount: this.#lastGeometryVisibleSentinelDiagnostics?.measuredSentinelCount ?? null,
+            zeroAreaSentinelCount: this.#lastGeometryVisibleSentinelDiagnostics?.zeroAreaSentinelCount ?? null,
         }
+        if (reason === 'page') {
+            manabiJul8PageTurnDiagnostic('paginator.afterScroll.range', {
+                index: this.#index,
+                reason,
+                pageTurnDirection: this.#pendingPageTurnDirection,
+                canUseMetricsOnlyRelocate,
+                shouldIncludePageTurnVisibleRange,
+                ...visibleRangeDiagnostics,
+            })
+        }
+        const anchorRange = shouldIncludePageTurnVisibleRange ? null : range
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
-            this.#anchor = range
+            this.#anchor = anchorRange
         else this.#justAnchored = true
 
         const index = this.#index
@@ -4772,6 +4864,10 @@ export class Paginator extends HTMLElement {
             reason,
             range,
             index
+        }
+        if (shouldIncludePageTurnVisibleRange && pageTurnVisibleSentinelIDs.length > 0) {
+            detail.visibleSentinelIDs = pageTurnVisibleSentinelIDs
+            detail.visibleRangeSource = 'page-sentinel-geometry-range'
         }
         let relocationMetrics = null
         if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
@@ -4807,7 +4903,10 @@ export class Paginator extends HTMLElement {
                 }))
                 return
             }
-            this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
+            const headerVisibility = page > 1 ? 'visible' : 'hidden'
+            if (this.#header.style.visibility !== headerVisibility) {
+                this.#header.style.visibility = headerVisibility
+            }
             const contentPageCount = Math.max(1, pages - 2)
             detail.fraction = manabiClamp01((page - 1) / contentPageCount)
             detail.size = 1 / contentPageCount
@@ -5748,8 +5847,33 @@ export class Paginator extends HTMLElement {
     async #turnPage(dir, distance, options = {}) {
         const navigationSource = globalThis.__manabiNavigationIntent?.source ?? null
         const turnStartedAt = manabiPerfNow()
+        manabiJul8PageTurnDiagnostic('paginator.turn.enter', {
+            index: this.#index,
+            direction: dir > 0 ? 'forward' : 'backward',
+            distance: distance ?? null,
+            locked: this.#locked,
+            isLoading: this.#isLoading,
+            navigationSource,
+            bypassDuplicateSuppression: options.bypassPostTurnDuplicateSuppression === true,
+            lastSettledDirection: this.#lastSettledPageTurn?.direction ?? null,
+            lastSettledPage: this.#lastSettledPageTurn?.page ?? null,
+            lastSettledElapsedMs: Number.isFinite(this.#lastSettledPageTurn?.settledAt)
+                ? manabiRound(turnStartedAt - this.#lastSettledPageTurn.settledAt, 1)
+                : null,
+        })
         if (!options.bypassPostTurnDuplicateSuppression && this.#shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, turnStartedAt)) {
             const lastPageTurn = this.#lastSettledPageTurn
+            manabiJul8PageTurnDiagnostic('paginator.turn.dropDuplicate', {
+                index: this.#index,
+                direction: dir > 0 ? 'forward' : 'backward',
+                elapsedMs: Number.isFinite(lastPageTurn?.settledAt)
+                    ? manabiRound(turnStartedAt - lastPageTurn.settledAt, 1)
+                    : null,
+                thresholdMs: MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS,
+                previousDirection: lastPageTurn?.direction ?? null,
+                previousPage: lastPageTurn?.page ?? null,
+                navigationSource,
+            })
             if (!this.#isCacheWarmer) {
                 manabiPaginatorReaderLoadLog('paginator.pageTurn.dropDuplicate', {
                     index: this.#index,
@@ -5779,6 +5903,18 @@ export class Paginator extends HTMLElement {
                 queuedStep: dir,
                 lockedElapsedMs,
                 distance,
+            })
+            manabiJul8PageTurnDiagnostic('paginator.turn.lockedDecision', {
+                index: this.#index,
+                direction: queuedDirection,
+                shouldQueue: queueDecision.shouldQueue,
+                reason: queueDecision.reason,
+                pendingDirection,
+                pendingRequestedPage: this.#pendingPageTurnRequestedPage,
+                pendingPageCount: this.#pendingPageTurnPageCount,
+                projectedQueuedPage: queueDecision.projectedQueuedPage ?? null,
+                lockedElapsedMs,
+                isLoading: this.#isLoading,
             })
             if (!queueDecision.shouldQueue) {
                 if (!this.#isCacheWarmer) {
@@ -5850,11 +5986,30 @@ export class Paginator extends HTMLElement {
             Number.isFinite(requestedPage)
             && Number.isFinite(beforeMetrics?.pages)
             && !expectedCrossSection
+        manabiJul8PageTurnDiagnostic('paginator.turn.before', {
+            index: this.#index,
+            direction: dir > 0 ? 'forward' : 'backward',
+            beforePage: beforeMetrics?.page ?? null,
+            beforePages: beforeMetrics?.pages ?? null,
+            beforeStart: Number.isFinite(beforeMetrics?.start) ? manabiRound(beforeMetrics.start, 1) : null,
+            requestedPage,
+            expectedCrossSection,
+            adjacentIndex: beforeAdjacentIndex ?? null,
+            pendingQueueAllowed: this.#pendingPageTurnQueueAllowed === true,
+        })
         try {
             const prev = dir === -1
             const shouldGo = !!(await (prev
                 ? await this.#scrollPrev(distance, beforeMetrics)
                 : await this.#scrollNext(distance, beforeMetrics)))
+            manabiJul8PageTurnDiagnostic('paginator.turn.afterScroll', {
+                index: this.#index,
+                direction: dir > 0 ? 'forward' : 'backward',
+                shouldGo,
+                beforeIndex,
+                currentIndex: this.#index,
+                requestedPage,
+            })
             if (shouldGo) await this.#goTo({
                 index: beforeAdjacentIndex,
                 anchor: prev ? () => 1 : () => 0,
@@ -5875,6 +6030,19 @@ export class Paginator extends HTMLElement {
                 || this.#index !== beforeIndex
                 || finalMetrics?.page !== beforeMetrics?.page
                 || Math.abs((finalMetrics?.start ?? NaN) - (beforeMetrics?.start ?? NaN)) >= 1
+            manabiJul8PageTurnDiagnostic('paginator.turn.finalMetrics', {
+                index: this.#index,
+                direction: dir > 0 ? 'forward' : 'backward',
+                shouldGo,
+                didMove,
+                beforeIndex,
+                beforePage: beforeMetrics?.page ?? null,
+                beforeStart: Number.isFinite(beforeMetrics?.start) ? manabiRound(beforeMetrics.start, 1) : null,
+                finalPage: finalMetrics?.page ?? null,
+                finalPages: finalMetrics?.pages ?? null,
+                finalStart: Number.isFinite(finalMetrics?.start) ? manabiRound(finalMetrics.start, 1) : null,
+                reusedFinalMetrics: canReuseCachedFinalMetrics,
+            })
             if (didMove) {
                 this.#lastSettledPageTurn = {
                     direction: dir > 0 ? 'forward' : 'backward',
@@ -5941,6 +6109,15 @@ export class Paginator extends HTMLElement {
         } finally {
             const lockElapsedMs = this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1)
             const queuedPageTurn = this.#queuedPageTurn
+            manabiJul8PageTurnDiagnostic('paginator.turn.finally', {
+                index: this.#index,
+                direction: dir > 0 ? 'forward' : 'backward',
+                lockElapsedMs,
+                hasQueuedPageTurn: !!queuedPageTurn,
+                pendingDirection: this.#pendingPageTurnDirection,
+                pendingRequestedPage: this.#pendingPageTurnRequestedPage,
+                pendingPageCount: this.#pendingPageTurnPageCount,
+            })
             this.#queuedPageTurn = null
             this.#pendingPageTurnDirection = null
             this.#pendingPageTurnStep = null

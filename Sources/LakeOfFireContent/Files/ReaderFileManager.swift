@@ -402,6 +402,62 @@ public class ReaderFileManager: ObservableObject {
         let readerFileURL = try await readerFileURL(for: fileURL)
         return readerFileURL
     }
+
+    @MainActor
+    public func ensureImported(downloadable: Downloadable) async throws -> URL? {
+        let existsLocally = await downloadable.existsLocally()
+        guard existsLocally else {
+            return nil
+        }
+        if let existingReaderURL = try await readerFileURL(for: downloadable) {
+            try await refreshMetadataForExistingLibraryFile(downloadable.localDestination)
+            return existingReaderURL
+        }
+        return try await importFile(
+            fileURL: downloadable.localDestination,
+            fromDownloadURL: downloadable.url
+        )
+    }
+
+    @MainActor
+    private func refreshMetadataForExistingLibraryFile(_ fileURL: URL) async throws {
+        let drives: [CloudDrive] = [cloudDrive, localDrive].filter({ $0?.isConnected ?? false }).compactMap({ $0 })
+        for drive in drives {
+            guard let relativePathStr = Self.relativePath(for: fileURL, relativeTo: drive.rootDirectory) else {
+                continue
+            }
+            let parentPath = URL(fileURLWithPath: relativePathStr).deletingLastPathComponent().relativePath
+            let relativeParentPath = parentPath == "." ? "" : parentPath
+            let metadataRefs = try await refreshFilesMetadata(
+                drive: drive,
+                relativePath: RootRelativePath(path: relativeParentPath)
+            )
+            try await publishDiscoveredFiles(metadataRefs ?? [])
+            Task { @MainActor [weak self] in
+                try await self?.refreshAllFilesMetadata(force: true)
+            }
+            return
+        }
+    }
+
+    @MainActor
+    private func publishDiscoveredFiles(_ discoveredFileRefs: [ThreadSafeReference<ContentFile>]) async throws {
+        guard !discoveredFileRefs.isEmpty else {
+            return
+        }
+        let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+        let discoveredFiles = discoveredFileRefs.compactMap { realm.resolve($0) }
+        let frozenDiscoveredFiles = discoveredFiles.map { $0.freeze() }
+        var mergedFiles = files ?? []
+        for discoveredFile in frozenDiscoveredFiles {
+            if let existingIndex = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
+                mergedFiles[existingIndex] = discoveredFile
+            } else {
+                mergedFiles.append(discoveredFile)
+            }
+        }
+        files = mergedFiles.filter { !$0.isDeleted }
+    }
     
     @MainActor
     public func readerFileURL(for fileURL: URL, drive: CloudDrive? = nil) async throws -> URL? {
@@ -434,7 +490,9 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
-        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
+        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else {
+            return nil
+        }
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
@@ -487,7 +545,7 @@ public class ReaderFileManager: ObservableObject {
         }
         
         do {
-            _ = try await refreshFilesMetadata(
+            let metadataRefs = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: targetDirectory
             )

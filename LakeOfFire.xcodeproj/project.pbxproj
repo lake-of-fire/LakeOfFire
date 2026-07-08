@@ -23,6 +23,7 @@
 		0D551DA60090AC51FE719B27 /* libLakeOfFireWeb.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 4DEB6279A7D8177EDD58CECA /* libLakeOfFireWeb.a */; };
 		0E905AFAD8F6B2B385C54E59 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		0FDF3B29CEE56A70D86C78E1 /* Exports.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F1D2A5E81A0BDE7133440F /* Exports.swift */; };
+		102A17971CB362DB150AC043 /* ZIPFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		1047412051B9446CDBB5C540 /* DefaultRealmConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91D0420AF9E12FDF8404AAE3 /* DefaultRealmConfiguration.swift */; };
 		110EC44263D739D1B1661598 /* OPDSParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4714FE0F036275EC607C6D9 /* OPDSParser.swift */; };
 		11AB4693821D804DF96B4378 /* AsyncView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
@@ -75,13 +76,11 @@
 		52FBCA2E87EE0D771931B2AC /* libLakeOfFireAdblock.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 497C719B89832F484459EAB5 /* libLakeOfFireAdblock.a */; };
 		552EEA670491E9BC7253EC14 /* OPDS1Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA602C324AB24D3A8B24474C /* OPDS1Parser.swift */; };
 		55BC904EFD19D052347124D7 /* ReaderContentList.swift in Sources */ = {isa = PBXBuildFile; fileRef = A32952544F41B678E8087702 /* ReaderContentList.swift */; };
-		573C56DF2F5FE8279A3822B2 /* FeedKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		598E881D58A0DF9D26F09D51 /* libzstd.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 231D575B5E9B5C559FBD1B7E /* libzstd.framework */; };
 		59FF7DE4EF12E96FE29A26E1 /* ReaderToastsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D232EF9DFC289EF1F9D2B6 /* ReaderToastsView.swift */; };
 		5A96F584C1590884AA55785A /* ReaderLoadingProgressOverlayViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEACDFF35BB3C511190E95F2 /* ReaderLoadingProgressOverlayViewModifier.swift */; };
 		5F02C6DB385F1DEF4212ACA8 /* URL+EBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */; };
-		5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		602A9980815C4D77EE598621 /* LibraryScriptFormSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */; };
 		619936BCC4D239752919BF05 /* EPubParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8CF30D23C857DABADD4F9B9 /* EPubParser.swift */; };
@@ -100,6 +99,7 @@
 		716CFBA789416BC4123C7800 /* libLakeOfFireCore.a in Dependencies */ = {isa = PBXBuildFile; fileRef = BA3C8838F519FBAA54C13599 /* libLakeOfFireCore.a */; };
 		744588F3F8042D1985945E50 /* WebFeedButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C257921AF7AD599679F761F7 /* WebFeedButton.swift */; };
 		749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C61C089C1B653DE60FEEFBE1 /* Collections.framework */; };
+		74DDFA8F962056FB207955DB /* FeedKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		780F7EA475E4BF038CDB59EF /* libLakeOfFireContent.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 3956EAD702E8250461971C1F /* libLakeOfFireContent.a */; };
 		793E22245AC31BCA04D92EAF /* Feed Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58665BB5C4CA1B4D6F5B559 /* Feed Models.swift */; };
 		7B4D92915A36D2E6FF70FB0D /* OPDSSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AA2729664E7B820C30DACA8 /* OPDSSupport.swift */; };
@@ -111,7 +111,6 @@
 		7FCBCA583B9AF6D2B0B597FB /* libLakeOfFireCore.a in Dependencies */ = {isa = PBXBuildFile; fileRef = BA3C8838F519FBAA54C13599 /* libLakeOfFireCore.a */; };
 		80E05426241473182B1338A2 /* ReaderSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355678653CC5882AE9C4748C /* ReaderSettings.swift */; };
 		81C98B4E9EE3A00F7B12C34F /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
-		827D2DAC3EE7D4F2DB47C90B /* OrderedCollections.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		836A11C9F2D9929F06A80FD0 /* ContentPackageFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75D9E6388FFDD5F7C0F4294 /* ContentPackageFile.swift */; };
 		836A5E35ABCECBFA07258131 /* libLakeOfFireWeb.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 4DEB6279A7D8177EDD58CECA /* libLakeOfFireWeb.a */; };
 		8415580E0CE2D12FF9F736C5 /* URL+Internal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C49D6E629C02F2EEA97E380 /* URL+Internal.swift */; };
@@ -135,6 +134,7 @@
 		9698ECA908D8785FCB9C32FC /* URL+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE1C1D617EC7AA8E290627A /* URL+ReaderView.swift */; };
 		979580DF06189621CF7CB131 /* Resources in Resources */ = {isa = PBXBuildFile; fileRef = 5167C1FBA25B7CF518F65926 /* Resources */; };
 		993045C9816D79E9C2785E47 /* ReaderFileManagerSetupModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B11E43A2FD82E69D4CC4A3 /* ReaderFileManagerSetupModifier.swift */; };
+		9D5B3F32C3B9FABF9B0333B5 /* ZIPFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		9F4D094C01515558F0B09FD2 /* libLakeOfFireAdblock.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 497C719B89832F484459EAB5 /* libLakeOfFireAdblock.a */; };
 		A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
@@ -148,7 +148,6 @@
 		AA76263D68F00D225F1D6CD8 /* NetflixUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9049D2896A2C87630EE94861 /* NetflixUserScript.swift */; };
 		AB551666734931A888FBF44D /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
 		AC9C4AD1FDE6AEC0A7979412 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
-		ACE644903D29FC72CDA341C2 /* FeedKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		AD2253430928B7CBBD12F2DC /* URL+ContentTypeTitle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2087E0C0462C479BEC4635D5 /* URL+ContentTypeTitle.swift */; };
 		AD3B33A198590D27D20E79A9 /* Exports.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EC77074D792477FEBA62436 /* Exports.swift */; };
 		AFBB460F903C40989FE64CCA /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
@@ -183,9 +182,7 @@
 		DE24BE520C4947D253222816 /* libLakeOfFireReader.a in Dependencies */ = {isa = PBXBuildFile; fileRef = F7074A126E1306727328D05C /* libLakeOfFireReader.a */; };
 		DE8643AA823ED4BB529A919D /* LibraryManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6014A3319E03F979A559A27C /* LibraryManagerView.swift */; };
 		DEA10EBF7958877E6E5E41B2 /* FeedCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93EB0B118916B63BC76CB86C /* FeedCell.swift */; };
-		DF5EFF4666A4BDF4FD9C0E50 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
-		E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
 		E7E3D2C99B45173435E98B02 /* BookGridCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C42D6E7E1ACFA977D35C9E /* BookGridCell.swift */; };
@@ -196,6 +193,7 @@
 		E9A5FBE5A9EE1B46BC1642B5 /* OPML.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 20D77CA7B347A9568C453FE8 /* OPML.framework */; };
 		EB6837B009027A5B466E2591 /* libLakeOfFireContent.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 3956EAD702E8250461971C1F /* libLakeOfFireContent.a */; };
 		EB9A5589A44F98BDE3DA8616 /* ReaderImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 478B7F7FF550E7549BDC8459 /* ReaderImage.swift */; };
+		ED2DB4BADE2FDBB351C33C48 /* FeedKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		ED786D9E19DD9A9A419F258E /* ExpandableText.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 2D1235D7683CF901922B01A2 /* ExpandableText.framework */; };
 		EE18294F8009B8E0A5729DC5 /* ReaderFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C862B081B81E9DCD4CC5E9 /* ReaderFileManager.swift */; };
 		EEAAA647CD83080360D5EB6C /* LibraryCategoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E5090C3B0565E597051BF78 /* LibraryCategoryView.swift */; };
@@ -214,8 +212,10 @@
 		F7746BBD1F45F311A2C9081E /* SwiftUIBackports.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */; };
 		F902851CBCF814BD00F93A3A /* DebouncedOnChange.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */; };
 		FA920CEAEB2A6C87C0902E76 /* MediaTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A7C654FB182EEA94098FEB /* MediaTranscript.swift */; };
+		FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		FBC4A5A419BFC3FC12FCAF74 /* libLakeOfFireCore.a in Dependencies */ = {isa = PBXBuildFile; fileRef = BA3C8838F519FBAA54C13599 /* libLakeOfFireCore.a */; };
 		FC4FBC9CD92098606B6ADB0B /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
+		FC88CF4A14EE73AFD87B6C18 /* ZIPFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -511,7 +511,6 @@
 				244AB522A2F3D1323BE73FA0 /* libLakeOfFireOPDS.a in Dependencies */,
 				7C42AAF05B23E6CF3B8015EF /* libLakeOfFireWeb.a in Dependencies */,
 				6D91DDF89993CED1182642C4 /* Logging.framework in Dependencies */,
-				827D2DAC3EE7D4F2DB47C90B /* OrderedCollections.framework in Dependencies */,
 				214FCFBF840CF4B4895127CA /* PersistedLRUCacheHybrid.framework in Dependencies */,
 				87AC8179EDD92C03E10BA186 /* Pow.framework in Dependencies */,
 				A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */,
@@ -519,7 +518,6 @@
 				6452F3FABCAED36212C68897 /* SwiftSoup.framework in Dependencies */,
 				A7BE5EDB18360A051F0D3978 /* SwiftUIBackports.framework in Dependencies */,
 				C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */,
-				E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -550,7 +548,6 @@
 			dstSubfolderSpec = 16;
 			files = (
 				D4015DF5625ECC2253B8C2AF /* BigSyncKit.framework in Dependencies */,
-				573C56DF2F5FE8279A3822B2 /* FeedKit.framework in Dependencies */,
 				1986403F82646CC361C83CA4 /* LakeKit.framework in Dependencies */,
 				52FBCA2E87EE0D771931B2AC /* libLakeOfFireAdblock.a in Dependencies */,
 				E850D893DFDAE2005C91E154 /* libLakeOfFireCore.a in Dependencies */,
@@ -560,7 +557,6 @@
 				E8F2F54E7E47B61EDC3AE5F6 /* SwiftReadability.framework in Dependencies */,
 				630DA6856F4DE0B19E344505 /* SwiftSoup.framework in Dependencies */,
 				CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */,
-				5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */,
 				598E881D58A0DF9D26F09D51 /* libzstd.framework in Dependencies */,
 			);
 			name = Dependencies;
@@ -708,7 +704,6 @@
 				6A94158EC00721B29D4A242B /* BigSyncKit.framework in Dependencies */,
 				F902851CBCF814BD00F93A3A /* DebouncedOnChange.framework in Dependencies */,
 				8A3F0E04EA80C3C503F5A753 /* FaviconFinder.framework in Dependencies */,
-				ACE644903D29FC72CDA341C2 /* FeedKit.framework in Dependencies */,
 				11CAFB4F5FE211EB4B210B64 /* FilePicker.framework in Dependencies */,
 				F510C5073A7A0E5E2E59EA32 /* LakeKit.framework in Dependencies */,
 				A36D2BFF855193D99D8439D7 /* libLakeOfFireAdblock.a in Dependencies */,
@@ -743,7 +738,6 @@
 				BB27B9C8584A5A00D895FD2C /* libLakeOfFireContent.a in Dependencies */,
 				FBC4A5A419BFC3FC12FCAF74 /* libLakeOfFireCore.a in Dependencies */,
 				281C995DDEBC93B80B8092CE /* SwiftUtilities.framework in Dependencies */,
-				DF5EFF4666A4BDF4FD9C0E50 /* ZIPFoundation.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -957,10 +951,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */,
+				74DDFA8F962056FB207955DB /* FeedKit.framework in Frameworks */,
 				E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */,
 				69E7638756A1E0ACC91A24A3 /* RealmSwiftGaps.framework in Frameworks */,
 				0E905AFAD8F6B2B385C54E59 /* SwiftUIDownloads.framework in Frameworks */,
 				D08307802D0C0BF718FBB70E /* SwiftUIWebView.framework in Frameworks */,
+				9D5B3F32C3B9FABF9B0333B5 /* ZIPFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -968,6 +964,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ED2DB4BADE2FDBB351C33C48 /* FeedKit.framework in Frameworks */,
 				50E8C51C79DF640151744F19 /* RealmSwift.framework in Frameworks */,
 				CF7E1793B8C1593BEBF023F4 /* RealmSwiftGaps.framework in Frameworks */,
 				AC9C4AD1FDE6AEC0A7979412 /* SwiftUIDownloads.framework in Frameworks */,
@@ -980,6 +977,7 @@
 			files = (
 				4613E52C3705D82D492FF4F4 /* RealmSwift.framework in Frameworks */,
 				AFBB460F903C40989FE64CCA /* SwiftUIWebView.framework in Frameworks */,
+				102A17971CB362DB150AC043 /* ZIPFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1017,11 +1015,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */,
+				FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */,
 				F191CD711612C8230ABB5810 /* Perception.framework in Frameworks */,
 				598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */,
 				BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */,
 				5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */,
 				9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */,
+				FC88CF4A14EE73AFD87B6C18 /* ZIPFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
