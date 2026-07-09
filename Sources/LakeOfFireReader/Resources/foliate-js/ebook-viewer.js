@@ -2312,6 +2312,7 @@ const segmentMetadataTableArray = (tables, shortKey, longKey) => (
 
 const compactSegmentMetadataTables = (compactTables) => ({
     h: segmentMetadataTableArray(compactTables, 'h', 'segmentHashes'),
+    sid: segmentMetadataTableArray(compactTables, 'sid', 'stableIDs'),
     j: segmentMetadataTableArray(compactTables, 'j', 'jmdictEntryIDs'),
     n: segmentMetadataTableArray(compactTables, 'n', 'jmnedictEntryIDs'),
     s: segmentMetadataTableArray(compactTables, 's', 'jmdictSearchStrings'),
@@ -2320,12 +2321,15 @@ const compactSegmentMetadataTables = (compactTables) => ({
 });
 
 const segmentMetadataFromCompactTuple = (segment, tables, version) => {
-    const stableSegmentIdentifier = version === 3
+    const segmentHash = version === 3
         ? segmentMetadataTableValue(tables.h, segment?.[1], null)
         : segment?.[1];
+    const stableSegmentIdentifier = version === 3
+        ? segmentMetadataTableValue(tables.sid, segment?.[8], segmentHash)
+        : segmentHash;
     return {
         i: expandSegmentIDToken(segment?.[0], version),
-        h: stableSegmentIdentifier,
+        h: segmentHash,
         sid: stableSegmentIdentifier,
         j: segmentMetadataTableValue(tables.j, segment?.[2], []),
         n: segmentMetadataTableValue(tables.n, segment?.[3], []),
@@ -2384,6 +2388,14 @@ const segmentMetadataPayloadLookupState = (payload) => {
 };
 
 const findSegmentMetadataInPayload = (payload, segmentID) => {
+    const cacheSegmentMetadataAliases = (metadata, index, state) => {
+        if (!state?.byID || !metadata) return;
+        for (const alias of [metadata.i, metadata.sid]) {
+            if (typeof alias === 'string' && alias.length > 0 && !state.byID.has(alias)) {
+                state.byID.set(alias, index);
+            }
+        }
+    };
     const version = payload?.v ?? payload?.version;
     const compactTables = payload?.t ?? payload?.tables;
     const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
@@ -2400,13 +2412,11 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
         }
         for (let index = (state?.scannedThrough ?? -1) + 1; index < compactSegments.length; index += 1) {
             const segment = compactSegments[index];
-            const expandedID = expandSegmentIDToken(segment?.[0], version);
-            if (expandedID && state?.byID && !state.byID.has(expandedID)) {
-                state.byID.set(expandedID, index);
-            }
+            const metadata = segmentMetadataFromCompactTuple(segment, tables, version);
+            cacheSegmentMetadataAliases(metadata, index, state);
             if (state) state.scannedThrough = index;
-            if (expandedID !== segmentID) continue;
-            return segmentMetadataFromCompactTuple(segment, tables, version);
+            if (metadata?.i !== segmentID && metadata?.sid !== segmentID) continue;
+            return metadata;
         }
         if (state) state.complete = true;
         return null;
@@ -2423,12 +2433,11 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
         }
         for (let index = (state?.scannedThrough ?? -1) + 1; index < payload.length; index += 1) {
             const segment = payload[index];
-            if (segment?.i && state?.byID && !state.byID.has(segment.i)) {
-                state.byID.set(segment.i, index);
-            }
+            const metadata = segmentMetadataFromLegacyEntry(segment);
+            cacheSegmentMetadataAliases(metadata, index, state);
             if (state) state.scannedThrough = index;
-            if (segment?.i !== segmentID) continue;
-            return segmentMetadataFromLegacyEntry(segment);
+            if (metadata?.i !== segmentID && metadata?.sid !== segmentID) continue;
+            return metadata;
         }
         if (state) state.complete = true;
     }
@@ -2477,8 +2486,13 @@ const segmentMetadataBootstrap = (doc) => {
         for (const segment of expandSegmentMetadataPayload(payload)) {
             if (!segment?.i) continue;
             byID.set(segment.i, segment);
+            if (typeof segment.sid === 'string' && segment.sid.length > 0) {
+                byID.set(segment.sid, segment);
+            }
             indexEntryIDs(segment.i, segment.j);
             indexEntryIDs(segment.i, segment.n);
+            indexEntryIDs(segment.sid, segment.j);
+            indexEntryIDs(segment.sid, segment.n);
         }
     }
     doc.manabiSegmentMetadataByID = byID;

@@ -3165,9 +3165,9 @@ export class Paginator extends HTMLElement {
         const resolved = await target
         if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
     }
-    async #scrollPrev(distance) {
+    async #scrollPrev(distance, knownMetrics = null) {
         if (!this.#view) return true
-        const metrics = await this.pageMetrics()
+        const metrics = knownMetrics || await this.pageMetrics()
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
             const lineAdvance = this.#vertical ?
@@ -3191,9 +3191,9 @@ export class Paginator extends HTMLElement {
         const page = await this.#resolveBlankPageTarget(boundaryDecision.requestedPage, -1, 'page-turn.prev')
         return await this.#scrollToPage(page, 'page', false, metrics).then(() => boundaryDecision.crossesSection || page <= 0)
     }
-    async #scrollNext(distance) {
+    async #scrollNext(distance, knownMetrics = null) {
         if (!this.#view) return true
-        const metrics = await this.pageMetrics()
+        const metrics = knownMetrics || await this.pageMetrics()
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
             const lineAdvance = this.#vertical ?
@@ -3293,7 +3293,9 @@ export class Paginator extends HTMLElement {
             && !boundaryDecision.crossesSection
         try {
             const prev = dir === -1
-            const shouldGo = !!(await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance)))
+            const shouldGo = !!(await (prev
+                ? await this.#scrollPrev(distance, beforeMetrics)
+                : await this.#scrollNext(distance, beforeMetrics)))
             if (shouldGo) await this.#goTo({
                 index: beforeAdjacentIndex,
                 anchor: prev ? () => 1 : () => 0,
