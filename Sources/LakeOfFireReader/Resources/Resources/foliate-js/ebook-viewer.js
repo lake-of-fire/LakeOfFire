@@ -11122,7 +11122,6 @@ class Reader {
                     });
                     return;
                 }
-                const point = blankPointerPoint(event);
                 const eventKey = [
                     source,
                     event.type,
