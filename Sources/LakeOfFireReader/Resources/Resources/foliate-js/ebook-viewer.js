@@ -61,6 +61,16 @@ const manabiReaderTagName = element => element?.tagName?.toLowerCase?.() || '';
 const manabiIsReaderSegmentElement = element => manabiReaderSegmentTagNames.has(manabiReaderTagName(element));
 const manabiIsReaderSurfaceElement = element => manabiReaderSurfaceTagNames.has(manabiReaderTagName(element));
 const manabiIsReaderSentenceElement = element => manabiReaderSentenceTagNames.has(manabiReaderTagName(element));
+const manabiBlankNavigationMoveThreshold = 12;
+const manabiSyntheticTouchMouseDistanceThreshold = 24;
+const manabiEventScreenPoint = event => {
+    const point = event?.changedTouches?.[0] ?? event?.touches?.[0] ?? event;
+    if (!point) return null;
+    return {
+        x: point.screenX ?? point.clientX ?? null,
+        y: point.screenY ?? point.clientY ?? null,
+    };
+};
 
 const manabiSegmentSidecarParserVersion = 8;
 
@@ -1718,6 +1728,13 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
     const previousState = body.dataset?.mnbNavigationHiddenDueToScroll ?? null;
     const nextState = hidden ? 'true' : 'false';
     let changed = previousState !== nextState;
+    if (isPageTurnNavigationState && previousState !== nextState && (previousState === 'true' || previousState === 'false')) {
+        body.__manabiPendingEbookNavigationTransition = {
+            fromHidden: previousState === 'true',
+            toHidden: nextState === 'true',
+            reason,
+        };
+    }
     if (body.dataset) {
         if (previousState !== nextState) {
             body.dataset.mnbPreviousNavigationHiddenDueToScroll = previousState ?? (hidden ? 'false' : 'true');
@@ -2937,7 +2954,7 @@ const manabiJul9Diagnostic = (stage, payload = {}) => {
         force: true,
     };
     manabiTimelineMark(`JUL9.${stage}`, diagnosticPayload);
-    try {
+    if (globalThis.__manabiLogJul9Diagnostics === true || globalThis.__manabiTimelineTraceAll === true) try {
         console.info(`# JUL9 stage=${stage}`, diagnosticPayload);
     } catch (_error) {}
 };
@@ -6943,12 +6960,11 @@ class Reader {
             const pendingContentBlankEcho = globalThis.__manabiPendingContentDocumentBlankNavigationEcho || null;
             if (pendingContentBlankEcho) {
                 globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
-                const point = navigationGesturePoint(event);
+                const point = manabiEventScreenPoint(event);
                 const dx = (point?.x ?? pendingContentBlankEcho.x) - pendingContentBlankEcho.x;
                 const dy = (point?.y ?? pendingContentBlankEcho.y) - pendingContentBlankEcho.y;
-                const distanceThreshold = mainDocumentSyntheticMouseAfterTouchDistanceThreshold;
                 const isSyntheticTouchClick = event.sourceCapabilities?.firesTouchEvents === true
-                    || (point && (dx * dx + dy * dy) <= (distanceThreshold * distanceThreshold));
+                    || (point && (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold));
                 if (isSyntheticTouchClick) {
                     return;
                 }
@@ -9119,16 +9135,6 @@ class Reader {
 
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
-        const mainDocumentBlankNavigationMoveThreshold = 12;
-        const mainDocumentSyntheticMouseAfterTouchDistanceThreshold = 24;
-        const navigationGesturePoint = event => {
-            const point = touchPointForNavigationGesture(event);
-            if (!point) return null;
-            return {
-                x: point.screenX ?? point.clientX ?? null,
-                y: point.screenY ?? point.clientY ?? null,
-            };
-        };
         const shouldSuppressMainDocumentSyntheticMouseBlankTap = (event, now) => {
             if (event.type !== 'mousedown') {
                 return false;
@@ -9141,13 +9147,13 @@ class Reader {
             if (!lastTouchTap) {
                 return false;
             }
-            const point = navigationGesturePoint(event);
+            const point = manabiEventScreenPoint(event);
             if (!point || point.x === null || point.y === null) {
                 return true;
             }
             const dx = point.x - lastTouchTap.x;
             const dy = point.y - lastTouchTap.y;
-            return (dx * dx + dy * dy) <= (mainDocumentSyntheticMouseAfterTouchDistanceThreshold * mainDocumentSyntheticMouseAfterTouchDistanceThreshold);
+            return (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
             const now = Date.now();
@@ -9167,7 +9173,7 @@ class Reader {
                 || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                 || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
             if (event.type === 'touchend') {
-                const point = navigationGesturePoint(event);
+                const point = manabiEventScreenPoint(event);
                 lastPostedMainDocumentBlankTouchTap = point && point.x !== null && point.y !== null
                     ? {
                         x: point.x,
@@ -9202,7 +9208,7 @@ class Reader {
             const point = touchPointForNavigationGesture(event);
             const dx = (point?.screenX ?? point?.clientX ?? pending.startX) - pending.startX;
             const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
-            return (dx * dx + dy * dy) > (mainDocumentBlankNavigationMoveThreshold * mainDocumentBlankNavigationMoveThreshold);
+            return (dx * dx + dy * dy) > (manabiBlankNavigationMoveThreshold * manabiBlankNavigationMoveThreshold);
         };
         const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
@@ -11014,11 +11020,9 @@ class Reader {
             && !(MANABI_TEMP_DISABLE_EBOOK_NATIVE_LOOKUP_HIT_TARGETS && isEbookContentDocument(doc))
         ) {
             doc.__manabiMay20BlankTapLoggingInstalled = true;
-            const blankPointerMoveThreshold = 12;
             let pendingBlankPointerTap = null;
             let lastBlankTouchEnd = null;
             let lastPostedBlankTouchTap = null;
-            const syntheticMouseAfterTouchDistanceThreshold = 24;
             const touchPointForBlankPointer = event => event.changedTouches?.[0] ?? event.touches?.[0] ?? event;
             const blankPointerPoint = event => {
                 const point = touchPointForBlankPointer(event);
@@ -11053,14 +11057,14 @@ class Reader {
                 const dx = point.x - lastTouchTap.x;
                 const dy = point.y - lastTouchTap.y;
                 const shouldSuppress =
-                    (dx * dx + dy * dy) <= (syntheticMouseAfterTouchDistanceThreshold * syntheticMouseAfterTouchDistanceThreshold);
+                    (dx * dx + dy * dy) <= (manabiSyntheticTouchMouseDistanceThreshold * manabiSyntheticTouchMouseDistanceThreshold);
                 return shouldSuppress;
             };
             const blankPointerMovedPastTapThreshold = (event, pending) => {
                 const point = touchPointForBlankPointer(event);
                 const dx = (point?.screenX ?? point?.clientX ?? pending.startX) - pending.startX;
                 const dy = (point?.screenY ?? point?.clientY ?? pending.startY) - pending.startY;
-                return (dx * dx + dy * dy) > (blankPointerMoveThreshold * blankPointerMoveThreshold);
+                return (dx * dx + dy * dy) > (manabiBlankNavigationMoveThreshold * manabiBlankNavigationMoveThreshold);
             };
             const closestSegmentForElement = element => {
                 if (!element) return null;
@@ -11523,25 +11527,44 @@ class Reader {
                 }
                 const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
                 const body = doc?.body ?? null;
+                const pendingNavigationTransition = body?.__manabiPendingEbookNavigationTransition ?? null;
                 const previousHiddenValue = body?.dataset?.mnbPreviousNavigationHiddenDueToScroll ?? null;
                 const nextHiddenValue = body?.dataset?.mnbNavigationHiddenDueToScroll ?? null;
+                const pendingTransitionMatchesCurrentState =
+                    typeof pendingNavigationTransition?.fromHidden === 'boolean'
+                    && typeof pendingNavigationTransition?.toHidden === 'boolean'
+                    && pendingNavigationTransition.fromHidden !== pendingNavigationTransition.toHidden
+                    && nextHiddenValue === (pendingNavigationTransition.toHidden ? 'true' : 'false');
                 const hasExplicitHiddenTransitionState =
-                    (previousHiddenValue === 'true' || previousHiddenValue === 'false')
-                    && (nextHiddenValue === 'true' || nextHiddenValue === 'false')
-                    && previousHiddenValue !== nextHiddenValue;
+                    pendingTransitionMatchesCurrentState
+                    || (
+                        (previousHiddenValue === 'true' || previousHiddenValue === 'false')
+                        && (nextHiddenValue === 'true' || nextHiddenValue === 'false')
+                        && previousHiddenValue !== nextHiddenValue
+                    );
+                const transitionFromHidden = pendingTransitionMatchesCurrentState
+                    ? pendingNavigationTransition.fromHidden
+                    : previousHiddenValue === 'true';
+                const transitionToHidden = pendingTransitionMatchesCurrentState
+                    ? pendingNavigationTransition.toHidden
+                    : nextHiddenValue === 'true';
                 globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.beforePrepare', {
                     reason: reason ?? null,
                     pageTurnDirection: detail?.pageTurnDirection ?? null,
                     previousHiddenValue,
                     nextHiddenValue,
+                    pendingFromHidden: pendingNavigationTransition?.fromHidden ?? null,
+                    pendingToHidden: pendingNavigationTransition?.toHidden ?? null,
+                    pendingReason: pendingNavigationTransition?.reason ?? null,
+                    pendingTransitionMatchesCurrentState,
                     hasExplicitHiddenTransitionState,
                     relocatedVisibleSegmentCount: relocatedVisibleSegmentsResult?.visibleSegments?.length ?? null,
                     relocatedSource: relocatedVisibleSegmentsResult?.segmentCandidateSource ?? null,
                 });
                 const transitionStage = hasExplicitHiddenTransitionState
                     ? doc?.defaultView?.manabi_prepareEbookTrackingPaintNavigationTransition?.({
-                        fromHidden: previousHiddenValue === 'true',
-                        toHidden: nextHiddenValue === 'true',
+                        fromHidden: transitionFromHidden,
+                        toHidden: transitionToHidden,
                         reason: `relocate.${reason ?? 'unknown'}`,
                     })
                     : null;
@@ -11578,6 +11601,9 @@ class Reader {
                         fromHidden: commitResult?.fromHidden ?? null,
                         toHidden: commitResult?.toHidden ?? null,
                     });
+                }
+                if (body?.__manabiPendingEbookNavigationTransition === pendingNavigationTransition) {
+                    body.__manabiPendingEbookNavigationTransition = null;
                 }
             });
         }
