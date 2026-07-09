@@ -1714,6 +1714,7 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
     if (!body?.style) return false;
     const reason = typeof options?.reason === 'string' ? options.reason : 'unknown';
     const refreshPaint = options?.refreshPaint !== false;
+    const isPageTurnNavigationState = reason.includes('page-turn') || reason.includes('relocate.page');
     const previousState = body.dataset?.mnbNavigationHiddenDueToScroll ?? null;
     const nextState = hidden ? 'true' : 'false';
     let changed = previousState !== nextState;
@@ -1769,7 +1770,10 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
             }
         } catch (_error) {}
     }
-    if (reason.includes('page-turn') || reason.includes('relocate.page')) {
+    if (!isPageTurnNavigationState && body.dataset) {
+        body.dataset.mnbPreviousNavigationHiddenDueToScroll = nextState;
+    }
+    if (isPageTurnNavigationState) {
         globalThis.__manabiJul9Diagnostic?.('ebookBodyNavState', {
             reason,
             previousState,
@@ -6936,10 +6940,18 @@ class Reader {
             const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-section-progress') || null;
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             const shouldHide = !wasHidden;
-            const now = Date.now();
-            const lastContentBlankToggleAt = Number(globalThis.__manabiLastContentDocumentBlankToggleAtMs || 0);
-            if (lastContentBlankToggleAt > 0 && now - lastContentBlankToggleAt >= 0 && now - lastContentBlankToggleAt < 750) {
-                return;
+            const pendingContentBlankEcho = globalThis.__manabiPendingContentDocumentBlankNavigationEcho || null;
+            if (pendingContentBlankEcho) {
+                globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
+                const point = navigationGesturePoint(event);
+                const dx = (point?.x ?? pendingContentBlankEcho.x) - pendingContentBlankEcho.x;
+                const dy = (point?.y ?? pendingContentBlankEcho.y) - pendingContentBlankEcho.y;
+                const distanceThreshold = mainDocumentSyntheticMouseAfterTouchDistanceThreshold;
+                const isSyntheticTouchClick = event.sourceCapabilities?.firesTouchEvents === true
+                    || (point && (dx * dx + dy * dy) <= (distanceThreshold * distanceThreshold));
+                if (isSyntheticTouchClick) {
+                    return;
+                }
             }
             if (excludedTarget) {
                 return;
@@ -9108,7 +9120,6 @@ class Reader {
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
         const mainDocumentBlankNavigationMoveThreshold = 12;
-        const mainDocumentSyntheticMouseAfterTouchSuppressionMs = 900;
         const mainDocumentSyntheticMouseAfterTouchDistanceThreshold = 24;
         const navigationGesturePoint = event => {
             const point = touchPointForNavigationGesture(event);
@@ -9125,19 +9136,17 @@ class Reader {
             if (event.sourceCapabilities?.firesTouchEvents === true) {
                 return true;
             }
-            if (!lastPostedMainDocumentBlankTouchTap) {
-                return false;
-            }
-            const ageMs = now - lastPostedMainDocumentBlankTouchTap.postedAtMs;
-            if (ageMs < 0 || ageMs > mainDocumentSyntheticMouseAfterTouchSuppressionMs) {
+            const lastTouchTap = lastPostedMainDocumentBlankTouchTap;
+            lastPostedMainDocumentBlankTouchTap = null;
+            if (!lastTouchTap) {
                 return false;
             }
             const point = navigationGesturePoint(event);
             if (!point || point.x === null || point.y === null) {
                 return true;
             }
-            const dx = point.x - lastPostedMainDocumentBlankTouchTap.x;
-            const dy = point.y - lastPostedMainDocumentBlankTouchTap.y;
+            const dx = point.x - lastTouchTap.x;
+            const dy = point.y - lastTouchTap.y;
             return (dx * dx + dy * dy) <= (mainDocumentSyntheticMouseAfterTouchDistanceThreshold * mainDocumentSyntheticMouseAfterTouchDistanceThreshold);
         };
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
@@ -9153,9 +9162,6 @@ class Reader {
                 });
                 return;
             }
-            if (window.__manabiLookupPopoverActive === true) {
-                window.__manabiSuppressUnhandledTapHideNavigationUntil = now + 750;
-            }
             const ebookNavigationHidden =
                 globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                 || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
@@ -9164,7 +9170,6 @@ class Reader {
                 const point = navigationGesturePoint(event);
                 lastPostedMainDocumentBlankTouchTap = point && point.x !== null && point.y !== null
                     ? {
-                        postedAtMs: now,
                         x: point.x,
                         y: point.y,
                     }
@@ -11117,23 +11122,31 @@ class Reader {
                     });
                     return;
                 }
-                const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
-                if (now - lastPostedAt > 350) {
-                    doc.__manabiLastBlankPointerPostAt = now;
+                const point = blankPointerPoint(event);
+                const eventKey = [
+                    source,
+                    event.type,
+                    touchstartAtMs,
+                    Math.round(point?.screenX ?? point?.clientX ?? -1),
+                    Math.round(point?.screenY ?? point?.clientY ?? -1),
+                ].join(':');
+                if (doc.__manabiLastBlankPointerPostKey !== eventKey) {
+                    doc.__manabiLastBlankPointerPostKey = eventKey;
                     const ebookNavigationHidden =
                         globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
                         || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
                         || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
-                    globalThis.__manabiLastContentDocumentBlankToggleAtMs = now;
-                    if (event.type === 'touchend') {
-                        const point = blankPointerPoint(event);
-                        lastPostedBlankTouchTap = point && point.x !== null && point.y !== null
-                            ? {
-                                postedAtMs: now,
-                                x: point.x,
-                                y: point.y,
-                            }
+                    if (event.type === 'touchend' && point) {
+                        const blankX = point.screenX ?? point.clientX ?? null;
+                        const blankY = point.screenY ?? point.clientY ?? null;
+                        lastPostedBlankTouchTap = blankX !== null && blankY !== null
+                            ? { x: blankX, y: blankY }
                             : null;
+                        globalThis.__manabiPendingContentDocumentBlankNavigationEcho = lastPostedBlankTouchTap
+                            ? { ...lastPostedBlankTouchTap, source, touchstartAtMs }
+                            : null;
+                    } else {
+                        globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
                     }
                     manabiJul9Diagnostic('blankTap.post', {
                         source,
@@ -11142,7 +11155,7 @@ class Reader {
                         targetID: targetElement?.id ?? null,
                         touchstartAtMs,
                         now,
-                        lastPostedAt,
+                        eventKey,
                         ebookNavigationHidden,
                         navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
                         bodyHidden: doc?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
@@ -11159,13 +11172,12 @@ class Reader {
                     manabiJul9Diagnostic('blankTap.skip', {
                         source,
                         eventType: event.type,
-                        reason: 'dedupe-window',
+                        reason: 'duplicate-event-key',
                         targetTag: targetElement?.tagName ?? null,
                         targetID: targetElement?.id ?? null,
                         touchstartAtMs,
                         now,
-                        lastPostedAt,
-                        ageMs: now - lastPostedAt,
+                        eventKey,
                     });
                 }
             };
@@ -11204,12 +11216,10 @@ class Reader {
                     return;
                 }
                 const point = blankPointerPoint(event);
-                lastBlankTouchEnd = point && point.x !== null && point.y !== null
-                    ? {
-                        postedAtMs: Date.now(),
-                        x: point.x,
-                        y: point.y,
-                    }
+                const endX = point?.screenX ?? point?.clientX ?? null;
+                const endY = point?.screenY ?? point?.clientY ?? null;
+                lastBlankTouchEnd = endX !== null && endY !== null
+                    ? { x: endX, y: endY }
                     : null;
                 postContentDocumentBlankPointerTap(event, 'content-document.blank', pending.startAtMs);
             };
