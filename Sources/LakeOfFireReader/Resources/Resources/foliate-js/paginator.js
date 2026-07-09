@@ -157,13 +157,6 @@ const manabiTimelineMark = (event, payload = {}) => {
     } catch (_error) {}
     return label;
 };
-const manabiJul8PageTurnDiagnostic = (stage, payload = {}) => {
-    const diagnosticPayload = { ...payload, force: true };
-    manabiTimelineMark(`JUL8.${stage}`, diagnosticPayload);
-    try {
-        console.info(`# JUL8 stage=${stage}`, diagnosticPayload);
-    } catch (_error) {}
-};
 const manabiTimelineMeasure = (event, startedAt, payload = {}) => {
     const endedAt = manabiPerfNow();
     const elapsedMs = endedAt - startedAt;
@@ -4836,15 +4829,6 @@ export class Paginator extends HTMLElement {
             measuredSentinelCount: this.#lastGeometryVisibleSentinelDiagnostics?.measuredSentinelCount ?? null,
             zeroAreaSentinelCount: this.#lastGeometryVisibleSentinelDiagnostics?.zeroAreaSentinelCount ?? null,
         }
-        if (reason === 'page') {
-            manabiJul8PageTurnDiagnostic('paginator.afterScroll.range', {
-                index: this.#index,
-                reason,
-                pageTurnDirection: this.#pendingPageTurnDirection,
-                canUseMetricsOnlyRelocate,
-                ...visibleRangeDiagnostics,
-            })
-        }
         const anchorRange = reason === 'page' ? null : range
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
@@ -5849,33 +5833,8 @@ export class Paginator extends HTMLElement {
     async #turnPage(dir, distance, options = {}) {
         const navigationSource = globalThis.__manabiNavigationIntent?.source ?? null
         const turnStartedAt = manabiPerfNow()
-        manabiJul8PageTurnDiagnostic('paginator.turn.enter', {
-            index: this.#index,
-            direction: dir > 0 ? 'forward' : 'backward',
-            distance: distance ?? null,
-            locked: this.#locked,
-            isLoading: this.#isLoading,
-            navigationSource,
-            bypassDuplicateSuppression: options.bypassPostTurnDuplicateSuppression === true,
-            lastSettledDirection: this.#lastSettledPageTurn?.direction ?? null,
-            lastSettledPage: this.#lastSettledPageTurn?.page ?? null,
-            lastSettledElapsedMs: Number.isFinite(this.#lastSettledPageTurn?.settledAt)
-                ? manabiRound(turnStartedAt - this.#lastSettledPageTurn.settledAt, 1)
-                : null,
-        })
         if (!options.bypassPostTurnDuplicateSuppression && this.#shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, turnStartedAt)) {
             const lastPageTurn = this.#lastSettledPageTurn
-            manabiJul8PageTurnDiagnostic('paginator.turn.dropDuplicate', {
-                index: this.#index,
-                direction: dir > 0 ? 'forward' : 'backward',
-                elapsedMs: Number.isFinite(lastPageTurn?.settledAt)
-                    ? manabiRound(turnStartedAt - lastPageTurn.settledAt, 1)
-                    : null,
-                thresholdMs: MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS,
-                previousDirection: lastPageTurn?.direction ?? null,
-                previousPage: lastPageTurn?.page ?? null,
-                navigationSource,
-            })
             if (!this.#isCacheWarmer) {
                 manabiPaginatorReaderLoadLog('paginator.pageTurn.dropDuplicate', {
                     index: this.#index,
@@ -5905,18 +5864,6 @@ export class Paginator extends HTMLElement {
                 queuedStep: dir,
                 lockedElapsedMs,
                 distance,
-            })
-            manabiJul8PageTurnDiagnostic('paginator.turn.lockedDecision', {
-                index: this.#index,
-                direction: queuedDirection,
-                shouldQueue: queueDecision.shouldQueue,
-                reason: queueDecision.reason,
-                pendingDirection,
-                pendingRequestedPage: this.#pendingPageTurnRequestedPage,
-                pendingPageCount: this.#pendingPageTurnPageCount,
-                projectedQueuedPage: queueDecision.projectedQueuedPage ?? null,
-                lockedElapsedMs,
-                isLoading: this.#isLoading,
             })
             if (!queueDecision.shouldQueue) {
                 if (!this.#isCacheWarmer) {
@@ -5988,30 +5935,11 @@ export class Paginator extends HTMLElement {
             Number.isFinite(requestedPage)
             && Number.isFinite(beforeMetrics?.pages)
             && !expectedCrossSection
-        manabiJul8PageTurnDiagnostic('paginator.turn.before', {
-            index: this.#index,
-            direction: dir > 0 ? 'forward' : 'backward',
-            beforePage: beforeMetrics?.page ?? null,
-            beforePages: beforeMetrics?.pages ?? null,
-            beforeStart: Number.isFinite(beforeMetrics?.start) ? manabiRound(beforeMetrics.start, 1) : null,
-            requestedPage,
-            expectedCrossSection,
-            adjacentIndex: beforeAdjacentIndex ?? null,
-            pendingQueueAllowed: this.#pendingPageTurnQueueAllowed === true,
-        })
         try {
             const prev = dir === -1
             const shouldGo = !!(await (prev
                 ? await this.#scrollPrev(distance, beforeMetrics)
                 : await this.#scrollNext(distance, beforeMetrics)))
-            manabiJul8PageTurnDiagnostic('paginator.turn.afterScroll', {
-                index: this.#index,
-                direction: dir > 0 ? 'forward' : 'backward',
-                shouldGo,
-                beforeIndex,
-                currentIndex: this.#index,
-                requestedPage,
-            })
             if (shouldGo) await this.#goTo({
                 index: beforeAdjacentIndex,
                 anchor: prev ? () => 1 : () => 0,
@@ -6032,19 +5960,6 @@ export class Paginator extends HTMLElement {
                 || this.#index !== beforeIndex
                 || finalMetrics?.page !== beforeMetrics?.page
                 || Math.abs((finalMetrics?.start ?? NaN) - (beforeMetrics?.start ?? NaN)) >= 1
-            manabiJul8PageTurnDiagnostic('paginator.turn.finalMetrics', {
-                index: this.#index,
-                direction: dir > 0 ? 'forward' : 'backward',
-                shouldGo,
-                didMove,
-                beforeIndex,
-                beforePage: beforeMetrics?.page ?? null,
-                beforeStart: Number.isFinite(beforeMetrics?.start) ? manabiRound(beforeMetrics.start, 1) : null,
-                finalPage: finalMetrics?.page ?? null,
-                finalPages: finalMetrics?.pages ?? null,
-                finalStart: Number.isFinite(finalMetrics?.start) ? manabiRound(finalMetrics.start, 1) : null,
-                reusedFinalMetrics: canReuseCachedFinalMetrics,
-            })
             if (didMove) {
                 this.#lastSettledPageTurn = {
                     direction: dir > 0 ? 'forward' : 'backward',
@@ -6109,17 +6024,7 @@ export class Paginator extends HTMLElement {
             }
             if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
-            const lockElapsedMs = this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1)
             const queuedPageTurn = this.#queuedPageTurn
-            manabiJul8PageTurnDiagnostic('paginator.turn.finally', {
-                index: this.#index,
-                direction: dir > 0 ? 'forward' : 'backward',
-                lockElapsedMs,
-                hasQueuedPageTurn: !!queuedPageTurn,
-                pendingDirection: this.#pendingPageTurnDirection,
-                pendingRequestedPage: this.#pendingPageTurnRequestedPage,
-                pendingPageCount: this.#pendingPageTurnPageCount,
-            })
             this.#queuedPageTurn = null
             this.#pendingPageTurnDirection = null
             this.#pendingPageTurnStep = null

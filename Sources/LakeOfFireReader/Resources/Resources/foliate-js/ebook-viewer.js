@@ -1710,15 +1710,22 @@ const getLoadedEbookDocuments = (explicitDoc = null) => {
     return docs;
 };
 
-const applyNavigationHiddenVisualStateToEbookBody = (body, hidden) => {
+const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {}) => {
     if (!body?.style) return false;
+    const reason = typeof options?.reason === 'string' ? options.reason : 'unknown';
+    const refreshPaint = options?.refreshPaint !== false;
     const previousState = body.dataset?.mnbNavigationHiddenDueToScroll ?? null;
     const nextState = hidden ? 'true' : 'false';
     let changed = previousState !== nextState;
     if (body.dataset) {
-        body.dataset.mnbPreviousNavigationHiddenDueToScroll = previousState !== nextState
-            ? (previousState ?? nextState)
-            : nextState;
+        if (previousState !== nextState) {
+            body.dataset.mnbPreviousNavigationHiddenDueToScroll = previousState ?? (hidden ? 'false' : 'true');
+        } else if (
+            body.dataset.mnbPreviousNavigationHiddenDueToScroll !== 'true'
+            && body.dataset.mnbPreviousNavigationHiddenDueToScroll !== 'false'
+        ) {
+            body.dataset.mnbPreviousNavigationHiddenDueToScroll = nextState;
+        }
     }
     if (body.dataset && previousState !== nextState) {
         body.dataset.mnbNavigationHiddenDueToScroll = nextState;
@@ -1751,12 +1758,28 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden) => {
             changed = true;
         }
     }
-    try {
-        const refreshResult = body.ownerDocument?.defaultView?.manabi_refreshEbookTrackingPaintNavigationState?.(hidden);
-        if (refreshResult?.mutatedCount > 0) {
-            changed = true;
-        }
-    } catch (_error) {}
+    let refreshResult = null;
+    if (refreshPaint) {
+        try {
+            refreshResult = body.ownerDocument?.defaultView?.manabi_refreshEbookTrackingPaintNavigationState?.(hidden, {
+                source: reason,
+            });
+            if (refreshResult?.mutatedCount > 0) {
+                changed = true;
+            }
+        } catch (_error) {}
+    }
+    if (reason.includes('page-turn') || reason.includes('relocate.page')) {
+        globalThis.__manabiJul9Diagnostic?.('ebookBodyNavState', {
+            reason,
+            previousState,
+            nextState,
+            refreshPaint,
+            changed,
+            refreshMutatedCount: refreshResult?.mutatedCount ?? null,
+            refreshPaintedSegmentCount: refreshResult?.paintedSegmentCount ?? null,
+        });
+    }
     return changed;
 };
 
@@ -1769,7 +1792,7 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
         };
     }
     const hidden = globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
-    const changed = applyNavigationHiddenVisualStateToEbookBody(body, hidden);
+    const changed = applyNavigationHiddenVisualStateToEbookBody(body, hidden, { reason });
     return {
         applied: true,
         hidden,
@@ -2904,16 +2927,17 @@ const manabiTimelineMark = (event, payload = {}) => {
     } catch (_error) {}
     return label;
 };
-const manabiJul8PageTurnDiagnostic = (stage, payload = {}) => {
+const manabiJul9Diagnostic = (stage, payload = {}) => {
     const diagnosticPayload = {
         ...payload,
         force: true,
     };
-    manabiTimelineMark(`JUL8.${stage}`, diagnosticPayload);
+    manabiTimelineMark(`JUL9.${stage}`, diagnosticPayload);
     try {
-        console.info(`# JUL8 stage=${stage}`, diagnosticPayload);
+        console.info(`# JUL9 stage=${stage}`, diagnosticPayload);
     } catch (_error) {}
 };
+globalThis.__manabiJul9Diagnostic = manabiJul9Diagnostic;
 const manabiTimelineMeasure = (event, startedAt, payload = {}, thresholdMs = MANABI_TIMELINE_SLOW_THRESHOLD_MS) => {
     const endedAt = performanceNowMs();
     const elapsedMs = endedAt - startedAt;
@@ -3843,9 +3867,12 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
     } else if (typeof doc.elementsFromPoint !== 'function') {
         return null;
     }
-    const useSparseSampling = sampleDensity === 'sparse';
+    const useMinimalSampling = sampleDensity === 'minimal';
+    const useSparseSampling = sampleDensity === 'sparse' || useMinimalSampling;
     const useStatusSampling = sampleDensity === 'status';
-    const xFractions = useSparseSampling
+    const xFractions = useMinimalSampling
+        ? [0.25, 0.5, 0.75]
+        : useSparseSampling
         ? [0.5]
         : (useStatusSampling && isEbookDoc
             ? [0.18, 0.38, 0.62, 0.82]
@@ -3856,7 +3883,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
             ? [0.18, 0.5, 0.82]
             : (isEbookDoc ? [0.12, 0.28, 0.44, 0.6, 0.76, 0.92] : [0.1, 0.22, 0.34, 0.46, 0.58, 0.7, 0.82, 0.94]));
     const candidateSegments = [];
-    const candidateLimit = useSparseSampling ? 96 : (isEbookDoc ? 96 : 512);
+    const candidateLimit = useMinimalSampling ? 8 : (useSparseSampling ? 96 : (isEbookDoc ? 96 : 512));
     const seenSegments = new Set();
     const seenRoots = new Set();
     const left = Math.max(0, Math.floor(visibleBounds.left || 0));
@@ -3941,7 +3968,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
         }
     }
     let sampledSegmentIndexByNode = null;
-    if (isEbookDoc && candidateSegments.length > 0) {
+    if (isEbookDoc && candidateSegments.length > 0 && !useMinimalSampling) {
         const orderedSegments = orderedSegmentNodesForDocument(doc);
         const allSegments = orderedSegments.nodes;
         const indexByNode = orderedSegments.indexByNode;
@@ -3980,7 +4007,7 @@ const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
             }
         }
     }
-    if (isEbookDoc && candidateSegments.length === 0) {
+    if (isEbookDoc && candidateSegments.length === 0 && !useMinimalSampling) {
         const orderedSegments = orderedSegmentNodesForDocument(doc);
         for (const segment of orderedSegments.nodes.slice(0, candidateLimit)) {
             appendSegment(segment);
@@ -4381,7 +4408,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         : (rangeCommonAncestor?.parentElement || null);
     const isBroadEbookRangeAncestor = isEbookDoc && useVisibleRange && isBroadEbookRangeRoot(rangeCommonAncestorElement, doc);
     const normalizedViewportSampleDensity =
-        viewportSampleDensity === 'sparse' || viewportSampleDensity === 'status' || viewportSampleDensity === 'normal'
+        viewportSampleDensity === 'minimal'
+        || viewportSampleDensity === 'sparse'
+        || viewportSampleDensity === 'status'
+        || viewportSampleDensity === 'normal'
             ? viewportSampleDensity
             : null;
     const normalizedMinimumViewportSampleSegmentCount =
@@ -4733,6 +4763,65 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     cacheVisibleSegmentCollection(doc, collectionCacheKey, result);
     return result;
 };
+
+const visiblePageSegmentCollectionModes = Object.freeze({
+    initialRenderableProbe: Object.freeze({
+        includeClientRects: false,
+        postLookupTargets: false,
+        prepareLookupIndex: false,
+        hydrateStatuses: false,
+        viewportSampleDensity: 'minimal',
+        minimumViewportSampleSegmentCount: 1,
+        useOrderedDocumentWindow: false,
+        includeLookupSurfaceText: false,
+    }),
+    pageTurnLookupTargets: Object.freeze({
+        includeClientRects: false,
+        postLookupTargets: true,
+        prepareLookupIndex: true,
+        hydrateStatuses: false,
+        viewportSampleDensity: 'status',
+        minimumViewportSampleSegmentCount: 8,
+        includeLookupSurfaceText: false,
+    }),
+    pageTurnStatusHydration: Object.freeze({
+        includeClientRects: false,
+        postLookupTargets: true,
+        prepareLookupIndex: true,
+        hydrateStatuses: true,
+        hydrateStatusesSynchronously: true,
+        viewportSampleDensity: 'status',
+        minimumViewportSampleSegmentCount: 8,
+        includeLookupSurfaceText: false,
+    }),
+    visibleStatusRefresh: Object.freeze({
+        includeClientRects: false,
+        postLookupTargets: false,
+        prepareLookupIndex: true,
+        hydrateStatuses: true,
+        viewportSampleDensity: 'status',
+        minimumViewportSampleSegmentCount: 8,
+        includeLookupSurfaceText: false,
+    }),
+    fullLookupRefresh: Object.freeze({
+        includeClientRects: true,
+        postLookupTargets: true,
+        prepareLookupIndex: true,
+        hydrateStatuses: true,
+        includeLookupSurfaceText: true,
+    }),
+});
+
+const visiblePageSegmentCollectionOptions = (modeName = null, overrides = {}) => ({
+    ...(modeName && visiblePageSegmentCollectionModes[modeName] ? visiblePageSegmentCollectionModes[modeName] : {}),
+    ...(overrides || {}),
+});
+
+const renderableContentProbeResultForDocument = (doc, visibleRange = null, reason = 'initial-renderable-probe') =>
+    collectVisibleSegmentNodesFromRange(doc, visibleRange, {
+        ...visiblePageSegmentCollectionModes.initialRenderableProbe,
+        reason,
+    });
 
 const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspecified', {
     includeSurfaceText = true,
@@ -6009,6 +6098,26 @@ const getCSSForBookContent = ({
         inherits: true;
         initial-value: transparent;
     }
+    @property --word-tracking-unknown-highlight {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+    @property --word-tracking-familiar-highlight {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+    @property --word-tracking-learning-highlight {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
+    @property --word-tracking-known-highlight {
+        syntax: '<color>';
+        inherits: true;
+        initial-value: transparent;
+    }
     body.reader-vertical-writing ruby > m-t {
         display: inline !important;
     }
@@ -6640,7 +6749,12 @@ class Reader {
         for (const content of contents) {
             const body = content?.doc?.body;
             if (!body) continue;
-            if (applyNavigationHiddenVisualStateToEbookBody(body, hidden)) {
+            const isPageTurnNavigationState = reason.includes('relocate.page-turn')
+                || reason.includes('navHUD.visibilityChange.relocate.page-turn');
+            if (applyNavigationHiddenVisualStateToEbookBody(body, hidden, {
+                reason,
+                refreshPaint: !isPageTurnNavigationState,
+            })) {
                 changedCount += 1;
             }
         }
@@ -6984,14 +7098,10 @@ class Reader {
                 }
                 const visibleRange = this.#visibleRangeForDocument(doc);
                 this.#visiblePageSegmentResult(doc, visibleRange, `visible-status:${reason}`, {
+                    collectionMode: 'visibleStatusRefresh',
                     postIfCached: false,
-                    includeClientRects: false,
-                    postLookupTargets: false,
                     prepareLookupIndex: false,
-                    hydrateStatuses: true,
                     finishInitialCritical: false,
-                    viewportSampleDensity: 'status',
-                    minimumViewportSampleSegmentCount: 8,
                 });
             }
         };
@@ -7856,12 +7966,6 @@ class Reader {
         details = {},
     }) {
         if (this.#pageTurnInFlight) {
-            manabiJul8PageTurnDiagnostic('reader.run.queued', {
-                stage,
-                markInputSource,
-                queuedStage: this.#queuedPageTurnRun?.stage ?? null,
-                details: JSON.stringify(details).slice(0, 160),
-            });
             this.#queuedPageTurnRun = {
                 stage,
                 move,
@@ -7877,11 +7981,6 @@ class Reader {
 
         this.#pageTurnInFlight = true;
         const startedAt = performanceNowMs();
-        manabiJul8PageTurnDiagnostic('reader.run.start', {
-            stage,
-            markInputSource,
-            details: JSON.stringify(details).slice(0, 160),
-        });
         if (markInputSource) {
             markRestorePositionSavePageTurnInput(markInputSource);
         }
@@ -7897,19 +7996,10 @@ class Reader {
                     ...details,
                 }, move)
                 : await move();
-            manabiJul8PageTurnDiagnostic('reader.run.result', {
-                stage,
-                markInputSource,
-                ignored: result?.ignored ?? null,
-                reason: result?.reason ?? null,
-                superseded: result?.superseded ?? null,
-                resultType: typeof result,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            });
             return result ?? {};
         } catch (error) {
             thrownError = error;
-            manabiJul8PageTurnDiagnostic('reader.run.error', {
+            manabiTimelineMark('pageTurn.reader.run.error', {
                 stage,
                 markInputSource,
                 message: error?.message || String(error),
@@ -7918,15 +8008,6 @@ class Reader {
             throw error;
         } finally {
             this.#pageTurnInFlight = false;
-            manabiJul8PageTurnDiagnostic('reader.run.finally', {
-                stage,
-                markInputSource,
-                hasQueuedPageTurn: !!this.#queuedPageTurnRun,
-                resultIgnored: result?.ignored ?? null,
-                resultReason: result?.reason ?? null,
-                error: thrownError?.message || null,
-                elapsedMs: safeRound(performanceNowMs() - startedAt, 1),
-            });
             manabiTimelineMeasure('pageTurn.run', startedAt, {
                 stage,
                 markInputSource,
@@ -8177,27 +8258,34 @@ class Reader {
             globalThis.__manabiInitialForegroundCriticalSectionToken = null;
         }
     }
+    #renderableContentProbeResult(doc, visibleRange = null, reason = 'initial-renderable-probe') {
+        const result = renderableContentProbeResultForDocument(doc, visibleRange, reason);
+        this.#finishVisiblePageSegmentCritical(`renderable-probe:${reason}`, true);
+        return result;
+    }
     visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', options = {}) {
         return this.#visiblePageSegmentResult(doc, visibleRange, reason, options);
     }
-    #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', {
-        postIfCached = false,
-        includeClientRects = true,
-        postLookupTargets = true,
-        prepareLookupIndex = true,
-        hydrateStatuses = true,
-        hydrateStatusesSynchronously = true,
-        hydrateAdjacentStatusSegmentCount = 0,
-        hydrateAllowPartialTrackedWords = false,
-        hydrateRetainHiddenEbookStatusClasses = false,
-        finishInitialCritical = true,
-        viewportSampleDensity = null,
-        minimumViewportSampleSegmentCount = 0,
-        seedSegmentNodes = null,
-        seedSegmentSource = null,
-        useOrderedDocumentWindow = false,
-        includeLookupSurfaceText = true,
-    } = {}) {
+    #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', options = {}) {
+        const resolvedOptions = visiblePageSegmentCollectionOptions(options?.collectionMode, options);
+        const {
+            postIfCached = false,
+            includeClientRects = true,
+            postLookupTargets = true,
+            prepareLookupIndex = true,
+            hydrateStatuses = true,
+            hydrateStatusesSynchronously = true,
+            hydrateAdjacentStatusSegmentCount = 0,
+            hydrateAllowPartialTrackedWords = false,
+            hydrateRetainHiddenEbookStatusClasses = false,
+            finishInitialCritical = true,
+            viewportSampleDensity = null,
+            minimumViewportSampleSegmentCount = 0,
+            seedSegmentNodes = null,
+            seedSegmentSource = null,
+            useOrderedDocumentWindow = false,
+            includeLookupSurfaceText = true,
+        } = resolvedOptions;
         const collectionStartedAt = performanceNowMs();
         const effectivePostLookupTargets = postLookupTargets;
         const effectiveIncludeClientRects = includeClientRects;
@@ -8819,43 +8907,12 @@ class Reader {
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
             const compactDisabled = isCompactNavigationSheetSidePaginationDisabled();
             if (button?.disabled || compactDisabled) {
-                manabiJul8PageTurnDiagnostic('sideButton.skipped', {
-                    side,
-                    method,
-                    eventType,
-                    buttonDisabled: button?.disabled === true,
-                    compactDisabled,
-                    isRTL: this.isRTL,
-                });
                 return;
             }
             if (side === 'left' || side === 'right') {
                 this.#fadeSideNavChevronAfterFullOpacity(side);
             }
-            const viewSnapshot = () => {
-                const renderer = this.view?.renderer ?? null;
-                const location = this.view?.lastLocation ?? null;
-                const contents = renderer?.getContents?.() ?? [];
-                return {
-                    ...readerLoadViewerSnapshot(this),
-                    hasView: !!this.view,
-                    hasRenderer: !!renderer,
-                    rendererName: renderer?.constructor?.name ?? null,
-                    rendererTag: renderer?.localName ?? null,
-                    locationIndex: location?.index ?? null,
-                    locationReason: location?.reason ?? null,
-                    contentIndex: contents[0]?.index ?? null,
-                };
-            };
-            manabiJul8PageTurnDiagnostic('sideButton.start', {
-                side,
-                method,
-                eventType,
-                logicalDirection: this.#pageTurnDirectionForMove(method),
-                isRTL: this.isRTL,
-                viewSnapshot: JSON.stringify(viewSnapshot()).slice(0, 240),
-            });
-            const result = await this.#runPageTurn({
+            await this.#runPageTurn({
                 stage: 'pageTurn.sideButton',
                 markInputSource: `pageTurn.sideButton.${eventType ?? 'unknown'}`,
                 details: {
@@ -8866,15 +8923,6 @@ class Reader {
                 move: async () => method === 'goLeft'
                     ? await this.view.goLeft()
                     : await this.view.goRight(),
-            });
-            manabiJul8PageTurnDiagnostic('sideButton.result', {
-                side,
-                method,
-                eventType,
-                ignored: result?.ignored ?? null,
-                reason: result?.reason ?? null,
-                superseded: result?.superseded ?? null,
-                viewSnapshot: JSON.stringify(viewSnapshot()).slice(0, 240),
             });
         };
         const leftSideBtn = document.getElementById('btn-scroll-left');
@@ -9095,6 +9143,14 @@ class Reader {
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
             const now = Date.now();
             if (shouldSuppressMainDocumentSyntheticMouseBlankTap(event, now)) {
+                manabiJul9Diagnostic('blankTap.skip', {
+                    source,
+                    eventType: event.type,
+                    reason: 'main-document-synthetic-mouse',
+                    touchstartAtMs,
+                    now,
+                    navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
+                });
                 return;
             }
             if (window.__manabiLookupPopoverActive === true) {
@@ -9114,6 +9170,16 @@ class Reader {
                     }
                     : null;
             }
+            manabiJul9Diagnostic('blankTap.post', {
+                source,
+                eventType: event.type,
+                touchstartAtMs,
+                now,
+                ebookNavigationHidden,
+                navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
+                bodyHidden: document?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+                hasLookupPopover: window.__manabiLookupPopoverActive === true,
+            });
             window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
@@ -10599,19 +10665,10 @@ class Reader {
             const doc = content?.doc || content?.document || null;
             if (!isDocumentLike(doc)) { continue; }
             const visibleRange = this.#visibleRangeForDocument(doc);
-            const visibleSegmentsResult = this.#visiblePageSegmentResult(
+            const visibleSegmentsResult = this.#renderableContentProbeResult(
                 doc,
                 visibleRange,
-                `initialDisplay.visible-content:${reason}`,
-                {
-                    postIfCached: true,
-                    includeClientRects: false,
-                    postLookupTargets: false,
-                    prepareLookupIndex: false,
-                    hydrateStatuses: true,
-                    finishInitialCritical: true,
-                    useOrderedDocumentWindow: true,
-                }
+                `initialDisplay.visible-content:${reason}`
             );
             const visibleContentState = visibleRenderableContentStateForDocument(doc, visibleSegmentsResult);
             observedSegmentCount += visibleContentState.observedSegmentCount;
@@ -10912,9 +10969,10 @@ class Reader {
         const singleMediaInitialLayout = !isCacheWarmerDocument(doc)
             ? classifySingleMediaDocumentForInitialLayout(doc, 'document-load')
             : { applied: false, reason: 'cache-warmer-document' };
-        if (!isCacheWarmerDocument(doc)) {
-            this.#settleInitialDisplayFromVisibleContent('document-load');
-        }
+        // Foliate fires document load before the paginator has rendered/columnized the
+        // content. Running visible-segment sampling here forces layout, finds no
+        // candidates, and cannot safely clear loading. The didDisplay path performs
+        // the real visible-content pass after render.
         try {
             window.manabiForwardReaderFontToEbookDocuments?.('document-load', doc);
         } catch (error) {
@@ -11021,12 +11079,42 @@ class Reader {
                 const point = touchPointForBlankPointer(event);
                 const segmentTarget = segmentTargetForBlankPointerEvent(event);
                 if (segmentTarget) {
+                    manabiJul9Diagnostic('blankTap.skip', {
+                        source,
+                        eventType: event.type,
+                        reason: 'segment-target',
+                        targetTag: targetElement?.tagName ?? null,
+                        targetID: targetElement?.id ?? null,
+                        segmentID: segmentTarget?.id ?? null,
+                        touchstartAtMs,
+                        now,
+                    });
                     return;
                 }
                 if (shouldSuppressSyntheticMouseBlankTap(event)) {
+                    manabiJul9Diagnostic('blankTap.skip', {
+                        source,
+                        eventType: event.type,
+                        reason: 'content-document-synthetic-mouse',
+                        targetTag: targetElement?.tagName ?? null,
+                        targetID: targetElement?.id ?? null,
+                        touchstartAtMs,
+                        now,
+                    });
                     return;
                 }
                 if (excludedTarget) {
+                    manabiJul9Diagnostic('blankTap.skip', {
+                        source,
+                        eventType: event.type,
+                        reason: 'excluded-target',
+                        targetTag: targetElement?.tagName ?? null,
+                        targetID: targetElement?.id ?? null,
+                        excludedTag: excludedTarget?.tagName ?? null,
+                        excludedID: excludedTarget?.id ?? null,
+                        touchstartAtMs,
+                        now,
+                    });
                     return;
                 }
                 const lastPostedAt = Number(doc.__manabiLastBlankPointerPostAt || 0);
@@ -11047,6 +11135,18 @@ class Reader {
                             }
                             : null;
                     }
+                    manabiJul9Diagnostic('blankTap.post', {
+                        source,
+                        eventType: event.type,
+                        targetTag: targetElement?.tagName ?? null,
+                        targetID: targetElement?.id ?? null,
+                        touchstartAtMs,
+                        now,
+                        lastPostedAt,
+                        ebookNavigationHidden,
+                        navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
+                        bodyHidden: doc?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
+                    });
                     window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
@@ -11056,6 +11156,17 @@ class Reader {
                         source,
                     });
                 } else {
+                    manabiJul9Diagnostic('blankTap.skip', {
+                        source,
+                        eventType: event.type,
+                        reason: 'dedupe-window',
+                        targetTag: targetElement?.tagName ?? null,
+                        targetID: targetElement?.id ?? null,
+                        touchstartAtMs,
+                        now,
+                        lastPostedAt,
+                        ageMs: now - lastPostedAt,
+                    });
                 }
             };
             const handleBlankPointerTouchStart = (event) => {
@@ -11336,6 +11447,9 @@ class Reader {
                     visibleRange,
                     `relocate.${markerReason}:${reason ?? 'unknown'}`,
                     {
+                        collectionMode: reason === 'page' && hydrateStatuses
+                            ? 'pageTurnStatusHydration'
+                            : (reason === 'page' ? 'pageTurnLookupTargets' : null),
                         postIfCached: false,
                         includeClientRects: reason !== 'page',
                         postLookupTargets,
@@ -11346,8 +11460,6 @@ class Reader {
                         hydrateAllowPartialTrackedWords: pageTurnHydrationOptions.allowPartialTrackedWords,
                         hydrateRetainHiddenEbookStatusClasses: pageTurnHydrationOptions.retainHiddenEbookStatusClasses,
                         finishInitialCritical: false,
-                        viewportSampleDensity: 'status',
-                        minimumViewportSampleSegmentCount: 8,
                         seedSegmentNodes: useOrderedDocumentWindow ? null : seedSegmentNodes,
                         seedSegmentSource: useOrderedDocumentWindow ? null : seedSegmentSource,
                         useOrderedDocumentWindow,
@@ -11390,14 +11502,6 @@ class Reader {
                 postNativeLookupPageTurnDisplayReady(`relocate:${reason ?? 'unknown'}`);
                 postedPageTurnDisplayReady = true;
             }
-            const scheduledAt = typeof performanceNowMs === 'function'
-                ? performanceNowMs()
-                : (globalThis.performance?.now?.() ?? Date.now());
-            manabiTimelineMark('relocate.visible-targets.deferred.scheduleAfterFrame', {
-                reason: reason ?? null,
-                generation: relocateVisibleTargetGeneration,
-                pageTurnDirection: detail?.pageTurnDirection ?? null,
-            });
             const scheduleVisibleTargetCollection =
                 typeof scheduleAfterNextFrame === 'function'
                     ? scheduleAfterNextFrame
@@ -11405,24 +11509,42 @@ class Reader {
                         ? scheduleNextFrame
                         : (callback) => callback());
             scheduleVisibleTargetCollection(() => {
-                manabiTimelineMark('relocate.visible-targets.deferred.runAfterFrame', {
-                    reason: reason ?? null,
-                    generation: relocateVisibleTargetGeneration,
-                    currentGeneration: this.visiblePageCollectionGeneration,
-                    elapsedMs: (typeof performanceNowMs === 'function'
-                        ? performanceNowMs()
-                        : (globalThis.performance?.now?.() ?? Date.now())) - scheduledAt,
-                });
                 if (relocateVisibleTargetGeneration !== this.visiblePageCollectionGeneration) {
-                    manabiTimelineMark('relocate.visible-targets.deferred.skipStale', {
-                        reason: reason ?? null,
-                        generation: relocateVisibleTargetGeneration,
-                        currentGeneration: this.visiblePageCollectionGeneration,
-                    });
                     return;
                 }
-                const transitionStage = doc.defaultView?.manabi_prepareEbookTrackingPaintNavigationTransition?.({
-                    reason: `relocate.${reason ?? 'unknown'}`,
+                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                const body = doc?.body ?? null;
+                const previousHiddenValue = body?.dataset?.mnbPreviousNavigationHiddenDueToScroll ?? null;
+                const nextHiddenValue = body?.dataset?.mnbNavigationHiddenDueToScroll ?? null;
+                const hasExplicitHiddenTransitionState =
+                    (previousHiddenValue === 'true' || previousHiddenValue === 'false')
+                    && (nextHiddenValue === 'true' || nextHiddenValue === 'false')
+                    && previousHiddenValue !== nextHiddenValue;
+                globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.beforePrepare', {
+                    reason: reason ?? null,
+                    pageTurnDirection: detail?.pageTurnDirection ?? null,
+                    previousHiddenValue,
+                    nextHiddenValue,
+                    hasExplicitHiddenTransitionState,
+                    relocatedVisibleSegmentCount: relocatedVisibleSegmentsResult?.visibleSegments?.length ?? null,
+                    relocatedSource: relocatedVisibleSegmentsResult?.segmentCandidateSource ?? null,
+                });
+                const transitionStage = hasExplicitHiddenTransitionState
+                    ? doc?.defaultView?.manabi_prepareEbookTrackingPaintNavigationTransition?.({
+                        fromHidden: previousHiddenValue === 'true',
+                        toHidden: nextHiddenValue === 'true',
+                        reason: `relocate.${reason ?? 'unknown'}`,
+                    })
+                    : null;
+                globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.afterPrepare', {
+                    reason: reason ?? null,
+                    pageTurnDirection: detail?.pageTurnDirection ?? null,
+                    staged: transitionStage?.staged ?? false,
+                    stageReason: transitionStage?.reason ?? null,
+                    token: transitionStage?.token ?? null,
+                    fromHidden: transitionStage?.fromHidden ?? null,
+                    toHidden: transitionStage?.toHidden ?? null,
+                    paintedSegmentCount: transitionStage?.paintedSegmentCount ?? null,
                 });
                 collectRelocatedVisibleTargets({
                     postLookupTargets: true,
@@ -11430,8 +11552,23 @@ class Reader {
                     hydrateSynchronously: true,
                     markerReason: 'visible-targets',
                 });
+                globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.afterHydrate', {
+                    reason: reason ?? null,
+                    pageTurnDirection: detail?.pageTurnDirection ?? null,
+                    visibleSegmentCount: relocatedVisibleSegmentsResult?.visibleSegments?.length ?? null,
+                    nativeLookupTargetCount: relocatedVisibleSegmentsResult?.nativeLookupTargetCount ?? null,
+                });
                 if (transitionStage?.staged === true) {
-                    doc.defaultView?.manabi_commitEbookTrackingPaintNavigationTransition?.(transitionStage.token);
+                    const commitResult = doc.defaultView?.manabi_commitEbookTrackingPaintNavigationTransition?.(transitionStage.token);
+                    globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.commitRequested', {
+                        reason: reason ?? null,
+                        pageTurnDirection: detail?.pageTurnDirection ?? null,
+                        committed: commitResult?.committed ?? false,
+                        commitReason: commitResult?.reason ?? null,
+                        token: commitResult?.token ?? null,
+                        fromHidden: commitResult?.fromHidden ?? null,
+                        toHidden: commitResult?.toHidden ?? null,
+                    });
                 }
             });
         }
@@ -11989,6 +12126,7 @@ window.loadEBook = ({
     } catch (_error) {}
     let reader = new Reader()
     globalThis.reader = reader
+    reader.setLoadingIndicator(true, 'loadEBook.start');
 
     window.ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
         ? makeNativeSource(url)
