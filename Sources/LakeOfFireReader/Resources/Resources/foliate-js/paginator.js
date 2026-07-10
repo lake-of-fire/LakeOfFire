@@ -397,8 +397,12 @@ export const manabiPreparePaginatorLayoutMeasurement = ({
 } = {}) => {
     const usesVerticalPaginatedLayout =
         enableColumnizationOptimizations && vertical === true && flow !== 'scrolled';
-    top?.classList?.toggle?.('mnb-vertical-paginated', usesVerticalPaginatedLayout);
-    if (typeof invalidateSizes === 'function') {
+    const hadVerticalPaginatedLayout = top?.classList?.contains?.('mnb-vertical-paginated') === true;
+    const layoutModeChanged = hadVerticalPaginatedLayout !== usesVerticalPaginatedLayout;
+    if (layoutModeChanged) {
+        top?.classList?.toggle?.('mnb-vertical-paginated', usesVerticalPaginatedLayout);
+    }
+    if (layoutModeChanged && typeof invalidateSizes === 'function') {
         invalidateSizes();
     }
     return usesVerticalPaginatedLayout;
@@ -811,6 +815,8 @@ class View {
     #renderInFlightPromise = null
     #lastExpandSignature = null
     #lastExpandedMetrics = null
+    #scheduledExpandPromise = null
+    #expandGeneration = 0
     layout = {}
     #isCacheWarmer
     #loadCleanup = null
@@ -1030,7 +1036,10 @@ class View {
                                 rtl: this.#rtl,
                             },
                             () => beforeRender?.({
+                                view: this,
+                                document: doc,
                                 vertical: this.#vertical,
+                                verticalRTL: this.#verticalRTL,
                                 rtl: this.#rtl,
                             }),
                             { logReaderLoad }
@@ -1562,11 +1571,25 @@ class View {
             ...manabiElementDiagnostics('body', body, bodyStyleProperties),
         };
     }
-    async expand({ skipIfSignatureUnchanged = false } = {}) {
+    expand({ skipIfSignatureUnchanged = false } = {}) {
+        // Resize/font callbacks commonly converge before the next frame. Share that
+        // scheduled pass, while clearing the slot as soon as work starts so a real
+        // geometry change during expansion can enqueue a follow-up pass.
+        if (this.#scheduledExpandPromise) {
+            return this.#scheduledExpandPromise
+        }
+        const expandGeneration = this.#expandGeneration
         const expandStartedAt = manabiPerfNow();
         //        console.log("expand...")
-        return new Promise((resolve, reject) => {
+        const scheduledPromise = new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
+                if (this.#scheduledExpandPromise === scheduledPromise) {
+                    this.#scheduledExpandPromise = null
+                }
+                if (expandGeneration !== this.#expandGeneration) {
+                    resolve()
+                    return
+                }
                 let expandSignature = null
                 try {
                     //                console.log("expand... inside 0")
@@ -1724,6 +1747,8 @@ class View {
                 }
             })
         })
+        this.#scheduledExpandPromise = scheduledPromise
+        return scheduledPromise
     }
     set overlayer(overlayer) {
         this.#overlayer = overlayer
@@ -1747,6 +1772,8 @@ class View {
         return rectWidth > rectHeight * 2 && scrollWidth > scrollHeight * 2
     }
     prepareForReuse() {
+        this.#expandGeneration += 1
+        this.#scheduledExpandPromise = null
         this.#loadCleanup?.()
         this.#loadCleanup = null
         const body = this.document?.body
@@ -3108,8 +3135,8 @@ export class Paginator extends HTMLElement {
             this.#elementMutationObserver = null;
         }
     }
-    #isSingleMediaElementWithoutText() {
-        const doc = this.#view?.document ?? null;
+    #isSingleMediaElementWithoutText(view = this.#view) {
+        const doc = view?.document ?? null;
         if (doc?.__manabiSingleMediaElementWithoutTextCache?.ready === true) {
             return doc.__manabiSingleMediaElementWithoutTextCache.value === true;
         }
@@ -3128,8 +3155,8 @@ export class Paginator extends HTMLElement {
         doc.__manabiSingleMediaElementWithoutTextCache = { ready: true, value: result };
         return result;
     }
-    #typographyMetrics() {
-        const doc = this.#view?.document;
+    #typographyMetrics(view = this.#view) {
+        const doc = view?.document;
         const inlineBodyStyle = doc?.body?.style ?? null;
         const inlineContainerStyle = this.#container?.style ?? null;
         const cheapBodyFontSize =
@@ -3457,6 +3484,8 @@ export class Paginator extends HTMLElement {
         return { rendered: true, reason, previousSignature, signature };
     }
     async #beforeRender({
+        view,
+        document: renderDocument,
         vertical,
         verticalRTL,
         rtl,
@@ -3491,7 +3520,9 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
-        const typographyMetrics = this.#typographyMetrics()
+        const renderView = view ?? this.#view
+        const doc = renderDocument ?? renderView?.document ?? null
+        const typographyMetrics = this.#typographyMetrics(renderView)
         this.#lastTypographyRenderSignature = this.#typographyRenderSignature({
             width,
             height,
@@ -3542,7 +3573,7 @@ export class Paginator extends HTMLElement {
 
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
-        this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
+        doc?.documentElement?.style?.setProperty('--_max-inline-size', maxInlineSize)
 
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -3594,13 +3625,13 @@ export class Paginator extends HTMLElement {
         let columnWidth;
         const shouldNormalizeSingleMediaPage =
             MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
-            && this.#isSingleMediaElementWithoutText()
+            && this.#isSingleMediaElementWithoutText(renderView)
         if (shouldNormalizeSingleMediaPage) {
             divisor = 1
             columnWidth = maxInlineSize
-            this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
+            doc?.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
-            this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
+            doc?.body?.classList.remove('reader-is-single-media-element-without-text')
             const shouldForceSpread = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
                 && flow !== 'scrolled'
                 && maxColumnCountSpread > 1

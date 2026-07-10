@@ -407,7 +407,8 @@ public actor EBookProcessingActor {
         location: String,
         text: String,
         contentFingerprint: String? = nil,
-        isCacheWarmer: Bool
+        isCacheWarmer: Bool,
+        shouldReadProcessedCache: Bool = true
     ) async throws -> String {
         let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
             contentURL: contentURL,
@@ -415,7 +416,7 @@ public actor EBookProcessingActor {
             isCacheWarmer: isCacheWarmer,
             text: text
         ).textFingerprint
-        if let ebookProcessedTextCacheReader {
+        if shouldReadProcessedCache, let ebookProcessedTextCacheReader {
             if let cachedResult = try await ebookProcessedTextCacheReader(contentURL, location, text, resolvedContentFingerprint) {
                 return cachedResult
             }
@@ -651,7 +652,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                     location: replacedTextLocation,
                                     text: text,
                                     contentFingerprint: processRequestKey.textFingerprint,
-                                    isCacheWarmer: isCacheWarmer
+                                    isCacheWarmer: isCacheWarmer,
+                                    shouldReadProcessedCache: false
                                 )
                             }
                         } catch {
@@ -774,38 +776,26 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: false,
                             text: sourceText
                         )
-                        if let ebookProcessedTextCacheReader,
-                           let cachedText = try await ebookProcessedTextCacheReader(
-                            mainDocumentURL,
-                            sectionHref,
-                            sourceText,
-                            processRequestKey.textFingerprint
-                           ) {
-                            responseText = cachedText
-                            didCoalesce = false
-                            cacheOutcome = "processed-direct-hit"
-                        } else {
-                            (responseText, didCoalesce, cacheOutcome) = try await self.processTextRequestDeduper.process(
-                                key: processRequestKey
-                            ) {
-                                let processingActor = EBookProcessingActor(
-                                    ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
-                                    ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
-                                    ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
-                                    ebookTextProcessor: ebookTextProcessor,
-                                    processReadabilityContent: processReadabilityContent,
-                                    processHTMLDocument: processHTMLDocument,
-                                    processHTMLBytes: processHTMLBytes,
-                                    processHTML: processHTML
-                                )
-                                return try await processingActor.process(
-                                    contentURL: mainDocumentURL,
-                                    location: sectionHref,
-                                    text: sourceText,
-                                    contentFingerprint: processRequestKey.textFingerprint,
-                                    isCacheWarmer: false
-                                )
-                            }
+                        (responseText, didCoalesce, cacheOutcome) = try await self.processTextRequestDeduper.process(
+                            key: processRequestKey
+                        ) {
+                            let processingActor = EBookProcessingActor(
+                                ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
+                                ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
+                                ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
+                                ebookTextProcessor: ebookTextProcessor,
+                                processReadabilityContent: processReadabilityContent,
+                                processHTMLDocument: processHTMLDocument,
+                                processHTMLBytes: processHTMLBytes,
+                                processHTML: processHTML
+                            )
+                            return try await processingActor.process(
+                                contentURL: mainDocumentURL,
+                                location: sectionHref,
+                                text: sourceText,
+                                contentFingerprint: processRequestKey.textFingerprint,
+                                isCacheWarmer: false
+                            )
                         }
                     } else {
                         throw CustomSchemeHandlerError.fileNotFound

@@ -72,7 +72,7 @@ const manabiEventScreenPoint = event => {
     };
 };
 
-const manabiSegmentSidecarParserVersion = 8;
+const manabiSegmentSidecarParserVersion = 9;
 
 const manabiSidecarTableValue = (table, index, fallback = null) => (
     Number.isInteger(index) && Array.isArray(table) && index >= 0 && index < table.length
@@ -146,11 +146,10 @@ const manabiSegmentMetadataAliases = (segment) => {
 
 const manabiSegmentMetadataSidecarSnapshot = (doc) => {
     if (!doc) return { sidecars: [], sidecarTexts: [], sidecarSignature: 'none' };
-    const sidecarSelector = 'script#mnb-segment-metadata, script[data-mnb-seg-meta]';
-    const sidecars = typeof doc.getElementsByTagName === 'function'
-        ? Array.from(doc.getElementsByTagName('script') || [])
-            .filter(script => script?.id === 'mnb-segment-metadata' || script?.hasAttribute?.('data-mnb-seg-meta'))
-        : Array.from(doc.querySelectorAll?.(sidecarSelector) || []);
+    const canonicalSidecar = doc.getElementById?.('mnb-segment-metadata') ?? null;
+    // Processed EPUB sections have one canonical Swift-emitted sidecar. Keep this
+    // bootstrap O(1); the general reader script owns dynamic multi-sidecar content.
+    const sidecars = canonicalSidecar ? [canonicalSidecar] : [];
     const cachedSnapshot = doc.__manabiFoliateSegmentMetadataSidecarSnapshot;
     if (cachedSnapshot?.sidecars?.length === sidecars.length
         && sidecars.every((sidecar, index) => cachedSnapshot.sidecars[index] === sidecar)) {
@@ -170,11 +169,115 @@ const manabiSegmentMetadataSidecarSnapshot = (doc) => {
     return snapshot;
 };
 
-const sidecarNumberArray = (value) => Array.isArray(value)
+const manabiSidecarNumberArray = (value) => Array.isArray(value)
     ? value.filter(item => typeof item === 'number' && Number.isFinite(item))
     : [];
 
-const sidecarStringValue = (value) => typeof value === 'string' ? value : '';
+const manabiMaxExampleSentenceCodePointCount = 7000;
+const manabiHighSurrogateMinimum = 0xD800;
+const manabiHighSurrogateMaximum = 0xDBFF;
+const manabiLowSurrogateMinimum = 0xDC00;
+const manabiLowSurrogateMaximum = 0xDFFF;
+const manabiAmpersandCodeUnit = 0x26;
+const manabiApostropheCodeUnit = 0x27;
+const manabiQuotationMarkCodeUnit = 0x22;
+const manabiLessThanCodeUnit = 0x3C;
+const manabiGreaterThanCodeUnit = 0x3E;
+
+const manabiEscapedExampleSentenceHTML = (text) => {
+    const escapedParts = [];
+    let chunkStart = 0;
+    let index = 0;
+    let codePointCount = 0;
+    while (index < text.length && codePointCount < manabiMaxExampleSentenceCodePointCount) {
+        const codeUnit = text.charCodeAt(index);
+        let replacement = null;
+        switch (codeUnit) {
+        case manabiAmpersandCodeUnit:
+            replacement = '&amp;';
+            break;
+        case manabiLessThanCodeUnit:
+            replacement = '&lt;';
+            break;
+        case manabiGreaterThanCodeUnit:
+            replacement = '&gt;';
+            break;
+        case manabiQuotationMarkCodeUnit:
+            replacement = '&quot;';
+            break;
+        case manabiApostropheCodeUnit:
+            replacement = '&#39;';
+            break;
+        default:
+            break;
+        }
+        if (replacement !== null) {
+            if (chunkStart < index) {
+                escapedParts.push(text.slice(chunkStart, index));
+            }
+            escapedParts.push(replacement);
+            chunkStart = index + 1;
+        }
+        let codeUnitLength = 1;
+        if (
+            codeUnit >= manabiHighSurrogateMinimum
+            && codeUnit <= manabiHighSurrogateMaximum
+            && index + 1 < text.length
+        ) {
+            const nextCodeUnit = text.charCodeAt(index + 1);
+            if (nextCodeUnit >= manabiLowSurrogateMinimum && nextCodeUnit <= manabiLowSurrogateMaximum) {
+                codeUnitLength = 2;
+            }
+        }
+        index += codeUnitLength;
+        codePointCount += 1;
+    }
+    if (escapedParts.length === 0) {
+        return index === text.length ? text : text.slice(0, index);
+    }
+    if (chunkStart < index) {
+        escapedParts.push(text.slice(chunkStart, index));
+    }
+    return escapedParts.join('');
+};
+
+// Schema v9 derives examples from compact sidecar tuples on demand. This avoids serializing the
+// same sentence facts twice and keeps sentence HTML assembly off the initial render path.
+const manabiSentenceArchiveEntryFromSidecarSegments = (segments) => {
+    let text = '';
+    const sentenceJMDictIDs = [];
+    const sentenceJMDictIDSet = new Set();
+    const archiveSegments = [];
+    for (const segment of segments) {
+        text += segment.x || segment.s || segment.ns || '';
+        const jmdictEntryIDs = manabiSidecarNumberArray(segment.j);
+        const primaryEntryID = jmdictEntryIDs[0];
+        if (Number.isFinite(primaryEntryID) && !sentenceJMDictIDSet.has(primaryEntryID)) {
+            sentenceJMDictIDSet.add(primaryEntryID);
+            sentenceJMDictIDs.push(primaryEntryID);
+        }
+        const segmentIdentifier = segment.sid || segment.h || segment.i || '';
+        if (segmentIdentifier) {
+            archiveSegments.push({
+                jmdictEntryIds: jmdictEntryIDs,
+                jmnedictEntryIds: manabiSidecarNumberArray(segment.n),
+                searchString: segment.s || segment.ns || '',
+                segmentIdentifier,
+            });
+        }
+    }
+
+    const sentenceHTML = manabiEscapedExampleSentenceHTML(text);
+    for (const segment of archiveSegments) {
+        segment.exampleSentence = sentenceHTML;
+        segment.exampleSentenceJMDictIDs = sentenceJMDictIDs;
+    }
+    return {
+        sentenceHTML,
+        sentenceJMDictIDs,
+        segments: archiveSegments,
+    };
+};
 
 const directSegmentMetadataBootstrap = (doc) => {
     if (!doc) return emptySegmentMetadataBootstrap();
@@ -187,7 +290,8 @@ const directSegmentMetadataBootstrap = (doc) => {
     ) {
         return {
             byID: cachedByID,
-            idsByEntryID: doc.__manabiFoliateSegmentIDsByEntryID || new Map(),
+            idsByEntryID: new Map(),
+            hasEntryIDs: doc.__manabiFoliateSegmentMetadataHasEntryIDs === true,
             segmentIDsBySentenceID: doc.__manabiFoliateSegmentIDsBySentenceID || new Map(),
             segmentIDsByParagraphID: doc.__manabiFoliateSegmentIDsByParagraphID || new Map(),
             segments: doc.__manabiFoliateSegmentMetadataSegments || [],
@@ -196,90 +300,64 @@ const directSegmentMetadataBootstrap = (doc) => {
         };
     }
     const byID = new Map();
-    const idsByEntryID = new Map();
+    let hasEntryIDs = false;
     const segmentIDsBySentenceID = new Map();
     const segmentIDsByParagraphID = new Map();
     const sentenceArchive = new Map();
     const segments = [];
-    const indexEntryIDs = (segmentID, entryIDs) => {
-        if (typeof segmentID !== 'string' || segmentID.length === 0 || !Array.isArray(entryIDs)) return;
-        for (const entryID of entryIDs) {
-            if (!Number.isFinite(entryID)) continue;
-            const key = String(entryID);
-            if (!idsByEntryID.has(key)) idsByEntryID.set(key, new Set());
-            idsByEntryID.get(key).add(segmentID);
-        }
-    };
     const indexScopeID = (target, scopeID, segmentID) => {
         if (typeof scopeID !== 'string' || scopeID.length === 0) return;
         if (typeof segmentID !== 'string' || segmentID.length === 0) return;
         if (!target.has(scopeID)) target.set(scopeID, []);
         target.get(scopeID).push(segmentID);
     };
-    const addPrebuiltSentenceArchive = (payload) => {
-        const entries = Array.isArray(payload?.e) ? payload.e : [];
-        if (entries.length === 0) return false;
-        let didAdd = false;
-        for (const rawEntry of entries) {
-            const sentenceID = sidecarStringValue(rawEntry?.sid);
-            if (!sentenceID) continue;
-            const sentenceHTML = sidecarStringValue(rawEntry?.html);
-            const sentenceJMDictIDs = sidecarNumberArray(rawEntry?.j);
-            const segments = Array.isArray(rawEntry?.seg)
-                ? rawEntry.seg.map(rawSegment => ({
-                    jmdictEntryIds: sidecarNumberArray(rawSegment?.j),
-                    jmnedictEntryIds: sidecarNumberArray(rawSegment?.n),
-                    searchString: sidecarStringValue(rawSegment?.s),
-                    segmentIdentifier: sidecarStringValue(rawSegment?.id),
-                    exampleSentence: sentenceHTML,
-                    exampleSentenceJMDictIDs: sentenceJMDictIDs,
-                })).filter(segment => segment.segmentIdentifier.length > 0)
-                : [];
-            sentenceArchive.set(sentenceID, {
-                sentenceHTML,
-                sentenceJMDictIDs,
-                segments,
-            });
-            didAdd = true;
-        }
-        return didAdd;
-    };
     for (const sidecarText of sidecarTexts) {
         try {
             const payload = JSON.parse(sidecarText || '{}');
-            const hasPrebuiltSentenceArchive = addPrebuiltSentenceArchive(payload);
             for (const segment of manabiExpandSegmentMetadataPayload(payload)) {
                 if (!segment?.i) continue;
                 const aliases = manabiSegmentMetadataAliases(segment);
                 for (const alias of aliases) {
                     byID.set(alias, segment);
-                    indexEntryIDs(alias, segment.j);
-                    indexEntryIDs(alias, segment.n);
+                }
+                if (!hasEntryIDs) {
+                    hasEntryIDs = segment.j?.some?.(Number.isFinite) === true
+                        || segment.n?.some?.(Number.isFinite) === true;
                 }
                 segments.push(segment);
                 indexScopeID(segmentIDsBySentenceID, segment.sentenceID, segment.i);
                 indexScopeID(segmentIDsByParagraphID, segment.paragraphID || segment.pid, segment.i);
-                const archiveEntry = hasPrebuiltSentenceArchive && typeof segment.sentenceID === 'string' && segment.sentenceID.length > 0
-                    ? sentenceArchive.get(segment.sentenceID)
-                    : null;
-                if (archiveEntry) {
-                    segment.exampleSentence = archiveEntry.sentenceHTML;
-                    segment.exampleSentenceJMDictIDs = archiveEntry.sentenceJMDictIDs;
-                }
             }
         } catch (_error) {}
     }
+    // Keep the existing Map contract while moving sentence string assembly to the lookup that
+    // requests it. The segment index above makes each materialization sentence-local.
+    const cachedSentenceArchiveEntry = sentenceArchive.get.bind(sentenceArchive);
+    sentenceArchive.get = (sentenceID) => {
+        const cachedEntry = cachedSentenceArchiveEntry(sentenceID);
+        if (cachedEntry) return cachedEntry;
+        const sentenceSegmentIDs = segmentIDsBySentenceID.get(sentenceID);
+        if (!Array.isArray(sentenceSegmentIDs) || sentenceSegmentIDs.length === 0) return undefined;
+        const sentenceSegments = sentenceSegmentIDs
+            .map(segmentID => byID.get(segmentID) ?? null)
+            .filter(Boolean);
+        if (sentenceSegments.length === 0) return undefined;
+        const entry = manabiSentenceArchiveEntryFromSidecarSegments(sentenceSegments);
+        sentenceArchive.set(sentenceID, entry);
+        return entry;
+    };
     doc.__manabiFoliateSegmentMetadataParserVersion = manabiSegmentSidecarParserVersion;
     doc.__manabiFoliateSegmentMetadataSignature = sidecarSignature;
     doc.__manabiFoliateSegmentMetadataByID = byID;
-    doc.__manabiFoliateSegmentIDsByEntryID = idsByEntryID;
+    doc.__manabiFoliateSegmentMetadataHasEntryIDs = hasEntryIDs;
     doc.__manabiFoliateSegmentIDsBySentenceID = segmentIDsBySentenceID;
     doc.__manabiFoliateSegmentIDsByParagraphID = segmentIDsByParagraphID;
     doc.__manabiFoliateSegmentMetadataSegments = segments;
     doc.__manabiFoliateSidecarSentenceArchive = sentenceArchive;
     return {
         byID,
-        idsByEntryID,
+        idsByEntryID: new Map(),
+        hasEntryIDs,
         segmentIDsBySentenceID,
         segmentIDsByParagraphID,
         segments,
@@ -561,7 +639,7 @@ const visibleLookupIndexNeedsSidecarRefresh = (doc, index) => {
         return false;
     }
     const bootstrap = segmentMetadataBootstrap(doc);
-    return bootstrap.idsByEntryID instanceof Map && bootstrap.idsByEntryID.size > 0;
+    return bootstrap.hasEntryIDs === true;
 };
 
 const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-prime') => {
@@ -1263,16 +1341,6 @@ const layoutElementSnapshot = element => {
 
 const manabiElementTextContainsJapanese = (element) => /[\u3040-\u30ff\u3400-\u9fff]/.test(element?.textContent ?? '');
 
-const manabiAdjacentElementSibling = (node, direction) => {
-    let sibling = direction === 'previous' ? node?.previousSibling : node?.nextSibling;
-    while (sibling) {
-        if (sibling.nodeType === Node.ELEMENT_NODE) return sibling;
-        if (sibling.nodeType === Node.TEXT_NODE && !/^\s*$/.test(sibling.nodeValue ?? '')) return null;
-        sibling = direction === 'previous' ? sibling.previousSibling : sibling.nextSibling;
-    }
-    return null;
-};
-
 const normalizeManabiSegmentWhitespace = (doc) => {
     try {
         if (!doc?.body || isCacheWarmerDocument(doc)) return;
@@ -1280,37 +1348,49 @@ const normalizeManabiSegmentWhitespace = (doc) => {
             doc.body.classList?.contains?.('reader-vertical-writing') === true
             && doc.body.dataset?.isEbook === 'true';
         if (shouldRemoveInterSegmentWhitespace) {
-            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
-            const removableNodes = [];
-            while (walker.nextNode()) {
-                const node = walker.currentNode;
-                if (!/^\s+$/.test(node.nodeValue ?? '')) continue;
-                const previous = manabiAdjacentElementSibling(node, 'previous');
-                const next = manabiAdjacentElementSibling(node, 'next');
-                if (previous?.tagName?.toLowerCase?.() !== 'm-m') continue;
-                if (next?.tagName?.toLowerCase?.() !== 'm-m') continue;
-                if (!manabiElementTextContainsJapanese(previous) || !manabiElementTextContainsJapanese(next)) continue;
-                removableNodes.push(node);
-            }
-            for (const node of removableNodes) {
-                node.remove();
-            }
-        }
-        for (const segment of doc.querySelectorAll?.('m-m') ?? []) {
-            for (const containerNode of [segment, ...Array.from(segment.querySelectorAll?.('ruby') ?? [])]) {
-                for (const node of Array.from(containerNode.childNodes ?? [])) {
-                    if (node?.nodeType === Node.TEXT_NODE && /^\s*$/.test(node.nodeValue ?? '')) {
-                        node.remove();
+            const segments = doc.getElementsByTagName?.('m-m') ?? [];
+            for (let index = 0; index < segments.length; index += 1) {
+                const previous = segments[index];
+                const removableNodes = [];
+                let sibling = previous.nextSibling;
+                let gapContainsText = false;
+                while (sibling && sibling.nodeType !== Node.ELEMENT_NODE) {
+                    if (sibling.nodeType === Node.TEXT_NODE) {
+                        const value = sibling.nodeValue ?? '';
+                        if (value.length > 0 && !/^\s+$/.test(value)) {
+                            gapContainsText = true;
+                            break;
+                        }
+                        if (value.length > 0) {
+                            removableNodes.push(sibling);
+                        }
                     }
+                    sibling = sibling.nextSibling;
+                }
+                if (gapContainsText || sibling?.tagName?.toLowerCase?.() !== 'm-m') continue;
+                if (!manabiElementTextContainsJapanese(previous) || !manabiElementTextContainsJapanese(sibling)) continue;
+                for (const node of removableNodes) {
+                    node.remove();
                 }
             }
-            for (const inlineNode of segment.querySelectorAll?.('m-t, rt') ?? []) {
-                for (const node of Array.from(inlineNode.childNodes ?? [])) {
-                    if (node?.nodeType !== Node.TEXT_NODE) continue;
-                    const value = node.nodeValue ?? '';
-                    const trimmed = value.trim();
-                    if (trimmed.length > 0 && trimmed !== value) {
-                        node.nodeValue = trimmed;
+        }
+        if (doc.body.dataset?.mnbSegmentWhitespaceCompacted !== 'true') {
+            for (const segment of doc.querySelectorAll?.('m-m') ?? []) {
+                for (const containerNode of [segment, ...Array.from(segment.querySelectorAll?.('ruby') ?? [])]) {
+                    for (const node of Array.from(containerNode.childNodes ?? [])) {
+                        if (node?.nodeType === Node.TEXT_NODE && /^\s*$/.test(node.nodeValue ?? '')) {
+                            node.remove();
+                        }
+                    }
+                }
+                for (const inlineNode of segment.querySelectorAll?.('m-t, rt') ?? []) {
+                    for (const node of Array.from(inlineNode.childNodes ?? [])) {
+                        if (node?.nodeType !== Node.TEXT_NODE) continue;
+                        const value = node.nodeValue ?? '';
+                        const trimmed = value.trim();
+                        if (trimmed.length > 0 && trimmed !== value) {
+                            node.nodeValue = trimmed;
+                        }
                     }
                 }
             }
@@ -1572,9 +1652,24 @@ const classifySingleMediaDocumentForInitialLayout = (doc, reason = 'unknown') =>
         };
     }
     body.dataset.mnbSingleMediaInitialLayoutChecked = 'true';
+    if (body.dataset?.mnbHasReaderSegments === 'true') {
+        return {
+            applied: false,
+            reason: 'reader-segments',
+        };
+    }
     const mediaSelector = 'img, svg, image, picture, video, object';
     const mediaElements = Array.from(body.querySelectorAll?.(mediaSelector) ?? []);
     const textLength = body.textContent?.trim?.().length ?? 0;
+    if (textLength > 0 || mediaElements.length !== 1) {
+        return {
+            applied: false,
+            reason: 'not-single-media',
+            textLength,
+            mediaCount: mediaElements.length,
+            substantiveElementCount: null,
+        };
+    }
     const textNodeType = doc.defaultView?.Node?.TEXT_NODE ?? 3;
     const substantiveElements = Array.from(body.querySelectorAll?.('*') ?? [])
         .filter((element) => {
@@ -1854,9 +1949,21 @@ const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unk
         (doc.head || doc.documentElement).appendChild(targetFontStyle);
     }
     let changed = false;
+    const writingDirection = doc.body?.dataset?.mnbWritingDirection
+        || doc.body?.dataset?.mnbFoliateWritingDirection
+        || null;
+    const isVerticalDocument = writingDirection === 'vertical'
+        || doc.body?.classList?.contains?.('reader-vertical-writing') === true;
+    const directionalFamily = isVerticalDocument
+        ? (globalThis.manabiVerticalFontFamilyName || sourceFontStyle.dataset?.mnbInjectedFontFamily)
+        : (globalThis.manabiHorizontalFontFamilyName || sourceFontStyle.dataset?.mnbInjectedFontFamily);
     if (desiredTag === 'link') {
         const nextRel = sourceFontStyle.rel || 'stylesheet';
-        const nextHref = sourceFontStyle.href;
+        const nextHref = globalThis.manabiReaderFontInjectionMode === 'local-scheme'
+            && directionalFamily
+            && typeof globalThis.manabiResolveReaderFontStylesheetURL === 'function'
+            ? globalThis.manabiResolveReaderFontStylesheetURL(directionalFamily)
+            : sourceFontStyle.href;
         if (targetFontStyle.rel !== nextRel) {
             targetFontStyle.rel = nextRel;
             changed = true;
@@ -1873,13 +1980,16 @@ const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unk
         }
     }
     for (const [key, value] of Object.entries(sourceFontStyle.dataset || {})) {
-        if (targetFontStyle.dataset[key] !== value) {
-            targetFontStyle.dataset[key] = value;
+        const nextValue = key === 'mnbInjectedFontFamily' && directionalFamily
+            ? directionalFamily
+            : value;
+        if (targetFontStyle.dataset[key] !== nextValue) {
+            targetFontStyle.dataset[key] = nextValue;
             changed = true;
         }
     }
-    if (doc.documentElement && sourceFontStyle.dataset?.mnbInjectedFontFamily) {
-        const nextFamily = sourceFontStyle.dataset.mnbInjectedFontFamily;
+    if (doc.documentElement && directionalFamily) {
+        const nextFamily = directionalFamily;
         if (doc.documentElement.dataset.mnbInjectedFontFamily !== nextFamily) {
             doc.documentElement.dataset.mnbInjectedFontFamily = nextFamily;
             changed = true;
@@ -3205,6 +3315,7 @@ const visibleRangeForNavigationHUDDocument = (navHUD, doc) => {
 const emptySegmentMetadataBootstrap = () => ({
     byID: new Map(),
     idsByEntryID: new Map(),
+    hasEntryIDs: false,
     segments: [],
     aggregates: null,
     sentenceArchive: new Map(),
@@ -3226,6 +3337,8 @@ const mapLikeOrEmpty = (value) => (
 const normalizeSegmentMetadataBootstrap = (bootstrap) => ({
     byID: mapLikeOrEmpty(bootstrap?.byID),
     idsByEntryID: mapLikeOrEmpty(bootstrap?.idsByEntryID),
+    hasEntryIDs: bootstrap?.hasEntryIDs === true
+        || (bootstrap?.idsByEntryID?.size ?? 0) > 0,
     segmentIDsBySentenceID: mapLikeOrEmpty(bootstrap?.segmentIDsBySentenceID),
     segmentIDsByParagraphID: mapLikeOrEmpty(bootstrap?.segmentIDsByParagraphID),
     segments: Array.isArray(bootstrap?.segments) ? bootstrap.segments : [],
@@ -5071,6 +5184,8 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const viewportLeft = visibleSegmentsResult?.viewportLeft ?? 0;
     const viewportTop = visibleSegmentsResult?.viewportTop ?? 0;
     const visualViewportScale = Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1;
+    const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
+    const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const viewportPayload = {
         visualViewportWidth: viewportWidth,
         visualViewportHeight: viewportHeight,
@@ -5081,6 +5196,10 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         pageTop: Number.isFinite(window.visualViewport?.pageTop) ? window.visualViewport.pageTop : null,
         viewportLeft,
         viewportTop,
+        // Captured in the same geometry pass as each local segment rect. This keeps content-range
+        // fragments on the exact basis used for supplied rects without remeasuring a moving iframe.
+        contentFrameLeft: frameLeft,
+        contentFrameTop: frameTop,
         stylePayload: nativeLookupSharedStylePayloadForDocument(doc),
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
@@ -5098,8 +5217,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         }, 100);
         return 0;
     }
-    const frameLeft = visibleSegmentsResult?.frameLeft ?? 0;
-    const frameTop = visibleSegmentsResult?.frameTop ?? 0;
     const targets = [];
     view?.manabi_resetNativeLookupHitTargets?.();
     for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
@@ -11382,7 +11499,11 @@ class Reader {
                 synchronous: hydrateSynchronously === null ? !isPageRelocate : hydrateSynchronously === true,
                 adjacentSegmentCount: 0,
                 allowPartialTrackedWords: isPageRelocate,
-                retainHiddenEbookStatusClasses: isPageRelocate,
+                // The relocated visible page is hydrated in the transition's
+                // previous state before commit. Retaining older pages only
+                // grows the animated paint set and makes offscreen highlights
+                // composite on every later navigation change.
+                retainHiddenEbookStatusClasses: false,
             };
             if (isLookupNavigationPageTurn || relocatedVisibleSegmentsResult) {
                 if (relocatedVisibleSegmentsResult && hydrateStatuses) {
@@ -11578,8 +11699,11 @@ class Reader {
                     toHidden: transitionStage?.toHidden ?? null,
                     paintedSegmentCount: transitionStage?.paintedSegmentCount ?? null,
                 });
+                const needsDeferredLookupTargetPost = relocatedVisibleSegmentsResult === null;
                 collectRelocatedVisibleTargets({
-                    postLookupTargets: true,
+                    // Reuse the immediate geometry/identity post when it succeeded. If it could
+                    // not collect a document, this deferred pass remains responsible for posting.
+                    postLookupTargets: needsDeferredLookupTargetPost,
                     hydrateStatuses: true,
                     hydrateSynchronously: true,
                     markerReason: 'visible-targets',

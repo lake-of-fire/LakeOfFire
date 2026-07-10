@@ -175,6 +175,32 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result, expectedHTML)
     }
 
+    func testProcessingCanSkipCacheReadAfterCallerAlreadyMissed() async throws {
+        let expectedHTML = "<html><body>processed once</body></html>"
+        let actor = EBookProcessingActor(
+            ebookTextProcessorCacheHits: nil,
+            ebookProcessedTextCacheReader: { _, _, _, _ in
+                XCTFail("The scheme handler already performed this cache read")
+                return "<html><body>unexpected cached value</body></html>"
+            },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: false,
+            shouldReadProcessedCache: false
+        )
+
+        XCTAssertEqual(result, expectedHTML)
+    }
+
     func testCacheWarmerProcessTextResponseDoesNotReturnProcessedContent() throws {
         let processedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
 
