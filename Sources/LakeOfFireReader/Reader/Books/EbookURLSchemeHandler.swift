@@ -191,7 +191,7 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
     return processedText.data(using: .utf8)
 }
 
-fileprivate struct EBookProcessTextRequestKey: Hashable {
+struct EBookProcessTextRequestKey: Hashable {
     let contentURLString: String
     let location: String
     let isCacheWarmer: Bool
@@ -204,18 +204,6 @@ fileprivate struct EBookProcessTextRequestKey: Hashable {
         textFingerprint = "\(text.utf8.count)-\(stableHash(text))"
     }
 
-    static func == (lhs: EBookProcessTextRequestKey, rhs: EBookProcessTextRequestKey) -> Bool {
-        // Warmers and foreground loads produce the same transformed HTML; only the URL response body differs.
-        lhs.contentURLString == rhs.contentURLString
-            && lhs.location == rhs.location
-            && lhs.textFingerprint == rhs.textFingerprint
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(contentURLString)
-        hasher.combine(location)
-        hasher.combine(textFingerprint)
-    }
 }
 
 fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
@@ -460,11 +448,11 @@ fileprivate actor EBookLoadingActor {
         sharedFontCSSBase64 _: String?,
         sharedFontCSSBase64Provider _: (() async -> String?)?
     ) async throws -> (HTTPURLResponse, Data) {
-        var html = try String(contentsOfFile: viewerHtmlPath)
         let shouldEnablePageTurnInteractionDiagnostic =
             ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-
+        let data: Data
         if shouldEnablePageTurnInteractionDiagnostic {
+            var html = try String(contentsOfFile: viewerHtmlPath)
             let diagnosticPayload = """
             <script>
             (function() {
@@ -481,10 +469,15 @@ fileprivate actor EBookLoadingActor {
             } else {
                 html.append(diagnosticPayload)
             }
-        }
-
-        guard let data = html.data(using: .utf8) else {
-            throw EbookLoadingError.fileNotFound
+            guard let encodedHTML = html.data(using: .utf8) else {
+                throw EbookLoadingError.fileNotFound
+            }
+            data = encodedHTML
+        } else {
+            data = try Data(
+                contentsOf: URL(fileURLWithPath: viewerHtmlPath),
+                options: [.mappedIfSafe]
+            )
         }
         let response = ebookHTTPResponse(
             url: originalURL,

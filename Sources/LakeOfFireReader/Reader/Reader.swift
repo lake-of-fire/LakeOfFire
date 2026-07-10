@@ -1174,15 +1174,6 @@ public struct Reader: View {
                                 bottom: max(0, geometrySafeAreaInsets.bottom),
                                 trailing: max(0, geometrySafeAreaInsets.trailing)
                             )
-                            print(
-                                "# JUL6 reader.geometrySafeArea.appear",
-                                "pageURL=\(currentPageURL.absoluteString)",
-                                "top=\((Double(sampledInsets.top) * 10).rounded() / 10)",
-                                "leading=\((Double(sampledInsets.leading) * 10).rounded() / 10)",
-                                "bottom=\((Double(sampledInsets.bottom) * 10).rounded() / 10)",
-                                "trailing=\((Double(sampledInsets.trailing) * 10).rounded() / 10)",
-                                "size=\((Double(geometrySize.width) * 10).rounded() / 10)x\((Double(geometrySize.height) * 10).rounded() / 10)"
-                            )
                             if currentPageURL.isEBookURL {
                                 sampledInsets.top = EBookViewportStabilityCoordinator.acceptedSampledTopInset(
                                     current: sampledInsets.top,
@@ -1202,15 +1193,6 @@ public struct Reader: View {
                                 leading: max(0, safeAreaInsets.leading),
                                 bottom: max(0, safeAreaInsets.bottom),
                                 trailing: max(0, safeAreaInsets.trailing)
-                            )
-                            print(
-                                "# JUL6 reader.geometrySafeArea.change",
-                                "pageURL=\(currentPageURL.absoluteString)",
-                                "top=\((Double(sampledInsets.top) * 10).rounded() / 10)",
-                                "leading=\((Double(sampledInsets.leading) * 10).rounded() / 10)",
-                                "bottom=\((Double(sampledInsets.bottom) * 10).rounded() / 10)",
-                                "trailing=\((Double(sampledInsets.trailing) * 10).rounded() / 10)",
-                                "size=\((Double(geometrySize.width) * 10).rounded() / 10)x\((Double(geometrySize.height) * 10).rounded() / 10)"
                             )
                             let previousInsets = obscuredInsets
                             if currentPageURL.isEBookURL {

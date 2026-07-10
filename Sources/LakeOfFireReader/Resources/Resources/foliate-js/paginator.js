@@ -1620,7 +1620,12 @@ class View {
                         const inlineProgression = this.#usesInlineProgressionForVerticalColumn(contentRect)
                         const side = inlineProgression ? 'width' : defaultSide
                         const otherSide = side === 'width' ? 'height' : 'width'
-                        const scrollProp = inlineProgression ? 'scrollLeft' : null
+                        const scrollProp = side === 'width' ? 'scrollLeft' : 'scrollTop'
+                        // Capture scroll state while the content measurement above has
+                        // already resolved layout. Reading it after the geometry writes
+                        // below would force WebKit to synchronously lay out the section
+                        // again just to assemble the cached page metrics.
+                        const scrollStart = Math.abs(this.container?.[scrollProp] ?? 0)
                         // offset caused by column break at the start of the page
                         // which seem to be supported only by WebKit and only for horizontal writing
                         const contentStart = this.#vertical ? 0 : (() => {
@@ -1643,6 +1648,7 @@ class View {
                             size: this._size,
                             inlineProgression,
                             scrollProp,
+                            scrollStart,
                             contentStart,
                             remainder,
                         }
@@ -2419,7 +2425,9 @@ export class Paginator extends HTMLElement {
             : expandedMetrics.expandedSize
         const rawPages = size > 0 ? Math.round(viewSize / size) : 0
         const pages = this.#normalizePages(rawPages)
-        const start = Math.abs(this.#container?.[scrollProp] ?? 0)
+        const start = Number.isFinite(expandedMetrics.scrollStart)
+            ? expandedMetrics.scrollStart
+            : Math.abs(this.#container?.[scrollProp] ?? 0)
         const end = start + size
         const measuredPage = size > 0 ? Math.floor(((start + end) / 2) / size) : 0
         const page = this.#logicalPageFromMeasuredPage({ measuredPage, pages, rawPages })

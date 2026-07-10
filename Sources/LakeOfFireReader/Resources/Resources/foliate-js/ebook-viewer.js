@@ -1885,17 +1885,6 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
     if (!isPageTurnNavigationState && body.dataset) {
         body.dataset.mnbPreviousNavigationHiddenDueToScroll = nextState;
     }
-    if (isPageTurnNavigationState) {
-        globalThis.__manabiJul9Diagnostic?.('ebookBodyNavState', {
-            reason,
-            previousState,
-            nextState,
-            refreshPaint,
-            changed,
-            refreshMutatedCount: refreshResult?.mutatedCount ?? null,
-            refreshPaintedSegmentCount: refreshResult?.paintedSegmentCount ?? null,
-        });
-    }
     return changed;
 };
 
@@ -3058,17 +3047,6 @@ const manabiTimelineMark = (event, payload = {}) => {
     } catch (_error) {}
     return label;
 };
-const manabiJul9Diagnostic = (stage, payload = {}) => {
-    const diagnosticPayload = {
-        ...payload,
-        force: true,
-    };
-    manabiTimelineMark(`JUL9.${stage}`, diagnosticPayload);
-    if (globalThis.__manabiLogJul9Diagnostics === true || globalThis.__manabiTimelineTraceAll === true) try {
-        console.info(`# JUL9 stage=${stage}`, diagnosticPayload);
-    } catch (_error) {}
-};
-globalThis.__manabiJul9Diagnostic = manabiJul9Diagnostic;
 const manabiTimelineMeasure = (event, startedAt, payload = {}, thresholdMs = MANABI_TIMELINE_SLOW_THRESHOLD_MS) => {
     const endedAt = performanceNowMs();
     const elapsedMs = endedAt - startedAt;
@@ -9275,14 +9253,6 @@ class Reader {
         const postNoElementNavigationTouchStart = (event, source, touchstartAtMs = Date.now()) => {
             const now = Date.now();
             if (shouldSuppressMainDocumentSyntheticMouseBlankTap(event, now)) {
-                manabiJul9Diagnostic('blankTap.skip', {
-                    source,
-                    eventType: event.type,
-                    reason: 'main-document-synthetic-mouse',
-                    touchstartAtMs,
-                    now,
-                    navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
-                });
                 return;
             }
             const ebookNavigationHidden =
@@ -9298,16 +9268,6 @@ class Reader {
                     }
                     : null;
             }
-            manabiJul9Diagnostic('blankTap.post', {
-                source,
-                eventType: event.type,
-                touchstartAtMs,
-                now,
-                ebookNavigationHidden,
-                navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
-                bodyHidden: document?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
-                hasLookupPopover: window.__manabiLookupPopoverActive === true,
-            });
             window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                 touchedEntryWithElementId: null,
                 wasAlreadySelected: false,
@@ -11205,42 +11165,12 @@ class Reader {
                 const point = touchPointForBlankPointer(event);
                 const segmentTarget = segmentTargetForBlankPointerEvent(event);
                 if (segmentTarget) {
-                    manabiJul9Diagnostic('blankTap.skip', {
-                        source,
-                        eventType: event.type,
-                        reason: 'segment-target',
-                        targetTag: targetElement?.tagName ?? null,
-                        targetID: targetElement?.id ?? null,
-                        segmentID: segmentTarget?.id ?? null,
-                        touchstartAtMs,
-                        now,
-                    });
                     return;
                 }
                 if (shouldSuppressSyntheticMouseBlankTap(event)) {
-                    manabiJul9Diagnostic('blankTap.skip', {
-                        source,
-                        eventType: event.type,
-                        reason: 'content-document-synthetic-mouse',
-                        targetTag: targetElement?.tagName ?? null,
-                        targetID: targetElement?.id ?? null,
-                        touchstartAtMs,
-                        now,
-                    });
                     return;
                 }
                 if (excludedTarget) {
-                    manabiJul9Diagnostic('blankTap.skip', {
-                        source,
-                        eventType: event.type,
-                        reason: 'excluded-target',
-                        targetTag: targetElement?.tagName ?? null,
-                        targetID: targetElement?.id ?? null,
-                        excludedTag: excludedTarget?.tagName ?? null,
-                        excludedID: excludedTarget?.id ?? null,
-                        touchstartAtMs,
-                        now,
-                    });
                     return;
                 }
                 const eventKey = [
@@ -11268,18 +11198,6 @@ class Reader {
                     } else {
                         globalThis.__manabiPendingContentDocumentBlankNavigationEcho = null;
                     }
-                    manabiJul9Diagnostic('blankTap.post', {
-                        source,
-                        eventType: event.type,
-                        targetTag: targetElement?.tagName ?? null,
-                        targetID: targetElement?.id ?? null,
-                        touchstartAtMs,
-                        now,
-                        eventKey,
-                        ebookNavigationHidden,
-                        navHidden: globalThis.reader?.navHUD?.hideNavigationDueToScroll === true,
-                        bodyHidden: doc?.body?.dataset?.mnbNavigationHiddenDueToScroll ?? null,
-                    });
                     window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
                         touchedEntryWithElementId: null,
                         wasAlreadySelected: false,
@@ -11287,17 +11205,6 @@ class Reader {
                         touchstartEventType: event.type,
                         ebookNavigationHidden,
                         source,
-                    });
-                } else {
-                    manabiJul9Diagnostic('blankTap.skip', {
-                        source,
-                        eventType: event.type,
-                        reason: 'duplicate-event-key',
-                        targetTag: targetElement?.tagName ?? null,
-                        targetID: targetElement?.id ?? null,
-                        touchstartAtMs,
-                        now,
-                        eventKey,
                     });
                 }
             };
@@ -11669,19 +11576,6 @@ class Reader {
                 const transitionToHidden = pendingTransitionMatchesCurrentState
                     ? pendingNavigationTransition.toHidden
                     : nextHiddenValue === 'true';
-                globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.beforePrepare', {
-                    reason: reason ?? null,
-                    pageTurnDirection: detail?.pageTurnDirection ?? null,
-                    previousHiddenValue,
-                    nextHiddenValue,
-                    pendingFromHidden: pendingNavigationTransition?.fromHidden ?? null,
-                    pendingToHidden: pendingNavigationTransition?.toHidden ?? null,
-                    pendingReason: pendingNavigationTransition?.reason ?? null,
-                    pendingTransitionMatchesCurrentState,
-                    hasExplicitHiddenTransitionState,
-                    relocatedVisibleSegmentCount: relocatedVisibleSegmentsResult?.visibleSegments?.length ?? null,
-                    relocatedSource: relocatedVisibleSegmentsResult?.segmentCandidateSource ?? null,
-                });
                 const transitionStage = hasExplicitHiddenTransitionState
                     ? doc?.defaultView?.manabi_prepareEbookTrackingPaintNavigationTransition?.({
                         fromHidden: transitionFromHidden,
@@ -11689,16 +11583,6 @@ class Reader {
                         reason: `relocate.${reason ?? 'unknown'}`,
                     })
                     : null;
-                globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.afterPrepare', {
-                    reason: reason ?? null,
-                    pageTurnDirection: detail?.pageTurnDirection ?? null,
-                    staged: transitionStage?.staged ?? false,
-                    stageReason: transitionStage?.reason ?? null,
-                    token: transitionStage?.token ?? null,
-                    fromHidden: transitionStage?.fromHidden ?? null,
-                    toHidden: transitionStage?.toHidden ?? null,
-                    paintedSegmentCount: transitionStage?.paintedSegmentCount ?? null,
-                });
                 const needsDeferredLookupTargetPost = relocatedVisibleSegmentsResult === null;
                 collectRelocatedVisibleTargets({
                     // Reuse the immediate geometry/identity post when it succeeded. If it could
@@ -11708,23 +11592,8 @@ class Reader {
                     hydrateSynchronously: true,
                     markerReason: 'visible-targets',
                 });
-                globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.afterHydrate', {
-                    reason: reason ?? null,
-                    pageTurnDirection: detail?.pageTurnDirection ?? null,
-                    visibleSegmentCount: relocatedVisibleSegmentsResult?.visibleSegments?.length ?? null,
-                    nativeLookupTargetCount: relocatedVisibleSegmentsResult?.nativeLookupTargetCount ?? null,
-                });
                 if (transitionStage?.staged === true) {
-                    const commitResult = doc.defaultView?.manabi_commitEbookTrackingPaintNavigationTransition?.(transitionStage.token);
-                    globalThis.__manabiJul9Diagnostic?.('pageTurnTransition.commitRequested', {
-                        reason: reason ?? null,
-                        pageTurnDirection: detail?.pageTurnDirection ?? null,
-                        committed: commitResult?.committed ?? false,
-                        commitReason: commitResult?.reason ?? null,
-                        token: commitResult?.token ?? null,
-                        fromHidden: commitResult?.fromHidden ?? null,
-                        toHidden: commitResult?.toHidden ?? null,
-                    });
+                    doc.defaultView?.manabi_commitEbookTrackingPaintNavigationTransition?.(transitionStage.token);
                 }
                 if (body?.__manabiPendingEbookNavigationTransition === pendingNavigationTransition) {
                     body.__manabiPendingEbookNavigationTransition = null;
