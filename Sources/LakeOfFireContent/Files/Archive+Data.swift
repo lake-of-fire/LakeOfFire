@@ -1,5 +1,6 @@
 import Foundation
 import LakeOfFireCore
+import SwiftUIWebView
 import UniformTypeIdentifiers
 import ZIPFoundation
 
@@ -286,8 +287,23 @@ public actor ReaderPackageEntrySourceCache {
             return CachedSource(source: cached.source, entries: cached.entries)
         }
 
+        var entryCount = 0
+        let sourcePreparationInterval = ReaderLoadSignposts.beginInterval(
+            named: "reader.ebook.source.prepare",
+            metadata: [
+                "cache": "miss",
+                "localKind": localURL.hasDirectoryPath ? "directory" : "file",
+            ]
+        )
+        defer {
+            ReaderLoadSignposts.endInterval(
+                sourcePreparationInterval,
+                metadata: ["entries": "\(entryCount)"]
+            )
+        }
         let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
+        entryCount = entries.count
         cachedSources[cacheKey] = CacheRecord(
             source: source,
             entries: entries,

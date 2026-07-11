@@ -135,7 +135,6 @@ export class NavigationHUD {
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
-            center: document.getElementById('nav-section-progress-center'),
         };
         this.progressWrapper = document.getElementById('progress-wrapper');
         this.progressSlider = document.getElementById('progress-slider');
@@ -1224,7 +1223,6 @@ export class NavigationHUD {
         const fadeTargets = [
             this.navSectionProgress?.leading,
             this.navSectionProgress?.trailing,
-            this.navSectionProgress?.center,
         ].filter(Boolean);
         fadeTargets.forEach(el => {
             if (shouldShow) {
@@ -1245,38 +1243,6 @@ export class NavigationHUD {
         const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
-        const center = this.navSectionProgress?.center;
-        const setCenterPagesLeftVisible = (visible, label = '') => {
-            if (!center) return;
-            if (center.__pagesLeftFadeTimer) {
-                clearTimeout(center.__pagesLeftFadeTimer);
-                center.__pagesLeftFadeTimer = null;
-            }
-            if (visible) {
-                center.hidden = false;
-                center.textContent = label;
-                if (center.dataset.pagesLeftVisible !== 'true') {
-                    center.dataset.pagesLeftVisible = 'false';
-                    void center.offsetWidth;
-                    requestAnimationFrame(() => {
-                        requestAnimationFrame(() => {
-                            if (center.textContent === label) {
-                                center.dataset.pagesLeftVisible = 'true';
-                            }
-                        });
-                    });
-                }
-                return;
-            }
-            center.dataset.pagesLeftVisible = 'false';
-            center.__pagesLeftFadeTimer = setTimeout(() => {
-                if (center.dataset.pagesLeftVisible === 'false') {
-                    center.textContent = '';
-                    center.hidden = true;
-                }
-                center.__pagesLeftFadeTimer = null;
-            }, 390);
-        };
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
         try {
@@ -1300,7 +1266,6 @@ export class NavigationHUD {
             }
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) {
-                setCenterPagesLeftVisible(false);
                 this._updateTitleLocationLabel({
                     pagesLeftVisible: false,
                     pagesLeftLabel: '',
@@ -1309,7 +1274,6 @@ export class NavigationHUD {
                 return;
             }
             if (sectionResolution.index == null) {
-                setCenterPagesLeftVisible(false);
                 this._updateTitleLocationLabel({
                     pagesLeftVisible: false,
                     pagesLeftLabel: '',
@@ -1320,7 +1284,6 @@ export class NavigationHUD {
             if (!pagesLeft || pagesLeft <= 0) {
                 this.lastTerminalPagesLeftSection = sectionResolution.index;
                 this.lastTerminalPagesLeftPageNumber = result?.currentPageNumber ?? null;
-                setCenterPagesLeftVisible(false);
                 this._updateTitleLocationLabel({
                     pagesLeftVisible: false,
                     pagesLeftLabel: '',
@@ -1342,7 +1305,6 @@ export class NavigationHUD {
                 && !isExplicitBackwardRelocate
                 && !movedBeforeTerminalPage
             ) {
-                setCenterPagesLeftVisible(false);
                 this._updateTitleLocationLabel({
                     pagesLeftVisible: false,
                     pagesLeftLabel: '',
@@ -1362,7 +1324,6 @@ export class NavigationHUD {
             const label = pagesLeft === 1
                 ? `1 page left in ${progressScope}`
                 : `${pagesLeft} pages left in ${progressScope}`;
-            setCenterPagesLeftVisible(false);
             this._updateTitleLocationLabel({
                 pagesLeftVisible: true,
                 pagesLeftLabel: label,

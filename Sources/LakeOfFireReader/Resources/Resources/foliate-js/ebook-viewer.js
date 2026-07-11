@@ -7001,29 +7001,6 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
-        document.getElementById('nav-section-progress-center')?.addEventListener('click', (event) => {
-            const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
-            event.preventDefault?.();
-            event.stopPropagation?.();
-            event.stopImmediatePropagation?.();
-            if (wasHidden) {
-                ignoreNextIncomingRevealNavigation('nav-section-progress-center.click');
-                postEbookNavigationVisibilityToNative(true, 'nav-section-progress-center.click.preserve-hidden', {
-                    control: 'nav-section-progress-center',
-                    target: event.target?.id || event.target?.tagName || null,
-                });
-            } else {
-                ignoreNextIncomingHideNavigation('nav-section-progress-center.click');
-                postEbookNavigationVisibilityToNative(false, 'nav-section-progress-center.click.preserve-visible', {
-                    control: 'nav-section-progress-center',
-                    target: event.target?.id || event.target?.tagName || null,
-                });
-            }
-            postOpenReaderGoToSheetRequest('nav-section-progress-center', 'nav-section-progress-center', {
-                preserveHiddenNavigation: wasHidden,
-                preserveVisibleNavigation: !wasHidden,
-            });
-        });
         document.getElementById('nav-title-location-label')?.addEventListener('click', (event) => {
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
@@ -8811,7 +8788,7 @@ class Reader {
             return;
         }
         const isExcludedTouchTarget = target.closest?.('#reader-stage, #side-bar, #page-tracking-container, #nav-hidden-overlay, .side-nav, input, textarea, select, button, a, [role="button"], [contenteditable="true"]');
-        const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-section-progress-center, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
+        const isInteractiveNavTarget = target.closest?.('#progress-wrapper, #nav-primary-text, #nav-hidden-primary-text, #nav-bottom-row input, #nav-bottom-row button, .nav-relocate-button');
         if (isExcludedTouchTarget || isInteractiveNavTarget) {
             this.#mainDocumentSwipeState = null;
             return;
@@ -10993,9 +10970,42 @@ class Reader {
             }
         } catch (error) {
         }
+        // Keep the loading cover up through the first paint opportunity after the
+        // final paginator settle. Large books can spend another frame (or several
+        // blocked frames) applying the column geometry; clearing synchronously here
+        // exposes that work as a blank page even though the pre-paint geometry probe
+        // already found content.
         if (didDisplayVisibleContentState?.hasRenderableContent === true) {
+            const loadingPaintWaitStartedAt = performanceNowMs();
+            const markLoadingPaintBoundary = (phase) => {
+                const loadingIndicator = document.getElementById('loading-indicator');
+                const renderer = this.view?.renderer ?? null;
+                manabiTimelineMark('didDisplay.loadingPaintBoundary', {
+                    phase,
+                    elapsedMs: safeRound(performanceNowMs() - loadingPaintWaitStartedAt, 3),
+                    bodyLoading: document.body?.classList?.contains?.('loading') === true,
+                    bodyLoadingVisual: document.body?.classList?.contains?.('loading-visual') === true,
+                    loadingIndicatorHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
+                    rendererVisibility: renderer?.style?.visibility || null,
+                    rendererDisplay: renderer?.style?.display || null,
+                    documentVisibilityState: document.visibilityState ?? null,
+                    hasRenderableContent: didDisplayVisibleContentState?.hasRenderableContent === true,
+                    visibleSegmentCount: didDisplayVisibleContentState?.visibleSegmentCount ?? null,
+                    observedSegmentCount: didDisplayVisibleContentState?.observedSegmentCount ?? null,
+                    initialSettleRendered: initialSettleResult?.rendered ?? null,
+                    initialSettleReason: initialSettleResult?.reason ?? null,
+                    postFrameSettleRendered: postFrameSettleResult?.rendered ?? null,
+                    postFrameSettleReason: postFrameSettleResult?.reason ?? null,
+                });
+            };
+            markLoadingPaintBoundary('before-frame-wait');
+            await this.#waitForAnimationFrames(1);
+            markLoadingPaintBoundary('after-frame-1');
+            await this.#waitForAnimationFrames(1);
+            markLoadingPaintBoundary('after-frame-2-before-clear');
             this.setLoadingIndicator(false, 'didDisplay');
             markReaderRenderReady('didDisplay.loading-cleared');
+            markLoadingPaintBoundary('after-clear');
         }
         this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
             initialSettleResult,

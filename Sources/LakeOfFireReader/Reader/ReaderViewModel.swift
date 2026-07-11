@@ -162,6 +162,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
+        let modelInitInterval = ReaderLoadSignposts.beginInterval(
+            named: "reader.model.init",
+            metadata: ["systemScripts": "\(systemScripts.count)"]
+        )
+        defer { ReaderLoadSignposts.endInterval(modelInitInterval) }
         super.init()
         webViewSystemScripts = systemScripts
         
