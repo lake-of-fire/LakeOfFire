@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
 import LakeKit
+import LRUCache
 
 fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     if let body = request.httpBody, !body.isEmpty {
@@ -191,7 +192,7 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
     return processedText.data(using: .utf8)
 }
 
-struct EBookProcessTextRequestKey: Hashable {
+struct EBookProcessTextRequestKey: Hashable, Sendable {
     let contentURLString: String
     let location: String
     let isCacheWarmer: Bool
@@ -201,9 +202,13 @@ struct EBookProcessTextRequestKey: Hashable {
         contentURLString = contentURL.absoluteString
         self.location = location
         self.isCacheWarmer = isCacheWarmer
-        textFingerprint = "\(text.utf8.count)-\(stableHash(text))"
+        textFingerprint = ebookProcessTextFingerprint(text)
     }
+}
 
+@inline(__always)
+private func ebookProcessTextFingerprint(_ text: String) -> String {
+    "\(text.utf8.count)-\(stableHash(text))"
 }
 
 fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
@@ -217,7 +222,7 @@ fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable
     }
 }
 
-fileprivate actor EBookProcessTextRequestDeduper {
+actor EBookProcessTextRequestDeduper {
     private enum ProcessTextOutcome: Sendable {
         case success(String)
         case cancelled
@@ -226,14 +231,19 @@ fileprivate actor EBookProcessTextRequestDeduper {
 
     private struct CompletedResponse {
         let responseText: String
-        let byteCount: Int
     }
 
-    private let completedResponseByteLimit = 48 * 1024 * 1024
+    private let completedResponseByteLimit: Int
     private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
-    private var completedResponsesByKey: [EBookProcessTextRequestKey: CompletedResponse] = [:]
-    private var completedResponseKeysInAccessOrder: [EBookProcessTextRequestKey] = []
-    private var completedResponseByteCount = 0
+    private let completedResponsesByKey: LRUCache<EBookProcessTextRequestKey, CompletedResponse>
+
+    init(completedResponseByteLimit: Int = 48 * 1024 * 1024) {
+        self.completedResponseByteLimit = completedResponseByteLimit
+        completedResponsesByKey = LRUCache(
+            totalCostLimit: completedResponseByteLimit,
+            clearsOnMemoryPressure: true
+        )
+    }
 
     private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
         switch outcome {
@@ -253,29 +263,17 @@ fileprivate actor EBookProcessTextRequestDeduper {
 #endif
 
     private func rememberCompletedResponse(_ responseText: String, for key: EBookProcessTextRequestKey) {
-        guard !key.isCacheWarmer else { return }
         let byteCount = responseText.utf8.count
         guard byteCount > 0, byteCount <= completedResponseByteLimit else { return }
-        if let existing = completedResponsesByKey[key] {
-            completedResponseByteCount -= existing.byteCount
-            completedResponseKeysInAccessOrder.removeAll { $0 == key }
-        }
-        completedResponsesByKey[key] = CompletedResponse(responseText: responseText, byteCount: byteCount)
-        completedResponseKeysInAccessOrder.append(key)
-        completedResponseByteCount += byteCount
-        while completedResponseByteCount > completedResponseByteLimit,
-              let oldestKey = completedResponseKeysInAccessOrder.first {
-            completedResponseKeysInAccessOrder.removeFirst()
-            if let removed = completedResponsesByKey.removeValue(forKey: oldestKey) {
-                completedResponseByteCount -= removed.byteCount
-            }
-        }
+        completedResponsesByKey.setValue(
+            CompletedResponse(responseText: responseText),
+            forKey: key,
+            cost: byteCount
+        )
     }
 
     private func completedResponse(for key: EBookProcessTextRequestKey) -> String? {
-        guard !key.isCacheWarmer, let completed = completedResponsesByKey[key] else { return nil }
-        completedResponseKeysInAccessOrder.removeAll { $0 == key }
-        completedResponseKeysInAccessOrder.append(key)
+        guard let completed = completedResponsesByKey.value(forKey: key) else { return nil }
         return completed.responseText
     }
 
@@ -375,12 +373,7 @@ public actor EBookProcessingActor {
             contentURL: contentURL,
             location: sectionHref,
             text: entryText,
-            contentFingerprint: EBookProcessTextRequestKey(
-                contentURL: contentURL,
-                location: sectionHref,
-                isCacheWarmer: true,
-                text: entryText
-            ).textFingerprint,
+            contentFingerprint: ebookProcessTextFingerprint(entryText),
             isCacheWarmer: true
         )
         return EBookNativeSectionPrewarmResult(
@@ -398,12 +391,7 @@ public actor EBookProcessingActor {
         isCacheWarmer: Bool,
         shouldReadProcessedCache: Bool = true
     ) async throws -> String {
-        let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: location,
-            isCacheWarmer: isCacheWarmer,
-            text: text
-        ).textFingerprint
+        let resolvedContentFingerprint = contentFingerprint ?? ebookProcessTextFingerprint(text)
         if shouldReadProcessedCache, let ebookProcessedTextCacheReader {
             if let cachedResult = try await ebookProcessedTextCacheReader(contentURL, location, text, resolvedContentFingerprint) {
                 return cachedResult

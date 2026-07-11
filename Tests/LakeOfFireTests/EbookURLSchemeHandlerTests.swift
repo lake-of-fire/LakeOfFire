@@ -4,6 +4,35 @@ import SwiftSoup
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
+private actor EbookTestGate {
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var isWaiting = false
+
+    func waitUntilReleased() async {
+        isWaiting = true
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func isWaitingForRelease() -> Bool {
+        isWaiting
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor EbookTestInvocationCounter {
+    private(set) var count = 0
+
+    func increment() {
+        count += 1
+    }
+}
+
 final class EbookURLSchemeHandlerTests: XCTestCase {
     func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
         let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
@@ -236,5 +265,112 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
 
         XCTAssertEqual(result, originalText)
+    }
+
+    func testProcessTextRequestKeyIncludesCacheWarmerProcessingMode() throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let foreground = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            isCacheWarmer: false,
+            text: "本文"
+        )
+        let cacheWarmer = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            isCacheWarmer: true,
+            text: "本文"
+        )
+
+        XCTAssertNotEqual(foreground, cacheWarmer)
+    }
+
+    func testProcessTextRequestDeduperDoesNotCoalesceDifferentProcessingModes() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let foregroundKey = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            isCacheWarmer: false,
+            text: "本文"
+        )
+        let cacheWarmerKey = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            isCacheWarmer: true,
+            text: "本文"
+        )
+        let expectedHTML = "<html><body>processed</body></html>"
+        let gate = EbookTestGate()
+        let invocationCounter = EbookTestInvocationCounter()
+        let started = expectation(description: "processing starts")
+        let deduper = EBookProcessTextRequestDeduper(completedResponseByteLimit: 1024)
+
+        let cacheWarmerTask = Task {
+            try await deduper.process(key: cacheWarmerKey) {
+                await invocationCounter.increment()
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return expectedHTML
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+
+        let foregroundTask = Task {
+            try await deduper.process(key: foregroundKey) {
+                await invocationCounter.increment()
+                return "<html><body>foreground</body></html>"
+            }
+        }
+        let foregroundResult = try await foregroundTask.value
+        await gate.release()
+
+        let cacheWarmerResult = try await cacheWarmerTask.value
+        XCTAssertEqual(cacheWarmerResult.responseText, expectedHTML)
+        XCTAssertEqual(foregroundResult.responseText, "<html><body>foreground</body></html>")
+        XCTAssertFalse(cacheWarmerResult.didCoalesce)
+        XCTAssertEqual(cacheWarmerResult.cacheOutcome, "processed")
+        XCTAssertFalse(foregroundResult.didCoalesce)
+        XCTAssertEqual(foregroundResult.cacheOutcome, "processed")
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(invocationCount, 2)
+        let foregroundData = try XCTUnwrap(ebookProcessTextResponseData(
+            processedText: foregroundResult.responseText,
+            isCacheWarmer: false
+        ))
+        let cacheWarmerData = try XCTUnwrap(ebookProcessTextResponseData(
+            processedText: cacheWarmerResult.responseText,
+            isCacheWarmer: true
+        ))
+        XCTAssertFalse(foregroundData.isEmpty)
+        XCTAssertTrue(cacheWarmerData.isEmpty)
+    }
+
+    func testProcessTextRequestDeduperMaintainsByteLimitedLRUOrder() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let deduper = EBookProcessTextRequestDeduper(completedResponseByteLimit: 10)
+
+        func key(for location: String) -> EBookProcessTextRequestKey {
+            EBookProcessTextRequestKey(
+                contentURL: contentURL,
+                location: location,
+                isCacheWarmer: false,
+                text: location
+            )
+        }
+
+        let firstA = try await deduper.process(key: key(for: "a")) { "aaaa" }
+        let firstB = try await deduper.process(key: key(for: "b")) { "bbbb" }
+        let refreshedA = try await deduper.process(key: key(for: "a")) { "unexpected a hit miss" }
+        let firstC = try await deduper.process(key: key(for: "c")) { "cccc" }
+        let evictedB = try await deduper.process(key: key(for: "b")) { "bbbb" }
+        let evictedA = try await deduper.process(key: key(for: "a")) { "aaaa" }
+
+        XCTAssertFalse(firstA.didCoalesce)
+        XCTAssertFalse(firstB.didCoalesce)
+        XCTAssertTrue(refreshedA.didCoalesce)
+        XCTAssertEqual(refreshedA.cacheOutcome, "completed-hit")
+        XCTAssertFalse(firstC.didCoalesce)
+        XCTAssertFalse(evictedB.didCoalesce)
+        XCTAssertFalse(evictedA.didCoalesce)
     }
 }
