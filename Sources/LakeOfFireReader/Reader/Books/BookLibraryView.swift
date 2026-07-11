@@ -79,7 +79,7 @@ fileprivate struct EditorsPicksView: View {
     var body: some View {
         if let errorMessage = viewModel.errorMessage {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Error: \(errorMessage)")
+                Text(errorMessage)
                     .foregroundColor(.red)
                 Button("Retry") {
                     viewModel.fetchEditorsPicks()
@@ -136,17 +136,28 @@ public struct BookLibraryView: View {
         readerContentListViewModel.hasLoadedBefore && readerContentListViewModel.filteredContents.isEmpty
     }
 
+    private var mediaTypeTitleLowercased: String {
+        viewModel.mediaTypeTitle.lowercased()
+    }
+
+    private var addFileButtonTitle: String {
+        if viewModel.mediaTypeTitle == "Books" {
+            return "Add \(viewModel.mediaFileTypeTitle) Ebook"
+        }
+        return "Add \(viewModel.mediaFileTypeTitle)"
+    }
+
     private var editorsPicksHeader: some View {
         Text("Editor's Picks")
             .accessibilityIdentifier("BookLibrary.EditorsPicks.Header")
     }
 
     @ViewBuilder
-    private var addEpubButton: some View {
+    private var addFileButton: some View {
         Button {
             bookLibraryModalsModel.isImportingBookFile.toggle()
         } label: {
-            Text("Add EPUB Ebook")
+            Text(addFileButtonTitle)
                 .foregroundStyle(.primary)
         }
         .buttonStyle(.bordered)
@@ -156,8 +167,8 @@ public struct BookLibraryView: View {
     }
 
     @ViewBuilder
-    private var inlineAddEpubButton: some View {
-        addEpubButton
+    private var inlineAddFileButton: some View {
+        addFileButton
             .tint(.secondary)
     }
 
@@ -168,7 +179,7 @@ public struct BookLibraryView: View {
                 Text("My \(viewModel.mediaTypeTitle)")
                 Spacer()
                 if !isMyBooksEmpty {
-                    inlineAddEpubButton
+                    inlineAddFileButton
                 }
             }
         } else {
@@ -180,11 +191,11 @@ public struct BookLibraryView: View {
     private var myBooksSection: some View {
         if isMyBooksEmpty {
             EmptyStateBoxView(
-                title: Text("Discover and add books"),
-                text: Text("Find books to add in the Editor's Picks section. Add your own books as long as you have the EPUB editions."),
+                title: Text("Discover and add \(mediaTypeTitleLowercased)"),
+                text: Text("Find \(mediaTypeTitleLowercased) to add in the Editor's Picks section. Add your own \(mediaTypeTitleLowercased) as long as you have the \(viewModel.mediaFileTypeTitle) files."),
                 systemImageName: "books.vertical"
             ) {
-                addEpubButton
+                addFileButton
             }
             .listRowSeparatorIfAvailable(.hidden)
         } else {
@@ -335,7 +346,9 @@ public class BookLibraryViewModel: ObservableObject {
             let (publications, errorMessage) = await Self.fetchPublications(from: opdsURL)
             await MainActor.run {
                 self.editorsPicks = publications
-                self.errorMessage = errorMessage
+                self.errorMessage = errorMessage.map { _ in
+                    "\(mediaTypeTitle) editor's picks are unavailable. Pull to refresh or try again later."
+                }
             }
         }
     }
@@ -416,7 +429,7 @@ public class BookLibraryViewModel: ObservableObject {
 
         let importedURL: URL?
         if await downloadable.existsLocally() {
-            importedURL = try await readerFileManager.readerFileURL(for: downloadable)
+            importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
         } else {
             guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url) else {
                 print("Couldn't import \(publication.title) file URL")
@@ -453,7 +466,7 @@ public class BookLibraryViewModel: ObservableObject {
             let downloadURL = publication.downloadURL,
             let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
             await downloadable.existsLocally(),
-            let importedURL = try await readerFileManager.readerFileURL(for: downloadable)
+            let importedURL = try await readerFileManager.ensureImported(downloadable: downloadable)
         else { return }
 
         guard let content = try await ReaderContentLoader.load(

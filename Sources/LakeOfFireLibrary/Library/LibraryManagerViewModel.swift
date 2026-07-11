@@ -114,7 +114,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 //    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
     @Published var selectedFeed: Feed?
     
-    @Published private var exportOPMLTask: Task<Void, Never>?
+    private var exportOPMLTask: Task<Void, Never>?
+    private var exportOPMLGeneration = 0
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -145,19 +146,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                     .subscribe(on: libraryDataQueue)
                     .map { _ in }
                     .receive(on: RunLoop.main)
-                    .handleEvents(receiveOutput: { [weak self] changes in
+                    .handleEvents(receiveOutput: { [weak self] _ in
                         Task { @MainActor [weak self] in
-                            self?.exportedOPML = nil
-                            self?.exportedOPMLFileURL = nil
-                            self?.exportOPMLTask?.cancel()
+                            self?.invalidateOPMLExport()
                         }
                     })
-                    .debounceLeadingTrailing(for: .seconds(2), scheduler: libraryDataQueue)
-                    .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                        Task { @MainActor [weak self] in
-                            self?.refreshOPMLExport()
-                        }
-                    })
+                    .sink(receiveCompletion: { _ in }, receiveValue: { _ in })
                     .store(in: &cancellables)
             }
             
@@ -199,16 +193,34 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func refreshOPMLExport() {
+    private func invalidateOPMLExport() {
+        guard exportedOPML != nil || exportedOPMLFileURL != nil || exportOPMLTask != nil else { return }
+        exportOPMLGeneration += 1
         exportedOPML = nil
         exportedOPMLFileURL = nil
         exportOPMLTask?.cancel()
+        exportOPMLTask = nil
+    }
+
+    @MainActor
+    func ensureOPMLExportPrepared() {
+        guard exportedOPML == nil || exportedOPMLFileURL == nil else { return }
+        guard exportOPMLTask == nil else { return }
+        refreshOPMLExport()
+    }
+
+    @MainActor
+    func refreshOPMLExport() {
+        invalidateOPMLExport()
+        let exportGeneration = exportOPMLGeneration
         exportOPMLTask = Task.detached {
             do {
                 try Task.checkCancellation()
                 let opml = try await LibraryDataManager.shared.exportUserOPML()
                 Task { @MainActor [weak self] in
+                    guard self?.exportOPMLGeneration == exportGeneration else { return }
                     try Task.checkCancellation()
+                    self?.exportOPMLTask = nil
                     self?.exportedOPML = opml
                     
                     let resultURL = FileManager.default.temporaryDirectory
@@ -225,7 +237,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         print("Failed to write OPML file")
                     }
                 }
-            } catch { }
+            } catch {
+                Task { @MainActor [weak self] in
+                    guard self?.exportOPMLGeneration == exportGeneration else { return }
+                    self?.exportOPMLTask = nil
+                }
+            }
         }
     }
     

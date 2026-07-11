@@ -40,6 +40,9 @@ struct LibraryCategoriesView: View {
         }
         .labelStyle(.titleAndIcon)
         .disabled(libraryManagerViewModel.exportedOPML == nil)
+        .task {
+            libraryManagerViewModel.ensureOPMLExportPrepared()
+        }
 #if os(macOS)
         Button {
             savePanel = savePanel ?? NSSavePanel()

@@ -75,9 +75,14 @@ public enum ReaderContentSyncStatusPresentationBuilder {
 
     public static func defaultPresentation(for url: URL) -> ReaderContentSyncStatusPresentation {
         switch url.scheme?.lowercased() {
-        case "ebook":
-            return ReaderContentSyncStatusPresentation(title: "Local Only", imageName: "internaldrive", imageIsSystemSymbol: true)
-        case "reader-file":
+        case "ebook", "reader-file":
+            if url.pathComponents.dropFirst(2).first?.lowercased() == "icloud" {
+                return ReaderContentSyncStatusPresentation(
+                    title: "iCloud",
+                    imageName: "icloud",
+                    imageIsSystemSymbol: true
+                )
+            }
             return ReaderContentSyncStatusPresentation(title: "Local Only", imageName: "internaldrive", imageIsSystemSymbol: true)
         default:
             return ReaderContentSyncStatusPresentation(title: "Local Only", imageName: "internaldrive", imageIsSystemSymbol: true)

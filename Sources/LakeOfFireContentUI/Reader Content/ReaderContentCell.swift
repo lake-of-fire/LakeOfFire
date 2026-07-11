@@ -940,6 +940,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             } else { $0 }
         }
         .menuIndicator(.hidden)
+        .accessibilityLabel("More Options")
     }
 
     @ViewBuilder

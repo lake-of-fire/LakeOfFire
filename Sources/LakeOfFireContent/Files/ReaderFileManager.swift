@@ -387,6 +387,50 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
         return nil
     }
+
+    @MainActor
+    public func ensureImported(downloadable: Downloadable) async throws -> URL? {
+        guard await downloadable.existsLocally() else { return nil }
+        if let existingReaderURL = try await readerFileURL(for: downloadable) {
+            try await refreshMetadataForExistingLibraryFile(downloadable.localDestination)
+            return existingReaderURL
+        }
+        return try await importFile(
+            fileURL: downloadable.localDestination,
+            fromDownloadURL: downloadable.url
+        )
+    }
+
+    @MainActor
+    private func refreshMetadataForExistingLibraryFile(_ fileURL: URL) async throws {
+        let drives = [cloudDrive, localDrive].compactMap { drive in
+            drive?.isConnected == true ? drive : nil
+        }
+        for drive in drives {
+            guard let relativePath = Self.relativePath(for: fileURL, relativeTo: drive.rootDirectory) else { continue }
+            let parentPath = URL(fileURLWithPath: relativePath).deletingLastPathComponent().relativePath
+            let parent = RootRelativePath(path: parentPath == "." ? "" : parentPath)
+            let discoveredReferences = try await refreshFilesMetadata(drive: drive, relativePath: parent) ?? []
+            try await publishDiscoveredFiles(discoveredReferences)
+            return
+        }
+    }
+
+    @MainActor
+    private func publishDiscoveredFiles(_ references: [ThreadSafeReference<ContentFile>]) async throws {
+        guard !references.isEmpty else { return }
+        let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+        var mergedFiles = files ?? []
+        for reference in references {
+            guard let discoveredFile = realm.resolve(reference), !discoveredFile.isDeleted else { continue }
+            if let index = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
+                mergedFiles[index] = discoveredFile
+            } else {
+                mergedFiles.append(discoveredFile)
+            }
+        }
+        files = mergedFiles.filter { !$0.isDeleted }
+    }
     
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
@@ -816,7 +860,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             throw ReaderFileManagerError.invalidFileURL
         }
 
-        let localRootURL = try localDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
+        let localRootURL = try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory())
         let cloudRootURL = try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
         let activeRootURL: URL?
         switch storageLocation {
@@ -833,7 +877,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             localRootURL: localRootURL,
             cloudRootURL: cloudRootURL,
             activeRootURL: activeRootURL,
-            localRootExists: localRootURL.map(Self.fileSystemEntryExists(at:)) ?? false,
+            localRootExists: Self.fileSystemEntryExists(at: localRootURL),
             cloudRootExists: cloudRootURL.map(Self.fileSystemEntryExists(at:)) ?? false
         )
     }

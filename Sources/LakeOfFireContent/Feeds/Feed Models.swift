@@ -454,6 +454,7 @@ public extension Feed {
 
     public static func uniqueFollowingFeedRepresentatives(from feeds: [Feed]) -> [Feed] {
         var representativesByURL = [String: Feed]()
+        representativesByURL.reserveCapacity(feeds.count)
 
         for feed in feeds where !feed.isDeleted && !feed.isArchived && feed.entryContentKind != .contentListing {
             let key = feed.canonicalFollowingFeedURLKey
@@ -467,18 +468,33 @@ public extension Feed {
             }
         }
 
-        return representativesByURL.values.sorted { lhs, rhs in
-            switch (lhs.followingOrdinal, rhs.followingOrdinal) {
-            case let (left?, right?) where left != right:
-                return left < right
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            default:
-                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        return representativesByURL.values
+            .map { feed in
+                FollowingFeedRepresentativeSortValue(
+                    feed: feed,
+                    followingOrdinal: feed.followingOrdinal,
+                    title: feed.title
+                )
             }
-        }
+            .sorted { lhs, rhs in
+                switch (lhs.followingOrdinal, rhs.followingOrdinal) {
+                case let (left?, right?) where left != right:
+                    return left < right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+            }
+            .map(\.feed)
+    }
+
+    private struct FollowingFeedRepresentativeSortValue {
+        let feed: Feed
+        let followingOrdinal: Int?
+        let title: String
     }
 
     public static func isFollowingFeedGroup(containing feed: Feed, in feeds: [Feed]) -> Bool {

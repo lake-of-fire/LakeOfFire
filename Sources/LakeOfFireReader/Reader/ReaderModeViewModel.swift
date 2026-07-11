@@ -66,17 +66,39 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
-private func readerFontPayloadHash(_ payload: String) -> String {
-    let digest = SHA256.hash(data: Data(payload.utf8))
-    return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+private struct ReaderFontBlobPayload {
+    let base64CSS: String
+    let identity: String
 }
 
-private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
-    guard let rawValue = UserDefaults.standard.string(forKey: "readerFont") else {
-        return true
+private final class ReaderFontBlobPayloadCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cachedBase64CSS: String?
+    private var cachedPayload: ReaderFontBlobPayload?
+
+    func payload(base64CSS: String?) -> ReaderFontBlobPayload? {
+        guard let base64CSS, !base64CSS.isEmpty else { return nil }
+        lock.lock()
+        if cachedBase64CSS == base64CSS, let cachedPayload {
+            lock.unlock()
+            return cachedPayload
+        }
+        lock.unlock()
+
+        let digest = SHA256.hash(data: Data(base64CSS.utf8))
+        let identity = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+        let payload = ReaderFontBlobPayload(base64CSS: base64CSS, identity: identity)
+
+        lock.lock()
+        cachedBase64CSS = base64CSS
+        cachedPayload = payload
+        lock.unlock()
+        return payload
     }
-    return rawValue == "YuKyokasho"
 }
+
+private let readerFontBlobPayloadCache = ReaderFontBlobPayloadCache()
+private let readerModeReadabilityCSS = Readability.shared.css
 
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
     let gateCSS = """
@@ -455,7 +477,7 @@ internal func buildCanonicalReadabilityHTML(
         <head>
             <meta charset="utf-8">
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
-            <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)
+            <style type="text/css" id="swiftuiwebview-readability-styles">\(readerModeReadabilityCSS)
             \(systemUICSS)
             \(titleSuppressionCSS)</style>
             \(writingDirectionBootstrapStyle)
@@ -1735,18 +1757,14 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         }
         if let base64, !base64.isEmpty {
             metadata["fontCSSBase64Length"] = String(base64.count)
-            metadata["fontCSSBase64Hash"] = readerFontPayloadHash(base64)
+            metadata["fontCSSBase64Hash"] = readerFontBlobPayloadCache.payload(base64CSS: base64)?.identity
         }
         print("# EPUB", "sharedReaderFont.inject", metadata)
     }
 
-    private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
+    nonisolated private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) -> Bool {
         guard !pageURL.isReaderURLLoaderURL else { return false }
-        if sharedReaderFontUsesLocalScheme(for: pageURL) {
-            return true
-        }
-        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return false }
-        return !base64.isEmpty
+        return sharedReaderFontUsesLocalScheme(for: pageURL)
     }
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
@@ -1925,7 +1943,9 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             return
         }
 
-        guard let base64 = await resolveSharedReaderFontCSSBase64() else {
+        guard let blobPayload = readerFontBlobPayloadCache.payload(
+            base64CSS: await resolveSharedReaderFontCSSBase64()
+        ) else {
             logSharedReaderFontInjectionDecision(
                 mode: .blob,
                 pageURL: pageURL,
@@ -1936,9 +1956,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         logSharedReaderFontInjectionDecision(
             mode: .blob,
             pageURL: pageURL,
-            base64: base64
+            base64: blobPayload.base64CSS
         )
-        let fontHash = readerFontPayloadHash(base64)
         let js = """
             (function() {
                 const postLog = (message) => {
@@ -2102,8 +2121,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         try? await scriptCaller.evaluateJavaScript(
             js,
             arguments: [
-                "fontCSSBase64": base64,
-                "fontHash": fontHash,
+                "fontCSSBase64": blobPayload.base64CSS,
+                "fontHash": blobPayload.identity,
             ],
             duplicateInMultiTargetFrames: true
         )
@@ -3052,10 +3071,6 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
             isReaderMode = true
         }
 
-        if currentReaderFontNeedsDeferredSharedCSS() {
-            _ = await resolveSharedReaderFontCSSBase64()
-        }
-
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
@@ -3186,15 +3201,14 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 let trimmed = processedBodyClasses.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? "readability-mode" : trimmed
             }()
-            let processedTitleDisplayStyle = (try? doc.getElementById("reader-title")?.attr("style")) ?? ""
             let processedStyleTextForFrameInjection: String = {
                 guard let styleElement = try? doc.getElementById("swiftuiwebview-readability-styles"),
                       let styleHTML = try? styleElement.html() else {
-                    return Readability.shared.css
+                    return readerModeReadabilityCSS
                 }
-                return styleHTML.isEmpty ? Readability.shared.css : styleHTML
+                return styleHTML.isEmpty ? readerModeReadabilityCSS : styleHTML
             }()
-            if await self?.shouldUseDeferredSharedReaderFontGate(for: url) == true {
+            if self?.shouldUseDeferredSharedReaderFontGate(for: url) == true {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
 
@@ -3315,7 +3329,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     let transformedContent = transformedContentForFrameInjection ?? ""
                     let transformedBodyClasses = transformedBodyClassesForFrameInjection ?? "readability-mode"
-                    let transformedStyleText = transformedStyleTextForFrameInjection ?? Readability.shared.css
+                    let transformedStyleText = transformedStyleTextForFrameInjection ?? readerModeReadabilityCSS
                     debugPrint(
                         "# SNIPPETTITLE frameInjection",
                         "url=\(url.absoluteString)",

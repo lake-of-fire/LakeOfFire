@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
 import LakeKit
+import LRUCache
 import LakeOfFireCore
 import LakeOfFireContent
 import LakeOfFireFiles
@@ -120,16 +121,18 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
     return processedText.data(using: .utf8)
 }
 
-struct EBookProcessTextRequestKey: Hashable {
+struct EBookProcessTextRequestKey: Hashable, Sendable {
     let contentURLString: String
     let location: String
-    let isCacheWarmer: Bool
     let textFingerprint: String
 
-    init(contentURL: URL, location: String, isCacheWarmer: Bool, text: String) {
+    init(contentURL: URL, location: String, isCacheWarmer _: Bool, text: String) {
+        self.init(contentURL: contentURL, location: location, text: text)
+    }
+
+    init(contentURL: URL, location: String, text: String) {
         contentURLString = contentURL.absoluteString
         self.location = location
-        self.isCacheWarmer = isCacheWarmer
         textFingerprint = "\(text.utf8.count)-\(stableHash(text))"
     }
 }
@@ -152,7 +155,21 @@ actor EBookProcessTextRequestDeduper {
         case failure(String)
     }
 
+    private struct CompletedResponse {
+        let responseText: String
+    }
+
+    private let completedResponseByteLimit: Int
     private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
+    private let completedResponsesByKey: LRUCache<EBookProcessTextRequestKey, CompletedResponse>
+
+    init(completedResponseByteLimit: Int = 48 * 1024 * 1024) {
+        self.completedResponseByteLimit = completedResponseByteLimit
+        completedResponsesByKey = LRUCache(
+            totalCostLimit: completedResponseByteLimit,
+            clearsOnMemoryPressure: true
+        )
+    }
 
     private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
         switch outcome {
@@ -171,11 +188,29 @@ actor EBookProcessTextRequestDeduper {
     }
 #endif
 
+    private func rememberCompletedResponse(_ responseText: String, for key: EBookProcessTextRequestKey) {
+        let byteCount = responseText.utf8.count
+        guard byteCount > 0, byteCount <= completedResponseByteLimit else { return }
+        completedResponsesByKey.setValue(
+            CompletedResponse(responseText: responseText),
+            forKey: key,
+            cost: byteCount
+        )
+    }
+
+    private func completedResponse(for key: EBookProcessTextRequestKey) -> String? {
+        guard let completed = completedResponsesByKey.value(forKey: key) else { return nil }
+        return completed.responseText
+    }
+
     func process(
         key: EBookProcessTextRequestKey,
         operation: @Sendable () async throws -> String
     ) async throws -> (responseText: String, didCoalesce: Bool) {
         let startedAt = Date()
+        if let completedResponse = completedResponse(for: key) {
+            return (completedResponse, true)
+        }
         if inFlightWaitersByKey[key] != nil {
             let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
             if ebookReplaceTextDetailedLoggingEnabled {
@@ -207,7 +242,9 @@ actor EBookProcessTextRequestDeduper {
         for waiter in waiters {
             waiter.resume(returning: response)
         }
-        return (try resolve(response), false)
+        let resolvedResponse = try resolve(response)
+        rememberCompletedResponse(resolvedResponse, for: key)
+        return (resolvedResponse, false)
     }
 }
 
@@ -287,21 +324,28 @@ actor EBookProcessingActor {
         contentURL: URL,
         location: String,
         text: String,
-        isCacheWarmer: Bool
+        contentFingerprint: String? = nil,
+        isCacheWarmer: Bool,
+        shouldReadProcessedCache: Bool = true
     ) async throws -> String {
         let startedAt = Date()
         if ebookReplaceTextDetailedLoggingEnabled {
         }
-        let resolvedContentFingerprint = EBookProcessTextRequestKey(
+        let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
             contentURL: contentURL,
             location: location,
             isCacheWarmer: isCacheWarmer,
             text: text
         ).textFingerprint
-        if !isCacheWarmer,
-           let ebookProcessedTextCacheReader,
-           let cachedResult = try await ebookProcessedTextCacheReader(contentURL, location, text, resolvedContentFingerprint) {
-            return cachedResult
+        if shouldReadProcessedCache, let ebookProcessedTextCacheReader {
+            if let cachedResult = try await ebookProcessedTextCacheReader(
+                contentURL,
+                location,
+                text,
+                resolvedContentFingerprint
+            ) {
+                return cachedResult
+            }
         }
         guard let ebookTextProcessor else {
             return text
@@ -337,19 +381,14 @@ fileprivate actor EBookLoadingActor {
     func loadViewerFile(
         at viewerHtmlPath: String,
         originalURL: URL,
-        sharedFontCSSBase64: String?,
-        sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
+        sharedFontCSSBase64 _: String?,
+        sharedFontCSSBase64Provider _: SharedFontCSSBase64Provider?
     ) async throws -> (HTTPURLResponse, Data) {
-        var html = try String(contentsOfFile: viewerHtmlPath)
         let shouldEnablePageTurnInteractionDiagnostic =
             ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-
-        var base64 = sharedFontCSSBase64
-        if (base64 == nil || base64?.isEmpty == true), let sharedFontCSSBase64Provider {
-            base64 = await sharedFontCSSBase64Provider()
-        }
-
+        let data: Data
         if shouldEnablePageTurnInteractionDiagnostic {
+            var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
             let diagnosticPayload = """
             <script>
             (function() {
@@ -366,30 +405,15 @@ fileprivate actor EBookLoadingActor {
             } else {
                 html.append(diagnosticPayload)
             }
-        }
-
-        if let base64, !base64.isEmpty {
-            let payload = """
-            <script id="mnb-font-css-base64" type="application/json">\(base64)</script>
-            <script>
-            (function() {
-                try {
-                    globalThis.manabiFontCSSBase64 = "\(base64)";
-                } catch (err) {
-                    console.error('Failed to expose shared font css payload', err);
-                }
-            })();
-            </script>
-            """
-            if let range = html.range(of: "</body>", options: .caseInsensitive) {
-                html.replaceSubrange(range, with: payload + "</body>")
-            } else {
-                html.append(payload)
+            guard let encodedHTML = html.data(using: .utf8) else {
+                throw EbookLoadingError.fileNotFound
             }
-        }
-
-        guard let data = html.data(using: .utf8) else {
-            throw EbookLoadingError.fileNotFound
+            data = encodedHTML
+        } else {
+            data = try Data(
+                contentsOf: URL(fileURLWithPath: viewerHtmlPath),
+                options: [.mappedIfSafe]
+            )
         }
         let mimeType = "text/html"
         let response = HTTPURLResponse(
@@ -551,7 +575,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                     contentURL: contentURL,
                                     location: replacedTextLocation,
                                     text: text,
-                                    isCacheWarmer: isCacheWarmer
+                                    contentFingerprint: processRequestKey.textFingerprint,
+                                    isCacheWarmer: isCacheWarmer,
+                                    shouldReadProcessedCache: false
                                 )
                             }
                         } catch {
