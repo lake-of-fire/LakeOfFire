@@ -320,23 +320,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let pageURL = URL(string: href)
                 else { return }
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
-                let hasReaderContent = body["hasReaderContent"] as? Bool ?? false
-                let readyState = body["readyState"] as? String ?? "unknown"
-                let reason = body["reason"] as? String ?? "unknown"
-                let manabiFontPending = body["manabiFontPending"].map { String(describing: $0) } ?? "nil"
-                let bodyVisibility = body["bodyVisibility"] as? String ?? "nil"
-                let bodyOpacity = body["bodyOpacity"].map { String(describing: $0) } ?? "nil"
+                if readerViewModel.state.hasReaderRenderReady != hasReaderRenderReady {
+                    var state = readerViewModel.state
+                    state.hasReaderRenderReady = hasReaderRenderReady
+                    readerViewModel.state = state
+                }
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
-                readerModeViewModel.logSyntheticDocumentState(
-                    pageURL: pageURL,
-                    readyState: readyState,
-                    hasReaderContent: hasReaderContent,
-                    hasReaderRenderReady: hasReaderRenderReady,
-                    reason: reason,
-                    manabiFontPending: manabiFontPending,
-                    bodyVisibility: bodyVisibility,
-                    bodyOpacity: bodyOpacity
-                )
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
                 }
@@ -662,7 +651,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let hasParsedPublicationDate = result.outputHTML.contains("id=\"reader-publication-date\"")
                 let publicationDateFallback = hasParsedPublicationDate
                     ? nil
-                    : await readerContentPublicationDateFallback(for: content.url)
+                    : await readerContentPublicationDateFallback(for: content)
                 let resolvedOutputHTML = publicationDateFallback.map {
                     buildCanonicalReadabilityHTML(
                         title: result.title,

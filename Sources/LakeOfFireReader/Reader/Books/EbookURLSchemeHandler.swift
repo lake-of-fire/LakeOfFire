@@ -9,7 +9,6 @@ import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
 import LakeKit
-import LRUCache
 
 fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     if let body = request.httpBody, !body.isEmpty {
@@ -35,23 +34,6 @@ fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
         result.append(buffer, count: readCount)
     }
     return result.isEmpty ? nil : result
-}
-
-fileprivate enum EbookLoadRequestIDGenerator {
-    private static let lock = NSLock()
-    private static var nextID: UInt64 = 0
-
-    static func next() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        nextID += 1
-        return String(nextID)
-    }
-}
-
-fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> String {
-    guard value.count > limit else { return value }
-    return String(value.prefix(limit))
 }
 
 fileprivate func ebookEntrySubpath(from url: URL) -> String? {
@@ -229,21 +211,7 @@ actor EBookProcessTextRequestDeduper {
         case failure(String)
     }
 
-    private struct CompletedResponse {
-        let responseText: String
-    }
-
-    private let completedResponseByteLimit: Int
     private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
-    private let completedResponsesByKey: LRUCache<EBookProcessTextRequestKey, CompletedResponse>
-
-    init(completedResponseByteLimit: Int = 48 * 1024 * 1024) {
-        self.completedResponseByteLimit = completedResponseByteLimit
-        completedResponsesByKey = LRUCache(
-            totalCostLimit: completedResponseByteLimit,
-            clearsOnMemoryPressure: true
-        )
-    }
 
     private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
         switch outcome {
@@ -262,28 +230,10 @@ actor EBookProcessTextRequestDeduper {
     }
 #endif
 
-    private func rememberCompletedResponse(_ responseText: String, for key: EBookProcessTextRequestKey) {
-        let byteCount = responseText.utf8.count
-        guard byteCount > 0, byteCount <= completedResponseByteLimit else { return }
-        completedResponsesByKey.setValue(
-            CompletedResponse(responseText: responseText),
-            forKey: key,
-            cost: byteCount
-        )
-    }
-
-    private func completedResponse(for key: EBookProcessTextRequestKey) -> String? {
-        guard let completed = completedResponsesByKey.value(forKey: key) else { return nil }
-        return completed.responseText
-    }
-
     func process(
         key: EBookProcessTextRequestKey,
         operation: @Sendable () async throws -> String
     ) async throws -> (responseText: String, didCoalesce: Bool, cacheOutcome: String) {
-        if let completedResponse = completedResponse(for: key) {
-            return (completedResponse, true, "completed-hit")
-        }
         if inFlightWaitersByKey[key] != nil {
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
@@ -305,7 +255,6 @@ actor EBookProcessTextRequestDeduper {
             waiter.resume(returning: response)
         }
         let resolvedResponse = try resolve(response)
-        rememberCompletedResponse(resolvedResponse, for: key)
         return (resolvedResponse, false, "processed")
     }
 }
@@ -333,7 +282,6 @@ public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
 }
 
 public actor EBookProcessingActor {
-    private let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
     private let ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     private let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     private let ebookTextProcessor: EbookTextProcessor?
@@ -343,7 +291,6 @@ public actor EBookProcessingActor {
     private let processHTML: EbookHTMLProcessor?
     
     public init(
-        ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
         ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil,
         ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
@@ -352,7 +299,6 @@ public actor EBookProcessingActor {
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
-        self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookProcessedTextCacheReader = ebookProcessedTextCacheReader
         self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
@@ -412,13 +358,9 @@ public actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
-        if let ebookProcessedTextCacheWriter {
-            if isCacheWarmer {
+        if !isCacheWarmer, let ebookProcessedTextCacheWriter {
+            Task(priority: .utility) {
                 await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
-            } else {
-                Task(priority: .utility) {
-                    await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
-                }
             }
         }
         return result
@@ -494,13 +436,11 @@ public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Boo
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
-public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
 public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> String?
 public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, String) async -> Void
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    nonisolated(unsafe) var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
     nonisolated(unsafe) var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     nonisolated(unsafe) var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
@@ -516,7 +456,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     private static let sharedProcessTextRequestDeduper = EBookProcessTextRequestDeduper()
     private let processTextRequestDeduper = EbookURLSchemeHandler.sharedProcessTextRequestDeduper
-    private var hasLoggedValidatedMainDocumentURL = false
     
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -534,7 +473,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
         
         guard let url = urlSchemeTask.request.url else { return }
-        let requestID = EbookLoadRequestIDGenerator.next()
         let schemeRequestStartedAt = Date()
         let sharedReaderFontAsset = self.sharedReaderFontAsset
         if let fontResponse = sharedReaderFontResponse(
@@ -553,7 +491,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
             return
         }
-        let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
         let ebookProcessedTextCacheReader = self.ebookProcessedTextCacheReader
         let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
@@ -619,7 +556,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 key: processRequestKey
                             ) {
                                 let processingActor = EBookProcessingActor(
-                                    ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                                     ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
                                     ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                     ebookTextProcessor: ebookTextProcessor,
@@ -642,7 +578,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     urlSchemeTask.didFailWithError(error)
                                     self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                } else {
                                 }
                             }()
                             return
@@ -651,7 +586,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         if let respData = ebookProcessTextResponseData(processedText: respText, isCacheWarmer: isCacheWarmer) {
                             let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
                             let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
-                            let httpResponseBuildStartedAt = Date()
                             let resp = HTTPURLResponse(
                                 url: url,
                                 statusCode: 200,
@@ -670,20 +604,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 expectedContentLength: respData.count,
                                 textEncodingName: "utf-8"
                             )
-                            let httpResponseBuildElapsedMs = Int(Date().timeIntervalSince(httpResponseBuildStartedAt) * 1000)
-                            if httpResponseBuildElapsedMs > 0 {
-                            }
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                    let deliveryStartedAt = Date()
-                                    //                                    if !isCacheWarmer {
-                                    //                                        print("# ebook proc text endpoint", replacedTextLocation, "receive...", respText)
-                                    //                                    }
                                     urlSchemeTask.didReceive(resp)
                                     urlSchemeTask.didReceive(respData)
                                     urlSchemeTask.didFinish()
                                     self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                } else {
                                 }
                             }()
                         }
@@ -700,7 +626,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 urlSchemeTask.didReceive(respData)
                                 urlSchemeTask.didFinish()
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            } else {
                             }
                         }()
                     } else {
@@ -761,7 +686,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             key: processRequestKey
                         ) {
                             let processingActor = EBookProcessingActor(
-                                ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                                 ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
                                 ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                 ebookTextProcessor: ebookTextProcessor,
@@ -790,8 +714,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         ),
                         writingHint: writingHint
                     )
-                    if let writingHint {
-                    }
                     guard let responseData = ebookProcessTextResponseData(processedText: responseHTML, isCacheWarmer: false) else {
                         throw CustomSchemeHandlerError.fileNotFound
                     }
@@ -918,12 +840,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            let sendStartedAt = Date()
                             urlSchemeTask.didReceive(response)
                             urlSchemeTask.didReceive(data)
                             urlSchemeTask.didFinish()
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        } else {
                         }
                     }()
                 } catch {
@@ -1061,9 +981,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
               mainDocumentURL.host == "ebook",
               mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
             return nil
-        }
-        if !hasLoggedValidatedMainDocumentURL {
-            hasLoggedValidatedMainDocumentURL = true
         }
         return mainDocumentURL
     }

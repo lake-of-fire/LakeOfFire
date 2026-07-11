@@ -15,17 +15,6 @@ let feedQueue = DispatchQueue(label: "FeedQueue")
 
 
 
-private func logNiponica(_ message: String) {
-#if DEBUG
-    ()
-#endif
-}
-
-private func isNiponicaFeed(_ feed: Feed) -> Bool {
-    feed.title.localizedCaseInsensitiveContains("niponica")
-        || feed.rssUrl.absoluteString.localizedCaseInsensitiveContains("niponica")
-}
-
 private func sortFeedEntryCollections(_ collections: [FeedEntryCollection]) -> [FeedEntryCollection] {
     collections.sorted { lhs, rhs in
         switch (lhs.order, rhs.order) {
@@ -52,7 +41,6 @@ public class FeedViewModel: ObservableObject {
 
     private static var recentAutomaticFetchAttempts: [UUID: Date] = [:]
     private static let automaticFetchAttemptSuppressionInterval: TimeInterval = 60
-    private let instanceID = UUID()
     private let canonicalFeedURLKey: String
     
     @RealmBackgroundActor
@@ -172,37 +160,13 @@ public class FeedViewModel: ObservableObject {
     
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
-        if isNiponicaFeed(feed) {
-            logNiponica(
-                "stage=feedViewModel.fetchIfNeeded.begin instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) force=\(force) entries=\(entries?.count ?? -1) lastRefreshedEntriesAt=\(feed.lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(feed.lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(feed.lastFetchedETag ?? "nil") shouldAutoRefresh=\(feed.shouldRefreshAutomaticallyOnFeedAppear)"
-            )
-        }
         if force {
-            do {
-                try await feed.fetch()
-            } catch {
-                if isNiponicaFeed(feed) {
-                    logNiponica(
-                        "stage=feedViewModel.fetchIfNeeded.error instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) reason=force error=\(String(describing: error)) localized=\(error.localizedDescription) entries=\(entries?.count ?? -1)"
-                    )
-                }
-                throw error
-            }
+            try await feed.fetch()
             await reloadEntries(feedID: feed.id, reason: "forceFetchComplete")
-            if isNiponicaFeed(feed) {
-                logNiponica(
-                    "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=fetchedForce entries=\(entries?.count ?? -1)"
-                )
-            }
             return
         }
 
         guard feed.shouldRefreshAutomaticallyOnFeedAppear else {
-            if isNiponicaFeed(feed) {
-                logNiponica(
-                    "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=skipFresh entries=\(entries?.count ?? -1)"
-                )
-            }
             return
         }
 
@@ -210,31 +174,12 @@ public class FeedViewModel: ObservableObject {
         if let lastAttempt = Self.recentAutomaticFetchAttempts[feed.id],
            now.timeIntervalSince(lastAttempt) < Self.automaticFetchAttemptSuppressionInterval {
             await reloadEntries(feedID: feed.id, reason: "skipRecentAttempt")
-            if isNiponicaFeed(feed) {
-                logNiponica(
-                    "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=skipRecentAttempt elapsed=\(String(format: "%.2f", now.timeIntervalSince(lastAttempt))) entries=\(entries?.count ?? -1)"
-                )
-            }
             return
         }
 
         Self.recentAutomaticFetchAttempts[feed.id] = now
-        do {
-            try await feed.fetch()
-        } catch {
-            if isNiponicaFeed(feed) {
-                logNiponica(
-                    "stage=feedViewModel.fetchIfNeeded.error instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) reason=autoStale error=\(String(describing: error)) localized=\(error.localizedDescription) entries=\(entries?.count ?? -1)"
-                )
-            }
-            throw error
-        }
+        try await feed.fetch()
         await reloadEntries(feedID: feed.id, reason: "autoFetchComplete")
-        if isNiponicaFeed(feed) {
-            logNiponica(
-                "stage=feedViewModel.fetchIfNeeded.end instanceID=\(instanceID.uuidString) feedID=\(feed.id.uuidString) title=\(feed.title) result=fetchedAuto entries=\(entries?.count ?? -1)"
-            )
-        }
     }
 }
 
@@ -294,18 +239,10 @@ public struct FeedView: View {
     }
 #endif
 
-    private func entryIDsDescription(_ entries: [FeedEntry]?) -> String {
-        (entries ?? []).map(\.compoundKey).joined(separator: ",")
-    }
-
     private func consumeInitialScrollEntryIDIfNeeded(_ content: FeedEntry) {
         if content.compoundKey == initialScrollEntryID {
             hasAppliedInitialScrollEntryID = true
         }
-    }
-
-    private func logFeedViewFlash(_ stage: String, entries: [FeedEntry]?, showInitialContent: Bool? = nil) {
-        let showInitialContentDescription = showInitialContent.map(String.init(describing:)) ?? "nil"
     }
 
     @ViewBuilder
@@ -381,12 +318,6 @@ public struct FeedView: View {
 #endif
             }
         }
-        .onAppear {
-            logFeedViewFlash("contentAppear", entries: entries)
-        }
-        .onDisappear {
-            logFeedViewFlash("contentDisappear", entries: entries)
-        }
     }
 
     @MainActor
@@ -406,48 +337,14 @@ public struct FeedView: View {
         let allowsFollowing = feed.entryContentKind != .contentListing
         let showInitialContent = !(currentEntries?.isEmpty ?? true)
         AsyncView(operation: { forceRefreshRequested in
-            if isNiponicaFeed(feed) {
-                logNiponica(
-                    "stage=feedView.asyncOperation.begin feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) force=\(forceRefreshRequested) entries=\(viewModel.entries?.count ?? -1) showInitialContent=\(showInitialContent)"
-                )
-            }
-            logFeedViewFlash("asyncOperation force=\(forceRefreshRequested)", entries: viewModel.entries, showInitialContent: showInitialContent)
-            do {
-                try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
-                if isNiponicaFeed(feed) {
-                    logNiponica(
-                        "stage=feedView.asyncOperation.end feedID=\(feed.id.uuidString) title=\(feed.title) result=success entries=\(viewModel.entries?.count ?? -1)"
-                    )
-                }
-            } catch {
-                if isNiponicaFeed(feed) {
-                    logNiponica(
-                        "stage=feedView.asyncOperation.error feedID=\(feed.id.uuidString) title=\(feed.title) rssURL=\(feed.rssUrl.absoluteString) error=\(String(describing: error)) localized=\(error.localizedDescription) entries=\(viewModel.entries?.count ?? -1)"
-                    )
-                }
-                throw error
-            }
+            try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
         }, showInitialContent: showInitialContent) { _ in
             let contentEntries = viewModel.entries
             if let contentEntries {
                 feedContent(entries: contentEntries)
-                    .onAppear {
-                        logFeedViewFlash("contentBuilderVisible", entries: contentEntries, showInitialContent: showInitialContent)
-                    }
             } else {
                 Color.clear
-                    .onAppear {
-                        logFeedViewFlash("contentBuilderNil", entries: nil, showInitialContent: showInitialContent)
-                    }
             }
-        }
-        .onAppear {
-            logFeedViewFlash("appear", entries: currentEntries, showInitialContent: showInitialContent)
-        }
-        .onDisappear {
-            logFeedViewFlash("disappear", entries: viewModel.entries)
-        }
-        .onChange(of: viewModel.entries?.map(\.compoundKey) ?? []) { entryIDs in
         }
         .task(id: feed.id) {
             try? await markFeedAsViewed()

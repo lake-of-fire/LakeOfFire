@@ -107,7 +107,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let source = try ReaderPackageEntrySource(localURL: packageRoot)
         let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
         let actor = EBookProcessingActor(
-            ebookTextProcessorCacheHits: nil,
             ebookTextProcessor: { receivedContentURL, sectionHref, text, _, isCacheWarmer, _, _, _, _ in
                 XCTAssertEqual(receivedContentURL, contentURL)
                 XCTAssertEqual(sectionHref, "item/xhtml/chapter.xhtml")
@@ -186,7 +185,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testCacheWarmerCacheHitStillReturnsProcessedContent() async throws {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
-            ebookTextProcessorCacheHits: { _, _ in true },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -207,7 +205,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testProcessingCanSkipCacheReadAfterCallerAlreadyMissed() async throws {
         let expectedHTML = "<html><body>processed once</body></html>"
         let actor = EBookProcessingActor(
-            ebookTextProcessorCacheHits: nil,
             ebookProcessedTextCacheReader: { _, _, _, _ in
                 XCTFail("The scheme handler already performed this cache read")
                 return "<html><body>unexpected cached value</body></html>"
@@ -249,7 +246,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testCacheWarmerWithoutProcessorFallsBackToOriginalText() async throws {
         let originalText = "<html><body>raw</body></html>"
         let actor = EBookProcessingActor(
-            ebookTextProcessorCacheHits: { _, _ in true },
             ebookTextProcessor: nil,
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -303,7 +299,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let gate = EbookTestGate()
         let invocationCounter = EbookTestInvocationCounter()
         let started = expectation(description: "processing starts")
-        let deduper = EBookProcessTextRequestDeduper(completedResponseByteLimit: 1024)
+        let deduper = EBookProcessTextRequestDeduper()
 
         let cacheWarmerTask = Task {
             try await deduper.process(key: cacheWarmerKey) {
@@ -345,32 +341,131 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(cacheWarmerData.isEmpty)
     }
 
-    func testProcessTextRequestDeduperMaintainsByteLimitedLRUOrder() async throws {
+    func testProcessTextRequestDeduperCoalescesEquivalentInFlightRequests() async throws {
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
-        let deduper = EBookProcessTextRequestDeduper(completedResponseByteLimit: 10)
+        let key = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            isCacheWarmer: false,
+            text: "本文"
+        )
+        let gate = EbookTestGate()
+        let invocationCounter = EbookTestInvocationCounter()
+        let started = expectation(description: "processing starts")
+        let deduper = EBookProcessTextRequestDeduper()
 
-        func key(for location: String) -> EBookProcessTextRequestKey {
-            EBookProcessTextRequestKey(
-                contentURL: contentURL,
-                location: location,
-                isCacheWarmer: false,
-                text: location
-            )
+        let firstTask = Task {
+            try await deduper.process(key: key) {
+                await invocationCounter.increment()
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return "shared"
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+        let secondTask = Task {
+            try await deduper.process(key: key) {
+                XCTFail("Equivalent in-flight work should reuse the active operation")
+                return "duplicate"
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) > 0 {
+                break
+            }
+            await Task.yield()
+        }
+        let waiterCount = await deduper.inFlightWaiterCountForTesting(key: key)
+        XCTAssertEqual(waiterCount, 1)
+        await gate.release()
+
+        let first = try await firstTask.value
+        let second = try await secondTask.value
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(first.responseText, "shared")
+        XCTAssertEqual(second.responseText, "shared")
+        XCTAssertFalse(first.didCoalesce)
+        XCTAssertTrue(second.didCoalesce)
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testProcessTextRequestDeduperDoesNotRetainCompletedResponses() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            isCacheWarmer: false,
+            text: "本文"
+        )
+        let deduper = EBookProcessTextRequestDeduper()
+        let invocationCounter = EbookTestInvocationCounter()
+
+        let first = try await deduper.process(key: key) {
+            await invocationCounter.increment()
+            return "first"
+        }
+        let second = try await deduper.process(key: key) {
+            await invocationCounter.increment()
+            return "second"
         }
 
-        let firstA = try await deduper.process(key: key(for: "a")) { "aaaa" }
-        let firstB = try await deduper.process(key: key(for: "b")) { "bbbb" }
-        let refreshedA = try await deduper.process(key: key(for: "a")) { "unexpected a hit miss" }
-        let firstC = try await deduper.process(key: key(for: "c")) { "cccc" }
-        let evictedB = try await deduper.process(key: key(for: "b")) { "bbbb" }
-        let evictedA = try await deduper.process(key: key(for: "a")) { "aaaa" }
+        XCTAssertEqual(first.responseText, "first")
+        XCTAssertEqual(second.responseText, "second")
+        XCTAssertFalse(first.didCoalesce)
+        XCTAssertFalse(second.didCoalesce)
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(invocationCount, 2)
+    }
 
-        XCTAssertFalse(firstA.didCoalesce)
-        XCTAssertFalse(firstB.didCoalesce)
-        XCTAssertTrue(refreshedA.didCoalesce)
-        XCTAssertEqual(refreshedA.cacheOutcome, "completed-hit")
-        XCTAssertFalse(firstC.didCoalesce)
-        XCTAssertFalse(evictedB.didCoalesce)
-        XCTAssertFalse(evictedA.didCoalesce)
+    func testCacheWarmerDoesNotPopulateDisplayReadyProcessedTextCache() async throws {
+        let writerInvocationCounter = EbookTestInvocationCounter()
+        let actor = EBookProcessingActor(
+            ebookProcessedTextCacheWriter: { _, _, _, _, _ in
+                await writerInvocationCounter.increment()
+            },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
+                "<html><body>warmer result</body></html>"
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        _ = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: true
+        )
+
+        let writerInvocationCount = await writerInvocationCounter.count
+        XCTAssertEqual(writerInvocationCount, 0)
+    }
+
+    func testForegroundProcessingPopulatesDisplayReadyProcessedTextCache() async throws {
+        let writerCalled = expectation(description: "display-ready cache writer runs")
+        let actor = EBookProcessingActor(
+            ebookProcessedTextCacheWriter: { _, _, _, _, processedText in
+                XCTAssertEqual(processedText, "<html><body>foreground result</body></html>")
+                writerCalled.fulfill()
+            },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
+                "<html><body>foreground result</body></html>"
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        _ = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: false
+        )
+
+        await fulfillment(of: [writerCalled], timeout: 1)
     }
 }

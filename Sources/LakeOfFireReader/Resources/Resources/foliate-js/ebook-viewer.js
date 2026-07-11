@@ -2475,12 +2475,12 @@ const normalizeChromeInsetState = (rawState, fallbackSource = 'unknown') => {
 };
 
 const getStoredChromeInsetState = () =>
-    normalizeChromeInsetState(globalThis.__manabiChromeInsets, 'stored');
+    normalizeChromeInsetState(globalThis.__swiftUIWebViewObscuredInsets, 'stored');
 
 const readChromeInsetStateFromWindow = (targetWindow, fallbackSource) => {
     try {
         if (!targetWindow) return null;
-        return normalizeChromeInsetState(targetWindow.__manabiChromeInsets, fallbackSource);
+        return normalizeChromeInsetState(targetWindow.__swiftUIWebViewObscuredInsets, fallbackSource);
     } catch {
         return null;
     }
@@ -2543,11 +2543,11 @@ const getStoredPositiveChromeInsetState = () => {
 };
 
 const getNextChromeInsetRevision = () => {
-    const currentRevision = Number.isFinite(globalThis.__manabiChromeInsetsRevision)
-        ? globalThis.__manabiChromeInsetsRevision
+    const currentRevision = Number.isFinite(globalThis.__swiftUIWebViewObscuredInsetsRevision)
+        ? globalThis.__swiftUIWebViewObscuredInsetsRevision
         : 0;
     const nextRevision = currentRevision + 1;
-    globalThis.__manabiChromeInsetsRevision = nextRevision;
+    globalThis.__swiftUIWebViewObscuredInsetsRevision = nextRevision;
     return nextRevision;
 };
 
@@ -2676,11 +2676,11 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         const nextState = {
             ...createDefaultChromeInsetState(),
             source: `${reason}:disabled`,
-            revision: Number.isFinite(globalThis.__manabiChromeInsetsRevision)
-                ? globalThis.__manabiChromeInsetsRevision
+            revision: Number.isFinite(globalThis.__swiftUIWebViewObscuredInsetsRevision)
+                ? globalThis.__swiftUIWebViewObscuredInsetsRevision
                 : 0,
         };
-        globalThis.__manabiChromeInsets = nextState;
+        globalThis.__swiftUIWebViewObscuredInsets = nextState;
         applyResolvedChromeInsetState(nextState);
         return nextState;
     }
@@ -2695,8 +2695,8 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
     if (!Number.isFinite(nextState.revision)) {
         nextState.revision = incomingState ? getNextChromeInsetRevision() : previousState.revision;
     } else {
-        globalThis.__manabiChromeInsetsRevision = Math.max(
-            Number.isFinite(globalThis.__manabiChromeInsetsRevision) ? globalThis.__manabiChromeInsetsRevision : 0,
+        globalThis.__swiftUIWebViewObscuredInsetsRevision = Math.max(
+            Number.isFinite(globalThis.__swiftUIWebViewObscuredInsetsRevision) ? globalThis.__swiftUIWebViewObscuredInsetsRevision : 0,
             nextState.revision,
         );
     }
@@ -2760,7 +2760,7 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         }
     }
 
-    globalThis.__manabiChromeInsets = nextState;
+    globalThis.__swiftUIWebViewObscuredInsets = nextState;
     if (
         parseChromeInsetPixelValue(nextState.obscuredTopInset) > 0 ||
         parseChromeInsetPixelValue(nextState.toolbarBottomOffset) > 0 ||

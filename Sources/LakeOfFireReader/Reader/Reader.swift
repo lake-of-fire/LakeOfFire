@@ -497,7 +497,7 @@ func syncEbookViewerChromeInsets(
               const obscuredBottomInset = '\(obscuredBottomInsetCSS)';
               postMay8('before', {
                 hasApplyFunction,
-                previousInsets: window.__manabiChromeInsets || null,
+                previousInsets: window.__swiftUIWebViewObscuredInsets || null,
                 obscuredTopInset,
                 toolbarBottomOffset,
                 obscuredBottomInset,
@@ -510,7 +510,7 @@ func syncEbookViewerChromeInsets(
                 source: 'native',
                 revision: \(revision),
               };
-              window.__manabiChromeInsets = appliedInsets;
+              window.__swiftUIWebViewObscuredInsets = appliedInsets;
               if (hasApplyFunction) {
                 window.manabiApplyChromeInsets(appliedInsets, 'native-sync');
                 postMay8('after.applyFunction', { appliedInsets });
@@ -912,8 +912,7 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
         content
             .modifier(
                 ReaderLoadingProgressOverlayViewModifier(
-                    isLoading: shouldShowOverlay,
-                    context: "ReaderOverlay"
+                    isLoading: shouldShowOverlay
                 )
             )
 //            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }

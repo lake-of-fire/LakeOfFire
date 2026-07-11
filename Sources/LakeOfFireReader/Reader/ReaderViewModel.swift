@@ -49,9 +49,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
+
+    @MainActor
+    private static let builtInReaderScripts = [
+        ReaderDocStateUserScript().userScript,
+        ReaderUnhandledTapUserScript().userScript,
+    ]
     
+    @MainActor
     public var allScripts: [WebViewUserScript] {
-        return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
+        Self.builtInReaderScripts + (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
 
     @MainActor

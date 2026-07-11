@@ -84,6 +84,32 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         return try XCTUnwrap(candidates.compactMap { $0 }.first)
     }
 
+    func testCanonicalReadabilityHTMLEscapesTextAndAttributes() throws {
+        let contentURL = try XCTUnwrap(URL(string: "https://example.com/article?one=1&two=2"))
+        let title = "A & <B> \"quoted\""
+        let byline = "Author & <Editor> \"quoted\""
+        let readerHTML = buildCanonicalReadabilityHTML(
+            title: title,
+            byline: byline,
+            publishedTime: "2026 & later",
+            content: "<p>Body</p>",
+            contentURL: contentURL
+        )
+
+        let document = try SwiftSoup.parse(readerHTML)
+        XCTAssertEqual(try document.getElementById("reader-title")?.text(), title)
+        XCTAssertEqual(try document.getElementById("reader-byline")?.text(), byline)
+        XCTAssertEqual(try document.getElementById("reader-publication-date")?.text(), "2026 & later")
+        XCTAssertEqual(
+            try document.select("a.reader-view-original").first()?.attr("href"),
+            contentURL.absoluteString
+        )
+        XCTAssertEqual(
+            try document.body()?.attr("data-mnb-reader-mode-available-for"),
+            contentURL.absoluteString
+        )
+    }
+
     @MainActor
     func testAsahiOPMLFeedArticleReadabilityDoesNotRepeatTitleOrBylineInReaderContent() async throws {
         let opmlURL = try fixtureURL("asahi-defaults.opml")
