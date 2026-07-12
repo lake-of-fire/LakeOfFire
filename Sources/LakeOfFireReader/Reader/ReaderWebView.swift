@@ -200,7 +200,6 @@ public struct ReaderWebView: View {
 
     private var ebookSchemeBindingState: String {
         [
-            readerModeViewModel.ebookTextProcessorCacheHits != nil ? "cacheHits=1" : "cacheHits=0",
             readerModeViewModel.ebookProcessedTextCacheReader != nil ? "processedTextRead=1" : "processedTextRead=0",
             readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "processedTextWrite=1" : "processedTextWrite=0",
             readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
@@ -290,7 +289,6 @@ public struct ReaderWebView: View {
         )
         .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
-            ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
             ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
             ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor

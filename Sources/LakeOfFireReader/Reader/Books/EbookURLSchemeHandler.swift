@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
 import LakeKit
-import LRUCache
 import LakeOfFireCore
 import LakeOfFireContent
 import LakeOfFireFiles
@@ -37,11 +36,6 @@ fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
 
 fileprivate func logEbookAsset(_ line: String) {
     Logger.shared.logger.info("\(line)")
-}
-
-fileprivate func ebookProcessTextSample(_ value: String, limit: Int = 80) -> String {
-    guard value.count > limit else { return value }
-    return String(value.prefix(limit))
 }
 
 fileprivate func ebookHTMLAttributeEscaped(_ string: String) -> String {
@@ -96,22 +90,26 @@ func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookPr
     return result
 }
 
-@inline(__always)
-fileprivate func ebookLoadElapsedMs(since startedAt: Date) -> Int {
-    Int(Date().timeIntervalSince(startedAt) * 1000)
-}
-
-fileprivate let ebookReplaceTextDetailedLoggingEnabled =
-    ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
-fileprivate let ebookReplaceTextSlowSummaryThresholdMs = 5_000
-
-@inline(__always)
-fileprivate func shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: Int? = nil, didCoalesce: Bool = false) -> Bool {
-    if ebookReplaceTextDetailedLoggingEnabled || didCoalesce {
-        return true
+func ebookHTTPResponse(
+    url: URL,
+    mimeType: String,
+    byteCount: Int,
+    textEncodingName: String? = nil,
+    additionalHeaderFields: [String: String] = [:]
+) -> HTTPURLResponse {
+    var contentType = mimeType
+    if let textEncodingName {
+        contentType += "; charset=\(textEncodingName)"
     }
-    guard let elapsedMs else { return false }
-    return elapsedMs >= ebookReplaceTextSlowSummaryThresholdMs
+    var headerFields = additionalHeaderFields
+    headerFields["Content-Type"] = contentType
+    headerFields["Content-Length"] = "\(byteCount)"
+    return HTTPURLResponse(
+        url: url,
+        statusCode: 200,
+        httpVersion: nil,
+        headerFields: headerFields
+    )!
 }
 
 func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
@@ -119,6 +117,10 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
         return Data()
     }
     return processedText.data(using: .utf8)
+}
+
+public func ebookProcessTextFingerprint(_ text: String) -> String {
+    "\(text.utf8.count)-\(stableHash(text))"
 }
 
 struct EBookProcessTextRequestKey: Hashable, Sendable {
@@ -133,7 +135,7 @@ struct EBookProcessTextRequestKey: Hashable, Sendable {
     init(contentURL: URL, location: String, text: String) {
         contentURLString = contentURL.absoluteString
         self.location = location
-        textFingerprint = "\(text.utf8.count)-\(stableHash(text))"
+        textFingerprint = ebookProcessTextFingerprint(text)
     }
 }
 
@@ -155,21 +157,7 @@ actor EBookProcessTextRequestDeduper {
         case failure(String)
     }
 
-    private struct CompletedResponse {
-        let responseText: String
-    }
-
-    private let completedResponseByteLimit: Int
     private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
-    private let completedResponsesByKey: LRUCache<EBookProcessTextRequestKey, CompletedResponse>
-
-    init(completedResponseByteLimit: Int = 48 * 1024 * 1024) {
-        self.completedResponseByteLimit = completedResponseByteLimit
-        completedResponsesByKey = LRUCache(
-            totalCostLimit: completedResponseByteLimit,
-            clearsOnMemoryPressure: true
-        )
-    }
 
     private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
         switch outcome {
@@ -188,45 +176,18 @@ actor EBookProcessTextRequestDeduper {
     }
 #endif
 
-    private func rememberCompletedResponse(_ responseText: String, for key: EBookProcessTextRequestKey) {
-        let byteCount = responseText.utf8.count
-        guard byteCount > 0, byteCount <= completedResponseByteLimit else { return }
-        completedResponsesByKey.setValue(
-            CompletedResponse(responseText: responseText),
-            forKey: key,
-            cost: byteCount
-        )
-    }
-
-    private func completedResponse(for key: EBookProcessTextRequestKey) -> String? {
-        guard let completed = completedResponsesByKey.value(forKey: key) else { return nil }
-        return completed.responseText
-    }
-
     func process(
         key: EBookProcessTextRequestKey,
         operation: @Sendable () async throws -> String
     ) async throws -> (responseText: String, didCoalesce: Bool) {
-        let startedAt = Date()
-        if let completedResponse = completedResponse(for: key) {
-            return (completedResponse, true)
-        }
         if inFlightWaitersByKey[key] != nil {
-            let waiterCountBeforeAppend = inFlightWaitersByKey[key]?.count ?? 0
-            if ebookReplaceTextDetailedLoggingEnabled {
-            }
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
-            }
-            let joinElapsedMs = ebookLoadElapsedMs(since: startedAt)
-            if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: joinElapsedMs, didCoalesce: true) {
             }
             return (try resolve(response), true)
         }
 
         inFlightWaitersByKey[key] = []
-        if ebookReplaceTextDetailedLoggingEnabled {
-        }
         let response: ProcessTextOutcome
         do {
             response = .success(try await operation())
@@ -236,14 +197,10 @@ actor EBookProcessTextRequestDeduper {
             response = .failure(error.localizedDescription)
         }
         let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
-        let resolveElapsedMs = ebookLoadElapsedMs(since: startedAt)
-        if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: resolveElapsedMs, didCoalesce: !waiters.isEmpty) {
-        }
         for waiter in waiters {
             waiter.resume(returning: response)
         }
         let resolvedResponse = try resolve(response)
-        rememberCompletedResponse(resolvedResponse, for: key)
         return (resolvedResponse, false)
     }
 }
@@ -271,7 +228,6 @@ public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
 }
 
 actor EBookProcessingActor {
-    let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
     let ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     let ebookTextProcessor: EbookTextProcessor?
@@ -281,7 +237,6 @@ actor EBookProcessingActor {
     let processHTML: EbookHTMLProcessor?
 
     init(
-        ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
         ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil,
         ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
@@ -290,7 +245,6 @@ actor EBookProcessingActor {
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
-        self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookProcessedTextCacheReader = ebookProcessedTextCacheReader
         self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
@@ -328,9 +282,6 @@ actor EBookProcessingActor {
         isCacheWarmer: Bool,
         shouldReadProcessedCache: Bool = true
     ) async throws -> String {
-        let startedAt = Date()
-        if ebookReplaceTextDetailedLoggingEnabled {
-        }
         let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
             contentURL: contentURL,
             location: location,
@@ -364,11 +315,8 @@ actor EBookProcessingActor {
         )
         if !isCacheWarmer,
            let ebookProcessedTextCacheWriter {
-            Task(priority: .utility) {
-                await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
-            }
+            await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
         }
-        let elapsedMs = ebookLoadElapsedMs(since: startedAt)
         return result
     }
 }
@@ -443,13 +391,11 @@ public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Boo
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
-public typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async throws -> Bool
 public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> String?
 public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, String) async -> Void
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    nonisolated(unsafe) var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
     nonisolated(unsafe) var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     nonisolated(unsafe) var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
@@ -464,7 +410,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
-    private var hasLoggedValidatedMainDocumentURL = false
 
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -479,7 +424,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        let urlRequestStartedAt = Date()
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
 
         guard let url = urlSchemeTask.request.url else { return }
@@ -504,7 +448,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
             return
         }
-        let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
         let ebookProcessedTextCacheReader = self.ebookProcessedTextCacheReader
         let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
@@ -520,7 +463,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             if url.path == "/process-text" {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                     if let ebookTextProcessor {
-                        let requestStartedAt = Date()
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                         let processRequestKey = EBookProcessTextRequestKey(
                             contentURL: contentURL,
@@ -553,16 +495,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                             return
                         }
-                        if ebookReplaceTextDetailedLoggingEnabled {
-                        }
                         let respText: String
-                        let didCoalesce: Bool
                         do {
-                            (respText, didCoalesce) = try await self.processTextRequestDeduper.process(
+                            (respText, _) = try await self.processTextRequestDeduper.process(
                                 key: processRequestKey
                             ) {
                                 let processingActor = EBookProcessingActor(
-                                    ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                                     ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
                                     ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                     ebookTextProcessor: ebookTextProcessor,
@@ -589,27 +527,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                             return
                         }
-                        let responseDataEncodeStartedAt = Date()
                         if let respData = ebookProcessTextResponseData(processedText: respText, isCacheWarmer: isCacheWarmer) {
-                            let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
-                            let responseReadyElapsedMs = ebookLoadElapsedMs(since: requestStartedAt)
-                            if shouldEmitEbookReplaceTextLifecycleLog(elapsedMs: responseReadyElapsedMs, didCoalesce: didCoalesce) {
-                            }
-                            let httpResponseBuildStartedAt = Date()
                             let resp = HTTPURLResponse(
                                 url: url,
                                 mimeType: nil,
                                 expectedContentLength: respData.count,
                                 textEncodingName: "utf-8"
                             )
-                            let httpResponseBuildElapsedMs = Int(Date().timeIntervalSince(httpResponseBuildStartedAt) * 1000)
-                            if httpResponseBuildElapsedMs > 0 {
-                            }
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                    //                                    if !isCacheWarmer {
-                                    //                                        print("# ebook proc text endpoint", replacedTextLocation, "receive...", respText)
-                                    //                                    }
                                     urlSchemeTask.didReceive(resp)
                                     urlSchemeTask.didReceive(respData)
                                     urlSchemeTask.didFinish()
@@ -657,7 +583,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 do {
-                    let routeStartedAt = Date()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
@@ -697,7 +622,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 do {
-                    let routeStartedAt = Date()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
@@ -749,10 +673,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                         logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
                     }
-                    let response = HTTPURLResponse(
+                    let response = ebookHTTPResponse(
                         url: url,
                         mimeType: mimeType,
-                        expectedContentLength: data.count, textEncodingName: nil)
+                        byteCount: data.count,
+                        textEncodingName: mimeType.hasPrefix("text/") ? "utf-8" : nil,
+                        additionalHeaderFields: [
+                            "Cache-Control": "no-store, no-cache, must-revalidate",
+                            "Pragma": "no-cache",
+                            "Expires": "0",
+                        ]
+                    )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
                             urlSchemeTask.didReceive(response)
@@ -767,7 +698,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
                         }
                         do {
-                            let routeStartedAt = Date()
                             let (response, data) = try await EBookLoadingActor().loadViewerFile(
                                 at: viewerHtmlPath,
                                 originalURL: url,
@@ -877,16 +807,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 mainDocumentURL.absoluteString
             )
             return nil
-        }
-        if !hasLoggedValidatedMainDocumentURL {
-            hasLoggedValidatedMainDocumentURL = true
-            print(
-                "# EBOOKFIX1 validated ebook source",
-                "route:",
-                route,
-                "mainDocumentURL:",
-                mainDocumentURL.absoluteString
-            )
         }
         return mainDocumentURL
     }

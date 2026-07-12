@@ -122,7 +122,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @Published var selectedScript: UserScript?
     @Published public var navigationPath = NavigationPath()
-    @Published var libraryConfiguration: LibraryConfiguration?
+    // The library presentation change publishes the initial value. Avoid invalidating
+    // the off-screen library graph when its configuration loads during app startup.
+    var libraryConfiguration: LibraryConfiguration?
     
     @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
@@ -182,8 +184,11 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         if newLibraryConfigurationID != currentConfigurationID {
                             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                             guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
+                            if self.isLibraryPresented {
+                                self.objectWillChange.send()
+                            }
                             self.libraryConfiguration = libraryConfiguration
-                        } else {
+                        } else if self.isLibraryPresented {
                             self.objectWillChange.send()
                         }
                     }
