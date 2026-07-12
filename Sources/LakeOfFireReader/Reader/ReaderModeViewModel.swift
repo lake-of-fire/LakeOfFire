@@ -1138,9 +1138,10 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil
     @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
+    @Published public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil
     @Published public var nativeEbookSectionPrewarmer: ((URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: ((String, URL, URL?, Bool, Bool, String?, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
-    @Published public var processHTMLDocument: ((SwiftSoup.Document, Bool) async throws -> [UInt8])? = nil
+    @Published public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil
     @Published public var processHTMLBytes: (([UInt8], Bool) async -> [UInt8])? = nil
     @Published public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
@@ -1415,6 +1416,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard #available(iOS 16.4, macOS 14, *) else {
             return
         }
+        let fontValues = currentReaderFontCSSValues()
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
             (function() {
@@ -1495,10 +1497,32 @@ public class ReaderModeViewModel: ObservableObject {
                 };
                 return (async () => {
                     const root = document.documentElement;
+                    const horizontalFamily =
+                        typeof horizontalFontFamily !== 'undefined'
+                        ? horizontalFontFamily
+                        : arguments?.horizontalFontFamily;
+                    const verticalFamily =
+                        typeof verticalFontFamily !== 'undefined'
+                        ? verticalFontFamily
+                        : arguments?.verticalFontFamily;
+                    if (horizontalFamily) {
+                        globalThis.manabiHorizontalFontFamilyName = horizontalFamily;
+                        root.dataset.mnbHorizontalFontFamily = horizontalFamily;
+                    }
+                    if (verticalFamily) {
+                        globalThis.manabiVerticalFontFamilyName = verticalFamily;
+                        root.dataset.mnbVerticalFontFamily = verticalFamily;
+                    }
+                    const writingDirection =
+                        document.body?.dataset?.mnbWritingDirection
+                        || root.dataset.mnbWritingDirection
+                        || null;
                     const desiredFamily =
-                        root?.dataset?.mnbHorizontalFontFamily
+                        writingDirection === 'vertical'
+                        ? (root.dataset.mnbVerticalFontFamily || verticalFamily)
+                        : (root.dataset.mnbHorizontalFontFamily
                         || globalThis.manabiHorizontalFontFamilyName
-                        || 'YuKyokasho';
+                        || 'YuKyokasho');
                     setFontPendingState(true);
                     scheduleGateTimeout();
                     ensureReaderFontStyle(desiredFamily);
@@ -1530,7 +1554,11 @@ public class ReaderModeViewModel: ObservableObject {
             """
             try? await scriptCaller.evaluateJavaScript(
                 js,
-                arguments: ["stylesheetURLTemplate": stylesheetURLTemplate],
+                arguments: [
+                    "stylesheetURLTemplate": stylesheetURLTemplate,
+                    "horizontalFontFamily": fontValues.horizontalFamily,
+                    "verticalFontFamily": fontValues.verticalFamily,
+                ],
                 duplicateInMultiTargetFrames: true
             )
             return
@@ -1644,10 +1672,32 @@ public class ReaderModeViewModel: ObservableObject {
             };
             return (async () => {
                 const root = document.documentElement;
-                const desiredFamily =
-                    root?.dataset?.mnbHorizontalFontFamily
-                    || globalThis.manabiHorizontalFontFamilyName
+                const horizontalFamily =
+                    typeof horizontalFontFamily !== 'undefined'
+                    ? horizontalFontFamily
+                    : arguments?.horizontalFontFamily;
+                const verticalFamily =
+                    typeof verticalFontFamily !== 'undefined'
+                    ? verticalFontFamily
+                    : arguments?.verticalFontFamily;
+                if (horizontalFamily) {
+                    globalThis.manabiHorizontalFontFamilyName = horizontalFamily;
+                    root.dataset.mnbHorizontalFontFamily = horizontalFamily;
+                }
+                if (verticalFamily) {
+                    globalThis.manabiVerticalFontFamilyName = verticalFamily;
+                    root.dataset.mnbVerticalFontFamily = verticalFamily;
+                }
+                const writingDirection =
+                    document.body?.dataset?.mnbWritingDirection
+                    || root.dataset.mnbWritingDirection
                     || null;
+                const desiredFamily =
+                    writingDirection === 'vertical'
+                    ? (root.dataset.mnbVerticalFontFamily || verticalFamily)
+                    : (root.dataset.mnbHorizontalFontFamily
+                    || globalThis.manabiHorizontalFontFamilyName
+                    || null);
                 setFontPendingState(true);
                 scheduleGateTimeout();
                 let style = ensureReaderFontStyle(desiredFamily);
@@ -1697,6 +1747,8 @@ public class ReaderModeViewModel: ObservableObject {
             arguments: [
                 "fontCSSBase64": blobPayload.base64CSS,
                 "fontHash": fontHash,
+                "horizontalFontFamily": fontValues.horizontalFamily,
+                "verticalFontFamily": fontValues.verticalFamily,
             ],
             duplicateInMultiTargetFrames: true
         )
@@ -2339,6 +2391,14 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 transformedHTMLString = processedHTML
                 transformedHTMLBytes = Array(processedHTML.utf8)
+            }
+
+            if renderBaseURL.scheme?.lowercased() == "internal",
+               frameInfo?.isMainFrame != false {
+                transformedHTMLBytes = Array(externalizingCanonicalReaderSegmentSidecar(
+                    in: transformedHTMLBytes,
+                    scheme: .internalReader
+                ).documentHTML)
             }
 
             let transformedContentForFrameInjection: String?

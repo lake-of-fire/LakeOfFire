@@ -155,6 +155,7 @@
 		AFBB460F903C40989FE64CCA /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		B314E13B3112276D24ABACB1 /* URL+GoogleQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B5DBD524B1DA313BA8C068 /* URL+GoogleQuery.swift */; };
 		B5F12031B245ACC93B2726C7 /* CSS in Resources */ = {isa = PBXBuildFile; fileRef = 71FBF0C1DA553663DD278EAD /* CSS */; };
+		B66C61CD1D9CA78011F875DC /* ReaderExternalSegmentSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66DDD29D6922BB34E9C687CC /* ReaderExternalSegmentSidecar.swift */; };
 		B8B2A183DF6A5B204CB3F869 /* ReaderDateFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D368550632212CD59E14EFC7 /* ReaderDateFormatter.swift */; };
 		BB26728C3F79E4B59BC16BF4 /* ReaderUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3EAC595659849552A355873 /* ReaderUserScript.swift */; };
 		BB27B9C8584A5A00D895FD2C /* libLakeOfFireContent.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 3956EAD702E8250461971C1F /* libLakeOfFireContent.a */; };
@@ -818,6 +819,7 @@
 		61E59AC8F43CB9A301471ABB /* ReaderContentHorizontalList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentHorizontalList.swift; sourceTree = "<group>"; };
 		63C862B081B81E9DCD4CC5E9 /* ReaderFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileManager.swift; sourceTree = "<group>"; };
 		64238F6B2BCE65AB3D1E2032 /* BookLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookLibraryView.swift; sourceTree = "<group>"; };
+		66DDD29D6922BB34E9C687CC /* ReaderExternalSegmentSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderExternalSegmentSidecar.swift; sourceTree = "<group>"; };
 		69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderShareUtilities.swift; sourceTree = "<group>"; };
 		6D46E0204024D29E3136178D /* EbookFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookFileManager.swift; sourceTree = "<group>"; };
 		6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BigSyncKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1081,6 +1083,7 @@
 				EC43DFD1859F78C744F50A65 /* ReaderDocStateUserScript.swift */,
 				2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */,
 				DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */,
+				66DDD29D6922BB34E9C687CC /* ReaderExternalSegmentSidecar.swift */,
 				8C1A5B9E03F2CF3DEB0D4C84 /* ReaderHTTPErrorRecoveryPolicy.swift */,
 				C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */,
 				AEACDFF35BB3C511190E95F2 /* ReaderLoadingProgressOverlayViewModifier.swift */,
@@ -2029,6 +2032,7 @@
 				3A986237EC99681E49138627 /* ReaderDocStateUserScript.swift in Sources */,
 				8FB6AF011166D0B829C8402D /* ReaderEbookTextProcessor.swift in Sources */,
 				52E9D564CC7C6233AA680257 /* ReaderEnvironmentViewModifier.swift in Sources */,
+				B66C61CD1D9CA78011F875DC /* ReaderExternalSegmentSidecar.swift in Sources */,
 				A47AE248CCA11DAAB5E3FF6A /* ReaderHTTPErrorRecoveryPolicy.swift in Sources */,
 				E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */,
 				5A96F584C1590884AA55785A /* ReaderLoadingProgressOverlayViewModifier.swift in Sources */,

@@ -43,32 +43,72 @@ fileprivate func ebookEntrySubpath(from url: URL) -> String? {
         .value
 }
 
+private enum EbookBase64URLByte {
+    static let plus = UInt8(ascii: "+")
+    static let hyphen = UInt8(ascii: "-")
+    static let slash = UInt8(ascii: "/")
+    static let underscore = UInt8(ascii: "_")
+    static let equals = UInt8(ascii: "=")
+}
+
 fileprivate func ebookBase64URLToken(for string: String) -> String {
-    Data(string.utf8)
-        .base64EncodedString()
-        .replacingOccurrences(of: "+", with: "-")
-        .replacingOccurrences(of: "/", with: "_")
-        .replacingOccurrences(of: "=", with: "")
+    var bytes = Array(Data(string.utf8).base64EncodedData())
+    for index in bytes.indices {
+        if bytes[index] == EbookBase64URLByte.plus {
+            bytes[index] = EbookBase64URLByte.hyphen
+        } else if bytes[index] == EbookBase64URLByte.slash {
+            bytes[index] = EbookBase64URLByte.underscore
+        }
+    }
+    while bytes.last == EbookBase64URLByte.equals {
+        bytes.removeLast()
+    }
+    return String(decoding: bytes, as: UTF8.self)
 }
 
 fileprivate func ebookString(fromBase64URLToken token: String) -> String? {
-    var base64 = token
-        .replacingOccurrences(of: "-", with: "+")
-        .replacingOccurrences(of: "_", with: "/")
-    let padding = (4 - base64.count % 4) % 4
-    if padding > 0 {
-        base64 += String(repeating: "=", count: padding)
+    var bytes = Array(token.utf8)
+    for index in bytes.indices {
+        if bytes[index] == EbookBase64URLByte.hyphen {
+            bytes[index] = EbookBase64URLByte.plus
+        } else if bytes[index] == EbookBase64URLByte.underscore {
+            bytes[index] = EbookBase64URLByte.slash
+        }
     }
-    guard let data = Data(base64Encoded: base64) else { return nil }
+    let padding = (4 - bytes.count % 4) % 4
+    if padding > 0 {
+        bytes.append(contentsOf: repeatElement(EbookBase64URLByte.equals, count: padding))
+    }
+    guard let data = Data(base64Encoded: Data(bytes)) else { return nil }
     return String(data: data, encoding: .utf8)
 }
 
-fileprivate func ebookHTMLAttributeEscaped(_ string: String) -> String {
-    string
-        .replacingOccurrences(of: "&", with: "&amp;")
-        .replacingOccurrences(of: "\"", with: "&quot;")
-        .replacingOccurrences(of: "<", with: "&lt;")
-        .replacingOccurrences(of: ">", with: "&gt;")
+private let ebookHTMLEscapedAmpersand = Array("&amp;".utf8)
+private let ebookHTMLEscapedDoubleQuote = Array("&quot;".utf8)
+private let ebookHTMLEscapedSingleQuote = Array("&#39;".utf8)
+private let ebookHTMLEscapedLessThan = Array("&lt;".utf8)
+private let ebookHTMLEscapedGreaterThan = Array("&gt;".utf8)
+
+fileprivate func appendEbookHTMLAttributeEscapedBytes(
+    _ string: String,
+    to output: inout Data
+) {
+    for byte in string.utf8 {
+        switch byte {
+        case EbookHTMLByte.ampersand:
+            output.append(contentsOf: ebookHTMLEscapedAmpersand)
+        case EbookHTMLByte.doubleQuote:
+            output.append(contentsOf: ebookHTMLEscapedDoubleQuote)
+        case EbookHTMLByte.singleQuote:
+            output.append(contentsOf: ebookHTMLEscapedSingleQuote)
+        case EbookHTMLByte.lessThan:
+            output.append(contentsOf: ebookHTMLEscapedLessThan)
+        case EbookHTMLByte.greaterThan:
+            output.append(contentsOf: ebookHTMLEscapedGreaterThan)
+        default:
+            output.append(byte)
+        }
+    }
 }
 
 fileprivate func ebookDirectorySubpath(for sectionHref: String) -> String {
@@ -88,23 +128,6 @@ fileprivate func ebookPathEscaped(_ path: String) -> String {
 fileprivate func ebookProcessedSectionBaseURL(contentURL: URL, sectionHref: String) -> String {
     let token = ebookBase64URLToken(for: contentURL.absoluteString)
     return "ebook://ebook/entry-source/\(token)/\(ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)))"
-}
-
-fileprivate func ebookHTMLWithInjectedBase(_ html: String, baseURL: String) -> String {
-    let baseTag = "<base href=\"\(ebookHTMLAttributeEscaped(baseURL))\">"
-    if let headOpenRange = html.range(of: "<head", options: [.caseInsensitive]),
-       let headOpenEnd = html[headOpenRange.lowerBound...].firstIndex(of: ">") {
-        var result = html
-        result.insert(contentsOf: baseTag, at: html.index(after: headOpenEnd))
-        return result
-    }
-    if let htmlOpenRange = html.range(of: "<html", options: [.caseInsensitive]),
-       let htmlOpenEnd = html[htmlOpenRange.lowerBound...].firstIndex(of: ">") {
-        var result = html
-        result.insert(contentsOf: "<head>\(baseTag)</head>", at: html.index(after: htmlOpenEnd))
-        return result
-    }
-    return "<!doctype html><html><head>\(baseTag)</head><body>\(html)</body></html>"
 }
 
 struct EBookProcessedSectionWritingHint {
@@ -129,40 +152,338 @@ fileprivate func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcess
     return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: writingMode)
 }
 
-func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
-    guard let writingHint else { return html }
-    guard let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]) else { return html }
-    let afterBodyName = bodyTagRange.upperBound
-    if afterBodyName < html.endIndex {
-        let nextCharacter = html[afterBodyName]
-        guard nextCharacter == ">" || nextCharacter == "/" || nextCharacter.isWhitespace else { return html }
+public struct EbookSectionPresentation: Sendable {
+    public let bodyAttributes: [String: String]
+    public let bodyStyleDeclarations: String
+
+    public init(bodyAttributes: [String: String], bodyStyleDeclarations: String) {
+        self.bodyAttributes = bodyAttributes
+        self.bodyStyleDeclarations = bodyStyleDeclarations
     }
-    guard let tagEnd = html[afterBodyName...].firstIndex(of: ">") else { return html }
+}
 
-    let attributes = [
-        "data-mnb-writing-direction=\"\(writingHint.direction)\"",
-        "data-mnb-writing-mode=\"\(writingHint.writingMode)\"",
-        "data-mnb-foliate-writing-direction=\"\(writingHint.direction)\"",
-        "data-mnb-foliate-writing-mode=\"\(writingHint.writingMode)\""
-    ].joined(separator: " ")
+private struct EbookHTMLDocumentTagLocations {
+    var htmlOpenTagEnd: Int?
+    var headOpenTagEnd: Int?
+    var bodyOpenTagEnd: Int?
+    var bodyStyleValueEnd: Int?
+}
 
-    var result = html
-    result.insert(contentsOf: " \(attributes)", at: tagEnd)
+private enum EbookHTMLDocumentTag {
+    case html
+    case head
+    case body
+}
+
+private enum EbookHTMLByte {
+    static let lessThan = UInt8(ascii: "<")
+    static let greaterThan = UInt8(ascii: ">")
+    static let slash = UInt8(ascii: "/")
+    static let equals = UInt8(ascii: "=")
+    static let singleQuote = UInt8(ascii: "'")
+    static let doubleQuote = UInt8(ascii: "\"")
+    static let ampersand = UInt8(ascii: "&")
+    static let semicolon = UInt8(ascii: ";")
+    static let space = UInt8(ascii: " ")
+    static let horizontalTab = UInt8(ascii: "\t")
+    static let lineFeed = UInt8(ascii: "\n")
+    static let carriageReturn = UInt8(ascii: "\r")
+    static let uppercaseA = UInt8(ascii: "A")
+    static let uppercaseZ = UInt8(ascii: "Z")
+    static let lowercaseOffset = UInt8(ascii: "a") - UInt8(ascii: "A")
+}
+
+private let ebookHTMLTagName = UTF8Arrays.html
+private let ebookHeadTagName = UTF8Arrays.head
+private let ebookBodyTagName = UTF8Arrays.body
+private let ebookStyleAttributeName = UTF8Arrays.style
+
+func ebookHTMLDataWithInjectedResponseMetadata(
+    _ htmlData: Data,
+    baseURL: String,
+    writingHint: EBookProcessedSectionWritingHint?,
+    bodyAttributes: [String: String],
+    presentation: EbookSectionPresentation? = nil,
+    additionalHeadMarkup: Data? = nil
+) -> Data {
+    var encodedBodyAttributes = presentation?.bodyAttributes ?? [:]
+    encodedBodyAttributes.merge(bodyAttributes) { _, responseValue in responseValue }
+    if let writingHint {
+        encodedBodyAttributes["data-mnb-writing-direction"] = writingHint.direction
+        encodedBodyAttributes["data-mnb-writing-mode"] = writingHint.writingMode
+        encodedBodyAttributes["data-mnb-foliate-writing-direction"] = writingHint.direction
+        encodedBodyAttributes["data-mnb-foliate-writing-mode"] = writingHint.writingMode
+    }
+    var bodyAttributeBytes = Data()
+    for (key, value) in encodedBodyAttributes.sorted(by: { $0.key < $1.key }) {
+        if !bodyAttributeBytes.isEmpty {
+            bodyAttributeBytes.append(EbookHTMLByte.space)
+        }
+        bodyAttributeBytes.append(contentsOf: key.utf8)
+        bodyAttributeBytes.append(contentsOf: UTF8Arrays.attributeEqualsQuoteMark)
+        appendEbookHTMLAttributeEscapedBytes(value, to: &bodyAttributeBytes)
+        bodyAttributeBytes.append(EbookHTMLByte.doubleQuote)
+    }
+    var headPayload = Data("<base href=\"".utf8)
+    appendEbookHTMLAttributeEscapedBytes(baseURL, to: &headPayload)
+    headPayload.append(contentsOf: "\">".utf8)
+    if let additionalHeadMarkup {
+        headPayload.append(additionalHeadMarkup)
+    }
+    let bodyStyleDeclarations = presentation?.bodyStyleDeclarations ?? ""
+    var escapedBodyStyleDeclarations = Data()
+    escapedBodyStyleDeclarations.reserveCapacity(bodyStyleDeclarations.utf8.count)
+    appendEbookHTMLAttributeEscapedBytes(bodyStyleDeclarations, to: &escapedBodyStyleDeclarations)
+
+    let tags = ebookHTMLDocumentTagLocations(in: htmlData)
+    var insertions = [(index: Int, data: Data)]()
+    if let headTagEnd = tags.headOpenTagEnd {
+        insertions.append((headTagEnd, headPayload))
+    } else if let htmlTagEnd = tags.htmlOpenTagEnd {
+        var head = Data("<head>".utf8)
+        head.append(headPayload)
+        head.append(Data("</head>".utf8))
+        insertions.append((htmlTagEnd, head))
+    } else {
+        var wrapped = Data("<!doctype html><html><head>".utf8)
+        wrapped.append(headPayload)
+        wrapped.append(Data("</head><body".utf8))
+        if !escapedBodyStyleDeclarations.isEmpty {
+            wrapped.append(Data(" style=\"".utf8))
+            wrapped.append(contentsOf: escapedBodyStyleDeclarations)
+            wrapped.append(EbookHTMLByte.doubleQuote)
+        }
+        if !bodyAttributeBytes.isEmpty {
+            wrapped.append(EbookHTMLByte.space)
+            wrapped.append(contentsOf: bodyAttributeBytes)
+        }
+        wrapped.append(EbookHTMLByte.greaterThan)
+        wrapped.append(htmlData)
+        wrapped.append(Data("</body></html>".utf8))
+        return wrapped
+    }
+    if let bodyTagEnd = tags.bodyOpenTagEnd {
+        var closingTagInsertion = Data()
+        if !escapedBodyStyleDeclarations.isEmpty {
+            if let styleValueEnd = tags.bodyStyleValueEnd {
+                var styleSuffix = Data([EbookHTMLByte.semicolon])
+                styleSuffix.append(contentsOf: escapedBodyStyleDeclarations)
+                insertions.append((styleValueEnd, styleSuffix))
+            } else {
+                closingTagInsertion.append(Data(" style=\"".utf8))
+                closingTagInsertion.append(contentsOf: escapedBodyStyleDeclarations)
+                closingTagInsertion.append(EbookHTMLByte.doubleQuote)
+            }
+        }
+        if !bodyAttributeBytes.isEmpty {
+            closingTagInsertion.append(EbookHTMLByte.space)
+            closingTagInsertion.append(contentsOf: bodyAttributeBytes)
+        }
+        if !closingTagInsertion.isEmpty {
+            insertions.append((bodyTagEnd - 1, closingTagInsertion))
+        }
+    }
+
+    var result = Data()
+    result.reserveCapacity(htmlData.count + insertions.reduce(0) { $0 + $1.data.count })
+    var sourceIndex = 0
+    for insertion in insertions.sorted(by: { $0.index < $1.index }) {
+        result.append(htmlData[sourceIndex..<insertion.index])
+        result.append(insertion.data)
+        sourceIndex = insertion.index
+    }
+    result.append(htmlData[sourceIndex...])
     return result
 }
 
-fileprivate func ebookHTMLWithInjectedBodyAttributes(_ html: String, attributes: [String: String]) -> String {
-    guard !attributes.isEmpty,
-          let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]) else { return html }
-    let afterBodyName = bodyTagRange.upperBound
-    guard let tagEnd = html[afterBodyName...].firstIndex(of: ">") else { return html }
-    let encodedAttributes = attributes
-        .sorted { $0.key < $1.key }
-        .map { "\($0.key)=\"\(ebookHTMLAttributeEscaped($0.value))\"" }
-        .joined(separator: " ")
-    var result = html
-    result.insert(contentsOf: " \(encodedAttributes)", at: tagEnd)
-    return result
+private func ebookHTMLDocumentTagLocations(in data: Data) -> EbookHTMLDocumentTagLocations {
+    data.withUnsafeBytes { rawBuffer in
+        let bytes = rawBuffer.bindMemory(to: UInt8.self)
+        var locations = EbookHTMLDocumentTagLocations()
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == EbookHTMLByte.lessThan else {
+                index += 1
+                continue
+            }
+            let nameStart = index + 1
+            guard nameStart < bytes.count,
+                  bytes[nameStart] != EbookHTMLByte.slash else {
+                index += 1
+                continue
+            }
+            let matchingTag: EbookHTMLDocumentTag?
+            if locations.htmlOpenTagEnd == nil,
+               ebookHTMLTagNameMatches(ebookHTMLTagName, in: bytes, startingAt: nameStart) {
+                matchingTag = .html
+            } else if locations.headOpenTagEnd == nil,
+                      ebookHTMLTagNameMatches(ebookHeadTagName, in: bytes, startingAt: nameStart) {
+                matchingTag = .head
+            } else if locations.bodyOpenTagEnd == nil,
+                      ebookHTMLTagNameMatches(ebookBodyTagName, in: bytes, startingAt: nameStart) {
+                matchingTag = .body
+            } else {
+                matchingTag = nil
+            }
+            guard let matchingTag,
+                  let tagEnd = ebookHTMLOpenTagEnd(in: bytes, startingAt: nameStart) else {
+                index += 1
+                continue
+            }
+            switch matchingTag {
+            case .html:
+                locations.htmlOpenTagEnd = tagEnd
+            case .head:
+                locations.headOpenTagEnd = tagEnd
+            case .body:
+                locations.bodyOpenTagEnd = tagEnd
+                locations.bodyStyleValueEnd = ebookHTMLQuotedStyleValueEnd(
+                    in: bytes,
+                    attributesStart: nameStart + ebookBodyTagName.count,
+                    tagEnd: tagEnd
+                )
+            }
+            if locations.htmlOpenTagEnd != nil,
+               locations.headOpenTagEnd != nil,
+               locations.bodyOpenTagEnd != nil {
+                return locations
+            }
+            index = tagEnd
+        }
+        return locations
+    }
+}
+
+private func ebookHTMLQuotedStyleValueEnd(
+    in bytes: UnsafeBufferPointer<UInt8>,
+    attributesStart: Int,
+    tagEnd: Int
+) -> Int? {
+    var index = attributesStart
+    let contentEnd = tagEnd - 1
+    while index < contentEnd {
+        while index < contentEnd, ebookHTMLAttributeWhitespace(bytes[index]) {
+            index += 1
+        }
+        guard index < contentEnd, bytes[index] != EbookHTMLByte.slash else {
+            index += 1
+            continue
+        }
+        let nameStart = index
+        while index < contentEnd,
+              !ebookHTMLAttributeWhitespace(bytes[index]),
+              bytes[index] != EbookHTMLByte.equals,
+              bytes[index] != EbookHTMLByte.greaterThan {
+            index += 1
+        }
+        let isStyle = ebookHTMLASCIIEquals(ebookStyleAttributeName, bytes: bytes, range: nameStart..<index)
+        while index < contentEnd, ebookHTMLAttributeWhitespace(bytes[index]) {
+            index += 1
+        }
+        guard index < contentEnd, bytes[index] == EbookHTMLByte.equals else {
+            continue
+        }
+        index += 1
+        while index < contentEnd, ebookHTMLAttributeWhitespace(bytes[index]) {
+            index += 1
+        }
+        guard index < contentEnd else { return nil }
+        let quote = bytes[index]
+        if quote == EbookHTMLByte.singleQuote || quote == EbookHTMLByte.doubleQuote {
+            index += 1
+            while index < contentEnd, bytes[index] != quote {
+                index += 1
+            }
+            if isStyle, index < contentEnd {
+                return index
+            }
+            index += index < contentEnd ? 1 : 0
+        } else {
+            while index < contentEnd, !ebookHTMLAttributeWhitespace(bytes[index]) {
+                index += 1
+            }
+        }
+    }
+    return nil
+}
+
+@inline(__always)
+private func ebookHTMLAttributeWhitespace(_ byte: UInt8) -> Bool {
+    byte == EbookHTMLByte.space
+        || byte == EbookHTMLByte.horizontalTab
+        || byte == EbookHTMLByte.lineFeed
+        || byte == EbookHTMLByte.carriageReturn
+}
+
+@inline(__always)
+private func ebookHTMLASCIIEquals(
+    _ expected: [UInt8],
+    bytes: UnsafeBufferPointer<UInt8>,
+    range: Range<Int>
+) -> Bool {
+    guard range.count == expected.count else { return false }
+    for (offset, expectedByte) in expected.enumerated() {
+        if ebookLowercasedASCII(bytes[range.lowerBound + offset]) != expectedByte {
+            return false
+        }
+    }
+    return true
+}
+
+@inline(__always)
+private func ebookHTMLTagNameMatches(
+    _ tagName: [UInt8],
+    in bytes: UnsafeBufferPointer<UInt8>,
+    startingAt start: Int
+) -> Bool {
+    guard start <= bytes.count - tagName.count else { return false }
+    for offset in tagName.indices {
+        if ebookLowercasedASCII(bytes[start + offset]) != tagName[offset] {
+            return false
+        }
+    }
+    let boundaryIndex = start + tagName.count
+    guard boundaryIndex < bytes.count else { return false }
+    return ebookHTMLTagBoundary(bytes[boundaryIndex])
+}
+
+@inline(__always)
+private func ebookLowercasedASCII(_ byte: UInt8) -> UInt8 {
+    byte >= EbookHTMLByte.uppercaseA && byte <= EbookHTMLByte.uppercaseZ
+        ? byte + EbookHTMLByte.lowercaseOffset
+        : byte
+}
+
+@inline(__always)
+private func ebookHTMLTagBoundary(_ byte: UInt8) -> Bool {
+    byte == EbookHTMLByte.greaterThan
+        || byte == EbookHTMLByte.slash
+        || byte == EbookHTMLByte.space
+        || byte == EbookHTMLByte.horizontalTab
+        || byte == EbookHTMLByte.lineFeed
+        || byte == EbookHTMLByte.carriageReturn
+}
+
+private func ebookHTMLOpenTagEnd(
+    in bytes: UnsafeBufferPointer<UInt8>,
+    startingAt start: Int
+) -> Int? {
+    var quote: UInt8?
+    var index = start
+    while index < bytes.count {
+        let byte = bytes[index]
+        if let activeQuote = quote {
+            if byte == activeQuote {
+                quote = nil
+            }
+        } else if byte == EbookHTMLByte.singleQuote || byte == EbookHTMLByte.doubleQuote {
+            quote = byte
+        } else if byte == EbookHTMLByte.greaterThan {
+            return index + 1
+        }
+        index += 1
+    }
+    return nil
 }
 
 fileprivate func ebookHTTPResponse(
@@ -187,24 +508,15 @@ fileprivate func ebookHTTPResponse(
     )!
 }
 
-func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
-    if isCacheWarmer {
-        return Data()
-    }
-    return processedText.data(using: .utf8)
-}
-
-struct EBookProcessTextRequestKey: Hashable, Sendable {
+struct EBookSectionProcessingRequestKey: Hashable, Sendable {
     let contentURLString: String
     let location: String
-    let isCacheWarmer: Bool
     let textFingerprint: String
 
-    init(contentURL: URL, location: String, isCacheWarmer: Bool, text: String) {
+    init(contentURL: URL, location: String, contentData: Data) {
         contentURLString = contentURL.absoluteString
         self.location = location
-        self.isCacheWarmer = isCacheWarmer
-        textFingerprint = ebookProcessTextFingerprint(text)
+        textFingerprint = ebookProcessDataFingerprint(contentData)
     }
 }
 
@@ -213,7 +525,12 @@ public func ebookProcessTextFingerprint(_ text: String) -> String {
     "\(text.utf8.count)-\(stableHash(text))"
 }
 
-fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
+@inline(__always)
+public func ebookProcessDataFingerprint(_ data: Data) -> String {
+    "\(data.count)-\(stableHash(data: data))"
+}
+
+fileprivate enum EBookSectionProcessingDeduperError: Error, Sendable, Equatable, LocalizedError {
     case failed(String)
 
     var errorDescription: String? {
@@ -224,36 +541,36 @@ fileprivate enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable
     }
 }
 
-actor EBookProcessTextRequestDeduper {
-    private enum ProcessTextOutcome: Sendable {
-        case success(String)
+actor EBookSectionProcessingDeduper {
+    private enum SectionProcessingOutcome: Sendable {
+        case success(EbookProcessedSectionPayload)
         case cancelled
         case failure(String)
     }
 
-    private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
+    private var inFlightWaitersByKey: [EBookSectionProcessingRequestKey: [CheckedContinuation<SectionProcessingOutcome, Never>]] = [:]
 
-    private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
+    private func resolve(_ outcome: SectionProcessingOutcome) throws -> EbookProcessedSectionPayload {
         switch outcome {
-        case .success(let responseText):
-            return responseText
+        case .success(let payload):
+            return payload
         case .cancelled:
             throw CancellationError()
         case .failure(let message):
-            throw EBookProcessTextRequestDeduperError.failed(message)
+            throw EBookSectionProcessingDeduperError.failed(message)
         }
     }
 
 #if DEBUG
-    func inFlightWaiterCountForTesting(key: EBookProcessTextRequestKey) -> Int {
+    func inFlightWaiterCountForTesting(key: EBookSectionProcessingRequestKey) -> Int {
         inFlightWaitersByKey[key]?.count ?? 0
     }
 #endif
 
     func process(
-        key: EBookProcessTextRequestKey,
-        operation: @Sendable () async throws -> String
-    ) async throws -> (responseText: String, didCoalesce: Bool, cacheOutcome: String) {
+        key: EBookSectionProcessingRequestKey,
+        operation: @Sendable () async throws -> EbookProcessedSectionPayload
+    ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool, cacheOutcome: String) {
         if inFlightWaitersByKey[key] != nil {
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
@@ -262,7 +579,7 @@ actor EBookProcessTextRequestDeduper {
         }
 
         inFlightWaitersByKey[key] = []
-        let response: ProcessTextOutcome
+        let response: SectionProcessingOutcome
         do {
             response = .success(try await operation())
         } catch is CancellationError {
@@ -302,7 +619,6 @@ public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
 }
 
 public actor EBookProcessingActor {
-    private let ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     private let ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     private let ebookTextProcessor: EbookTextProcessor?
     private let processReadabilityContent: EbookReadabilityContentProcessor?
@@ -311,7 +627,6 @@ public actor EBookProcessingActor {
     private let processHTML: EbookHTMLProcessor?
     
     public init(
-        ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil,
         ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil,
         ebookTextProcessor: EbookTextProcessor?,
         processReadabilityContent: EbookReadabilityContentProcessor?,
@@ -319,7 +634,6 @@ public actor EBookProcessingActor {
         processHTMLBytes: EbookHTMLBytesProcessor?,
         processHTML: EbookHTMLProcessor?
     ) {
-        self.ebookProcessedTextCacheReader = ebookProcessedTextCacheReader
         self.ebookProcessedTextCacheWriter = ebookProcessedTextCacheWriter
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
@@ -335,17 +649,17 @@ public actor EBookProcessingActor {
     ) async throws -> EBookNativeSectionPrewarmResult {
         let entryData = try source.readEntry(subpath: sectionHref)
         let entryText = String(decoding: entryData, as: UTF8.self)
-        let processedText = try await process(
+        let processedPayload = try await process(
             contentURL: contentURL,
             location: sectionHref,
             text: entryText,
-            contentFingerprint: ebookProcessTextFingerprint(entryText),
+            contentFingerprint: ebookProcessDataFingerprint(entryData),
             isCacheWarmer: true
         )
         return EBookNativeSectionPrewarmResult(
             sectionHref: sectionHref,
             requestBytes: entryData.count,
-            responseBytes: processedText.utf8.count
+            responseBytes: processedPayload.combinedByteCount
         )
     }
     
@@ -354,17 +668,14 @@ public actor EBookProcessingActor {
         location: String,
         text: String,
         contentFingerprint: String? = nil,
-        isCacheWarmer: Bool,
-        shouldReadProcessedCache: Bool = true
-    ) async throws -> String {
+        isCacheWarmer: Bool
+    ) async throws -> EbookProcessedSectionPayload {
         let resolvedContentFingerprint = contentFingerprint ?? ebookProcessTextFingerprint(text)
-        if shouldReadProcessedCache, let ebookProcessedTextCacheReader {
-            if let cachedResult = try await ebookProcessedTextCacheReader(contentURL, location, text, resolvedContentFingerprint) {
-                return cachedResult
-            }
-        }
         guard let ebookTextProcessor else {
-            return text
+            return EbookProcessedSectionPayload(
+                documentHTML: Data(text.utf8),
+                segmentSidecar: Data()
+            )
         }
 
         let result = try await ebookTextProcessor(
@@ -383,12 +694,28 @@ public actor EBookProcessingActor {
             // The writer detaches its persisted write internally, so awaiting it here
             // prevents an immediate reload from racing an unstarted utility task
             // without putting disk I/O on the visible processing path.
-            await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
+            await ebookProcessedTextCacheWriter(contentURL, location, resolvedContentFingerprint, result)
         }
         return result
     }
 }
     
+fileprivate actor EbookViewerAssetCache {
+    static let shared = EbookViewerAssetCache()
+
+    private var dataByURL = [URL: Data]()
+
+    func data(for fileURL: URL) throws -> Data {
+        let key = fileURL.standardizedFileURL
+        if let cached = dataByURL[key] {
+            return cached
+        }
+        let data = try Data(contentsOf: key, options: [.mappedIfSafe])
+        dataByURL[key] = data
+        return data
+    }
+}
+
 fileprivate actor EBookLoadingActor {
     enum EbookLoadingError: Error {
         case fileNotFound
@@ -404,7 +731,7 @@ fileprivate actor EBookLoadingActor {
             ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
         let data: Data
         if shouldEnablePageTurnInteractionDiagnostic {
-            var html = try String(contentsOfFile: viewerHtmlPath)
+            var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
             let diagnosticPayload = """
             <script>
             (function() {
@@ -426,16 +753,20 @@ fileprivate actor EBookLoadingActor {
             }
             data = encodedHTML
         } else {
-            data = try Data(
-                contentsOf: URL(fileURLWithPath: viewerHtmlPath),
-                options: [.mappedIfSafe]
+            data = try await EbookViewerAssetCache.shared.data(
+                for: URL(fileURLWithPath: viewerHtmlPath)
             )
         }
         let response = ebookHTTPResponse(
             url: originalURL,
             mimeType: "text/html",
             byteCount: data.count,
-            textEncodingName: "utf-8"
+            textEncodingName: "utf-8",
+            additionalHeaderFields: [
+                "Cache-Control": shouldEnablePageTurnInteractionDiagnostic
+                    ? "no-store"
+                    : "public, max-age=31536000, immutable",
+            ]
         )
         return (response, data)
     }
@@ -454,18 +785,20 @@ public actor EbookURLSchemeActor {
 
 public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
 public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, String?, EbookDocumentTransform) async throws -> SwiftSoup.Document
-public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> [UInt8]
+public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> EbookProcessedSectionPayload
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
-public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> String?
-public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, String) async -> Void
+public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> EbookProcessedSectionPayload
+public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String) async throws -> EbookProcessedSectionPayload?
+public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, EbookProcessedSectionPayload) async -> Void
+public typealias EbookSectionPresentationProvider = @Sendable () async -> EbookSectionPresentation
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     nonisolated(unsafe) var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
+    nonisolated(unsafe) var ebookSectionPresentationProvider: EbookSectionPresentationProvider?
     public var readerFileManager: ReaderFileManager?
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
     nonisolated(unsafe) var processHTMLDocument: EbookHTMLDocumentProcessor?
@@ -476,8 +809,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
-    private static let sharedProcessTextRequestDeduper = EBookProcessTextRequestDeduper()
-    private let processTextRequestDeduper = EbookURLSchemeHandler.sharedProcessTextRequestDeduper
+    private static let sharedSectionProcessingDeduper = EBookSectionProcessingDeduper()
+    private let sectionProcessingDeduper = EbookURLSchemeHandler.sharedSectionProcessingDeduper
     
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -495,7 +828,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
         
         guard let url = urlSchemeTask.request.url else { return }
-        let schemeRequestStartedAt = Date()
         let sharedReaderFontAsset = self.sharedReaderFontAsset
         if let fontResponse = sharedReaderFontResponse(
             for: url,
@@ -503,6 +835,21 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         ) {
             urlSchemeTask.didReceive(fontResponse.response)
             urlSchemeTask.didReceive(fontResponse.data)
+            urlSchemeTask.didFinish()
+            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+            return
+        }
+        if url.path.hasPrefix(ReaderExternalSegmentSidecarScheme.ebook.endpointPathPrefix) {
+            guard let sidecar = readerExternalSegmentSidecarResponse(
+                for: url,
+                scheme: .ebook
+            ) else {
+                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                return
+            }
+            urlSchemeTask.didReceive(sidecar.response)
+            urlSchemeTask.didReceive(sidecar.data)
             urlSchemeTask.didFinish()
             schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
             return
@@ -516,6 +863,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let ebookProcessedTextCacheReader = self.ebookProcessedTextCacheReader
         let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
+        let ebookSectionPresentationProvider = self.ebookSectionPresentationProvider
         let processReadabilityContent = self.processReadabilityContent
         let processHTMLDocument = self.processHTMLDocument
         let processHTMLBytes = self.processHTMLBytes
@@ -526,147 +874,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         
         Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
-            if url.path == "/process-text" {
-                if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
-                    let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
-                    let processRequestKey = EBookProcessTextRequestKey(
-                        contentURL: contentURL,
-                        location: replacedTextLocation,
-                        isCacheWarmer: isCacheWarmer,
-                        text: text
-                    )
-                    if !isCacheWarmer,
-                       let ebookProcessedTextCacheReader,
-                       let cachedText = try? await ebookProcessedTextCacheReader(contentURL, replacedTextLocation, text, processRequestKey.textFingerprint),
-                       let cachedData = ebookProcessTextResponseData(processedText: cachedText, isCacheWarmer: false) {
-                        let responseReadyElapsedMs = Int(Date().timeIntervalSince(schemeRequestStartedAt) * 1000)
-                        let resp = HTTPURLResponse(
-                            url: url,
-                            statusCode: 200,
-                            httpVersion: nil,
-                            headerFields: [
-                                "Content-Type": "text/plain; charset=utf-8",
-                                "Content-Length": "\(cachedData.count)",
-                                "X-Manabi-Process-Cache": "processed-direct-hit",
-                                "X-Manabi-Response-Ready-Elapsed-Ms": "\(responseReadyElapsedMs)",
-                                "X-Manabi-Response-Encode-Elapsed-Ms": "0",
-                                "X-Manabi-Did-Coalesce": "false"
-                            ]
-                        ) ?? HTTPURLResponse(
-                            url: url,
-                            mimeType: nil,
-                            expectedContentLength: cachedData.count,
-                            textEncodingName: "utf-8"
-                        )
-                        await { @MainActor in
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didReceive(resp)
-                                urlSchemeTask.didReceive(cachedData)
-                                urlSchemeTask.didFinish()
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }
-                        }()
-                        return
-                    }
-                    if let ebookTextProcessor {
-                        let requestStartedAt = Date()
-                        let respText: String
-                        let didCoalesce: Bool
-                        let processTextCacheOutcome: String
-                        do {
-                            (respText, didCoalesce, processTextCacheOutcome) = try await self.processTextRequestDeduper.process(
-                                key: processRequestKey
-                            ) {
-                                let processingActor = EBookProcessingActor(
-                                    ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
-                                    ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
-                                    ebookTextProcessor: ebookTextProcessor,
-                                    processReadabilityContent: processReadabilityContent,
-                                    processHTMLDocument: processHTMLDocument,
-                                    processHTMLBytes: processHTMLBytes,
-                                    processHTML: processHTML
-                                )
-                                return try await processingActor.process(
-                                    contentURL: contentURL,
-                                    location: replacedTextLocation,
-                                    text: text,
-                                    contentFingerprint: processRequestKey.textFingerprint,
-                                    isCacheWarmer: isCacheWarmer,
-                                    shouldReadProcessedCache: false
-                                )
-                            }
-                        } catch {
-                            await { @MainActor in
-                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                    urlSchemeTask.didFailWithError(error)
-                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                }
-                            }()
-                            return
-                        }
-                        let responseDataEncodeStartedAt = Date()
-                        if let respData = ebookProcessTextResponseData(processedText: respText, isCacheWarmer: isCacheWarmer) {
-                            let responseDataEncodeElapsedMs = Int(Date().timeIntervalSince(responseDataEncodeStartedAt) * 1000)
-                            let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
-                            let resp = HTTPURLResponse(
-                                url: url,
-                                statusCode: 200,
-                                httpVersion: nil,
-                                headerFields: [
-                                    "Content-Type": "text/plain; charset=utf-8",
-                                    "Content-Length": "\(respData.count)",
-                                    "X-Manabi-Process-Cache": processTextCacheOutcome,
-                                    "X-Manabi-Response-Ready-Elapsed-Ms": "\(responseReadyElapsedMs)",
-                                    "X-Manabi-Response-Encode-Elapsed-Ms": "\(responseDataEncodeElapsedMs)",
-                                    "X-Manabi-Did-Coalesce": didCoalesce ? "true" : "false"
-                                ]
-                            ) ?? HTTPURLResponse(
-                                url: url,
-                                mimeType: nil,
-                                expectedContentLength: respData.count,
-                                textEncodingName: "utf-8"
-                            )
-                            await { @MainActor in
-                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                    urlSchemeTask.didReceive(resp)
-                                    urlSchemeTask.didReceive(respData)
-                                    urlSchemeTask.didFinish()
-                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                }
-                            }()
-                        }
-                    } else if let respData = text.data(using: .utf8) {
-                        let resp = HTTPURLResponse(
-                            url: url,
-                            mimeType: nil,
-                            expectedContentLength: respData.count,
-                            textEncodingName: "utf-8"
-                        )
-                        await { @MainActor in
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didReceive(resp)
-                                urlSchemeTask.didReceive(respData)
-                                urlSchemeTask.didFinish()
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }
-                        }()
-                    } else {
-                        await { @MainActor in
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }
-                        }()
-                    }
-                } else {
-                    await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        }
-                    }()
-                }
-            } else if url.path == "/processed-section" {
+            if url.path == "/processed-section" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/processed-section"),
                       let sectionHref = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                     .queryItems?
@@ -687,6 +895,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let isDirectSectionLoad = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                         .queryItems?
                         .contains(where: { $0.name == "direct" && $0.value == "1" }) == true
+                    async let sectionPresentation = ebookSectionPresentationProvider?()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
@@ -694,49 +903,45 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let sourceReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                     let sourceData = try cachedSource.source.readEntry(subpath: sectionHref)
                     let sourceReadElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000) - sourceReadyElapsedMs
-                    let sourceText = String(decoding: sourceData, as: UTF8.self)
-
-                    let responseText: String
                     let didCoalesce: Bool
                     let cacheOutcome: String
-                    let processRequestKey = EBookProcessTextRequestKey(
+                    let processRequestKey = EBookSectionProcessingRequestKey(
                         contentURL: mainDocumentURL,
                         location: sectionHref,
-                        isCacheWarmer: false,
-                        text: sourceText
+                        contentData: sourceData
                     )
                     let cacheProbeStartedAt = Date()
-                    let directlyCachedText: String?
+                    let cachedPayload: EbookProcessedSectionPayload?
                     let cacheProbeOutcome: String
                     if let ebookProcessedTextCacheReader {
                         do {
-                            directlyCachedText = try await ebookProcessedTextCacheReader(
+                            cachedPayload = try await ebookProcessedTextCacheReader(
                                 mainDocumentURL,
                                 sectionHref,
-                                sourceText,
                                 processRequestKey.textFingerprint
                             )
-                            cacheProbeOutcome = directlyCachedText == nil ? "miss" : "hit"
+                            cacheProbeOutcome = cachedPayload == nil ? "miss" : "hit"
                         } catch {
-                            directlyCachedText = nil
+                            cachedPayload = nil
                             cacheProbeOutcome = "error:\(String(describing: type(of: error)))"
                         }
                     } else {
-                        directlyCachedText = nil
+                        cachedPayload = nil
                         cacheProbeOutcome = "unavailable"
                     }
                     let cacheProbeElapsedMs = Int(Date().timeIntervalSince(cacheProbeStartedAt) * 1000)
+                    let processedPayload: EbookProcessedSectionPayload
                     if let ebookTextProcessor {
-                        if let directlyCachedText {
-                            responseText = directlyCachedText
+                        if let cachedPayload {
+                            processedPayload = cachedPayload
                             didCoalesce = false
                             cacheOutcome = "final-direct-hit"
                         } else {
-                            let processedResult = try await self.processTextRequestDeduper.process(
+                            let sourceText = String(decoding: sourceData, as: UTF8.self)
+                            let processedResult = try await self.sectionProcessingDeduper.process(
                                 key: processRequestKey
                             ) {
                                 let processingActor = EBookProcessingActor(
-                                    ebookProcessedTextCacheReader: nil,
                                     ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
                                     ebookTextProcessor: ebookTextProcessor,
                                     processReadabilityContent: processReadabilityContent,
@@ -749,11 +954,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                     location: sectionHref,
                                     text: sourceText,
                                     contentFingerprint: processRequestKey.textFingerprint,
-                                    isCacheWarmer: false,
-                                    shouldReadProcessedCache: false
+                                    isCacheWarmer: false
                                 )
                             }
-                            responseText = processedResult.responseText
+                            processedPayload = processedResult.payload
                             didCoalesce = processedResult.didCoalesce
                             cacheOutcome = processedResult.didCoalesce
                                 ? "final-miss-coalesced"
@@ -766,14 +970,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let processingElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                         - sourceReadyElapsedMs
                         - sourceReadElapsedMs
+                    let sidecarPublishStartedAt = Date()
+                    let publishedSidecar = publishingCanonicalReaderSegmentSidecar(
+                        processedPayload,
+                        scheme: .ebook
+                    )
+                    let sidecarPublishElapsedMs = Int(
+                        Date().timeIntervalSince(sidecarPublishStartedAt) * 1000
+                    )
+                    let processedResponseByteCount = processedPayload.combinedByteCount
                     let writingHint = ebookProcessedSectionWritingHint(from: url)
-                    let responseHTML = ebookHTMLWithInjectedBodyAttributes(ebookHTMLWithInjectedPresentationHints(
-                        ebookHTMLWithInjectedBase(
-                            responseText,
-                            baseURL: ebookProcessedSectionBaseURL(contentURL: mainDocumentURL, sectionHref: sectionHref)
-                        ),
-                        writingHint: writingHint
-                    ), attributes: [
+                    let responseBodyAttributes = [
                         "data-mnb-native-cache-outcome": cacheOutcome,
                         "data-mnb-native-cache-probe-outcome": cacheProbeOutcome,
                         "data-mnb-native-cache-probe-ms": "\(cacheProbeElapsedMs)",
@@ -781,15 +988,29 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         "data-mnb-native-cache-writer-available": ebookProcessedTextCacheWriter == nil ? "false" : "true",
                         "data-mnb-native-content-fingerprint": processRequestKey.textFingerprint,
                         "data-mnb-native-did-coalesce": didCoalesce ? "true" : "false",
-                        "data-mnb-native-response-bytes": "\(responseText.utf8.count)",
+                        "data-mnb-native-response-bytes": "\(processedResponseByteCount)",
                         "data-mnb-native-source-bytes": "\(sourceData.count)",
                         "data-mnb-native-source-ready-ms": "\(sourceReadyElapsedMs)",
                         "data-mnb-native-source-read-ms": "\(sourceReadElapsedMs)",
                         "data-mnb-native-processing-ms": "\(processingElapsedMs)",
-                    ])
-                    guard let responseData = ebookProcessTextResponseData(processedText: responseHTML, isCacheWarmer: false) else {
-                        throw CustomSchemeHandlerError.fileNotFound
-                    }
+                        "data-mnb-native-document-bytes": "\(publishedSidecar.documentHTML.count)",
+                        "data-mnb-native-sidecar-bytes": "\(publishedSidecar.canonicalSidecarByteCount)",
+                        "data-mnb-native-sidecar-delivery": publishedSidecar.endpointURL == nil ? "embedded-or-empty" : "external",
+                        "data-mnb-native-sidecar-publish-ms": "\(sidecarPublishElapsedMs)",
+                    ]
+                    let responseDecorationStartedAt = Date()
+                    let responseData = ebookHTMLDataWithInjectedResponseMetadata(
+                        publishedSidecar.documentHTML,
+                        baseURL: ebookProcessedSectionBaseURL(
+                            contentURL: mainDocumentURL,
+                            sectionHref: sectionHref
+                        ),
+                        writingHint: writingHint,
+                        bodyAttributes: responseBodyAttributes,
+                        presentation: await sectionPresentation,
+                        additionalHeadMarkup: publishedSidecar.headDescriptor
+                    )
+                    let responseEncodeElapsedMs = Int(Date().timeIntervalSince(responseDecorationStartedAt) * 1000)
                     let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                     let response = HTTPURLResponse(
                         url: url,
@@ -800,8 +1021,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             "Content-Length": "\(responseData.count)",
                             "X-Manabi-Process-Cache": cacheOutcome,
                             "X-Manabi-Response-Ready-Elapsed-Ms": "\(responseReadyElapsedMs)",
-                            "X-Manabi-Response-Encode-Elapsed-Ms": "0",
-                            "X-Manabi-Did-Coalesce": didCoalesce ? "true" : "false"
+                            "X-Manabi-Response-Encode-Elapsed-Ms": "\(responseEncodeElapsedMs)",
+                            "X-Manabi-Did-Coalesce": didCoalesce ? "true" : "false",
+                            "X-Manabi-Sidecar-Delivery": publishedSidecar.endpointURL == nil ? "embedded-or-empty" : "external",
+                            "X-Manabi-Sidecar-Bytes": "\(publishedSidecar.canonicalSidecarByteCount)",
+                            "X-Manabi-Sidecar-Publish-Elapsed-Ms": "\(sidecarPublishElapsedMs)",
                         ]
                     ) ?? HTTPURLResponse(
                         url: url,
@@ -946,16 +1170,14 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Bundle file.
                 if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
-                   let data = try? Data(contentsOf: fileUrl) {
+                   let data = try? await EbookViewerAssetCache.shared.data(for: fileUrl) {
                     let response = ebookHTTPResponse(
                         url: url,
                         mimeType: mimeType,
                         byteCount: data.count,
                         textEncodingName: mimeType.hasPrefix("text/") ? "utf-8" : nil,
                         additionalHeaderFields: [
-                            "Cache-Control": "no-store, no-cache, must-revalidate",
-                            "Pragma": "no-cache",
-                            "Expires": "0",
+                            "Cache-Control": "public, max-age=31536000, immutable",
                         ]
                     )
                     await { @MainActor in

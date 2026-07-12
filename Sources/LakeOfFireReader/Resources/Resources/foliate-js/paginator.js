@@ -957,7 +957,28 @@ class View {
                             sourceReadyMs: doc?.body?.dataset?.mnbNativeSourceReadyMs ?? null,
                             sourceReadMs: doc?.body?.dataset?.mnbNativeSourceReadMs ?? null,
                             processingMs: doc?.body?.dataset?.mnbNativeProcessingMs ?? null,
+                            documentBytes: doc?.body?.dataset?.mnbNativeDocumentBytes ?? null,
+                            sidecarBytes: doc?.body?.dataset?.mnbNativeSidecarBytes ?? null,
+                            sidecarDelivery: doc?.body?.dataset?.mnbNativeSidecarDelivery ?? null,
+                            sidecarExternalizationMs: doc?.body?.dataset?.mnbNativeSidecarExternalizationMs ?? null,
+                            sidecarSplitMs: doc?.body?.dataset?.mnbNativeSidecarSplitMs ?? null,
+                            sidecarPublishMs: doc?.body?.dataset?.mnbNativeSidecarPublishMs ?? null,
+                            cacheMigrationMs: doc?.body?.dataset?.mnbNativeCacheMigrationMs ?? null,
                         })
+
+                        const externalSidecarStartedAt = manabiPerfNow();
+                        const externalSidecar = await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.();
+                        const externalSidecarState = doc?.defaultView?.manabi_externalSegmentSidecarState ?? null;
+                        manabiTimelineMeasure('paginator.view.externalSidecar', externalSidecarStartedAt, {
+                            ...basePayload,
+                            force: true,
+                            source: externalSidecar?.source ?? 'none',
+                            textBytes: externalSidecar?.byteCount ?? 0,
+                            fetchElapsedMs: externalSidecar?.fetchElapsedMs ?? null,
+                            parseElapsedMs: externalSidecar?.parseElapsedMs ?? null,
+                            descriptorFound: externalSidecarState?.descriptor != null,
+                            error: externalSidecarState?.error?.message || null,
+                        }, 0);
 
                         await manabiRunPaginatorBoundary(
                             'paginator.view.afterLoad',
@@ -1616,6 +1637,12 @@ class View {
         //        console.log("expand...")
         const scheduledPromise = new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
+                const rafStartedAt = manabiPerfNow();
+                manabiTimelineMeasure('paginator.expand.rafWait', expandStartedAt, {
+                    cacheWarmer: this.#isCacheWarmer,
+                    column: this._column,
+                    vertical: this.#vertical,
+                }, 0);
                 if (this.#scheduledExpandPromise === scheduledPromise) {
                     this.#scheduledExpandPromise = null
                 }
@@ -1647,8 +1674,15 @@ class View {
                         resolve()
                         return
                     }
+                    const beforeExpandStartedAt = manabiPerfNow();
                     await this.onBeforeExpand()
+                    manabiTimelineMeasure('paginator.expand.beforeExpand', beforeExpandStartedAt, {
+                        cacheWarmer: this.#isCacheWarmer,
+                        column: this._column,
+                        vertical: this.#vertical,
+                    }, 0);
                     if (this._column) {
+                        const contentMeasureStartedAt = manabiPerfNow();
                         const contentRect = this.#contentRange.getBoundingClientRect()
                         const inlineProgression = this.#usesInlineProgressionForVerticalColumn(contentRect)
                         const side = inlineProgression ? 'width' : defaultSide
@@ -1669,6 +1703,13 @@ class View {
                         const pageCount = Math.ceil(contentSize / this._size)
                         const expandedSize = pageCount * this._size
                         const remainder = this._size > 0 ? contentSize % this._size : null
+                        manabiTimelineMeasure('paginator.expand.contentMeasure', contentMeasureStartedAt, {
+                            cacheWarmer: this.#isCacheWarmer,
+                            vertical: this.#vertical,
+                            inlineProgression,
+                            contentSize: manabiRound(contentSize, 1),
+                            pageCount,
+                        }, 0);
                         expandedMetrics = {
                             column: true,
                             side,
@@ -1685,6 +1726,7 @@ class View {
                             contentStart,
                             remainder,
                         }
+                        const geometryApplyStartedAt = manabiPerfNow();
                         let geometryChanged = false
                         geometryChanged = manabiSetStyleIfChanged(this.#element.style, 'padding', '0') || geometryChanged
                         geometryChanged = manabiSetStyleIfChanged(this.#iframe.style, side, `${expandedSize}px`) || geometryChanged
@@ -1703,6 +1745,13 @@ class View {
                                 this.#overlayer.redraw()
                             }
                         }
+                        manabiTimelineMeasure('paginator.expand.geometryApply', geometryApplyStartedAt, {
+                            cacheWarmer: this.#isCacheWarmer,
+                            vertical: this.#vertical,
+                            inlineProgression,
+                            geometryChanged,
+                            overlayer: !!this.#overlayer,
+                        }, 0);
                     } else {
                         const side = defaultSide
                         const otherSide = defaultOtherSide
@@ -1768,7 +1817,13 @@ class View {
                     //                console.log("expand... call onexpand")
                     this.#lastExpandSignature = expandSignature
                     this.#lastExpandedMetrics = expandedMetrics
+                    const onExpandStartedAt = manabiPerfNow();
                     await this.onExpand(expandedMetrics)
+                    manabiTimelineMeasure('paginator.expand.onExpand', onExpandStartedAt, {
+                        cacheWarmer: this.#isCacheWarmer,
+                        column: this._column,
+                        vertical: this.#vertical,
+                    }, 0);
                     if (this.#lastExpandedMetrics) {
                         this.#lastExpandedMetrics.loadingSettled = true
                     }
@@ -1782,6 +1837,7 @@ class View {
                         column: this._column,
                         scrolled: !this._column,
                         vertical: this.#vertical,
+                        rafWorkMs: manabiRound(manabiPerfNow() - rafStartedAt, 1),
                     });
                 }
             })

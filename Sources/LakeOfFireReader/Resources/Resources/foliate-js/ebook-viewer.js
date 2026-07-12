@@ -145,18 +145,22 @@ const manabiSegmentMetadataAliases = (segment) => {
 };
 
 const manabiSegmentMetadataSidecarSnapshot = (doc) => {
-    if (!doc) return { sidecars: [], sidecarTexts: [], sidecarSignature: 'none' };
+    if (!doc) return { sidecars: [], sidecarTexts: [], sidecarPayloads: [], sidecarSignature: 'none' };
     const canonicalSidecar = doc.getElementById?.('mnb-segment-metadata') ?? null;
     // Processed EPUB sections have one canonical Swift-emitted sidecar. Keep this
     // bootstrap O(1); the general reader script owns dynamic multi-sidecar content.
     const sidecars = canonicalSidecar ? [canonicalSidecar] : [];
+    const externalEntry = canonicalSidecar ? null : (doc.manabiExternalSegmentSidecar ?? null);
     const cachedSnapshot = doc.__manabiFoliateSegmentMetadataSidecarSnapshot;
     if (cachedSnapshot?.sidecars?.length === sidecars.length
-        && sidecars.every((sidecar, index) => cachedSnapshot.sidecars[index] === sidecar)) {
+        && sidecars.every((sidecar, index) => cachedSnapshot.sidecars[index] === sidecar)
+        && cachedSnapshot.externalEntry === externalEntry) {
         return cachedSnapshot;
     }
-    const sidecarTexts = sidecars.map(sidecar => sidecar.textContent || '');
-    const sidecarSignature = sidecarTexts.map((text) => {
+    const sidecarTexts = sidecars.length > 0
+        ? sidecars.map(sidecar => sidecar.textContent || '')
+        : (externalEntry?.payload ? [''] : []);
+    const sidecarSignature = externalEntry?.signature || sidecarTexts.map((text) => {
         let hash = 2166136261;
         for (let index = 0; index < text.length; index += 1) {
             hash ^= text.charCodeAt(index);
@@ -164,7 +168,13 @@ const manabiSegmentMetadataSidecarSnapshot = (doc) => {
         }
         return `${text.length}:${(hash >>> 0).toString(36)}`;
     }).join('|');
-    const snapshot = { sidecars, sidecarTexts, sidecarSignature };
+    const snapshot = {
+        sidecars,
+        sidecarTexts,
+        sidecarPayloads: externalEntry?.payload ? [externalEntry.payload] : [],
+        sidecarSignature,
+        externalEntry,
+    };
     doc.__manabiFoliateSegmentMetadataSidecarSnapshot = snapshot;
     return snapshot;
 };
@@ -281,7 +291,7 @@ const manabiSentenceArchiveEntryFromSidecarSegments = (segments) => {
 
 const directSegmentMetadataBootstrap = (doc) => {
     if (!doc) return emptySegmentMetadataBootstrap();
-    const { sidecars, sidecarTexts, sidecarSignature } = manabiSegmentMetadataSidecarSnapshot(doc);
+    const { sidecars, sidecarTexts, sidecarPayloads = [], sidecarSignature } = manabiSegmentMetadataSidecarSnapshot(doc);
     const cachedByID = doc.__manabiFoliateSegmentMetadataByID;
     if (
         doc.__manabiFoliateSegmentMetadataParserVersion === manabiSegmentSidecarParserVersion
@@ -311,9 +321,10 @@ const directSegmentMetadataBootstrap = (doc) => {
         if (!target.has(scopeID)) target.set(scopeID, []);
         target.get(scopeID).push(segmentID);
     };
-    for (const sidecarText of sidecarTexts) {
+    for (let sidecarIndex = 0; sidecarIndex < sidecarTexts.length; sidecarIndex += 1) {
+        const sidecarText = sidecarTexts[sidecarIndex];
         try {
-            const payload = JSON.parse(sidecarText || '{}');
+            const payload = sidecarPayloads[sidecarIndex] ?? JSON.parse(sidecarText || '{}');
             for (const segment of manabiExpandSegmentMetadataPayload(payload)) {
                 if (!segment?.i) continue;
                 const aliases = manabiSegmentMetadataAliases(segment);
@@ -644,6 +655,7 @@ const visibleLookupIndexNeedsSidecarRefresh = (doc, index) => {
 
 const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-prime') => {
     if (!isDocumentLike(doc) || !index || !isEbookContentDocument(doc)) {
+        manabiTimelineMark('visiblePrime.request.skip', { reason, skipReason: 'invalid-context' });
         return false;
     }
     const view = doc.defaultView;
@@ -651,19 +663,47 @@ const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-pri
         ? Array.from(new Set(index.visibleElementIDs.filter((elementID) => typeof elementID === 'string' && elementID.length > 0)))
         : [];
     if (visibleElementIDs.length === 0 || !(index.byElementID instanceof Map)) {
+        manabiTimelineMark('visiblePrime.request.skip', {
+            reason,
+            skipReason: visibleElementIDs.length === 0 ? 'empty-visible-elements' : 'missing-element-index',
+            visibleElementIDCount: visibleElementIDs.length,
+        });
         return false;
     }
     const entryIDs = visiblePrimeEntryIDsForIndex(doc, index, visibleElementIDs);
     if (entryIDs.length === 0) {
+        manabiTimelineMark('visiblePrime.request.skip', {
+            reason,
+            skipReason: 'empty-entry-ids',
+            visibleElementIDCount: visibleElementIDs.length,
+        });
         return false;
     }
     const signature = visiblePrimeSignatureForIndex(visibleElementIDs, entryIDs);
     if (view.__manabiLastNativeVisiblePrimeSignature === signature) {
+        manabiTimelineMark('visiblePrime.request.skip', {
+            reason,
+            skipReason: 'duplicate-signature',
+            visibleElementIDCount: visibleElementIDs.length,
+            entryIDCount: entryIDs.length,
+        });
         return false;
     }
-    view.__manabiLastNativeVisiblePrimeSignature = signature;
     try {
-        view.webkit?.messageHandlers?.manabiSegmentsReady?.postMessage?.({
+        const handler = view.webkit?.messageHandlers?.manabiSegmentsReady;
+        if (typeof handler?.postMessage !== 'function') {
+            manabiTimelineMark('visiblePrime.request.skip', {
+                reason,
+                skipReason: 'missing-native-handler',
+                visibleElementIDCount: visibleElementIDs.length,
+                entryIDCount: entryIDs.length,
+            });
+            return false;
+        }
+        const uuid = typeof view.manabiCurrentFrameUUID === 'function'
+            ? view.manabiCurrentFrameUUID()
+            : doc.body?.dataset?.swiftuiwebviewFrameUuid ?? null;
+        handler.postMessage({
             windowURL: window.top.location.href,
             pageURL: doc.location?.href || doc.URL || '',
             isCacheWarmer: doc.body?.dataset?.isCacheWarmer === 'true',
@@ -671,15 +711,26 @@ const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-pri
             reason,
             segmentCount: visibleElementIDs.length,
             force: false,
-            uuid: typeof view.manabiCurrentFrameUUID === 'function'
-                ? view.manabiCurrentFrameUUID()
-                : doc.body?.dataset?.swiftuiwebviewFrameUuid ?? null,
+            uuid,
             visiblePrimeOnly: true,
             visibleElementIDs,
             entryIDs,
         });
+        view.__manabiLastNativeVisiblePrimeSignature = signature;
+        manabiTimelineMark('visiblePrime.request.sent', {
+            reason,
+            visibleElementIDCount: visibleElementIDs.length,
+            entryIDCount: entryIDs.length,
+            uuidPresent: typeof uuid === 'string' && uuid.length > 0,
+        });
         return true;
-    } catch (_error) {
+    } catch (error) {
+        manabiTimelineMark('visiblePrime.request.error', {
+            reason,
+            error: String(error),
+            visibleElementIDCount: visibleElementIDs.length,
+            entryIDCount: entryIDs.length,
+        });
         return false;
     }
 };
@@ -1820,34 +1871,23 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
     const reason = typeof options?.reason === 'string' ? options.reason : 'unknown';
     const refreshPaint = options?.refreshPaint !== false;
     const isPageTurnNavigationState = reason.includes('page-turn') || reason.includes('relocate.page');
-    const previousState = body.dataset?.mnbNavigationHiddenDueToScroll ?? null;
-    const nextState = hidden ? 'true' : 'false';
-    let changed = previousState !== nextState;
-    if (isPageTurnNavigationState && previousState !== nextState && (previousState === 'true' || previousState === 'false')) {
+    const previousHidden = typeof body.__manabiNavigationHiddenDueToScroll === 'boolean'
+        ? body.__manabiNavigationHiddenDueToScroll
+        : null;
+    const nextHidden = !!hidden;
+    let changed = previousHidden !== nextHidden;
+    if (isPageTurnNavigationState && previousHidden !== null && previousHidden !== nextHidden) {
         body.__manabiPendingEbookNavigationTransition = {
-            fromHidden: previousState === 'true',
-            toHidden: nextState === 'true',
+            fromHidden: previousHidden,
+            toHidden: nextHidden,
             reason,
         };
     }
-    if (body.dataset) {
-        if (previousState !== nextState) {
-            body.dataset.mnbPreviousNavigationHiddenDueToScroll = previousState ?? (hidden ? 'false' : 'true');
-        } else if (
-            body.dataset.mnbPreviousNavigationHiddenDueToScroll !== 'true'
-            && body.dataset.mnbPreviousNavigationHiddenDueToScroll !== 'false'
-        ) {
-            body.dataset.mnbPreviousNavigationHiddenDueToScroll = nextState;
-        }
-    }
-    if (body.dataset && previousState !== nextState) {
-        body.dataset.mnbNavigationHiddenDueToScroll = nextState;
-    }
-    // Keep ebook content navigation state data-driven. Adding nav-hidden classes
-    // to the chapter body makes WebKit re-match broad reader CSS against the
-    // whole section on every page turn; the ebook content body only carries
-    // state, and the content script applies any visual dimming to painted
-    // visible segments.
+    body.__manabiPreviousNavigationHiddenDueToScroll = previousHidden ?? nextHidden;
+    body.__manabiNavigationHiddenDueToScroll = nextHidden;
+    // Keep bookkeeping on the body object rather than in attributes or classes.
+    // Either DOM mutation makes WebKit reconsider broad body selectors across the
+    // whole chapter; only visible painted segments need the visual state.
     for (const className of ['nav-hidden', 'nav-hidden-due-to-scroll']) {
         if (body.classList?.contains?.(className)) {
             body.classList?.remove?.(className);
@@ -1858,7 +1898,7 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
     // properties on the chapter body. Those variables are referenced by many
     // segment gradients and make WebKit recalculate styles across the whole
     // section on every page turn. Clear old values from previous builds, but
-    // keep steady-state page-turn updates to the dataset above.
+    // keep steady-state page-turn updates local to visible painted segments.
     for (const property of [
         '--mnb-highlight-fill-opacity',
         '--mnb-tracking-highlight-alpha',
@@ -1882,8 +1922,8 @@ const applyNavigationHiddenVisualStateToEbookBody = (body, hidden, options = {})
             }
         } catch (_error) {}
     }
-    if (!isPageTurnNavigationState && body.dataset) {
-        body.dataset.mnbPreviousNavigationHiddenDueToScroll = nextState;
+    if (!isPageTurnNavigationState) {
+        body.__manabiPreviousNavigationHiddenDueToScroll = nextHidden;
     }
     return changed;
 };
@@ -7228,6 +7268,26 @@ class Reader {
                     && snapshot.doc === doc
                     && (snapshot.result?.visibleSegments?.length ?? 0) > 0
                 ) {
+                    const lookupIndex = this.#restoreVisiblePageLookupIndex(
+                        doc,
+                        snapshot,
+                        `visible-status:${reason}:snapshot`,
+                        true,
+                        { includeSurfaceText: false }
+                    );
+                    manabiTimelineMark('# JUL8 learningHighlights.snapshotIndex', {
+                        reason,
+                        visibleSegmentCount: snapshot.result?.visibleSegments?.length ?? 0,
+                        visibleElementIDCount: lookupIndex?.visibleElementIDs?.length ?? 0,
+                        indexedSegmentCount: lookupIndex?.indexedSegmentCount ?? 0,
+                        entryIDCount: visiblePrimeEntryIDsForIndex(
+                            doc,
+                            lookupIndex,
+                            lookupIndex?.visibleElementIDs ?? []
+                        ).length,
+                        trackedWordsInitialized: doc.manabi_trackedWordsInitialized === true,
+                        ebookTrackingInitialized: doc.manabi_ebookTrackingInitialized === true,
+                    });
                     this.#hydrateVisiblePageTracking(doc, snapshot.result, `visible-status:${reason}:snapshot`, true);
                     continue;
                 }
@@ -7235,7 +7295,6 @@ class Reader {
                 this.#visiblePageSegmentResult(doc, visibleRange, `visible-status:${reason}`, {
                     collectionMode: 'visibleStatusRefresh',
                     postIfCached: false,
-                    prepareLookupIndex: false,
                     finishInitialCritical: false,
                 });
             }
@@ -8562,14 +8621,11 @@ class Reader {
             const docs = isDocumentLike(explicitDoc)
                 ? [explicitDoc]
                 : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-            if (reason !== 'manual') {
-                await Promise.all(
-                    docs
-                        .map((doc) => doc?.fonts?.ready)
-                        .filter((promise) => promise?.then)
-                        .map((promise) => Promise.resolve(promise).catch(() => null))
-                );
-            }
+            // didDisplay means Foliate has already columnized a usable page. Do not
+            // hold its first lookup/status pass behind fonts.ready: remote or custom
+            // fonts can settle much later, leaving the initially visible page inert.
+            // The document-load font callback schedules one corrective geometry pass
+            // if font metrics actually finish after this provisional pass.
             if (generation !== this.nativeLookupHitTargetRefreshGeneration) {
                 return;
             }
@@ -8618,6 +8674,13 @@ class Reader {
         this.pendingNativeLookupHitTargetRefresh = null;
         this.visiblePageSegmentSnapshot = null;
         this.#scheduleNativeLookupHitTargetRefreshSettle(`${pending.reason}.flush:${reason}`, pending.explicitDoc);
+    }
+    completeLastPositionLoad(reason = 'unspecified') {
+        this.hasLoadedLastPosition = true;
+        // didDisplay may have deferred visible lookup/status enrichment until the
+        // restore position became authoritative. Flush at that state transition;
+        // otherwise the first relocate is the next event that can hydrate it.
+        this.#flushPendingNativeLookupHitTargetRefresh(`last-position-loaded:${reason}`);
     }
     refreshNativeLookupHitTargets(reason = 'manual') {
         if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
@@ -9271,7 +9334,7 @@ class Reader {
             }
             const ebookNavigationHidden =
                 globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
-                || document?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                || document?.body?.__manabiNavigationHiddenDueToScroll === true
                 || document?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
             if (event.type === 'touchend') {
                 const point = manabiEventScreenPoint(event);
@@ -9890,7 +9953,7 @@ class Reader {
             );
             if (initialRestoreWillBeMarkedHandled) {
                 this.initialDisplayNavigationPending = false;
-                this.hasLoadedLastPosition = true;
+                this.completeLastPositionLoad('initial-display-restore-satisfied');
                 clearInitialRestoreRenderReadyGate('initialDisplay.restoreSatisfied');
                 markReaderRenderReady('initialDisplay.restoreSatisfied');
                 globalThis.__manabiInitialRestoreHandled = {
@@ -11136,10 +11199,12 @@ class Reader {
             normalizeManabiSegmentWhitespace(doc);
         }
         if (doc?.fonts?.ready?.then) {
-            const fontsReadyStartedAt = performanceNowMs();
             doc.fonts.ready.then(() => {
-
-                if (!isCacheWarmerDocument(doc)) {
+                if (!isCacheWarmerDocument(doc) && doc.fonts.status === 'loaded') {
+                    this.#invalidateVisiblePageSegmentSnapshot('document.fonts-ready');
+                    if (this.hasLoadedLastPosition !== true) {
+                        this.#scheduleNativeLookupHitTargetRefreshSettle('document.fonts-ready', doc);
+                    }
                 }
             }).catch((error) => {
             });
@@ -11244,7 +11309,7 @@ class Reader {
                     doc.__manabiLastBlankPointerPostKey = eventKey;
                     const ebookNavigationHidden =
                         globalThis.reader?.navHUD?.hideNavigationDueToScroll === true
-                        || doc?.body?.dataset?.mnbNavigationHiddenDueToScroll === 'true'
+                        || doc?.body?.__manabiNavigationHiddenDueToScroll === true
                         || doc?.body?.classList?.contains?.('nav-hidden-due-to-scroll') === true;
                     if (event.type === 'touchend' && point) {
                         const blankX = point.screenX ?? point.clientX ?? null;
@@ -11632,26 +11697,30 @@ class Reader {
                 const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
                 const body = doc?.body ?? null;
                 const pendingNavigationTransition = body?.__manabiPendingEbookNavigationTransition ?? null;
-                const previousHiddenValue = body?.dataset?.mnbPreviousNavigationHiddenDueToScroll ?? null;
-                const nextHiddenValue = body?.dataset?.mnbNavigationHiddenDueToScroll ?? null;
+                const previousHiddenValue = typeof body?.__manabiPreviousNavigationHiddenDueToScroll === 'boolean'
+                    ? body.__manabiPreviousNavigationHiddenDueToScroll
+                    : null;
+                const nextHiddenValue = typeof body?.__manabiNavigationHiddenDueToScroll === 'boolean'
+                    ? body.__manabiNavigationHiddenDueToScroll
+                    : null;
                 const pendingTransitionMatchesCurrentState =
                     typeof pendingNavigationTransition?.fromHidden === 'boolean'
                     && typeof pendingNavigationTransition?.toHidden === 'boolean'
                     && pendingNavigationTransition.fromHidden !== pendingNavigationTransition.toHidden
-                    && nextHiddenValue === (pendingNavigationTransition.toHidden ? 'true' : 'false');
+                    && nextHiddenValue === pendingNavigationTransition.toHidden;
                 const hasExplicitHiddenTransitionState =
                     pendingTransitionMatchesCurrentState
                     || (
-                        (previousHiddenValue === 'true' || previousHiddenValue === 'false')
-                        && (nextHiddenValue === 'true' || nextHiddenValue === 'false')
+                        typeof previousHiddenValue === 'boolean'
+                        && typeof nextHiddenValue === 'boolean'
                         && previousHiddenValue !== nextHiddenValue
                     );
                 const transitionFromHidden = pendingTransitionMatchesCurrentState
                     ? pendingNavigationTransition.fromHidden
-                    : previousHiddenValue === 'true';
+                    : previousHiddenValue === true;
                 const transitionToHidden = pendingTransitionMatchesCurrentState
                     ? pendingNavigationTransition.toHidden
-                    : nextHiddenValue === 'true';
+                    : nextHiddenValue === true;
                 const transitionStage = hasExplicitHiddenTransitionState
                     ? doc?.defaultView?.manabi_prepareEbookTrackingPaintNavigationTransition?.({
                         fromHidden: transitionFromHidden,
@@ -12497,10 +12566,10 @@ const finalizeInitialRestoreHandledWithoutNativeRestore = (reason = 'loadEBook.i
         return false;
     }
     ensureRestorePositionSaveUserInputTracking();
-    globalThis.reader.hasLoadedLastPosition = true;
     globalThis.__manabiSuppressNextRestoreRelocateSave = true;
     globalThis.__manabiRequireUserInputBeforePositionSave = true;
     globalThis.__manabiRestoreInProgress = false;
+    globalThis.reader.completeLastPositionLoad(reason);
     const visibleSettleResult = globalThis.reader.settleInitialDisplayFromVisibleContent?.(`${reason}.visibleContent`);
     if (visibleSettleResult?.settled === true) {
         clearInitialRestoreRenderReadyGate(reason);
@@ -12708,8 +12777,8 @@ window.loadLastPosition = async ({
     const releaseDispatchedNavigation = (reason, {
         markReadyReason = null,
     } = {}) => {
-        globalThis.reader.hasLoadedLastPosition = true;
         globalThis.__manabiRestoreInProgress = false;
+        globalThis.reader.completeLastPositionLoad(reason);
         globalThis.__manabiSuppressNextRestoreRelocateSave = true;
         globalThis.__manabiRequireUserInputBeforePositionSave = true;
         shouldKeepRestoreSaveGuard = true;
@@ -12849,7 +12918,7 @@ window.loadLastPosition = async ({
             && initialRestoreFractionMatches
             && initialRestoreCurrentFractionMatches
         ) {
-            globalThis.reader.hasLoadedLastPosition = true;
+            globalThis.reader.completeLastPositionLoad('initial-restore-already-handled');
             globalThis.__manabiSuppressNextRestoreRelocateSave = true;
             globalThis.__manabiRequireUserInputBeforePositionSave = true;
             shouldKeepRestoreSaveGuard = true;
@@ -13176,6 +13245,9 @@ window.loadLastPosition = async ({
         const hasRenderer = !!globalThis.reader?.view?.renderer;
     } finally {
         globalThis.__manabiRestoreInProgress = false;
+        if (globalThis.reader?.hasLoadedLastPosition === true) {
+            globalThis.reader.completeLastPositionLoad('load-last-position-finally');
+        }
         globalThis.reader?.setLoadingIndicator?.(false, 'loadLastPosition.finally');
         if (globalThis.reader?.hasLoadedLastPosition === true) {
             globalThis.reader.refreshNativeMarkReadState?.('load-last-position-finally');

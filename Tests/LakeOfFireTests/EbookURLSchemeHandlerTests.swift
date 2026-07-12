@@ -33,7 +33,118 @@ private actor EbookTestInvocationCounter {
     }
 }
 
+private func ebookTestPayload(
+    _ documentHTML: String,
+    sidecar: String = ""
+) -> EbookProcessedSectionPayload {
+    EbookProcessedSectionPayload(
+        documentHTML: Data(documentHTML.utf8),
+        segmentSidecar: Data(sidecar.utf8)
+    )
+}
+
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let aggregateJSON = #"{"c":0,"j":[],"n":[],"k":[],"sid":[]}"#
+        let html = """
+        <html><head><title>Test</title></head><body><p>本文</p>
+        <script id="mnb-segment-metadata-aggregate" type="application/json" data-mnb-seg-meta-aggregate="true">\(aggregateJSON)</script>
+        <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
+        </body></html>
+        """
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .ebook
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertFalse(output.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertTrue(output.contains("id=\"mnb-segment-metadata-aggregate\""))
+        XCTAssertTrue(output.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertTrue(output.contains("ebook://ebook/processed-section-sidecar/"))
+        XCTAssertLessThan(
+            try XCTUnwrap(output.range(of: "meta name=\"mnb-segment-sidecar\"")?.lowerBound),
+            try XCTUnwrap(output.range(of: "</head>")?.lowerBound)
+        )
+        XCTAssertEqual(result.canonicalSidecarByteCount, canonicalJSON.utf8.count)
+        let endpointURL = try XCTUnwrap(result.endpointURL)
+        let token = try XCTUnwrap(URL(string: endpointURL)?.lastPathComponent)
+        let stored = try XCTUnwrap(ReaderExternalSegmentSidecarStore.shared.entry(for: token))
+        XCTAssertEqual(String(decoding: stored.data, as: UTF8.self), canonicalJSON)
+        XCTAssertEqual(stored.signature, result.signature)
+    }
+
+    func testExternalSidecarIdentityIsDeterministicAndCacheable() throws {
+        let payload = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><head></head><body>本文</body></html>".utf8),
+            segmentSidecar: Data(#"{"v":9,"s":[]}"#.utf8)
+        )
+
+        let first = publishingCanonicalReaderSegmentSidecar(payload, scheme: .ebook)
+        let second = publishingCanonicalReaderSegmentSidecar(payload, scheme: .ebook)
+
+        XCTAssertEqual(first.endpointURL, second.endpointURL)
+        XCTAssertEqual(first.signature, second.signature)
+        let responseDocument = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            first.documentHTML,
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: [:],
+            additionalHeadMarkup: first.headDescriptor
+        ), as: UTF8.self)
+        XCTAssertTrue(responseDocument.contains("<head><base href="))
+        XCTAssertTrue(responseDocument.contains("<meta name=\"mnb-segment-sidecar\""))
+        let endpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
+        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook))
+        XCTAssertEqual(served.data, payload.segmentSidecar)
+        XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "public, max-age=31536000, immutable")
+    }
+
+    func testExternalizingCanonicalSidecarLeavesHTMLWithoutCanonicalSidecarUnchanged() {
+        let html = "<html><head></head><body><p>本文</p></body></html>"
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .internalReader
+        )
+
+        XCTAssertEqual(result.documentHTML, Data(html.utf8))
+        XCTAssertEqual(result.canonicalSidecarByteCount, 0)
+        XCTAssertNil(result.endpointURL)
+        XCTAssertNil(result.signature)
+    }
+
+    func testProcessedSidecarCacheEnvelopeRoundTripsWithoutRescanningCombinedHTML() throws {
+        let canonicalJSON = #"{"v":9,"t":{"語":[1]},"s":[]}"#
+        let aggregateJSON = #"{"c":1,"j":["語"]}"#
+        let html = """
+        <html><head></head><body><p>本文</p>
+        <script id="mnb-segment-metadata-aggregate" type="application/json">\(aggregateJSON)</script>
+        <script id="mnb-segment-metadata" type="application/json" data-mnb-seg-meta="true">\(canonicalJSON)</script>
+        </body></html>
+        """
+
+        let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
+        let encoded = encodedEbookProcessedSectionCacheValue(payload)
+        let decoded = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(encoded))
+        let splitDocument = String(decoding: decoded.documentHTML, as: UTF8.self)
+
+        XCTAssertFalse(splitDocument.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertTrue(splitDocument.contains("id=\"mnb-segment-metadata-aggregate\""))
+        XCTAssertEqual(String(decoding: decoded.segmentSidecar, as: UTF8.self), canonicalJSON)
+
+    }
+
+    func testProcessedSidecarCacheEnvelopeRejectsTruncatedValue() throws {
+        let html = "<html><body><script id=\"mnb-segment-metadata\">{}</script></body></html>"
+        let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
+        let encoded = encodedEbookProcessedSectionCacheValue(payload)
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(encoded.dropLast())))
+    }
+
     func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
         let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
         let css = """
@@ -62,29 +173,55 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue((try doc.body()?.attr("style") ?? "").contains("--mnb-content-vertical-font: 'YuKyokasho Yoko';"))
     }
 
-    func testPresentationHintsInjectBodyAttributesWithoutReserializingDocument() throws {
-        let html = "<!doctype html><html><head><title>T</title></head><body class=\"p-text\"><p>本文</p></body></html>"
-        let result = ebookHTMLWithInjectedPresentationHints(
-            html,
-            writingHint: EBookProcessedSectionWritingHint(direction: "vertical", writingMode: "vertical-rl")
-        )
+    func testResponseMetadataByteInjectionDecoratesUppercaseDocumentWithoutReserializingContent() {
+        let html = "<!doctype html><HTML><HEAD><title>T</title></HEAD><BODY class=\"book\"><p>本文</p></BODY></HTML>"
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml?x=1&y=2",
+            writingHint: EBookProcessedSectionWritingHint(
+                direction: "vertical",
+                writingMode: "vertical-rl"
+            ),
+            bodyAttributes: ["data-mnb-native-cache-outcome": "final-direct-hit"]
+        ), as: UTF8.self)
+
+        XCTAssertTrue(result.contains("<HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml?x=1&amp;y=2\">"))
+        XCTAssertTrue(result.contains("<BODY class=\"book\""))
+        XCTAssertTrue(result.contains("data-mnb-native-cache-outcome=\"final-direct-hit\""))
+        XCTAssertTrue(result.contains("data-mnb-writing-direction=\"vertical\""))
+        XCTAssertTrue(result.contains("data-mnb-writing-mode=\"vertical-rl\""))
+        XCTAssertTrue(result.contains("<p>本文</p>"))
+    }
+
+    func testResponseMetadataByteInjectionWrapsHTMLFragment() {
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data("<section>本文</section>".utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-test": "ok"]
+        ), as: UTF8.self)
 
         XCTAssertEqual(
             result,
-            "<!doctype html><html><head><title>T</title></head><body class=\"p-text\" data-mnb-writing-direction=\"vertical\" data-mnb-writing-mode=\"vertical-rl\" data-mnb-foliate-writing-direction=\"vertical\" data-mnb-foliate-writing-mode=\"vertical-rl\"><p>本文</p></body></html>"
+            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/chapter.xhtml\"></head><body data-test=\"ok\"><section>本文</section></body></html>"
         )
     }
 
-    func testPresentationHintsLeaveBodylessFragmentUnchanged() throws {
-        let html = "<section><p>本文</p></section>"
+    func testResponseMetadataScannerHandlesGreaterThanInsideQuotedAttributesAndInjectsPresentation() {
+        let html = "<HTML data-note='1>0'><HEAD data-note=\"2>1\"></HEAD><BODY data-note='3>2' style='color:red'>本文</BODY></HTML>"
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-response": "ready"],
+            presentation: EbookSectionPresentation(
+                bodyAttributes: ["data-presentation": "current"],
+                bodyStyleDeclarations: "font-family:'Reader Font';font-size:18px;"
+            )
+        ), as: UTF8.self)
 
-        XCTAssertEqual(
-            ebookHTMLWithInjectedPresentationHints(
-                html,
-                writingHint: EBookProcessedSectionWritingHint(direction: "vertical", writingMode: "vertical-rl")
-            ),
-            html
-        )
+        XCTAssertTrue(result.contains("<HEAD data-note=\"2>1\"><base href="))
+        XCTAssertTrue(result.contains("<BODY data-note='3>2' style='color:red;font-family:&#39;Reader Font&#39;;font-size:18px;' data-presentation=\"current\" data-response=\"ready\">"))
     }
 
     func testNativeSectionPrewarmReadsEntryAndRunsCacheWarmerProcessor() async throws {
@@ -112,7 +249,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 XCTAssertEqual(sectionHref, "item/xhtml/chapter.xhtml")
                 XCTAssertEqual(text, chapterHTML)
                 XCTAssertTrue(isCacheWarmer)
-                return "<html><body>processed</body></html>"
+                return ebookTestPayload("<html><body>processed</body></html>")
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -182,10 +319,10 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(String(decoding: try source.readEntry(subpath: chapterPath), as: UTF8.self), chapterHTML)
     }
 
-    func testCacheWarmerCacheHitStillReturnsProcessedContent() async throws {
+    func testCacheWarmerProcessingReturnsProcessedContent() async throws {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload(expectedHTML) },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
             processHTMLBytes: nil,
@@ -199,48 +336,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: true
         )
 
-        XCTAssertEqual(result, expectedHTML)
-    }
-
-    func testProcessingCanSkipCacheReadAfterCallerAlreadyMissed() async throws {
-        let expectedHTML = "<html><body>processed once</body></html>"
-        let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in
-                XCTFail("The scheme handler already performed this cache read")
-                return "<html><body>unexpected cached value</body></html>"
-            },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
-            processReadabilityContent: nil,
-            processHTMLDocument: nil,
-            processHTMLBytes: nil,
-            processHTML: nil
-        )
-
-        let result = try await actor.process(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            text: "<html><body>raw</body></html>",
-            isCacheWarmer: false,
-            shouldReadProcessedCache: false
-        )
-
-        XCTAssertEqual(result, expectedHTML)
-    }
-
-    func testCacheWarmerProcessTextResponseDoesNotReturnProcessedContent() throws {
-        let processedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
-
-        let cacheWarmerData = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: processedHTML,
-            isCacheWarmer: true
-        ))
-        let liveData = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: processedHTML,
-            isCacheWarmer: false
-        ))
-
-        XCTAssertTrue(cacheWarmerData.isEmpty)
-        XCTAssertEqual(String(data: liveData, encoding: .utf8), processedHTML)
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), expectedHTML)
     }
 
     func testCacheWarmerWithoutProcessorFallsBackToOriginalText() async throws {
@@ -260,113 +356,34 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: true
         )
 
-        XCTAssertEqual(result, originalText)
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
     }
 
-    func testProcessTextRequestKeyIncludesCacheWarmerProcessingMode() throws {
+    func testSectionProcessingDeduperCoalescesEquivalentInFlightRequests() async throws {
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
-        let foreground = EBookProcessTextRequestKey(
+        let key = EBookSectionProcessingRequestKey(
             contentURL: contentURL,
             location: "chapter.xhtml",
-            isCacheWarmer: false,
-            text: "本文"
-        )
-        let cacheWarmer = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "chapter.xhtml",
-            isCacheWarmer: true,
-            text: "本文"
-        )
-
-        XCTAssertNotEqual(foreground, cacheWarmer)
-    }
-
-    func testProcessTextRequestDeduperDoesNotCoalesceDifferentProcessingModes() async throws {
-        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
-        let foregroundKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "chapter.xhtml",
-            isCacheWarmer: false,
-            text: "本文"
-        )
-        let cacheWarmerKey = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "chapter.xhtml",
-            isCacheWarmer: true,
-            text: "本文"
-        )
-        let expectedHTML = "<html><body>processed</body></html>"
-        let gate = EbookTestGate()
-        let invocationCounter = EbookTestInvocationCounter()
-        let started = expectation(description: "processing starts")
-        let deduper = EBookProcessTextRequestDeduper()
-
-        let cacheWarmerTask = Task {
-            try await deduper.process(key: cacheWarmerKey) {
-                await invocationCounter.increment()
-                started.fulfill()
-                await gate.waitUntilReleased()
-                return expectedHTML
-            }
-        }
-        await fulfillment(of: [started], timeout: 1)
-
-        let foregroundTask = Task {
-            try await deduper.process(key: foregroundKey) {
-                await invocationCounter.increment()
-                return "<html><body>foreground</body></html>"
-            }
-        }
-        let foregroundResult = try await foregroundTask.value
-        await gate.release()
-
-        let cacheWarmerResult = try await cacheWarmerTask.value
-        XCTAssertEqual(cacheWarmerResult.responseText, expectedHTML)
-        XCTAssertEqual(foregroundResult.responseText, "<html><body>foreground</body></html>")
-        XCTAssertFalse(cacheWarmerResult.didCoalesce)
-        XCTAssertEqual(cacheWarmerResult.cacheOutcome, "processed")
-        XCTAssertFalse(foregroundResult.didCoalesce)
-        XCTAssertEqual(foregroundResult.cacheOutcome, "processed")
-        let invocationCount = await invocationCounter.count
-        XCTAssertEqual(invocationCount, 2)
-        let foregroundData = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: foregroundResult.responseText,
-            isCacheWarmer: false
-        ))
-        let cacheWarmerData = try XCTUnwrap(ebookProcessTextResponseData(
-            processedText: cacheWarmerResult.responseText,
-            isCacheWarmer: true
-        ))
-        XCTAssertFalse(foregroundData.isEmpty)
-        XCTAssertTrue(cacheWarmerData.isEmpty)
-    }
-
-    func testProcessTextRequestDeduperCoalescesEquivalentInFlightRequests() async throws {
-        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
-        let key = EBookProcessTextRequestKey(
-            contentURL: contentURL,
-            location: "chapter.xhtml",
-            isCacheWarmer: false,
-            text: "本文"
+            contentData: Data("本文".utf8)
         )
         let gate = EbookTestGate()
         let invocationCounter = EbookTestInvocationCounter()
         let started = expectation(description: "processing starts")
-        let deduper = EBookProcessTextRequestDeduper()
+        let deduper = EBookSectionProcessingDeduper()
 
         let firstTask = Task {
             try await deduper.process(key: key) {
                 await invocationCounter.increment()
                 started.fulfill()
                 await gate.waitUntilReleased()
-                return "shared"
+                return ebookTestPayload("shared")
             }
         }
         await fulfillment(of: [started], timeout: 1)
         let secondTask = Task {
             try await deduper.process(key: key) {
                 XCTFail("Equivalent in-flight work should reuse the active operation")
-                return "duplicate"
+                return ebookTestPayload("duplicate")
             }
         }
         for _ in 0..<1_000 {
@@ -382,35 +399,34 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let first = try await firstTask.value
         let second = try await secondTask.value
         let invocationCount = await invocationCounter.count
-        XCTAssertEqual(first.responseText, "shared")
-        XCTAssertEqual(second.responseText, "shared")
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "shared")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "shared")
         XCTAssertFalse(first.didCoalesce)
         XCTAssertTrue(second.didCoalesce)
         XCTAssertEqual(invocationCount, 1)
     }
 
-    func testProcessTextRequestDeduperDoesNotRetainCompletedResponses() async throws {
+    func testSectionProcessingDeduperDoesNotRetainCompletedResponses() async throws {
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
-        let key = EBookProcessTextRequestKey(
+        let key = EBookSectionProcessingRequestKey(
             contentURL: contentURL,
             location: "chapter.xhtml",
-            isCacheWarmer: false,
-            text: "本文"
+            contentData: Data("本文".utf8)
         )
-        let deduper = EBookProcessTextRequestDeduper()
+        let deduper = EBookSectionProcessingDeduper()
         let invocationCounter = EbookTestInvocationCounter()
 
         let first = try await deduper.process(key: key) {
             await invocationCounter.increment()
-            return "first"
+            return ebookTestPayload("first")
         }
         let second = try await deduper.process(key: key) {
             await invocationCounter.increment()
-            return "second"
+            return ebookTestPayload("second")
         }
 
-        XCTAssertEqual(first.responseText, "first")
-        XCTAssertEqual(second.responseText, "second")
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "first")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "second")
         XCTAssertFalse(first.didCoalesce)
         XCTAssertFalse(second.didCoalesce)
         let invocationCount = await invocationCounter.count
@@ -420,11 +436,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testCacheWarmerDoesNotPopulateDisplayReadyProcessedTextCache() async throws {
         let writerInvocationCounter = EbookTestInvocationCounter()
         let actor = EBookProcessingActor(
-            ebookProcessedTextCacheWriter: { _, _, _, _, _ in
+            ebookProcessedTextCacheWriter: { _, _, _, _ in
                 await writerInvocationCounter.increment()
             },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
-                "<html><body>warmer result</body></html>"
+                ebookTestPayload("<html><body>warmer result</body></html>")
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -445,13 +461,16 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testForegroundProcessingPopulatesDisplayReadyProcessedTextCache() async throws {
         let writerCalled = expectation(description: "display-ready cache writer runs")
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
+        let processedHTML = "<html><body>foreground result<script id=\"mnb-segment-metadata\">\(canonicalJSON)</script></body></html>"
         let actor = EBookProcessingActor(
-            ebookProcessedTextCacheWriter: { _, _, _, _, processedText in
-                XCTAssertEqual(processedText, "<html><body>foreground result</body></html>")
+            ebookProcessedTextCacheWriter: { _, _, _, payload in
+                XCTAssertEqual(String(decoding: payload.documentHTML, as: UTF8.self), "<html><body>foreground result</body></html>")
+                XCTAssertEqual(String(decoding: payload.segmentSidecar, as: UTF8.self), canonicalJSON)
                 writerCalled.fulfill()
             },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
-                "<html><body>foreground result</body></html>"
+                try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(processedHTML.utf8)))
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,

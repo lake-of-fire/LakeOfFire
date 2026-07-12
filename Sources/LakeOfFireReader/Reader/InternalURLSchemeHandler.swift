@@ -38,6 +38,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didFinish()
             return
         }
+        if url.path.hasPrefix(ReaderExternalSegmentSidecarScheme.internalReader.endpointPathPrefix) {
+            guard let sidecar = readerExternalSegmentSidecarResponse(
+                for: url,
+                scheme: .internalReader
+            ) else {
+                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
+                return
+            }
+            urlSchemeTask.didReceive(sidecar.response)
+            urlSchemeTask.didReceive(sidecar.data)
+            urlSchemeTask.didFinish()
+            return
+        }
         let response = URLResponse(
             url: url,
             mimeType: "text/html",
