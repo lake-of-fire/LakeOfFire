@@ -157,10 +157,15 @@ const manabiTimelineMark = (event, payload = {}) => {
     } catch (_error) {}
     return label;
 };
-const manabiTimelineMeasure = (event, startedAt, payload = {}) => {
+const manabiTimelineMeasure = (
+    event,
+    startedAt,
+    payload = {},
+    thresholdMs = MANABI_TIMELINE_SLOW_THRESHOLD_MS,
+) => {
     const endedAt = manabiPerfNow();
     const elapsedMs = endedAt - startedAt;
-    if (elapsedMs < MANABI_TIMELINE_SLOW_THRESHOLD_MS && globalThis.__manabiTimelineTraceAll !== true) {
+    if (elapsedMs < thresholdMs && globalThis.__manabiTimelineTraceAll !== true) {
         return elapsedMs;
     }
     const label = manabiTimelineMark(event, { ...payload, elapsedMs });
@@ -724,10 +729,20 @@ const makeMarginals = (length, part) => Array.from({
 })
 
 const setStylesImportant = (el, styles) => {
-    const {
-        style
-    } = el
-    for (const [k, v] of Object.entries(styles)) style.setProperty(k, v, 'important')
+    const style = el?.style
+    if (!style) return false
+    let changed = false
+    for (const [property, value] of Object.entries(styles)) {
+        if (
+            style.getPropertyValue(property) === value
+            && style.getPropertyPriority(property) === 'important'
+        ) {
+            continue
+        }
+        style.setProperty(property, value, 'important')
+        changed = true
+    }
+    return changed
 }
 
 const isJapaneseLanguageTag = value => {
@@ -925,6 +940,24 @@ class View {
                             manabiPaginatorReaderLoadLog('paginator.view.iframeLoad', eventPayload);
                         }
                         const doc = this.document
+                        manabiTimelineMark('paginator.view.nativeProcessing', {
+                            ...basePayload,
+                            cacheOutcome: doc?.body?.dataset?.mnbNativeCacheOutcome ?? null,
+                            cacheProbeOutcome: doc?.body?.dataset?.mnbNativeCacheProbeOutcome ?? null,
+                            cacheProbeMs: doc?.body?.dataset?.mnbNativeCacheProbeMs ?? null,
+                            cacheReaderAvailable: doc?.body?.dataset?.mnbNativeCacheReaderAvailable ?? null,
+                            cacheWriterAvailable: doc?.body?.dataset?.mnbNativeCacheWriterAvailable ?? null,
+                            contentFingerprint: doc?.body?.dataset?.mnbNativeContentFingerprint ?? null,
+                            didCoalesce: doc?.body?.dataset?.mnbNativeDidCoalesce ?? null,
+                            sourceBytes: doc?.body?.dataset?.mnbNativeSourceBytes ?? null,
+                            responseBytes: doc?.body?.dataset?.mnbNativeResponseBytes ?? null,
+                            settingsKey: doc?.body?.dataset?.mnbNativeSettingsKey ?? null,
+                            dictionariesKey: doc?.body?.dataset?.mnbNativeDictionariesKey ?? null,
+                            processorSchema: doc?.body?.dataset?.mnbNativeProcessorSchema ?? null,
+                            sourceReadyMs: doc?.body?.dataset?.mnbNativeSourceReadyMs ?? null,
+                            sourceReadMs: doc?.body?.dataset?.mnbNativeSourceReadMs ?? null,
+                            processingMs: doc?.body?.dataset?.mnbNativeProcessingMs ?? null,
+                        })
 
                         await manabiRunPaginatorBoundary(
                             'paginator.view.afterLoad',
@@ -1832,6 +1865,7 @@ export class Paginator extends HTMLElement {
 
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
+        this.#cachedVerticalPaginatedSizes = null
         this.#sizesPromise = null
         //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
@@ -1887,6 +1921,7 @@ export class Paginator extends HTMLElement {
     #lastSettledPageTurn = null
 
     #cachedSizes = null
+    #cachedVerticalPaginatedSizes = null
     #cachedStart = null
     #sizesPromise = null
     #viewSizePromise = null
@@ -3499,6 +3534,7 @@ export class Paginator extends HTMLElement {
         rtl,
         //        background
     }) {
+        const beforeRenderStartedAt = manabiPerfNow()
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
@@ -3517,20 +3553,40 @@ export class Paginator extends HTMLElement {
             vertical,
             flow,
             invalidateSizes: () => {
-                this.#cachedSizes = null
-                this.#sizesPromise = null
+                if (vertical && flow !== 'scrolled' && this.#cachedVerticalPaginatedSizes) {
+                    this.#cachedSizes = this.#cachedVerticalPaginatedSizes
+                } else {
+                    this.#cachedSizes = null
+                    this.#sizesPromise = null
+                }
             },
         })
 
+        const sizesStartedAt = manabiPerfNow()
         const {
             width,
             height
         } = await this.sizes()
+        manabiTimelineMeasure('paginator.beforeRender.sizes', sizesStartedAt, {
+            width,
+            height,
+            vertical,
+            cacheWarmer: this.#isCacheWarmer,
+        }, 0)
         this.#lastRenderContainerSize = { width, height }
         const size = vertical ? height : width
         const renderView = view ?? this.#view
         const doc = renderDocument ?? renderView?.document ?? null
+        const typographyStartedAt = manabiPerfNow()
         const typographyMetrics = this.#typographyMetrics(renderView)
+        manabiTimelineMeasure('paginator.beforeRender.typography', typographyStartedAt, {
+            fontSize: typographyMetrics.fontSize,
+            lineHeight: typographyMetrics.lineHeight,
+            inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
+            usedInlineFontSize: Number.isFinite(parseFloat(doc?.body?.style?.fontSize)),
+            vertical,
+            cacheWarmer: this.#isCacheWarmer,
+        }, 0)
         this.#lastTypographyRenderSignature = this.#typographyRenderSignature({
             width,
             height,
@@ -3676,7 +3732,7 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
-        return {
+        const result = {
             height,
             width,
             topMargin,
@@ -3686,6 +3742,16 @@ export class Paginator extends HTMLElement {
             divisor,
             typographySignature: this.#lastTypographyRenderSignature,
         }
+        manabiTimelineMeasure('paginator.beforeRender.total', beforeRenderStartedAt, {
+            width,
+            height,
+            vertical,
+            divisor,
+            columnWidth,
+            gap,
+            cacheWarmer: this.#isCacheWarmer,
+        }, 0)
+        return result
     }
     async render() {
         if (!this.#view) {
@@ -3860,6 +3926,10 @@ export class Paginator extends HTMLElement {
                     this.#cachedSizes = {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
+                    }
+                    this.#cachedVerticalPaginatedSizes = {
+                        width: this.#cachedSizes.width,
+                        height: this.#top.clientHeight,
                     }
                     this.#sizesPromise = null
                     resolve(this.#cachedSizes)
@@ -5201,6 +5271,7 @@ export class Paginator extends HTMLElement {
                 this.#suspendOnExpandAnchor = true
 
                 this.#cachedSizes = null
+                this.#cachedVerticalPaginatedSizes = null
                 this.#sizesPromise = null
                 this.#viewSizePromise = null
                 this.#cachedStart = null
@@ -5271,6 +5342,18 @@ export class Paginator extends HTMLElement {
                     }
                 }
                 globalThis.manabiApplyChromeInsets?.(null, 'paginator.display.beforeViewLoad')
+                // Resolve final host dimensions while the processed section and
+                // iframe load. This must run after chrome insets are applied;
+                // measuring before that point captures the transient shorter stage
+                // and is invalidated before #beforeRender.
+                const containerSizeWarmupStartedAt = manabiPerfNow()
+                void this.sizes().then(size => {
+                    manabiTimelineMeasure('paginator.display.containerSizeWarmup', containerSizeWarmupStartedAt, {
+                        width: size?.width ?? null,
+                        height: size?.height ?? null,
+                        cacheWarmer: this.#isCacheWarmer,
+                    }, 0)
+                })
                 try {
                     await view.load(src, afterLoad, beforeRender)
                     this.#commitView(view)

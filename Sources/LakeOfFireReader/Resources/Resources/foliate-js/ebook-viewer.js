@@ -6463,13 +6463,39 @@ class Reader {
         const previousVisible = body.classList.contains('loading');
         const nextVisible = !!visible;
         if (nextVisible) {
+            this.loadingPaintPending = true;
+        } else if (this.loadingPaintPending) {
+            const isPaintBoundary = reason === 'didDisplay';
+            const isTerminalFailure = reason.includes('error')
+                || reason.includes('watchdog')
+                || reason.includes('timeout');
+            if (!isPaintBoundary && !isTerminalFailure) {
+                manabiTimelineMark('loadingIndicator.clearRetainedForPaint', {
+                    reason,
+                    previousVisible,
+                    bodyLoading: body.classList.contains('loading'),
+                    bodyLoadingVisual: body.classList.contains('loading-visual'),
+                    indicatorHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
+                });
+                return;
+            }
+            this.loadingPaintPending = false;
+        }
+        if (nextVisible) {
             loadingIndicator?.removeAttribute?.('hidden');
-            clearTimeout(this.loadingVisualTimer);
-            this.loadingVisualTimer = setTimeout(() => {
-                if (document.body?.classList?.contains?.('loading')) {
-                    document.body.classList.add('loading-visual');
-                }
-            }, loadingVisualDelayMs);
+            const requiresImmediateVisual = reason === 'loadEBook.start' || reason === 'reader.open';
+            if (requiresImmediateVisual) {
+                clearTimeout(this.loadingVisualTimer);
+                this.loadingVisualTimer = null;
+                body.classList.add('loading-visual');
+            } else if (!previousVisible && !this.loadingVisualTimer) {
+                this.loadingVisualTimer = setTimeout(() => {
+                    this.loadingVisualTimer = null;
+                    if (document.body?.classList?.contains?.('loading')) {
+                        document.body.classList.add('loading-visual');
+                    }
+                }, loadingVisualDelayMs);
+            }
         }
         body.classList.toggle('loading', nextVisible);
         if (!nextVisible) {
@@ -6484,6 +6510,15 @@ class Reader {
         }
         if (previousVisible !== nextVisible) {
         }
+        manabiTimelineMark('loadingIndicator.state', {
+            reason,
+            requestedVisible: nextVisible,
+            previousVisible,
+            bodyLoading: body.classList.contains('loading'),
+            bodyLoadingVisual: body.classList.contains('loading-visual'),
+            indicatorHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
+            timerPending: this.loadingVisualTimer != null,
+        });
     }
     #tocView
     #bookForSidebarCover = null
@@ -8359,9 +8394,11 @@ class Reader {
         }
     }
     #renderableContentProbeResult(doc, visibleRange = null, reason = 'initial-renderable-probe') {
-        const result = renderableContentProbeResultForDocument(doc, visibleRange, reason);
-        this.#finishVisiblePageSegmentCritical(`renderable-probe:${reason}`, true);
-        return result;
+        // This probe only decides whether content is ready to reveal. Finishing the
+        // lookup/status critical section here can synchronously apply tracking state
+        // and force whole-book layout before the loading cover reaches its first
+        // paint. The deferred visible-target refresh finishes that work after reveal.
+        return renderableContentProbeResultForDocument(doc, visibleRange, reason);
     }
     visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', options = {}) {
         return this.#visiblePageSegmentResult(doc, visibleRange, reason, options);
@@ -10740,7 +10777,17 @@ class Reader {
             visibleSegmentCount += visibleContentState.visibleSegmentCount;
             if (visibleContentState.hasRenderableContent === true) {
                 const clearReason = `initialDisplay.visible-content:${reason}`;
-                this.setLoadingIndicator(false, clearReason);
+                // Visible geometry is not proof that WebKit has painted the final
+                // paginated result. Keep the loading cover until #onDidDisplay has
+                // completed its post-settle frame boundary; otherwise long style and
+                // column-layout passes are exposed as a blank page.
+                manabiTimelineMark('initialDisplay.visibleContent.loadingRetained', {
+                    reason,
+                    bodyLoading: document.body?.classList?.contains?.('loading') === true,
+                    bodyLoadingVisual: document.body?.classList?.contains?.('loading-visual') === true,
+                    visibleSegmentCount,
+                    observedSegmentCount,
+                });
                 markReaderRenderReady(clearReason);
                 globalThis.__manabiPostReaderDocStateEvent?.(clearReason);
                 this.#resolveInitialDisplaySettled(clearReason);
@@ -10950,12 +10997,13 @@ class Reader {
                     visibleRange,
                     'didDisplay.pre-render-ready',
                     {
-                        postIfCached: true,
-                        includeClientRects: true,
-                        postLookupTargets: true,
+                        collectionMode: 'initialRenderableProbe',
+                        postIfCached: false,
+                        includeClientRects: false,
+                        postLookupTargets: false,
                         prepareLookupIndex: false,
-                        hydrateStatuses: true,
-                        finishInitialCritical: true,
+                        hydrateStatuses: false,
+                        finishInitialCritical: false,
                     }
                 );
                 didDisplayNativeLookupTargetCount = visibleSegmentsResult?.nativeLookupTargetCount ?? null;
@@ -11000,9 +11048,11 @@ class Reader {
             };
             markLoadingPaintBoundary('before-frame-wait');
             await this.#waitForAnimationFrames(1);
-            markLoadingPaintBoundary('after-frame-1');
-            await this.#waitForAnimationFrames(1);
-            markLoadingPaintBoundary('after-frame-2-before-clear');
+            // The final paginator settle has completed and the renderability probe
+            // already found visible content. One animation-frame boundary is the
+            // first opportunity for that final geometry to paint; a second frame
+            // repeats the same full-document layout on large vertical sections.
+            markLoadingPaintBoundary('after-frame-1-before-clear');
             this.setLoadingIndicator(false, 'didDisplay');
             markReaderRenderReady('didDisplay.loading-cleared');
             markLoadingPaintBoundary('after-clear');
@@ -11409,6 +11459,8 @@ class Reader {
             postLookupTargets = true,
             hydrateStatuses = true,
             hydrateSynchronously = null,
+            prepareLookupIndex = true,
+            includeClientRects = reason !== 'page',
             markerReason = 'visible-targets',
         } = {}) => {
             const isPageRelocate = reason === 'page';
@@ -11502,9 +11554,9 @@ class Reader {
                             ? 'pageTurnStatusHydration'
                             : (reason === 'page' ? 'pageTurnLookupTargets' : null),
                         postIfCached: false,
-                        includeClientRects: reason !== 'page',
+                        includeClientRects,
                         postLookupTargets,
-                        prepareLookupIndex: true,
+                        prepareLookupIndex,
                         hydrateStatuses,
                         hydrateStatusesSynchronously: pageTurnHydrationOptions.synchronous,
                         hydrateAdjacentStatusSegmentCount: pageTurnHydrationOptions.adjacentSegmentCount,
@@ -11530,7 +11582,21 @@ class Reader {
         const relocateVisibleTargetGeneration = this.visiblePageCollectionGeneration;
         let postedPageTurnDisplayReady = false;
         if (!isLookupNavigationPageTurn) {
-            if (shouldDeferVisibleTargetCollection) {
+            const isInitialLoadingRelocate = document.body?.classList?.contains?.('loading') === true;
+            if (isInitialLoadingRelocate) {
+                // Initial rendering only needs enough identity/geometry to prove that
+                // content exists. Lookup-index preparation and tracking-status DOM
+                // writes invalidate the just-columnized document and force another
+                // full layout before the loading cover can paint. didDisplay schedules
+                // that enrichment after the paint boundary.
+                collectRelocatedVisibleTargets({
+                    postLookupTargets: false,
+                    hydrateStatuses: false,
+                    prepareLookupIndex: false,
+                    includeClientRects: false,
+                    markerReason: 'visible-content-initial',
+                });
+            } else if (shouldDeferVisibleTargetCollection) {
                 postNativeLookupPageTurnDisplayReady(`relocate:${reason ?? 'unknown'}`);
                 postedPageTurnDisplayReady = true;
                 manabiTimelineMark('relocate.visible-targets.immediateLookupOnly', {

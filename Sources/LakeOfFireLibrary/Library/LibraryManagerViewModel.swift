@@ -133,7 +133,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published var selectedScript: UserScript?
     @Published public var selectedSidebarDestination: LibrarySidebarDestination?
     @Published public var navigationPath = NavigationPath()
-    @Published var libraryConfiguration: LibraryConfiguration?
+    // Loading the shared library configuration happens during app startup. Publishing
+    // that initial value while the library is off-screen invalidates the entire
+    // environment-dependent SwiftUI graph and can stall an unrelated reader launch.
+    // `isLibraryPresented` publishes the transition that first makes this value
+    // visible; subsequent Realm updates notify explicitly while the library is open.
+    var libraryConfiguration: LibraryConfiguration?
     
     @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
@@ -216,10 +221,14 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             let newLibraryConfigurationID = libraryConfiguration.id
                             let frozenLibraryConfiguration = libraryConfiguration.freeze()
                             await MainActor.run { [weak self] in
+                                guard let self else { return }
                                 if newLibraryConfigurationID != currentConfigurationID {
-                                    self?.libraryConfiguration = frozenLibraryConfiguration
-                                } else {
-                                    self?.objectWillChange.send()
+                                    if self.isLibraryPresented {
+                                        self.objectWillChange.send()
+                                    }
+                                    self.libraryConfiguration = frozenLibraryConfiguration
+                                } else if self.isLibraryPresented {
+                                    self.objectWillChange.send()
                                 }
                             }
                         }()
