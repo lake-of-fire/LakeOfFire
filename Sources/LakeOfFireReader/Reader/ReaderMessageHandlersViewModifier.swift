@@ -154,8 +154,7 @@ private let readerPaginationSizeTrackingCache = PersistedLRUCache<String, Reader
     version: 2,
     totalBytesLimit: 20 * 1024 * 1024,
     countLimit: 10_000,
-    inlineStorageThreshold: 64 * 1024,
-    writeMode: .asynchronous(batchDelay: 0.15)
+    inlineStorageThreshold: 64 * 1024
 )
 
 /// Opens the shared pagination cache before a reader view needs to install its message handlers.
@@ -164,7 +163,7 @@ public func prewarmReaderPaginationSizeTrackingCache() {
 }
 
 @MainActor
-fileprivate class ReaderMessageHandlers: Identifiable {
+fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
     var forceReaderModeWhenAvailable: Bool
     
     var scriptCaller: WebViewScriptCaller
@@ -1106,7 +1105,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
     var colorScheme: ColorScheme
     var webViewMessageHandlers: WebViewMessageHandlers
 
-    @State private var readerMessageHandlers: ReaderMessageHandlers
+    @StateObject private var readerMessageHandlers: ReaderMessageHandlers
     @State private var lastPushedHideNavigationDueToScroll: Bool?
     @State private var lastPushedHideNavigationPageURL: URL?
 
@@ -1136,7 +1135,7 @@ private struct ReaderMessageHandlersInstaller<Content: View>: View {
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
         self.colorScheme = colorScheme
         self.webViewMessageHandlers = webViewMessageHandlers
-        _readerMessageHandlers = State(initialValue: ReaderMessageHandlers(
+        _readerMessageHandlers = StateObject(wrappedValue: ReaderMessageHandlers(
             forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
             scriptCaller: scriptCaller,
             readerViewModel: readerViewModel,

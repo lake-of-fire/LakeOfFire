@@ -6110,10 +6110,16 @@ const getView = async (source) => {
     return view
 }
 
-// Keep the book stylesheet out of processed EPUB markup: attaching it before parsing
-// makes WebKit repeatedly restyle the growing document. The paginator installs this
-// shared resource once after the child document has loaded and before columnization.
+// Start this fetch while the book is opening. Each section receives the resolved CSS
+// as one style mutation after parsing; a child-document link would add a serial custom-
+// scheme request between iframe load and columnization.
 const bookContentStylesheetURL = new URL('./book-content.css', import.meta.url).href;
+const bookContentStylesPromise = fetch(bookContentStylesheetURL).then(response => {
+    if (!response.ok) {
+        throw new Error(`Unable to load book content stylesheet (${response.status})`);
+    }
+    return response.text();
+});
 
 const $ = document.querySelector.bind(document)
 
@@ -8661,7 +8667,7 @@ class Reader {
         document.body?.setAttribute?.('data-book-dir', this.bookDir);
         this.navHUD?.setIsRTL(this.isRTL);
         this.navHUD?.setPageTargets(book.pageList ?? []);
-        this.view.renderer.setStylesheetURL?.(bookContentStylesheetURL)
+        this.view.renderer.setBookContentStyles?.(bookContentStylesPromise)
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true, 'reader.open');
         applyStoredChromeInsets('reader.open');
         //        this.view.renderer.next()
@@ -13054,6 +13060,22 @@ window.nextSection = async () => {
     } else {
         await globalThis.reader?.view?.renderer?.nextSection?.();
     }
+}
+
+window.manabiReadAloudAdvanceToNextSection = async () => {
+    const reader = globalThis.reader;
+    const renderer = reader?.view?.renderer;
+    const sections = reader?.view?.book?.sections;
+    if (!renderer || !Array.isArray(sections)) return false;
+    const beforeIndex = getPrimaryRendererContentIndex(renderer);
+    if (!Number.isFinite(beforeIndex) || beforeIndex >= sections.length - 1) return false;
+    await renderer.nextSection?.();
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+        const afterIndex = getPrimaryRendererContentIndex(renderer);
+        if (Number.isFinite(afterIndex) && afterIndex !== beforeIndex) return true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
 }
 
 window.manabi_markAllSectionsAsRead = async () => {

@@ -843,14 +843,18 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
             || readerModeViewModel.isReaderMode
             || readerModeViewModel.pendingReaderModeURL != nil
             || renderedCanonicalURL == contentCanonicalURL
-        let hasRecordedAudio = readerMediaPlayerViewModel.hasRecordedAudio || (readerContent.content?.hasAudio ?? false)
-        let ttsAvailable = isReaderModeContent
-            && !hasRecordedAudio
-            && (readerContent.content?.hasHTML ?? false)
+        let availability = ReaderAudioAvailabilitySnapshot(
+            contentURL: readerContent.content?.url,
+            pageURL: webViewPageURL,
+            isReaderModeContent: isReaderModeContent,
+            recordedAudioURLs: readerContent.content?.resolvedVoiceAudioURLs ?? [],
+            hasLoadedRecordedMedia: readerMediaPlayerViewModel.hasRecordedAudio
+        )
+        let hasRecordedAudio = availability.hasRecordedAudio
+        let ttsAvailable = availability.canReadAloud
         let usesTTS = readerMediaPlayerViewModel.playbackSource == .aiTextToSpeech || (!hasRecordedAudio && ttsAvailable)
-        let mediaAvailable = hasRecordedAudio
+        let mediaAvailable = availability.hasAnyPlayableAudio
             || readerMediaPlayerViewModel.hasPreparedAITTS
-            || ttsAvailable
         if isReaderModeContent {
             guard !webViewPageURL.isReaderURLLoaderURL else {
                 return

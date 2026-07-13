@@ -43,6 +43,16 @@ fileprivate func ebookEntrySubpath(from url: URL) -> String? {
         .value
 }
 
+func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
+    guard url.path == "/processed-section" else {
+        return .userInitiated
+    }
+    let isDirectForegroundSection = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?
+        .contains(where: { $0.name == "direct" && $0.value == "1" }) == true
+    return isDirectForegroundSection ? .userInitiated : .utility
+}
+
 private enum EbookBase64URLByte {
     static let plus = UInt8(ascii: "+")
     static let hyphen = UInt8(ascii: "-")
@@ -706,12 +716,13 @@ fileprivate actor EbookViewerAssetCache {
     private var dataByURL = [URL: Data]()
 
     func data(for fileURL: URL) throws -> Data {
-        let key = fileURL.standardizedFileURL
-        if let cached = dataByURL[key] {
+        if let cached = dataByURL[fileURL] {
             return cached
         }
-        let data = try Data(contentsOf: key, options: [.mappedIfSafe])
-        dataByURL[key] = data
+        // Callers provide Bundle.module URLs, so normalization only adds filesystem
+        // metadata I/O before an otherwise in-memory cache hit.
+        let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+        dataByURL[fileURL] = data
         return data
     }
 }
@@ -872,7 +883,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
         
-        Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
+        Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
             if url.path == "/processed-section" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/processed-section"),

@@ -1,10 +1,96 @@
 import XCTest
+import AVFoundation
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
+@MainActor
+private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
+    var delegate: (any AVSpeechSynthesizerDelegate)?
+    var isSpeaking = false
+    var isPaused = false
+    private(set) var spokenTexts = [String]()
+
+    func speak(_ utterance: AVSpeechUtterance) {
+        spokenTexts.append(utterance.speechString)
+        isSpeaking = true
+        isPaused = false
+    }
+
+    func stopSpeaking(at boundary: AVSpeechBoundary) -> Bool {
+        let wasActive = isSpeaking || isPaused
+        isSpeaking = false
+        isPaused = false
+        return wasActive
+    }
+
+    func pauseSpeaking(at boundary: AVSpeechBoundary) -> Bool {
+        guard isSpeaking else { return false }
+        isSpeaking = false
+        isPaused = true
+        return true
+    }
+
+    func continueSpeaking() -> Bool {
+        guard isPaused else { return false }
+        isPaused = false
+        isSpeaking = true
+        return true
+    }
+}
+
 final class ReaderMediaMetadataTests: XCTestCase {
+    func testAudioAvailabilitySnapshotKeepsRecordedAndReadAloudIndependent() {
+        let ebookURL = URL(string: "ebook://book/section.epub")!
+        let ebook = ReaderAudioAvailabilitySnapshot(
+            contentURL: ebookURL,
+            pageURL: ebookURL,
+            isReaderModeContent: false,
+            recordedAudioURLs: []
+        )
+        XCTAssertFalse(ebook.hasRecordedAudio)
+        XCTAssertTrue(ebook.canReadAloud)
+        XCTAssertTrue(ebook.hasAnyPlayableAudio)
+
+        let articleURL = URL(string: "https://example.com/article")!
+        let recordedArticle = ReaderAudioAvailabilitySnapshot(
+            contentURL: articleURL,
+            pageURL: articleURL,
+            isReaderModeContent: false,
+            recordedAudioURLs: [URL(string: "https://example.com/audio.m4a")!]
+        )
+        XCTAssertTrue(recordedArticle.hasRecordedAudio)
+        XCTAssertFalse(recordedArticle.canReadAloud)
+        XCTAssertTrue(recordedArticle.hasAnyPlayableAudio)
+    }
+
+    @MainActor
+    func testInjectedSpeechControllerMakesReadAloudPlaybackDeterministic() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let controller = ReaderReadAloudController(synthesizer: synthesizer)
+        let viewModel = ReaderMediaPlayerViewModel(readAloudController: controller)
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [
+                ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One."),
+                ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two."),
+            ],
+            preferredLanguage: "en-US",
+            autoplay: true
+        ))
+        XCTAssertEqual(synthesizer.spokenTexts, ["One.", "Two."])
+        XCTAssertTrue(viewModel.isPlaying)
+
+        viewModel.pauseAITTS()
+        XCTAssertTrue(synthesizer.isPaused)
+        XCTAssertFalse(viewModel.isPlaying)
+
+        viewModel.playAITTS()
+        XCTAssertTrue(synthesizer.isSpeaking)
+        XCTAssertTrue(viewModel.isPlaying)
+    }
+
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(name)
@@ -180,6 +266,82 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertNil(viewModel.autoplayRequestToken)
         XCTAssertTrue(viewModel.hasPreparedAITTS)
         XCTAssertFalse(viewModel.isPlaying)
+    }
+
+    @MainActor
+    func testEbookSectionChangeInvalidatesPreparedReadAloudWithoutAffectingSameSection() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US",
+                ebookSectionIndex: 4,
+                autoplay: false
+            )
+        )
+
+        viewModel.invalidateReadAloudForEbookSectionChange(4)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertTrue(viewModel.isMediaPlayerPresented)
+
+        viewModel.invalidateReadAloudForEbookSectionChange(5)
+        XCTAssertFalse(viewModel.hasPreparedAITTS)
+        XCTAssertFalse(viewModel.isMediaPlayerPresented)
+    }
+
+    @MainActor
+    func testClosingReadAloudRetainsPreparedQueueForManualResume() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US",
+                autoplay: false
+            )
+        )
+
+        viewModel.closePlaybackPresentation()
+
+        XCTAssertFalse(viewModel.isMediaPlayerPresented)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+    }
+
+    @MainActor
+    func testBackgroundPauseKeepsReadAloudPreparedForManualResume() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US",
+                autoplay: false
+            )
+        )
+        viewModel.isPlaying = true
+
+        viewModel.pauseReadAloudForBackgroundIfNeeded()
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertTrue(viewModel.isMediaPlayerPresented)
+    }
+
+    @MainActor
+    func testSeekingReadAloudToEndClearsSavedResumePosition() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        viewModel.registerPlaybackStart(contentKey: "read-aloud-end-\(UUID().uuidString)")
+        let utterances = [
+            ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One."),
+            ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two."),
+        ]
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: false))
+        viewModel.seekAITTS(toProgressValue: 1, shouldPlay: false)
+        viewModel.seekAITTS(toProgressValue: 2, shouldPlay: false)
+
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: false))
+
+        XCTAssertEqual(viewModel.ttsProgressValue, 0)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
     }
 
     @MainActor

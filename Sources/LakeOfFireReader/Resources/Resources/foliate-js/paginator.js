@@ -1,7 +1,7 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
-const FOLIATE_BOOK_CONTENT_STYLESHEET_ID = 'foliate-book-content-stylesheet';
+const FOLIATE_BOOK_CONTENT_STYLE_ID = 'foliate-book-content-style';
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -1995,8 +1995,8 @@ export class Paginator extends HTMLElement {
     #lockedAt = null
     #queuedPageTurn = null
     #styles
-    #stylesheetURL = null
-    #stylesheetReadyMap = new WeakMap()
+    #bookContentStylesPromise = null
+    #bookContentStylesReadyMap = new WeakMap()
     #styleMap = new WeakMap()
     #scrollBounds
     #touchState
@@ -2342,7 +2342,7 @@ export class Paginator extends HTMLElement {
     }
     #installStyleElementsForDocument(doc) {
         if (!doc?.head) return Promise.resolve()
-        const stylesheetReady = this.#applyStylesheetURLToDocument(doc)
+        const stylesheetReady = this.#applyBookContentStylesToDocument(doc)
         if (this.#styleMap.has(doc) || this.#styles == null) return stylesheetReady
         const $styleBefore = doc.createElement('style')
         doc.head.prepend($styleBefore)
@@ -2351,39 +2351,26 @@ export class Paginator extends HTMLElement {
         this.#styleMap.set(doc, [$styleBefore, $style])
         return stylesheetReady
     }
-    #applyStylesheetURLToDocument(doc, stylesheetURL = this.#stylesheetURL) {
-        if (!doc?.head || !stylesheetURL) return Promise.resolve()
-        let link = doc.getElementById(FOLIATE_BOOK_CONTENT_STYLESHEET_ID)
-        const existingReady = this.#stylesheetReadyMap.get(doc)
-        if (
-            existingReady?.stylesheetURL === stylesheetURL
-            && link?.localName === 'link'
-            && link.href === stylesheetURL
-        ) {
+    #applyBookContentStylesToDocument(doc, stylesPromise = this.#bookContentStylesPromise) {
+        if (!doc?.head || !stylesPromise) return Promise.resolve()
+        const existingReady = this.#bookContentStylesReadyMap.get(doc)
+        if (existingReady?.stylesPromise === stylesPromise) {
             return existingReady.promise
         }
-        if (link && link.localName !== 'link') {
-            link.remove()
-            link = null
-        }
-        const isNewLink = !link
-        if (!link) {
-            link = doc.createElement('link')
-            link.id = FOLIATE_BOOK_CONTENT_STYLESHEET_ID
-            link.rel = 'stylesheet'
-        }
-        if (link.rel !== 'stylesheet') link.rel = 'stylesheet'
-        const alreadyLoaded = link.href === stylesheetURL && link.sheet != null
-        const promise = alreadyLoaded || typeof link.addEventListener !== 'function'
-            ? Promise.resolve()
-            : new Promise(resolve => {
-                link.addEventListener('load', resolve, { once: true })
-                // A failed optional reader stylesheet must not strand rendering.
-                link.addEventListener('error', resolve, { once: true })
-            })
-        this.#stylesheetReadyMap.set(doc, { stylesheetURL, promise })
-        if (link.href !== stylesheetURL) link.href = stylesheetURL
-        if (isNewLink) doc.head.append(link)
+        const promise = Promise.resolve(stylesPromise).then(styles => {
+            let style = doc.getElementById(FOLIATE_BOOK_CONTENT_STYLE_ID)
+            if (style && style.localName !== 'style') {
+                style.remove()
+                style = null
+            }
+            if (!style) {
+                style = doc.createElement('style')
+                style.id = FOLIATE_BOOK_CONTENT_STYLE_ID
+                doc.head.prepend(style)
+            }
+            if (style.textContent !== styles) style.textContent = styles
+        })
+        this.#bookContentStylesReadyMap.set(doc, { stylesPromise, promise })
         return promise
     }
     #applyStylesToDocument(doc, styles = this.#styles) {
@@ -6348,9 +6335,12 @@ export class Paginator extends HTMLElement {
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
-    setStylesheetURL(stylesheetURL) {
-        this.#stylesheetURL = stylesheetURL || null
-        this.#applyStylesheetURLToDocument(this.#view?.document, this.#stylesheetURL)
+    setBookContentStyles(stylesPromise) {
+        this.#bookContentStylesPromise = Promise.resolve(stylesPromise)
+        this.#applyBookContentStylesToDocument(
+            this.#view?.document,
+            this.#bookContentStylesPromise
+        )
     }
     focusView() {
         this.#view?.document?.defaultView?.focus?.()
