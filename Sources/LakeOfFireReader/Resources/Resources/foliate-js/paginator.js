@@ -1,6 +1,7 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
+const FOLIATE_BOOK_CONTENT_STYLESHEET_ID = 'foliate-book-content-stylesheet';
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -1079,6 +1080,42 @@ class View {
                             cacheWarmer: this.#isCacheWarmer,
                         });
 
+                        const directionalFontFamily = this.#vertical
+                            ? doc?.documentElement?.dataset?.mnbVerticalFontFamily
+                                ?? doc?.body?.dataset?.mnbVerticalFontFamily
+                            : doc?.documentElement?.dataset?.mnbHorizontalFontFamily
+                                ?? doc?.body?.dataset?.mnbHorizontalFontFamily;
+                        if (
+                            !this.#isCacheWarmer
+                            && doc?.fonts?.load
+                            && (directionalFontFamily === 'YuKyokasho'
+                                || directionalFontFamily === 'YuKyokasho Yoko')
+                        ) {
+                            // Column geometry depends on the selected face's metrics. Waiting here
+                            // prevents WebKit from laying out every column once with fallback metrics
+                            // and again when the locally served reader font becomes usable.
+                            const fontLoadStartedAt = manabiPerfNow();
+                            const fontSize = doc?.body?.style?.fontSize || '16px';
+                            let loadedFaceCount = 0;
+                            let fontLoadError = null;
+                            try {
+                                const loadedFaces = await doc.fonts.load(
+                                    `500 ${fontSize} "${directionalFontFamily}"`,
+                                    '日'
+                                );
+                                loadedFaceCount = loadedFaces?.length ?? 0;
+                            } catch (error) {
+                                fontLoadError = error?.message || String(error);
+                            }
+                            manabiTimelineMeasure('paginator.view.directionalFontReady', fontLoadStartedAt, {
+                                ...basePayload,
+                                family: directionalFontFamily,
+                                fontSize,
+                                loadedFaceCount,
+                                error: fontLoadError,
+                            }, 0);
+                        }
+
                         this.#contentRange.selectNodeContents(doc.body)
 
                         const layout = await manabiRunPaginatorBoundary(
@@ -1958,6 +1995,8 @@ export class Paginator extends HTMLElement {
     #lockedAt = null
     #queuedPageTurn = null
     #styles
+    #stylesheetURL = null
+    #stylesheetReadyMap = new WeakMap()
     #styleMap = new WeakMap()
     #scrollBounds
     #touchState
@@ -2302,13 +2341,50 @@ export class Paginator extends HTMLElement {
         view.element.remove()
     }
     #installStyleElementsForDocument(doc) {
-        if (!doc?.head) return
-        if (this.#styleMap.has(doc)) return
+        if (!doc?.head) return Promise.resolve()
+        const stylesheetReady = this.#applyStylesheetURLToDocument(doc)
+        if (this.#styleMap.has(doc) || this.#styles == null) return stylesheetReady
         const $styleBefore = doc.createElement('style')
         doc.head.prepend($styleBefore)
         const $style = doc.createElement('style')
         doc.head.append($style)
         this.#styleMap.set(doc, [$styleBefore, $style])
+        return stylesheetReady
+    }
+    #applyStylesheetURLToDocument(doc, stylesheetURL = this.#stylesheetURL) {
+        if (!doc?.head || !stylesheetURL) return Promise.resolve()
+        let link = doc.getElementById(FOLIATE_BOOK_CONTENT_STYLESHEET_ID)
+        const existingReady = this.#stylesheetReadyMap.get(doc)
+        if (
+            existingReady?.stylesheetURL === stylesheetURL
+            && link?.localName === 'link'
+            && link.href === stylesheetURL
+        ) {
+            return existingReady.promise
+        }
+        if (link && link.localName !== 'link') {
+            link.remove()
+            link = null
+        }
+        const isNewLink = !link
+        if (!link) {
+            link = doc.createElement('link')
+            link.id = FOLIATE_BOOK_CONTENT_STYLESHEET_ID
+            link.rel = 'stylesheet'
+        }
+        if (link.rel !== 'stylesheet') link.rel = 'stylesheet'
+        const alreadyLoaded = link.href === stylesheetURL && link.sheet != null
+        const promise = alreadyLoaded || typeof link.addEventListener !== 'function'
+            ? Promise.resolve()
+            : new Promise(resolve => {
+                link.addEventListener('load', resolve, { once: true })
+                // A failed optional reader stylesheet must not strand rendering.
+                link.addEventListener('error', resolve, { once: true })
+            })
+        this.#stylesheetReadyMap.set(doc, { stylesheetURL, promise })
+        if (link.href !== stylesheetURL) link.href = stylesheetURL
+        if (isNewLink) doc.head.append(link)
+        return promise
     }
     #applyStylesToDocument(doc, styles = this.#styles) {
         const $$styles = this.#styleMap.get(doc)
@@ -5288,7 +5364,8 @@ export class Paginator extends HTMLElement {
                     })
                 } else {
                     if (doc.head) {
-                        this.#installStyleElementsForDocument(doc)
+                        await this.#installStyleElementsForDocument(doc)
+                        this.#applyStylesToDocument(doc)
                     }
                     await onLoad?.({
                         doc,
@@ -5718,10 +5795,6 @@ export class Paginator extends HTMLElement {
                 if (MANABI_ENABLE_SIMPLIFIED_SECTION_LOADING) {
                     const oldIndex = this.#index
                     const onLoad = async (detail) => {
-                        if (!this.#isCacheWarmer) {
-                            this.setStyles(this.#styles)
-                        }
-
                         this.dispatchEvent(new CustomEvent('load', {
                             detail
                         }))
@@ -5763,10 +5836,6 @@ export class Paginator extends HTMLElement {
 
                 const oldIndex = this.#index
                 const onLoad = async (detail) => {
-                    if (!this.#isCacheWarmer) {
-                        this.setStyles(this.#styles)
-                    }
-
                     this.dispatchEvent(new CustomEvent('load', {
                         detail
                     }))
@@ -6267,7 +6336,9 @@ export class Paginator extends HTMLElement {
         return []
     }
     setStyles(styles) {
+        if (styles == null) return
         this.#styles = styles
+        this.#installStyleElementsForDocument(this.#view?.document)
         this.#applyStylesToDocument(this.#view?.document, styles)
 
         //        // NOTE: needs `requestAnimationFrame` in Chromium
@@ -6276,6 +6347,10 @@ export class Paginator extends HTMLElement {
 
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+    }
+    setStylesheetURL(stylesheetURL) {
+        this.#stylesheetURL = stylesheetURL || null
+        this.#applyStylesheetURLToDocument(this.#view?.document, this.#stylesheetURL)
     }
     focusView() {
         this.#view?.document?.defaultView?.focus?.()

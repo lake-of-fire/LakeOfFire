@@ -149,6 +149,20 @@ private struct ReaderSizeTrackingCacheBucket: Codable {
     }
 }
 
+private let readerPaginationSizeTrackingCache = PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
+    namespace: "reader-pagination-size-tracking-cache-v2",
+    version: 2,
+    totalBytesLimit: 20 * 1024 * 1024,
+    countLimit: 10_000,
+    inlineStorageThreshold: 64 * 1024,
+    writeMode: .asynchronous(batchDelay: 0.15)
+)
+
+/// Opens the shared pagination cache before a reader view needs to install its message handlers.
+public func prewarmReaderPaginationSizeTrackingCache() {
+    _ = readerPaginationSizeTrackingCache
+}
+
 @MainActor
 fileprivate class ReaderMessageHandlers: Identifiable {
     var forceReaderModeWhenAvailable: Bool
@@ -172,13 +186,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
     private var lastNonEBookReaderProgress: (url: URL, fractionalCompletion: Float)?
-    private let trackingSizeCache = PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
-        namespace: "reader-pagination-size-tracking-cache-v2",
-        version: 2,
-        totalBytesLimit: 20 * 1024 * 1024,
-        countLimit: 10_000,
-        inlineStorageThreshold: 64 * 1024
-    )
     private let trackingSizeHistoryLimit = 10
     fileprivate var automaticReadabilityTask: Task<Void, Never>?
 
@@ -379,7 +386,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 blockStart: blockStart
                             )
                         }
-                        var bucket = trackingSizeCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
+                        var bucket = readerPaginationSizeTrackingCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
                         let snapshot = ReaderSizeTrackingCacheSnapshot(
                             cacheKey: key,
                             savedAt: Date(),
@@ -387,11 +394,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             entries: decoded
                         )
                         bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
-                        trackingSizeCache.setValue(bucket, forKey: bucketKey)
+                        readerPaginationSizeTrackingCache.setValue(bucket, forKey: bucketKey)
                     }
                 case "get":
                     guard let requestId = body["requestId"] as? String else { return }
-                    if let bucket = trackingSizeCache.value(forKey: bucketKey),
+                    if let bucket = readerPaginationSizeTrackingCache.value(forKey: bucketKey),
                        let cached = bucket.snapshot(for: key)?.entries {
                         do {
                             let data = try JSONEncoder().encode(cached)

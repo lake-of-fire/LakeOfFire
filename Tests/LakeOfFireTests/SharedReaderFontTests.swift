@@ -14,7 +14,8 @@ final class SharedReaderFontTests: XCTestCase {
             localFileURL: fileURL,
             mimeType: "font/woff2",
             format: "woff2",
-            supportedFamilyNames: ["YuKyokasho", "YuKyokasho Yoko"]
+            horizontalFamilyName: "YuKyokasho",
+            verticalFamilyName: "YuKyokasho Yoko"
         )
     }
 
@@ -87,6 +88,10 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertEqual(response.response.value(forHTTPHeaderField: "Content-Type"), "text/css")
         let css = try XCTUnwrap(String(data: response.data, encoding: .utf8))
         XCTAssertTrue(css.contains("font-family: 'YuKyokasho'"), css)
+        XCTAssertTrue(css.contains("font-family: 'YuKyokasho Yoko'"), css)
+        XCTAssertTrue(css.contains("--mnb-content-font: 'YuKyokasho'"), css)
+        XCTAssertTrue(css.contains("--mnb-content-vertical-font: 'YuKyokasho Yoko'"), css)
+        XCTAssertTrue(css.contains("body.reader-vertical-writing"), css)
         XCTAssertTrue(css.contains(":not(rt)"), css)
         XCTAssertTrue(css.contains("rt {\n  font-family: -apple-system"), css)
         XCTAssertTrue(css.contains("internal://local/manabi-fonts/YuKyokasho.woff2"), css)

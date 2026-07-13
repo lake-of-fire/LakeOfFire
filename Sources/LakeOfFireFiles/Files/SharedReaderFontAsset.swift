@@ -6,21 +6,30 @@ public struct SharedReaderFontAsset: Equatable, Sendable {
     public let localFileURL: URL
     public let mimeType: String
     public let format: String
-    public let supportedFamilyNames: [String]
+    public let horizontalFamilyName: String
+    public let verticalFamilyName: String
     public let publicFilenameBase: String
 
     public init(
         localFileURL: URL,
         mimeType: String,
         format: String,
-        supportedFamilyNames: [String],
+        horizontalFamilyName: String,
+        verticalFamilyName: String,
         publicFilenameBase: String = "YuKyokasho"
     ) {
         self.localFileURL = localFileURL
         self.mimeType = mimeType
         self.format = format
-        self.supportedFamilyNames = supportedFamilyNames
+        self.horizontalFamilyName = horizontalFamilyName
+        self.verticalFamilyName = verticalFamilyName
         self.publicFilenameBase = publicFilenameBase
+    }
+
+    public var supportedFamilyNames: [String] {
+        horizontalFamilyName == verticalFamilyName
+            ? [horizontalFamilyName]
+            : [horizontalFamilyName, verticalFamilyName]
     }
 
     public var publicFilename: String {
@@ -226,22 +235,31 @@ public func sharedReaderFontResponse(
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
 
+        let fontFaces = asset.supportedFamilyNames.map { supportedFamilyName in
+            """
+            @font-face {
+              font-family: '\(supportedFamilyName)';
+              font-weight: 500;
+              font-style: normal;
+              src: url("\(fontURL.absoluteString)") format("\(asset.format)");
+              font-display: swap;
+            }
+            """
+        }.joined(separator: "\n")
         let css = """
-        @font-face {
-          font-family: '\(familyName)';
-          font-weight: 500;
-          font-style: normal;
-          src: url("\(fontURL.absoluteString)") format("\(asset.format)");
-          font-display: swap;
-        }
+        \(fontFaces)
         :root {
-          --mnb-content-font: '\(familyName)';
-          --mnb-content-vertical-font: '\(familyName)';
+          --mnb-content-font: '\(asset.horizontalFamilyName)';
+          --mnb-content-vertical-font: '\(asset.verticalFamilyName)';
         }
         html,
         body,
         body *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
-          font-family: '\(familyName)' !important;
+          font-family: var(--mnb-content-font, '\(asset.horizontalFamilyName)') !important;
+        }
+        body.reader-vertical-writing,
+        body.reader-vertical-writing *:not(.mnb-tracking-container):not(.mnb-tracking-container *):not(#page-tracking-container):not(#page-tracking-container *):not(#nav-hidden-buttons):not(#nav-hidden-buttons *):not(#nav-bar):not(#nav-bar *):not(rt) {
+          font-family: var(--mnb-content-vertical-font, '\(asset.verticalFamilyName)') !important;
         }
         rt {
           font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', system-ui, sans-serif !important;

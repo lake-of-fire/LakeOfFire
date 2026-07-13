@@ -1,0 +1,376 @@
+@namespace epub "http://www.idpf.org/2007/ops";
+html {
+    color-scheme: light dark;
+    cursor: inherit;
+}
+html:lang(ja),
+body:lang(ja),
+:lang(ja) {
+    line-break: strict;
+    -webkit-line-break: strict;
+    word-break: normal;
+    overflow-wrap: normal;
+}
+/* https://github.com/whatwg/html/issues/5426 */
+@media (prefers-color-scheme: dark) {
+    a:link {
+        color: lightblue;
+    }
+}
+p, li, blockquote, dd {
+    line-height: 1.4;
+    text-align: start;
+    -webkit-text-align-last: auto;
+    text-align-last: auto;
+    -webkit-hyphens: auto;
+    hyphens: auto;
+    -webkit-hyphenate-limit-before: 3;
+    -webkit-hyphenate-limit-after: 2;
+    -webkit-hyphenate-limit-lines: 2;
+    hanging-punctuation: allow-end last;
+    widows: 2;
+}
+/*
+   Neutralize book-provided body/p justification as well. Some EPUBs ship
+   text-align: justify on body/p, which causes punctuation spacing artifacts.
+*/
+body, p, li, blockquote, dd {
+    text-align: start !important;
+    -webkit-text-align-last: auto !important;
+    text-align-last: auto !important;
+}
+/* prevent the above from overriding the align attribute */
+[align="left"] { text-align: left !important; }
+[align="right"] { text-align: right !important; }
+[align="center"] { text-align: center !important; }
+
+pre {
+    white-space: pre-wrap !important;
+}
+aside[epub|type~="endnote"],
+aside[epub|type~="footnote"],
+aside[epub|type~="note"],
+aside[epub|type~="rearnote"] {
+    display: none;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    background: inherit !important;
+    color: inherit !important;
+}
+
+m-c,
+m-s {
+    display: contents !important;
+}
+
+m-t {
+    contain: style paint !important;
+}
+
+m-m {
+    /* Keep book segments atomic so page turns never split a segment across pages. */
+    display: inline-block !important;
+    contain: style paint !important;
+    vertical-align: baseline !important;
+    max-inline-size: 100% !important;
+    break-inside: avoid !important;
+    break-before: avoid !important;
+    break-after: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid !important;
+}
+body.reader-vertical-writing[data-is-ebook="true"] m-m {
+    display: inline !important;
+    contain: none !important;
+    vertical-align: baseline !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+    -webkit-column-break-inside: auto !important;
+}
+html.vrtl body,
+body[data-mnb-foliate-writing-direction="vertical"],
+body.reader-vertical-writing {
+    --mnb-highlight-gradient-direction: to right;
+}
+html.vrtl body [data-mnb-horizontal-writing-island="true"],
+html.vrtl body m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+html.vrtl body m-t[data-mnb-horizontal-writing-island="true"],
+body[data-mnb-foliate-writing-direction="vertical"] [data-mnb-horizontal-writing-island="true"],
+body[data-mnb-foliate-writing-direction="vertical"] m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+body[data-mnb-foliate-writing-direction="vertical"] m-t[data-mnb-horizontal-writing-island="true"],
+body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
+body.reader-vertical-writing m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+body.reader-vertical-writing m-t[data-mnb-horizontal-writing-island="true"] {
+    --mnb-highlight-gradient-direction: to bottom;
+}
+body.reader-vertical-writing [data-mnb-display-token="1"] {
+    unicode-bidi: isolate;
+}
+body.reader-vertical-writing .mnb-tate-upright {
+    text-orientation: upright !important;
+}
+body.reader-vertical-writing .mnb-tate-upright-digit {
+    display: inline-block;
+    inline-size: 1em;
+    max-inline-size: 1em;
+    text-align: center;
+    line-height: 1;
+    font-feature-settings: "halt" 1, "vhal" 1;
+    font-variant-numeric: lining-nums proportional-nums;
+    direction: ltr;
+    unicode-bidi: isolate;
+}
+body.reader-vertical-writing .mnb-tate-upright-latin,
+body.reader-vertical-writing .mnb-tate-upright-stacked-number {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    inline-size: 1em;
+    max-inline-size: 1em;
+    direction: ltr;
+    unicode-bidi: isolate;
+    overflow: clip;
+}
+body.reader-vertical-writing .mnb-tate-upright-stacked-number {
+    letter-spacing: -0.02em;
+    font-feature-settings: "halt" 1, "vhal" 1;
+    font-variant-numeric: lining-nums proportional-nums;
+}
+body.reader-vertical-writing .mnb-tate-upright-char {
+    display: inline-block;
+    inline-size: 1em;
+    max-inline-size: 1em;
+    text-align: center;
+    line-height: 0.94;
+}
+body.reader-vertical-writing .mnb-tate-sideways-latin {
+    display: inline-block;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    direction: ltr;
+    unicode-bidi: isolate;
+    transform-origin: center center;
+    white-space: nowrap;
+}
+@property --word-tracking-unknown-highlight-nav-conditional {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-familiar-highlight-nav-conditional {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-learning-highlight-nav-conditional {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-known-highlight-nav-conditional {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-unknown-highlight {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-familiar-highlight {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-learning-highlight {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+@property --word-tracking-known-highlight {
+    syntax: '<color>';
+    inherits: true;
+    initial-value: transparent;
+}
+body.reader-vertical-writing ruby > m-t {
+    display: inline !important;
+}
+body.reader-vertical-writing m-t {
+    /*
+       Preserve the ruby-reserved vertical line grid. The app stylesheet
+       normally tightens m-t to 1em for highlight bounds, but in vertical
+       EPUB layout that can collapse adjacent line boxes after m-m is
+       restored.
+    */
+    line-height: inherit !important;
+}
+body.reader-vertical-writing #reader-content .mnb-media-wrapper {
+    /*
+       Let vertical ebook media wrappers size to their media. Forcing these
+       wrappers to one full page can leave an empty page-sized wrapper before
+       the image itself when consecutive media pages are columnized.
+    */
+    block-size: fit-content !important;
+    width: fit-content !important;
+    max-block-size: 100% !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+    -webkit-column-break-inside: auto !important;
+}
+body.reader-vertical-writing:not([data-is-ebook="true"]) m-m > m-t {
+    /*
+       In vertical WebKit layout, line-height fixes the paragraph grid, but
+       an inline no-ruby segment's own rect still only covers the base glyph.
+       Reserve the missing rt lane, but clip tracking backgrounds to the
+       base glyph content so learning-status highlights do not fill it.
+       Target only direct surface children; ruby base text uses ruby > m-t
+       and already owns its annotation lane.
+    */
+    padding-right: 0.75em !important;
+    background-clip: content-box !important;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected,
+body.reader-vertical-writing:not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected {
+    background: transparent !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+}
+body.reader-vertical-writing:not([data-mnb-native-lookup-highlight-overlay="true"])[data-mnb-lookup-highlight-mode="word"] m-m.mnb-selected m-t,
+body.reader-vertical-writing:not([data-mnb-native-lookup-highlight-overlay="true"]):not([data-mnb-lookup-highlight-mode]) m-m.mnb-selected m-t {
+    background: var(--theme-selection-color) !important;
+    background-color: var(--theme-selection-color) !important;
+    background-image: none !important;
+    border-radius: var(--segment-match-border-radius);
+    box-shadow: 0 0 0 2px var(--theme-selection-color);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+body.reader-vertical-writing[data-mnb-native-lookup-highlight-overlay="true"] m-m.mnb-selected m-t {
+    background: transparent !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    box-shadow: none !important;
+}
+
+m-s ruby.mnb-gen > rt,
+m-s ruby.mnb-src > rt,
+m-s ruby.mnb-src-fwd > rt {
+    /*
+       Keep Manabi-owned ruby annotations in the historical Japanese sans stack.
+       Reader-selected surface fonts such as YuKyokasho should apply to the
+       sentence surface text, not to the compact annotation text.
+    */
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
+    line-height: 1em !important;
+    block-size: 1em !important;
+}
+
+body:not([data-mnb-romaji-mode-enabled="true"]) rt {
+    color: var(--theme-secondary-text) !important;
+    color: color-mix(in srgb, var(--theme-secondary-text) 85%, var(--theme-text-color) 15%) !important;
+}
+
+body[data-mnb-romaji-mode-enabled="true"] rt,
+body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before {
+    font-family: system-ui !important;
+    font-weight: 400 !important;
+    letter-spacing: normal !important;
+    color: var(--theme-text-color) !important;
+}
+
+body.reader-is-single-media-element-without-text {
+    --mnb-single-media-side-inset: min(var(--side-nav-width, 32px), 12vw);
+    box-sizing: border-box !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    min-width: 100vw !important;
+    min-height: 100vh !important;
+    margin: 0 !important;
+    padding-block: 0 !important;
+    padding-inline: var(--mnb-single-media-side-inset) !important;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    direction: ltr !important;
+    overflow: hidden !important;
+}
+body.reader-is-single-media-element-without-text .mnb-media-wrapper,
+body.reader-is-single-media-element-without-text .koboSpan,
+body.reader-is-single-media-element-without-text > :is(a, div, figure, p, span),
+body.reader-is-single-media-element-without-text .mnb-media-wrapper > a {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    direction: ltr !important;
+}
+body.reader-is-single-media-element-without-text :is(.h-valign-width, .v-valign-height) {
+    display: none !important;
+    inline-size: 0 !important;
+    block-size: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+body.reader-is-single-media-element-without-text :is(.inline-height, .inline-width) {
+    inline-size: auto !important;
+    block-size: auto !important;
+    width: auto !important;
+    height: auto !important;
+}
+body.reader-is-single-media-element-without-text .mnb-media-wrapper {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 100% !important;
+    height: 100% !important;
+    inline-size: 100% !important;
+    block-size: 100% !important;
+    max-inline-size: 100% !important;
+    max-block-size: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    overflow: visible !important;
+    text-align: center !important;
+}
+body.reader-is-single-media-element-without-text :is(img, svg, image, picture, video, object) {
+    max-inline-size: 100% !important;
+    max-block-size: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    width: auto !important;
+    height: auto !important;
+    margin: auto !important;
+    object-fit: contain !important;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    direction: ltr !important;
+}
+reader-sentinel {
+     position: relative !important;
+     display: inline-block !important;
+     width: 1px !important;
+     height: 1px !important;
+     padding: 0 !important;
+     contain: strict !important;
+     pointer-events: none !important;
+     opacity: 0 !important;
+     vertical-align: bottom !important;
+     break-before: avoid !important;
+     break-after: avoid !important;
+     break-inside: avoid !important;
+}

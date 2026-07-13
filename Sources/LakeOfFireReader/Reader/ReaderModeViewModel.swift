@@ -1436,7 +1436,7 @@ public class ReaderModeViewModel: ObservableObject {
                         + ' href=' + window.location.href
                         + ' fontsStatus=' + (document.fonts?.status || 'nil'));
                 };
-                const resolveStylesheetURL = (desiredFamily) => {
+                const resolveInitialStylesheetURL = (desiredFamily) => {
                     const family = desiredFamily || 'YuKyokasho';
                     return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
                 };
@@ -1447,7 +1447,7 @@ public class ReaderModeViewModel: ObservableObject {
                         || root?.dataset?.mnbHorizontalFontFamily
                         || globalThis.manabiHorizontalFontFamilyName
                         || 'YuKyokasho';
-                    const stylesheetURL = resolveStylesheetURL(family);
+                    const stylesheetURL = resolveInitialStylesheetURL(family);
                     let style = document.getElementById('mnb-custom-fonts-inline');
                     if (!style) {
                         style = document.createElement('link');
@@ -1469,7 +1469,6 @@ public class ReaderModeViewModel: ObservableObject {
                     return style;
                 };
                 globalThis.manabiReaderFontInjectionMode = 'local-scheme';
-                globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
                 let gateTimeout = null;
                 const scheduleGateTimeout = () => {
