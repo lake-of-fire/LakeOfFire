@@ -29,6 +29,35 @@ export const readerLoadPathsMatch = (lhs, rhs) => {
     return left != null && right != null && left === right
 }
 
+export const preparePaginatorLayoutMeasurement = ({
+    top,
+    vertical,
+    flow,
+    invalidateSizes,
+    enableColumnizationOptimizations = true,
+} = {}) => {
+    const usesVerticalPaginatedLayout =
+        enableColumnizationOptimizations && vertical === true && flow !== 'scrolled'
+    const hadVerticalPaginatedLayout = top?.classList?.contains?.('mnb-vertical-paginated') === true
+    if (hadVerticalPaginatedLayout !== usesVerticalPaginatedLayout) {
+        top?.classList?.toggle?.('mnb-vertical-paginated', usesVerticalPaginatedLayout)
+        invalidateSizes?.()
+    }
+    return usesVerticalPaginatedLayout
+}
+
+export const paginatorRenderSignature = ({ layout, vertical, rtl }) => JSON.stringify({
+    flow: layout?.flow ?? null,
+    width: Math.round(Number(layout?.width) || 0),
+    height: Math.round(Number(layout?.height) || 0),
+    gap: Number((Number(layout?.gap) || 0).toFixed(2)),
+    columnWidth: Number((Number(layout?.columnWidth) || 0).toFixed(2)),
+    divisor: Number(layout?.divisor) || 0,
+    vertical: !!vertical,
+    rtl: !!rtl,
+    typography: layout?.typographySignature ?? null,
+})
+
 export const lockedPageTurnQueueDecision = ({
     pendingQueueAllowed,
     pendingRequestedPage,

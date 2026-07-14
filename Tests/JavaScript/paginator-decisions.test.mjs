@@ -7,6 +7,8 @@ import {
     pageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision,
     paginatorAnchorForLocalPage,
+    paginatorRenderSignature,
+    preparePaginatorLayoutMeasurement,
     readerLoadPathsMatch,
     revealPaginatorDocument,
     resolveBlankPageTarget,
@@ -32,6 +34,53 @@ test('reader-load path matching normalizes encoding, queries, and relative prefi
     assert.equal(readerLoadPathsMatch('./item/xhtml/p-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
     assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml', 'item/xhtml/p-004.xhtml'), false)
     assert.equal(readerLoadPathsMatch(null, 'item/xhtml/p-003.xhtml'), false)
+})
+
+test('vertical paginated layout is applied before measurement and invalidated once', () => {
+    const classes = new Set()
+    const top = {
+        classList: {
+            contains: value => classes.has(value),
+            toggle(value, enabled) { enabled ? classes.add(value) : classes.delete(value) },
+        },
+        measuredHeight: () => classes.has('mnb-vertical-paginated') ? 747 : 711,
+    }
+    let invalidationCount = 0
+    const before = top.measuredHeight()
+    assert.equal(preparePaginatorLayoutMeasurement({
+        top,
+        vertical: true,
+        flow: null,
+        invalidateSizes: () => { invalidationCount += 1 },
+    }), true)
+    const after = top.measuredHeight()
+    preparePaginatorLayoutMeasurement({
+        top,
+        vertical: true,
+        flow: null,
+        invalidateSizes: () => { invalidationCount += 1 },
+    })
+
+    assert.equal(before, 711)
+    assert.equal(after, 747)
+    assert.equal(invalidationCount, 1)
+    assert.equal(preparePaginatorLayoutMeasurement({ top, vertical: true, flow: 'scrolled' }), false)
+})
+
+test('render signatures are stable for identical layout inputs', () => {
+    const input = {
+        layout: {
+            flow: 'paginated', width: 390, height: 844, gap: 12,
+            columnWidth: 390, divisor: 1, typographySignature: 'book-css-v1',
+        },
+        vertical: false,
+        rtl: false,
+    }
+    assert.equal(paginatorRenderSignature(input), paginatorRenderSignature(input))
+    assert.notEqual(
+        paginatorRenderSignature(input),
+        paginatorRenderSignature({ ...input, vertical: true }),
+    )
 })
 
 test('blank-page correction remains within content sentinels', () => {

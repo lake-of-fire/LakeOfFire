@@ -9,6 +9,8 @@ import {
     pageSummaryIsVisiblyBlank as manabiPageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision as manabiPageTurnBoundaryDecision,
     paginatorAnchorForLocalPage as manabiPaginatorAnchorForLocalPage,
+    paginatorRenderSignature as manabiPaginatorRenderSignature,
+    preparePaginatorLayoutMeasurement as manabiPreparePaginatorLayoutMeasurement,
     readerLoadPathsMatch as manabiReaderLoadPathsMatch,
     revealPaginatorDocument as manabiRevealPaginatorDocument,
     resolveBlankPageTarget as manabiResolveBlankPageTarget,
@@ -24,6 +26,7 @@ export {
     manabiNormalizeSingleMediaPageTarget,
     manabiPageSummaryIsVisiblyBlank,
     manabiPaginatorAnchorForLocalPage,
+    manabiPreparePaginatorLayoutMeasurement,
     manabiResolveBlankPageTarget,
     manabiShouldSuppressPostPageTurnDuplicate,
 }
@@ -272,25 +275,6 @@ const manabiSetPropertyIfChanged = (style, property, value) => {
     }
     style.setProperty(property, value);
     return true;
-};
-export const manabiPreparePaginatorLayoutMeasurement = ({
-    top,
-    vertical,
-    flow,
-    invalidateSizes,
-    enableColumnizationOptimizations = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS,
-} = {}) => {
-    const usesVerticalPaginatedLayout =
-        enableColumnizationOptimizations && vertical === true && flow !== 'scrolled';
-    const hadVerticalPaginatedLayout = top?.classList?.contains?.('mnb-vertical-paginated') === true;
-    const layoutModeChanged = hadVerticalPaginatedLayout !== usesVerticalPaginatedLayout;
-    if (layoutModeChanged) {
-        top?.classList?.toggle?.('mnb-vertical-paginated', usesVerticalPaginatedLayout);
-    }
-    if (layoutModeChanged && typeof invalidateSizes === 'function') {
-        invalidateSizes();
-    }
-    return usesVerticalPaginatedLayout;
 };
 const manabiBlobResourceInfo = url => {
     try {
@@ -1122,16 +1106,10 @@ class View {
         doc.body.classList.toggle('reader-vertical-writing', this.#vertical)
 
         const logReaderLoad = manabiShouldLogPaginatorReaderLoad(this.#isCacheWarmer);
-        const renderSignature = JSON.stringify({
-            flow: layout.flow ?? null,
-            width: Math.round(Number(layout.width) || 0),
-            height: Math.round(Number(layout.height) || 0),
-            gap: manabiRound(Number(layout.gap) || 0, 2),
-            columnWidth: manabiRound(Number(layout.columnWidth) || 0, 2),
-            divisor: Number(layout.divisor) || 0,
-            vertical: !!this.#vertical,
-            rtl: !!this.#rtl,
-            typography: layout.typographySignature ?? null,
+        const renderSignature = manabiPaginatorRenderSignature({
+            layout,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
         })
         const renderPayload = {
             flow: layout.flow ?? null,
