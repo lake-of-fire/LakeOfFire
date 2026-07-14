@@ -441,15 +441,18 @@ public class ReaderFileManager: ObservableObject {
     }
 
     @MainActor
-    private func publishDiscoveredFiles(_ discoveredFileRefs: [ThreadSafeReference<ContentFile>]) async throws {
+    func publishDiscoveredFiles(
+        _ discoveredFileRefs: [ThreadSafeReference<ContentFile>],
+        realmConfiguration: Realm.Configuration = ReaderContentLoader.historyRealmConfiguration
+    ) async throws {
         guard !discoveredFileRefs.isEmpty else {
             return
         }
-        let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-        let discoveredFiles = discoveredFileRefs.compactMap { realm.resolve($0) }
-        let frozenDiscoveredFiles = discoveredFiles.map { $0.freeze() }
+        let realm = try await Realm.open(configuration: realmConfiguration)
         var mergedFiles = files ?? []
-        for discoveredFile in frozenDiscoveredFiles {
+        for discoveredFileRef in discoveredFileRefs {
+            guard let discoveredFile = realm.resolve(discoveredFileRef),
+                  !discoveredFile.isDeleted else { continue }
             if let existingIndex = mergedFiles.firstIndex(where: { $0.url == discoveredFile.url }) {
                 mergedFiles[existingIndex] = discoveredFile
             } else {
@@ -614,10 +617,7 @@ public class ReaderFileManager: ObservableObject {
                         try Task.checkCancellation()
                         return realm.resolve($0)
                     }
-                    self.files = try files.map {
-                        try Task.checkCancellation()
-                        return $0.freeze()
-                    }
+                    self.files = files
                     let discoveredURLs = try files.map {
                         try Task.checkCancellation()
                         return $0.url
