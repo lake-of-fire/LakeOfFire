@@ -7,6 +7,7 @@ import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
+import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import {
     collectSegmentNodesInVisibleRange,
     collectViewportSampleSegmentNodes,
@@ -4233,6 +4234,7 @@ class Reader {
         }
     }
     #tocView
+    #deferredOpenWork = new DeferredOpenWorkCoordinator()
     #chevronFadeTimers = {
         l: null,
         r: null
@@ -5910,6 +5912,7 @@ class Reader {
         this.#mainDocumentSwipeState = null;
     }
     async open(file) {
+        const openGeneration = this.#deferredOpenWork.beginGeneration()
         this.setLoadingIndicator(true);
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
@@ -6471,78 +6474,73 @@ class Reader {
             blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
         })
 
-        const toc = book.toc
-        if (toc) {
-            this.#tocView = createTOCView(toc, async (href) => {
-                await runWithNavigationIntent({
-                    source: 'toc',
-                    target: 'view.goTo',
-                    href,
-                }, () => this.view.goTo(href)).catch(e => console.error(e))
-                this.closeSideBar()
-            })
-            $('#toc-view').append(this.#tocView.element)
-        }
+        this.#schedulePostInitialOpenWork(book, openGeneration)
+    }
 
-        // load and show highlights embedded in the file by Calibre
-        let calibreBookmarksPendingLogged = false;
-        const calibreBookmarksPendingTimer = setTimeout(() => {
-            calibreBookmarksPendingLogged = true;
-        }, 1000);
-        let bookmarks;
-        try {
-            bookmarks = await book.getCalibreBookmarks?.()
-        } catch (error) {
-            clearTimeout(calibreBookmarksPendingTimer);
-            throw error;
-        }
-        clearTimeout(calibreBookmarksPendingTimer);
-        if (bookmarks) {
-            const {
-                fromCalibreHighlight
-            } = await import('./epubcfi.js')
-            for (const obj of bookmarks) {
-                if (obj.type === 'highlight') {
-                    const value = fromCalibreHighlight(obj)
-                    const color = obj.style.which
-                    const note = obj.notes
-                    const annotation = {
-                        value,
-                        color,
-                        note
-                    }
-                    const list = this.annotations.get(obj.spine_index)
-                    if (list) list.push(annotation)
-                        else this.annotations.set(obj.spine_index, [annotation])
-                            this.annotationsByValue.set(value, annotation)
-                            }
-            }
-            this.view.addEventListener('create-overlay', e => {
-                const {
-                    index
-                } = e.detail
-                const list = this.annotations.get(index)
-                if (list)
-                    for (const annotation of list)
-                        this.view.addAnnotation(annotation)
-                        })
-            this.view.addEventListener('draw-annotation', e => {
-                const {
-                    draw,
-                    annotation
-                } = e.detail
-                const {
-                    color
-                } = annotation
-                draw(Overlayer.highlight, {
-                    color
-                })
-            })
-            this.view.addEventListener('show-annotation', e => {
-                const annotation = this.annotationsByValue.get(e.detail.value)
-                if (annotation.note) alert(annotation.note)
+    #schedulePostInitialOpenWork(book, generation) {
+        void this.#deferredOpenWork.schedule(generation, [
+            {
+                name: 'toc',
+                run: async ({ isCurrent }) => {
+                    const toc = book.toc
+                    if (!toc || this.#tocView || !isCurrent()) return
+                    const tocView = createTOCView(toc, async (href) => {
+                        if (!isCurrent()) return
+                        await runWithNavigationIntent({
+                            source: 'toc',
+                            target: 'view.goTo',
+                            href,
+                        }, () => this.view.goTo(href)).catch(e => console.error(e))
+                        if (isCurrent()) this.closeSideBar()
                     })
-        }
+                    if (!isCurrent()) return
+                    this.#tocView = tocView
+                    $('#toc-view').append(tocView.element)
+                },
+            },
+            {
+                name: 'calibre-bookmarks',
+                run: async ({ isCurrent }) => {
+                    const bookmarks = await book.getCalibreBookmarks?.()
+                    if (!bookmarks || !isCurrent()) return
+                    const { fromCalibreHighlight } = await import('./epubcfi.js')
+                    if (!isCurrent()) return
+                    for (const obj of bookmarks) {
+                        if (obj.type !== 'highlight') continue
+                        const value = fromCalibreHighlight(obj)
+                        const annotation = {
+                            value,
+                            color: obj.style.which,
+                            note: obj.notes,
+                        }
+                        const list = this.annotations.get(obj.spine_index)
+                        if (list) list.push(annotation)
+                        else this.annotations.set(obj.spine_index, [annotation])
+                        this.annotationsByValue.set(value, annotation)
+                    }
+                    if (!isCurrent()) return
+                    this.view.addEventListener('create-overlay', e => {
+                        if (!isCurrent()) return
+                        const list = this.annotations.get(e.detail.index)
+                        if (list) {
+                            for (const annotation of list) this.view.addAnnotation(annotation)
+                        }
+                    })
+                    this.view.addEventListener('draw-annotation', e => {
+                        if (!isCurrent()) return
+                        e.detail.draw(Overlayer.highlight, { color: e.detail.annotation.color })
+                    })
+                    this.view.addEventListener('show-annotation', e => {
+                        if (!isCurrent()) return
+                        const annotation = this.annotationsByValue.get(e.detail.value)
+                        if (annotation?.note) alert(annotation.note)
+                    })
+                },
+            },
+        ], {
+            isOwnerCurrent: () => globalThis.reader === this && this.view?.book === book,
+            onError: (task, error) => console.error(`Deferred ebook ${task} failed`, error),
+        })
     }
 
     async updateNavButtons() {
