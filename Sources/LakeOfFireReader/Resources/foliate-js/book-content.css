@@ -1,0 +1,213 @@
+@namespace epub "http://www.idpf.org/2007/ops";
+
+html {
+    color-scheme: light dark;
+    cursor: inherit;
+}
+
+html:lang(ja),
+body:lang(ja),
+:lang(ja),
+body[data-mnb-has-sentences="true"],
+body[data-mnb-has-segments="true"],
+body[data-mnb-has-sentences="true"] mnb-sen,
+body[data-mnb-has-segments="true"] mnb-seg {
+    line-break: strict;
+    -webkit-line-break: strict;
+    word-break: normal;
+    overflow-wrap: normal;
+    font-feature-settings: "vchw" 1, "chws" 1;
+}
+
+@media (prefers-color-scheme: dark) {
+    a:link {
+        color: lightblue;
+    }
+}
+
+p,
+li,
+blockquote,
+dd {
+    line-height: 1.4;
+    -webkit-hyphens: auto;
+    hyphens: auto;
+    -webkit-hyphenate-limit-before: 3;
+    -webkit-hyphenate-limit-after: 2;
+    -webkit-hyphenate-limit-lines: 2;
+    hanging-punctuation: allow-end last;
+    widows: 2;
+}
+
+html:lang(ja) :is(p, li, blockquote, dd),
+body:lang(ja) :is(p, li, blockquote, dd),
+:lang(ja):is(p, li, blockquote, dd),
+body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
+body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
+body[data-mnb-has-sentences="true"] mnb-sen,
+body[data-mnb-has-segments="true"] mnb-seg {
+    --mnb-ruby-reserved-line-height: 1.8;
+    line-height: var(--mnb-ruby-reserved-line-height) !important;
+}
+
+body,
+p,
+li,
+blockquote,
+dd {
+    text-align: start !important;
+    -webkit-text-align-last: auto !important;
+    text-align-last: auto !important;
+}
+
+[align="left"] { text-align: left !important; }
+[align="right"] { text-align: right !important; }
+[align="center"] { text-align: center !important; }
+
+pre {
+    white-space: pre-wrap !important;
+}
+
+aside[epub|type~="endnote"],
+aside[epub|type~="footnote"],
+aside[epub|type~="note"],
+aside[epub|type~="rearnote"] {
+    display: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    background: inherit !important;
+    color: inherit !important;
+}
+
+mnb-con,
+mnb-sen {
+    display: contents !important;
+}
+
+mnb-sur {
+    contain: style paint !important;
+}
+
+html.vrtl body,
+body[data-mnb-foliate-writing-direction="vertical"],
+body.reader-vertical-writing {
+    --mnb-highlight-gradient-direction: to right;
+}
+
+body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
+body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
+body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
+    --mnb-highlight-gradient-direction: to bottom;
+}
+
+body.reader-vertical-writing [data-mnb-display-token="1"] {
+    unicode-bidi: isolate;
+}
+
+body.reader-vertical-writing .mnb-tate-upright {
+    text-orientation: upright !important;
+}
+
+body.reader-vertical-writing .mnb-tate-upright-digit {
+    display: inline-block;
+    inline-size: 1em;
+    max-inline-size: 1em;
+    text-align: center;
+    line-height: 1;
+    font-feature-settings: "halt" 1, "vhal" 1;
+    font-variant-numeric: lining-nums proportional-nums;
+    direction: ltr;
+    unicode-bidi: isolate;
+}
+
+body.reader-vertical-writing .mnb-tate-upright-latin,
+body.reader-vertical-writing .mnb-tate-upright-stacked-number {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    inline-size: 1em;
+    max-inline-size: 1em;
+    direction: ltr;
+    unicode-bidi: isolate;
+    overflow: clip;
+}
+
+body.reader-vertical-writing .mnb-tate-upright-stacked-number {
+    font-feature-settings: "halt" 1, "vhal" 1;
+    font-variant-numeric: lining-nums proportional-nums;
+}
+
+body.reader-vertical-writing .mnb-tate-upright-char {
+    display: inline-block;
+    inline-size: 1em;
+    max-inline-size: 1em;
+    text-align: center;
+    line-height: 0.94;
+}
+
+body.reader-vertical-writing .mnb-tate-sideways-latin {
+    display: inline-block;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    direction: ltr;
+    unicode-bidi: isolate;
+    transform-origin: center center;
+    white-space: nowrap;
+}
+
+body.reader-vertical-writing ruby > mnb-sur {
+    display: inline !important;
+}
+
+body.reader-vertical-writing mnb-sur {
+    line-height: inherit !important;
+}
+
+mnb-sen ruby.mnb-gen > rt,
+mnb-sen ruby.mbn-src > rt,
+mnb-sen ruby.mbn-src-fwd > rt {
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
+}
+
+body:not([data-mnb-romaji-mode-enabled="true"]) rt {
+    color: var(--theme-secondary-text) !important;
+    color: color-mix(in srgb, var(--theme-secondary-text) 85%, var(--theme-text-color) 15%) !important;
+}
+
+body[data-mnb-romaji-mode-enabled="true"] rt,
+body[data-mnb-romaji-mode-enabled="true"] rt *,
+body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before {
+    font-family: system-ui !important;
+    font-weight: 400 !important;
+    letter-spacing: normal !important;
+    color: var(--theme-text-color) !important;
+}
+
+body.reader-is-single-media-element-without-text {
+    overflow: hidden !important;
+}
+
+body.reader-is-single-media-element-without-text :is(p, div, figure):has(> img, > svg, > video, > object, > image) {
+    display: grid !important;
+    place-items: center !important;
+    inline-size: 100% !important;
+    block-size: 100% !important;
+    overflow: hidden !important;
+}
+
+body.reader-is-single-media-element-without-text :is(img, svg, image, picture, video, object) {
+    max-inline-size: 100% !important;
+    max-block-size: 100% !important;
+    width: auto !important;
+    height: auto !important;
+    margin: auto !important;
+    object-fit: contain !important;
+}

@@ -1,5 +1,7 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
+import { installBookContentStyles } from './book-content-style.js'
+
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -962,6 +964,7 @@ export class Paginator extends HTMLElement {
     #isLoading = false
     #locked = false // while true, prevent any further navigation
     #styles
+    #bookContentStylesPromise = null
     #styleMap = new WeakMap()
     #scrollBounds
     #touchState
@@ -1261,14 +1264,17 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    #installStyleElementsForDocument(doc) {
+    async #installStyleElementsForDocument(doc) {
         if (!doc?.head) return
-        if (this.#styleMap.has(doc)) return
-        const $styleBefore = doc.createElement('style')
-        doc.head.prepend($styleBefore)
-        const $style = doc.createElement('style')
-        doc.head.append($style)
-        this.#styleMap.set(doc, [$styleBefore, $style])
+        await installBookContentStyles(doc, this.#bookContentStylesPromise)
+        if (!this.#styleMap.has(doc)) {
+            const $styleBefore = doc.createElement('style')
+            doc.head.prepend($styleBefore)
+            const $style = doc.createElement('style')
+            doc.head.append($style)
+            this.#styleMap.set(doc, [$styleBefore, $style])
+        }
+        this.#applyStylesToDocument(doc)
     }
     #applyStylesToDocument(doc, styles = this.#styles) {
         const $$styles = this.#styleMap.get(doc)
@@ -2928,9 +2934,7 @@ export class Paginator extends HTMLElement {
                         index,
                     })
                 } else {
-                    if (doc.head) {
-                        this.#installStyleElementsForDocument(doc)
-                    }
+                    await this.#installStyleElementsForDocument(doc)
                     //                    console.log("#display... await onLoad")
                     await onLoad?.({
                         doc,
@@ -3384,6 +3388,10 @@ export class Paginator extends HTMLElement {
 
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+    }
+    setBookContentStyles(stylesPromise) {
+        this.#bookContentStylesPromise = Promise.resolve(stylesPromise)
+        return installBookContentStyles(this.#view?.document, this.#bookContentStylesPromise)
     }
     focusView() {
         this.#view?.document?.defaultView?.focus?.()

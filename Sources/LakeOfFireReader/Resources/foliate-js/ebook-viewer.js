@@ -4073,6 +4073,16 @@ reader-sentinel {
 `
 }
 
+// Fetch once while the book is opening. The paginator awaits this resource before
+// publishing each parsed foreground section to its load and layout pipeline.
+const bookContentStylesheetURL = new URL('./book-content.css', import.meta.url).href
+const bookContentStylesPromise = fetch(bookContentStylesheetURL).then(response => {
+    if (!response.ok) {
+        throw new Error(`Unable to load book content stylesheet (${response.status})`)
+    }
+    return response.text()
+})
+
 const $ = document.querySelector.bind(document)
 
 const locales = 'en'
@@ -5841,6 +5851,7 @@ class Reader {
         document.body?.setAttribute?.('data-book-dir', this.bookDir);
         this.navHUD?.setIsRTL(this.isRTL);
         this.navHUD?.setPageTargets(book.pageList ?? []);
+        this.view.renderer.setBookContentStyles?.(bookContentStylesPromise)
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         applyStoredChromeInsets('reader.open');
