@@ -352,15 +352,17 @@ struct EBookProcessTextRequestKey: Hashable, Sendable {
     let contentURLString: String
     let location: String
     let textFingerprint: String
+    let isCacheWarmer: Bool
 
-    init(contentURL: URL, location: String, isCacheWarmer _: Bool, text: String) {
-        self.init(contentURL: contentURL, location: location, text: text)
-    }
-
-    init(contentURL: URL, location: String, text: String) {
+    init(contentURL: URL, location: String, isCacheWarmer: Bool, text: String) {
         contentURLString = contentURL.absoluteString
         self.location = location
         textFingerprint = ebookProcessTextFingerprint(text)
+        self.isCacheWarmer = isCacheWarmer
+    }
+
+    init(contentURL: URL, location: String, text: String) {
+        self.init(contentURL: contentURL, location: location, isCacheWarmer: false, text: text)
     }
 }
 
@@ -513,7 +515,7 @@ actor EBookProcessingActor {
             isCacheWarmer: isCacheWarmer,
             text: text
         ).textFingerprint
-        if shouldReadProcessedCache, let ebookProcessedTextCacheReader {
+        if !isCacheWarmer, shouldReadProcessedCache, let ebookProcessedTextCacheReader {
             if let cachedResult = try await ebookProcessedTextCacheReader(
                 contentURL,
                 location,
