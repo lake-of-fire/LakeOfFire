@@ -1,6 +1,15 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 import { installBookContentStyles } from './book-content-style.js'
+import {
+    lockedPageTurnQueueDecision as manabiLockedPageTurnQueueDecision,
+    normalizeSingleMediaPageTarget as manabiNormalizeSingleMediaPageTarget,
+    pageSummaryIsVisiblyBlank as manabiPageSummaryIsVisiblyBlank,
+    pageTurnBoundaryDecision as manabiPageTurnBoundaryDecision,
+    paginatorAnchorForLocalPage as manabiPaginatorAnchorForLocalPage,
+    resolveBlankPageTarget as manabiResolveBlankPageTarget,
+    shouldSuppressPostPageTurnDuplicate as manabiShouldSuppressPostPageTurnDuplicate,
+} from './paginator-decisions.js'
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
@@ -38,103 +47,8 @@ const MANABI_DISABLE_POST_LOAD_RERENDER = false;
 const MANABI_ENABLE_NEIGHBOR_PREFETCH = true;
 const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = true;
 const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = true;
-const MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION = true;
 const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
-const MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180;
-const MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240;
-const manabiLockedPageTurnQueueDecision = ({
-    pendingQueueAllowed,
-    pendingRequestedPage,
-    pendingPageCount,
-    pendingDirection,
-    queuedDirection,
-    queuedStep,
-    lockedElapsedMs,
-    distance,
-}) => {
-    const sameDirectionAsPending = pendingDirection === queuedDirection;
-    if (
-        sameDirectionAsPending
-        && lockedElapsedMs != null
-        && lockedElapsedMs < MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS
-        && distance == null
-    ) {
-        return { shouldQueue: false, reason: 'pageTurnDuplicateDuringLock' };
-    }
-    if (!pendingQueueAllowed) {
-        return { shouldQueue: false, reason: 'pageTurnQueueOutsideSection' };
-    }
-    if (
-        !Number.isFinite(pendingRequestedPage)
-        || !Number.isFinite(pendingPageCount)
-        || !Number.isFinite(queuedStep)
-    ) {
-        return { shouldQueue: false, reason: 'pageTurnQueueUnknownSection' };
-    }
-    const projectedQueuedPage = pendingRequestedPage + queuedStep;
-    const crossesSection = queuedStep < 0
-        ? projectedQueuedPage <= 0
-        : projectedQueuedPage >= pendingPageCount - 1;
-    return crossesSection
-        ? { shouldQueue: false, reason: 'pageTurnQueueWouldCrossSection', projectedQueuedPage }
-        : { shouldQueue: true, reason: 'pageTurnQueueWithinSection', projectedQueuedPage };
-};
-const manabiPageTurnBoundaryDecision = ({
-    currentPage,
-    pageCount,
-    step,
-    adjacentIndex,
-}) => {
-    const requestedPage = Number.isFinite(currentPage) && Number.isFinite(step)
-        ? currentPage + step
-        : null;
-    const crossesSection = Number.isFinite(requestedPage) && Number.isFinite(pageCount)
-        ? (step < 0 ? requestedPage <= 0 : requestedPage >= pageCount - 1)
-        : false;
-    const hasAdjacentSection = adjacentIndex != null;
-    return {
-        requestedPage,
-        crossesSection,
-        hasAdjacentSection,
-        shouldGoToAdjacentSection: crossesSection && hasAdjacentSection,
-        shouldScrollWithinSection: !(crossesSection && hasAdjacentSection),
-    };
-};
-export const manabiShouldSuppressPostPageTurnDuplicate = ({
-    lastDirection,
-    direction,
-    distance = null,
-    navigationSource = null,
-    elapsedMs,
-} = {}) => {
-    if (distance != null || navigationSource != null) return false;
-    if (lastDirection == null || direction == null || lastDirection !== direction) return false;
-    return Number.isFinite(elapsedMs)
-        && elapsedMs >= 0
-        && elapsedMs < MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS;
-};
-export const manabiNormalizeSingleMediaPageTarget = ({ page, pages, isSingleMedia = false } = {}) => {
-    if (
-        !MANABI_ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION
-        || !isSingleMedia
-        || !Number.isFinite(page)
-        || !Number.isFinite(pages)
-    ) return page;
-    const maxPage = Math.max(0, pages - 1);
-    const normalized = Math.max(0, Math.min(maxPage, Math.trunc(page)));
-    if (maxPage <= 1) return normalized;
-    if (normalized <= 1) return 1;
-    if (normalized >= maxPage - 1) return maxPage - 1;
-    return normalized;
-};
-export const manabiPaginatorAnchorForLocalPage = ({ localPage, textPageCount } = {}) => {
-    if (!Number.isFinite(textPageCount) || textPageCount <= 1) return 0;
-    const normalizedLocalPage = Number.isFinite(localPage)
-        ? Math.max(0, Math.round(localPage))
-        : 0;
-    return Math.max(0, Math.min(1, normalizedLocalPage / Math.max(1, textPageCount - 1)));
-};
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const manabiPerfNow = () =>
     globalThis.__manabiPerformanceNowMs?.()
@@ -146,33 +60,6 @@ const manabiRound = (value, digits = 1) =>
         ?? (typeof value === 'number' && Number.isFinite(value)
             ? Number(value.toFixed(digits))
             : null);
-export const manabiPageSummaryIsVisiblyBlank = summary =>
-    !!summary
-    && (summary.textCharCount ?? 0) === 0
-    && (summary.mediaCount ?? 0) === 0;
-export const manabiResolveBlankPageTarget = ({ page, pages, direction = 0, summariesByPage = null } = {}) => {
-    if (!Number.isFinite(page) || !Number.isFinite(pages) || !Number.isFinite(direction) || direction === 0) {
-        return page;
-    }
-    const minPage = 1;
-    const maxPage = Math.max(minPage, pages - 2);
-    let target = Math.max(minPage, Math.min(maxPage, Math.trunc(page)));
-    const step = direction > 0 ? 1 : -1;
-    const summaryForPage = candidatePage =>
-        summariesByPage instanceof Map
-            ? (summariesByPage.get(candidatePage) ?? null)
-            : (summariesByPage?.[candidatePage] ?? null);
-    while (
-        target >= minPage
-        && target <= maxPage
-        && manabiPageSummaryIsVisiblyBlank(summaryForPage(target))
-    ) {
-        const nextTarget = target + step;
-        if (nextTarget < minPage || nextTarget > maxPage) break;
-        target = nextTarget;
-    }
-    return target;
-};
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
     let timeout;
