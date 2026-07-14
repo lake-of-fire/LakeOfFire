@@ -292,6 +292,7 @@ let package = Package(
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
                 .product(name: "SwiftReadability", package: "swift-readability"),
+                .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "WebMedia", package: "swift-brave"),
             ],
             path: "Tests/LakeOfFireTests",

@@ -1,7 +1,28 @@
 import XCTest
+import SwiftCloudDrive
 @testable import LakeOfFireContent
 
 final class ReaderFileManagerNormalizationTests: XCTestCase {
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ReaderFileManagerTests.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return url
+    }
+
+    private func writeFixture(relativePath: String, under rootURL: URL) throws -> URL {
+        let fileURL = rootURL.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("ebook fixture".utf8).write(to: fileURL)
+        return fileURL
+    }
+
     func testCanonicalReaderBackingURLStripsQueryAndFragmentFromReaderFileURL() {
         let manager = ReaderFileManager()
         let url = URL(string: "reader-file://file/load/icloud/Books/test.cbz?subpath=cover.jpg#fragment")!
@@ -33,6 +54,81 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let manager = ReaderFileManager()
 
         XCTAssertNil(manager.canonicalReaderBackingURL(for: URL(string: "https://example.com/book")!))
+    }
+
+    @MainActor
+    func testConfiguredLocalDriveRootOwnsEbookStatusAndResolution() async throws {
+        let configuredRoot = try temporaryDirectory()
+        let fallbackRoot = try temporaryDirectory()
+        let expectedURL = try writeFixture(relativePath: "Books/configured.epub", under: configuredRoot)
+        _ = try writeFixture(relativePath: "Books/configured.epub", under: fallbackRoot)
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: configuredRoot))
+        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/configured.epub"))
+
+        let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
+        let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
+
+        XCTAssertEqual(status, .localOnly)
+        XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
+    }
+
+    @MainActor
+    func testConfiguredLocalDriveDoesNotProbeFallbackRoot() async throws {
+        let configuredRoot = try temporaryDirectory()
+        let fallbackRoot = try temporaryDirectory()
+        _ = try writeFixture(relativePath: "Books/fallback-only.epub", under: fallbackRoot)
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: configuredRoot))
+        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/fallback-only.epub"))
+
+        let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
+
+        XCTAssertEqual(status, .fileMissing)
+    }
+
+    @MainActor
+    func testLocalResolutionUsesInjectedRootBeforeDriveInitialization() async throws {
+        let fallbackRoot = try temporaryDirectory()
+        let expectedURL = try writeFixture(relativePath: "Books/cold-start.epub", under: fallbackRoot)
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
+        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/cold-start.epub"))
+
+        let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
+
+        XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
+    }
+
+    @MainActor
+    func testMissingLocalBackingFileReportsFileMissing() async throws {
+        let fallbackRoot = try temporaryDirectory()
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
+        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/missing.epub"))
+
+        XCTAssertEqual(try await manager.cloudDriveSyncStatus(readerFileURL: readerURL), .fileMissing)
+    }
+
+    @MainActor
+    func testLocalBackingPathCannotEscapeConfiguredRoot() async throws {
+        let configuredRoot = try temporaryDirectory()
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: { configuredRoot })
+        let traversalURLs = [
+            "ebook://ebook/load/local/Books/../outside.epub",
+            "ebook://ebook/load/local/Books/%2E%2E/outside.epub",
+            "ebook://ebook/load/local/Books/%2Foutside.epub",
+        ]
+
+        for rawURL in traversalURLs {
+            let readerURL = try XCTUnwrap(URL(string: rawURL))
+            do {
+                _ = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
+                XCTFail("Expected invalid reader backing path for \(rawURL)")
+            } catch ReaderFileManagerError.invalidFileURL {
+                // Expected.
+            } catch {
+                XCTFail("Unexpected error for \(rawURL): \(error)")
+            }
+        }
     }
 }
 

@@ -67,6 +67,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     nonisolated(unsafe) public static var fileProcessors = [@RealmBackgroundActor ([ContentFile]) async throws -> Void]()
     
     nonisolated(unsafe) public static var shared = ReaderFileManager()
+
+    private let defaultLocalRootURLProvider: @Sendable () -> URL
+
+    public init() {
+        defaultLocalRootURLProvider = { Self.getDocumentsDirectory() }
+    }
+
+    init(defaultLocalRootURLProvider: @escaping @Sendable () -> URL) {
+        self.defaultLocalRootURLProvider = defaultLocalRootURLProvider
+    }
     
     // TODO: Pull these from callbacks per above
     public var readerContentMimeTypes: [UTType] = [.plainText, .html, UTType(filenameExtension: "md") ?? UTType(importedAs: "net.daringfireball.markdown"), .zip]
@@ -128,8 +138,6 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         "ReaderFileDeletion.",
     ]
     
-    public init() { }
-
     public func canonicalReaderBackingURL(for contentURL: URL) -> URL? {
         guard var components = URLComponents(url: contentURL, resolvingAgainstBaseURL: false) else {
             return nil
@@ -177,7 +185,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
         cloudDrive?.observer = self
         //        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
-        localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
+        localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: defaultLocalRootURLProvider()))
         localDrive?.observer = self
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
@@ -845,8 +853,18 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     private static func extractRelativePath(fileURL: URL) throws -> RootRelativePath {
-        //        try ReaderFileManager.validate(readerFileURL: fileURL)
-        let relativePath = RootRelativePath(path: String(fileURL.pathComponents.dropFirst(3).joined(separator: "/")))
+        let relativePathComponents = Array(fileURL.pathComponents.dropFirst(3))
+        guard !relativePathComponents.isEmpty,
+              relativePathComponents.allSatisfy({ component in
+                  !component.isEmpty
+                      && component != "."
+                      && component != ".."
+                      && !component.contains("/")
+                      && !component.contains("\\")
+              }) else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let relativePath = RootRelativePath(path: relativePathComponents.joined(separator: "/"))
         return relativePath
     }
 
@@ -860,7 +878,8 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             throw ReaderFileManagerError.invalidFileURL
         }
 
-        let localRootURL = try relativePath.fileURL(forRoot: localDrive?.rootDirectory ?? Self.getDocumentsDirectory())
+        let localStorageRootURL = localDrive?.rootDirectory ?? defaultLocalRootURLProvider()
+        let localRootURL = try relativePath.fileURL(forRoot: localStorageRootURL)
         let cloudRootURL = try cloudDrive.map { try relativePath.fileURL(forRoot: $0.rootDirectory) }
         let activeRootURL: URL?
         switch storageLocation {
