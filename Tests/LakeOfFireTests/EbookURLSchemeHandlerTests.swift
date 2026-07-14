@@ -36,6 +36,27 @@ private actor EBookProcessingGate {
 }
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testEbookViewerAssetCacheReadsEachResolvedBundleURLOnce() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let firstURL = directoryURL.appendingPathComponent("first.js")
+        let secondURL = directoryURL.appendingPathComponent("second.css")
+        try Data("first-revision".utf8).write(to: firstURL)
+        try Data("second-asset".utf8).write(to: secondURL)
+        let cache = EbookViewerAssetCache()
+
+        let firstRead = try await cache.data(for: firstURL)
+        XCTAssertEqual(firstRead, Data("first-revision".utf8))
+        try Data("changed-on-disk".utf8).write(to: firstURL)
+
+        let cachedRead = try await cache.data(for: firstURL)
+        let secondRead = try await cache.data(for: secondURL)
+        XCTAssertEqual(cachedRead, Data("first-revision".utf8))
+        XCTAssertEqual(secondRead, Data("second-asset".utf8))
+    }
+
     func testEbookBundleResourceResponseDisablesCaching() throws {
         let response = ebookHTTPResponse(
             url: URL(string: "ebook://ebook/load/viewer-assets/ebook-viewer.js")!,

@@ -119,6 +119,21 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
     return processedText.data(using: .utf8)
 }
 
+actor EbookViewerAssetCache {
+    static let shared = EbookViewerAssetCache()
+
+    private var dataByFileURL = [URL: Data]()
+
+    func data(for fileURL: URL) throws -> Data {
+        if let cachedData = dataByFileURL[fileURL] {
+            return cachedData
+        }
+        let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+        dataByFileURL[fileURL] = data
+        return data
+    }
+}
+
 public func ebookProcessTextFingerprint(_ text: String) -> String {
     "\(text.utf8.count)-\(stableHash(text))"
 }
@@ -669,7 +684,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Bundle file.
                 if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
-                   let data = try? Data(contentsOf: fileUrl) {
+                   let data = try? await EbookViewerAssetCache.shared.data(for: fileUrl) {
                     if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                         logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
                     }
