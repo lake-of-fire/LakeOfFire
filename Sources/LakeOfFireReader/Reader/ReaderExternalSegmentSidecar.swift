@@ -52,7 +52,10 @@ private func generatedReaderSegmentCount(in documentHTML: Data) -> Int {
     var count = 0
     var searchRange = documentHTML.startIndex..<documentHTML.endIndex
     while let match = documentHTML.range(of: openingTag, options: [], in: searchRange) {
-        count += 1
+        if match.upperBound == documentHTML.endIndex
+            || [9, 10, 13, 32, 47, 62].contains(documentHTML[match.upperBound]) {
+            count += 1
+        }
         searchRange = match.upperBound..<documentHTML.endIndex
     }
     return count

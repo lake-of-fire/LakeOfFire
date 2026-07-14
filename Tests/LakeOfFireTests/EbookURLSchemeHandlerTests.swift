@@ -298,7 +298,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             segmentSidecar: Data(#"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["a",0,null,null,null,null,null,null,null,0]]}"#.utf8)
         )
         let segmentFreeDocument = EbookProcessedSectionPayload(
-            documentHTML: Data("<html><body>Plain text</body></html>".utf8),
+            documentHTML: Data("<html><body><m-metadata>Plain text</m-metadata></body></html>".utf8),
             segmentSidecar: Data()
         )
 
