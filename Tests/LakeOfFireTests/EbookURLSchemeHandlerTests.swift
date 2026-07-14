@@ -36,6 +36,105 @@ private actor EBookProcessingGate {
 }
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testDirectSectionRequestPreservesUnicodeIdentityAndRejectsDuplicateOrUnsafeSubpaths() throws {
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/processed-section"
+        components.queryItems = [
+            URLQueryItem(name: "sourceURL", value: "ebook://ebook/load/local/Books/日本語.epub"),
+            URLQueryItem(name: "subpath", value: "OPS/日本語/chapter 1.xhtml"),
+            URLQueryItem(name: "direct", value: "1")
+        ]
+        let request = try XCTUnwrap(ebookDirectSectionRequest(from: try XCTUnwrap(components.url)))
+
+        XCTAssertEqual(
+            request.sourceURL.absoluteString,
+            "ebook://ebook/load/local/Books/%E6%97%A5%E6%9C%AC%E8%AA%9E.epub"
+        )
+        XCTAssertEqual(request.subpath, "OPS/日本語/chapter 1.xhtml")
+
+        components.queryItems?.append(URLQueryItem(name: "subpath", value: "OPS/other.xhtml"))
+        XCTAssertNil(ebookDirectSectionRequest(from: try XCTUnwrap(components.url)))
+        XCTAssertNil(normalizedEbookEntrySubpath("../secret.xhtml"))
+        XCTAssertNil(normalizedEbookEntrySubpath("OPS/../secret.xhtml"))
+        XCTAssertNil(normalizedEbookEntrySubpath("/OPS/chapter.xhtml"))
+        XCTAssertNil(normalizedEbookEntrySubpath("OPS\\chapter.xhtml"))
+    }
+
+    func testPathBackedEntryRequiresOwningProcessedDocumentSource() throws {
+        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let token = ebookBase64URLToken(for: sourceURL.absoluteString)
+        let entryURL = try XCTUnwrap(URL(string: "ebook://ebook/entry-source/\(token)/OPS/images/cover.jpg"))
+        var ownerComponents = URLComponents()
+        ownerComponents.scheme = "ebook"
+        ownerComponents.host = "ebook"
+        ownerComponents.path = "/processed-section"
+        ownerComponents.queryItems = [
+            URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString),
+            URLQueryItem(name: "subpath", value: "OPS/chapter.xhtml")
+        ]
+
+        let request = try XCTUnwrap(ebookPathBackedEntryRequest(
+            from: entryURL,
+            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
+        ))
+        XCTAssertEqual(request.sourceURL, sourceURL)
+        XCTAssertEqual(request.subpath, "OPS/images/cover.jpg")
+
+        ownerComponents.queryItems = [
+            URLQueryItem(name: "sourceURL", value: "ebook://ebook/load/local/Books/other.epub"),
+            URLQueryItem(name: "subpath", value: "OPS/chapter.xhtml")
+        ]
+        XCTAssertNil(ebookPathBackedEntryRequest(
+            from: entryURL,
+            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
+        ))
+        XCTAssertNil(ebookPathBackedEntryRequest(from: entryURL, mainDocumentURL: nil))
+    }
+
+    func testDirectSectionMetadataInjectionPreservesDocumentBytesAndInstallsPathBackedBase() {
+        let html = """
+        <!doctype html><HTML data-note='1>0'><HEAD><base href="old/"></HEAD><BODY class="book">
+        <mnb-sen><mnb-seg>本文</mnb-seg></mnb-sen></BODY></HTML>
+        """
+        let result = ebookHTMLWithInjectedDirectSectionMetadata(
+            html,
+            baseURL: "ebook://ebook/entry-source/token/OPS/",
+            sourceHref: "OPS/chapter.xhtml"
+        )
+
+        XCTAssertTrue(result.contains(
+            "<HEAD><base href=\"ebook://ebook/entry-source/token/OPS/\"><base href=\"old/\">"
+        ))
+        XCTAssertTrue(result.contains(
+            "<BODY class=\"book\" data-mnb-source-href=\"OPS/chapter.xhtml\" "
+                + "data-mnb-has-sentences=\"true\" data-mnb-has-segments=\"true\">"
+        ))
+        XCTAssertTrue(result.contains("<mnb-sen><mnb-seg>本文</mnb-seg></mnb-sen>"))
+
+        XCTAssertEqual(
+            ebookHTMLWithInjectedDirectSectionMetadata(
+                "<section>fragment</section>",
+                baseURL: "ebook://ebook/entry-source/token/",
+                sourceHref: "chapter.xhtml"
+            ),
+            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/\"></head>"
+                + "<body data-mnb-source-href=\"chapter.xhtml\"><section>fragment</section></body></html>"
+        )
+    }
+
+    func testProcessedSectionUsesForegroundTaskPriority() throws {
+        XCTAssertEqual(
+            ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: "ebook://ebook/processed-section?sourceURL=x"))),
+            .userInitiated
+        )
+        XCTAssertEqual(
+            ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: "ebook://ebook/entries"))),
+            .utility
+        )
+    }
+
     func testEbookViewerAssetCacheReadsEachResolvedBundleURLOnce() async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

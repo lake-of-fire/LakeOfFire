@@ -562,13 +562,15 @@ class Loader {
         loadText,
         loadBlob,
         resources,
-        replaceText
+        replaceText,
+        replaceURL
     }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.manifest = resources.manifest
         this.assets = resources.manifest
         this.replaceText = replaceText
+        this.replaceURL = replaceURL
         // needed only when replacing in (X)HTML w/o parsing (see below)
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
     }
@@ -577,6 +579,17 @@ class Loader {
         const url = URL.createObjectURL(new Blob([data], {
             type
         }))
+        this.#cache.set(href, url)
+        this.#refCount.set(href, 1)
+        if (parent) {
+            const childList = this.#children.get(parent)
+            if (childList) childList.push(href)
+            else this.#children.set(parent, [href])
+        }
+        return url
+    }
+    createDirectURL(href, url, parent) {
+        if (!url) return ''
         this.#cache.set(href, url)
         this.#refCount.set(href, 1)
         if (parent) {
@@ -606,7 +619,8 @@ class Loader {
         //console.log(`unreferencing ${href}, now ${count}`)
         if (count < 1) {
             //console.log(`unloading ${href}`)
-            URL.revokeObjectURL(this.#cache.get(href))
+            const url = this.#cache.get(href)
+            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
             this.#cache.delete(href)
             this.#refCount.delete(href)
             // unref children
@@ -629,6 +643,12 @@ class Loader {
 
         const parent = parents.at(-1)
         if (this.#cache.has(href)) return this.ref(href, parent)
+
+        if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
+            const directURL = await this.replaceURL(href, mediaType)
+            if (!directURL) throw new Error(`Direct processed section URL required for ${href}`)
+            return this.createDirectURL(href, directURL, parent)
+        }
 
         const shouldReplace =
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
@@ -800,12 +820,14 @@ export class EPUB {
         loadBlob,
         getSize,
         replaceText,
+        replaceURL,
         sha1
     }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.getSize = getSize
         this.replaceText = replaceText
+        this.replaceURL = replaceURL
         this.#encryption = new Encryption(deobfuscators(sha1))
     }
     async #loadXML(uri) {
@@ -844,6 +866,7 @@ ${doc.querySelector('parsererror').innerText}`)
                 .then(this.#encryption.getDecoder(uri)),
             resources: this.resources,
             replaceText: this.replaceText,
+            replaceURL: this.replaceURL,
         })
         this.sections = this.resources.spine.map((spineItem, index) => {
             const {

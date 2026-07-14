@@ -34,6 +34,197 @@ fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     return result.isEmpty ? nil : result
 }
 
+private enum EbookBase64URLByte {
+    static let plus = UInt8(ascii: "+")
+    static let hyphen = UInt8(ascii: "-")
+    static let slash = UInt8(ascii: "/")
+    static let underscore = UInt8(ascii: "_")
+    static let equals = UInt8(ascii: "=")
+}
+
+func ebookBase64URLToken(for string: String) -> String {
+    var bytes = Array(Data(string.utf8).base64EncodedData())
+    for index in bytes.indices {
+        if bytes[index] == EbookBase64URLByte.plus {
+            bytes[index] = EbookBase64URLByte.hyphen
+        } else if bytes[index] == EbookBase64URLByte.slash {
+            bytes[index] = EbookBase64URLByte.underscore
+        }
+    }
+    while bytes.last == EbookBase64URLByte.equals {
+        bytes.removeLast()
+    }
+    return String(decoding: bytes, as: UTF8.self)
+}
+
+func ebookString(fromBase64URLToken token: String) -> String? {
+    var bytes = Array(token.utf8)
+    for index in bytes.indices {
+        if bytes[index] == EbookBase64URLByte.hyphen {
+            bytes[index] = EbookBase64URLByte.plus
+        } else if bytes[index] == EbookBase64URLByte.underscore {
+            bytes[index] = EbookBase64URLByte.slash
+        }
+    }
+    bytes.append(contentsOf: repeatElement(EbookBase64URLByte.equals, count: (4 - bytes.count % 4) % 4))
+    guard let data = Data(base64Encoded: Data(bytes)) else { return nil }
+    return String(data: data, encoding: .utf8)
+}
+
+func normalizedEbookEntrySubpath(_ rawSubpath: String) -> String? {
+    guard !rawSubpath.isEmpty,
+          !rawSubpath.hasPrefix("/"),
+          !rawSubpath.contains("\\"),
+          !rawSubpath.contains("\0") else {
+        return nil
+    }
+    let components = rawSubpath.split(separator: "/", omittingEmptySubsequences: false)
+    guard components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+        return nil
+    }
+    return components.joined(separator: "/")
+}
+
+struct EbookDirectSectionRequest: Equatable, Sendable {
+    let sourceURL: URL
+    let subpath: String
+}
+
+func ebookDirectSectionRequest(from url: URL) -> EbookDirectSectionRequest? {
+    guard url.path == "/processed-section",
+          let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+        return nil
+    }
+    let sourceValues = components.queryItems?.filter { $0.name == "sourceURL" }.compactMap(\.value) ?? []
+    let subpathValues = components.queryItems?.filter { $0.name == "subpath" }.compactMap(\.value) ?? []
+    guard sourceValues.count == 1,
+          subpathValues.count == 1,
+          let sourceURL = URL(string: sourceValues[0]),
+          sourceURL.scheme == "ebook",
+          sourceURL.host == "ebook",
+          sourceURL.pathComponents.starts(with: ["/", "load"]),
+          let subpath = normalizedEbookEntrySubpath(subpathValues[0]) else {
+        return nil
+    }
+    return EbookDirectSectionRequest(sourceURL: sourceURL, subpath: subpath)
+}
+
+struct EbookPathBackedEntryRequest: Equatable, Sendable {
+    let sourceURL: URL
+    let subpath: String
+}
+
+func ebookPathBackedEntryRequest(from url: URL, mainDocumentURL: URL?) -> EbookPathBackedEntryRequest? {
+    let prefix = "/entry-source/"
+    guard url.path.hasPrefix(prefix) else { return nil }
+    let path = String(url.path.dropFirst(prefix.count))
+    guard let separator = path.firstIndex(of: "/") else { return nil }
+    let token = String(path[..<separator])
+    let rawSubpath = String(path[path.index(after: separator)...])
+    guard let sourceURLString = ebookString(fromBase64URLToken: token),
+          let sourceURL = URL(string: sourceURLString),
+          sourceURL.scheme == "ebook",
+          sourceURL.host == "ebook",
+          sourceURL.pathComponents.starts(with: ["/", "load"]),
+          let subpath = normalizedEbookEntrySubpath(rawSubpath.removingPercentEncoding ?? rawSubpath) else {
+        return nil
+    }
+    guard let mainDocumentURL,
+          let owner = ebookDirectSectionRequest(from: mainDocumentURL),
+          owner.sourceURL == sourceURL else {
+        return nil
+    }
+    return EbookPathBackedEntryRequest(sourceURL: sourceURL, subpath: subpath)
+}
+
+private func ebookDirectorySubpath(for sectionHref: String) -> String {
+    guard let slashIndex = sectionHref.lastIndex(of: "/") else { return "" }
+    return String(sectionHref[..<sectionHref.index(after: slashIndex)])
+}
+
+private func ebookPathEscaped(_ path: String) -> String {
+    path.split(separator: "/", omittingEmptySubsequences: false)
+        .map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
+        .joined(separator: "/")
+}
+
+func ebookProcessedSectionBaseURL(sourceURL: URL, sectionHref: String) -> String {
+    let token = ebookBase64URLToken(for: sourceURL.absoluteString)
+    return "ebook://ebook/entry-source/\(token)/\(ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)))"
+}
+
+private func ebookOpeningTagEnd(in html: String, after tagStart: String.Index) -> String.Index? {
+    var quote: Character?
+    var index = tagStart
+    while index < html.endIndex {
+        let character = html[index]
+        if let activeQuote = quote {
+            if character == activeQuote { quote = nil }
+        } else if character == "\"" || character == "'" {
+            quote = character
+        } else if character == ">" {
+            return html.index(after: index)
+        }
+        index = html.index(after: index)
+    }
+    return nil
+}
+
+private func ebookOpeningTagRange(named name: String, in html: String) -> Range<String.Index>? {
+    var searchStart = html.startIndex
+    while searchStart < html.endIndex,
+          let tagNameRange = html.range(
+            of: "<\(name)",
+            options: [.caseInsensitive],
+            range: searchStart..<html.endIndex
+          ) {
+        let boundary = tagNameRange.upperBound
+        if boundary == html.endIndex || html[boundary] == ">" || html[boundary] == "/" || html[boundary].isWhitespace,
+           let end = ebookOpeningTagEnd(in: html, after: boundary) {
+            return tagNameRange.lowerBound..<end
+        }
+        searchStart = boundary
+    }
+    return nil
+}
+
+func ebookHTMLWithInjectedDirectSectionMetadata(
+    _ html: String,
+    baseURL: String,
+    sourceHref: String
+) -> String {
+    let escapedBaseURL = ebookHTMLAttributeEscaped(baseURL)
+    let escapedSourceHref = ebookHTMLAttributeEscaped(sourceHref)
+    let sentenceAttribute = html.range(of: "<mnb-sen", options: [.caseInsensitive]) == nil
+        ? ""
+        : " data-mnb-has-sentences=\"true\""
+    let segmentAttribute = html.range(of: "<mnb-seg", options: [.caseInsensitive]) == nil
+        ? ""
+        : " data-mnb-has-segments=\"true\""
+    let bodyAttributes = " data-mnb-source-href=\"\(escapedSourceHref)\"\(sentenceAttribute)\(segmentAttribute)"
+
+    guard ebookOpeningTagRange(named: "html", in: html) != nil else {
+        return "<!doctype html><html><head><base href=\"\(escapedBaseURL)\"></head>"
+            + "<body\(bodyAttributes)>\(html)</body></html>"
+    }
+
+    var result = html
+    if let headRange = ebookOpeningTagRange(named: "head", in: result) {
+        result.insert(contentsOf: "<base href=\"\(escapedBaseURL)\">", at: headRange.upperBound)
+    } else if let htmlRange = ebookOpeningTagRange(named: "html", in: result) {
+        result.insert(contentsOf: "<head><base href=\"\(escapedBaseURL)\"></head>", at: htmlRange.upperBound)
+    }
+    if let bodyRange = ebookOpeningTagRange(named: "body", in: result) {
+        let insertionIndex = result.index(before: bodyRange.upperBound)
+        result.insert(contentsOf: bodyAttributes, at: insertionIndex)
+    }
+    return result
+}
+
+func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
+    url.path == "/processed-section" ? .userInitiated : .utility
+}
+
 fileprivate func logEbookAsset(_ line: String) {
     Logger.shared.logger.info("\(line)")
 }
@@ -483,9 +674,84 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let sharedFontCSSBase64 = self.sharedFontCSSBase64
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
-        Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
+        Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
-            if url.path == "/process-text" {
+            if url.path == "/processed-section" {
+                guard let request = ebookDirectSectionRequest(from: url),
+                      let ebookTextProcessor else {
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
+                    return
+                }
+                do {
+                    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                        forPackageURL: request.sourceURL,
+                        readerFileManager: readerFileManager
+                    )
+                    let sourceData = try cachedSource.source.readEntry(subpath: request.subpath)
+                    let sourceText = String(decoding: sourceData, as: UTF8.self)
+                    let processRequestKey = EBookProcessTextRequestKey(
+                        contentURL: request.sourceURL,
+                        location: request.subpath,
+                        text: sourceText
+                    )
+                    let (processedText, _) = try await self.processTextRequestDeduper.process(
+                        key: processRequestKey
+                    ) {
+                        let processingActor = EBookProcessingActor(
+                            ebookProcessedTextCacheReader: ebookProcessedTextCacheReader,
+                            ebookProcessedTextCacheWriter: ebookProcessedTextCacheWriter,
+                            ebookTextProcessor: ebookTextProcessor,
+                            processReadabilityContent: processReadabilityContent,
+                            processHTMLDocument: processHTMLDocument,
+                            processHTMLBytes: processHTMLBytes,
+                            processHTML: processHTML
+                        )
+                        return try await processingActor.process(
+                            contentURL: request.sourceURL,
+                            location: request.subpath,
+                            text: sourceText,
+                            contentFingerprint: processRequestKey.textFingerprint,
+                            isCacheWarmer: false
+                        )
+                    }
+                    let responseText = ebookHTMLWithInjectedDirectSectionMetadata(
+                        processedText,
+                        baseURL: ebookProcessedSectionBaseURL(
+                            sourceURL: request.sourceURL,
+                            sectionHref: request.subpath
+                        ),
+                        sourceHref: request.subpath
+                    )
+                    let responseData = Data(responseText.utf8)
+                    let response = ebookHTTPResponse(
+                        url: url,
+                        mimeType: "text/html",
+                        byteCount: responseData.count,
+                        textEncodingName: "utf-8",
+                        additionalHeaderFields: ["Cache-Control": "no-store"]
+                    )
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didReceive(response)
+                            urlSchemeTask.didReceive(responseData)
+                            urlSchemeTask.didFinish()
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
+                } catch {
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didFailWithError(error)
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
+                }
+            } else if url.path == "/process-text" {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                     if let ebookTextProcessor {
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
@@ -634,25 +900,40 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                     }()
                 }
-            } else if url.path == "/entry" {
-                guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
-                      let subpath = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-                        .queryItems?
-                        .first(where: { $0.name == "subpath" })?
-                        .value else {
+            } else if url.path == "/entry" || url.path.hasPrefix("/entry-source/") {
+                let pathBackedRequest = ebookPathBackedEntryRequest(
+                    from: url,
+                    mainDocumentURL: urlSchemeTask.request.mainDocumentURL
+                )
+                let queryBackedRequest: EbookPathBackedEntryRequest? = {
+                    guard url.path == "/entry",
+                          let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
+                          let subpath = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                            .queryItems?
+                            .first(where: { $0.name == "subpath" })?
+                            .value,
+                          let normalizedSubpath = normalizedEbookEntrySubpath(subpath) else {
+                        return nil
+                    }
+                    return EbookPathBackedEntryRequest(sourceURL: mainDocumentURL, subpath: normalizedSubpath)
+                }()
+                guard let entryRequest = pathBackedRequest ?? queryBackedRequest else {
                     await { @MainActor in
-                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
                     }()
                     return
                 }
 
                 do {
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
-                        forPackageURL: mainDocumentURL,
+                        forPackageURL: entryRequest.sourceURL,
                         readerFileManager: readerFileManager
                     )
-                    let data = try cachedSource.source.readEntry(subpath: subpath)
-                    let metadata = try cachedSource.source.mimeType(subpath: subpath)
+                    let data = try cachedSource.source.readEntry(subpath: entryRequest.subpath)
+                    let metadata = try cachedSource.source.mimeType(subpath: entryRequest.subpath)
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: metadata.mimeType,

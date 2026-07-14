@@ -5,6 +5,7 @@ createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
+import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import {
     Overlayer
 } from '../foliate-js/overlayer.js'
@@ -3475,6 +3476,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
     const sizeMap = new Map(entries.map(function(entry) { return [entry.filename, entry.uncompressedSize]; }))
     const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
     const replaceText = makeReplaceText(isCacheWarmer)
+    const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer)
     return {
         entries,
         loadText: async (name) => {
@@ -3493,6 +3495,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
         },
         getSize: name => sizeMap.get(name) ?? 0,
         replaceText,
+        replaceURL,
         sourceURL: url,
     }
 }
