@@ -57,6 +57,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var ttsUtteranceObjectIdentifierToIndex = [ObjectIdentifier: Int]()
     private var ttsCurrentUtteranceIndex: Int = 0
     private var ttsCurrentCharacterRange: NSRange?
+    private var readAloudAudioSessionLease: ManabiSpokenAudioSessionLease?
     private var ttsVoiceLanguage = "ja-JP"
     private var ignoresCancellationCallbacksForQueueSwap = false
     private var readAloudPreparationID: UUID?
@@ -798,8 +799,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     private func activateReadAloudAudioSession() {
 #if os(iOS)
+        guard readAloudAudioSessionLease == nil else { return }
         do {
-            try ManabiSpokenAudioSession.activate(owner: "reader.readAloud")
+            readAloudAudioSessionLease = try ManabiSpokenAudioSession.acquire(.readAloud)
         } catch {
             mediaDebugPrint("# READALOUD audioSession.activate.failed", error.localizedDescription)
         }
@@ -809,7 +811,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private func deactivateReadAloudAudioSession() {
 #if os(iOS)
         do {
-            try ManabiSpokenAudioSession.deactivate(owner: "reader.readAloud")
+            try readAloudAudioSessionLease?.release()
+            readAloudAudioSessionLease = nil
         } catch {
             mediaDebugPrint("# READALOUD audioSession.deactivate.failed", error.localizedDescription)
         }

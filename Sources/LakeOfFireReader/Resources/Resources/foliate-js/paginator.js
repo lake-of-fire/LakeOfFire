@@ -3,6 +3,33 @@
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_ENABLE_PAGINATOR_DIAGNOSTICS = false;
 const FOLIATE_BOOK_CONTENT_STYLE_ID = 'foliate-book-content-style';
+export const installBookContentStyles = (installationByDocument, doc, stylesPromise) => {
+    if (!doc?.head || !stylesPromise) return Promise.resolve(false)
+    const existingInstallation = installationByDocument.get(doc)
+    if (existingInstallation?.stylesPromise === stylesPromise) {
+        return existingInstallation.promise
+    }
+
+    const installation = { stylesPromise, promise: null }
+    const promise = Promise.resolve(stylesPromise).then(styles => {
+        if (installationByDocument.get(doc) !== installation) return false
+        let style = doc.getElementById(FOLIATE_BOOK_CONTENT_STYLE_ID)
+        if (style && style.localName !== 'style') {
+            style.remove()
+            style = null
+        }
+        if (!style) {
+            style = doc.createElement('style')
+            style.id = FOLIATE_BOOK_CONTENT_STYLE_ID
+            doc.head.prepend(style)
+        }
+        if (style.textContent !== styles) style.textContent = styles
+        return true
+    })
+    installation.promise = promise
+    installationByDocument.set(doc, installation)
+    return promise
+}
 const MANABI_PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID = 'mnb-paginator-layout-bootstrap';
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
@@ -2366,26 +2393,7 @@ export class Paginator extends HTMLElement {
         return stylesheetReady
     }
     #applyBookContentStylesToDocument(doc, stylesPromise = this.#bookContentStylesPromise) {
-        if (!doc?.head || !stylesPromise) return Promise.resolve()
-        const existingReady = this.#bookContentStylesReadyMap.get(doc)
-        if (existingReady?.stylesPromise === stylesPromise) {
-            return existingReady.promise
-        }
-        const promise = Promise.resolve(stylesPromise).then(styles => {
-            let style = doc.getElementById(FOLIATE_BOOK_CONTENT_STYLE_ID)
-            if (style && style.localName !== 'style') {
-                style.remove()
-                style = null
-            }
-            if (!style) {
-                style = doc.createElement('style')
-                style.id = FOLIATE_BOOK_CONTENT_STYLE_ID
-                doc.head.prepend(style)
-            }
-            if (style.textContent !== styles) style.textContent = styles
-        })
-        this.#bookContentStylesReadyMap.set(doc, { stylesPromise, promise })
-        return promise
+        return installBookContentStyles(this.#bookContentStylesReadyMap, doc, stylesPromise)
     }
     #applyStylesToDocument(doc, styles = this.#styles) {
         const $$styles = this.#styleMap.get(doc)

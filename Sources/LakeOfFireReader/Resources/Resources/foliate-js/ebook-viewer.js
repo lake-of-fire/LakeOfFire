@@ -2848,14 +2848,6 @@ const manabiTimelinePayload = payload => Object.entries(payload || {})
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}=${manabiTimelineValue(value)}`)
     .join(' ');
-const manabiNativeLookupDiagnostic = (stage, payload = {}) => {
-    const details = manabiTimelinePayload(payload);
-    const label = details.length > 0
-        ? `# JUL14 stage=${stage} ${details}`
-        : `# JUL14 stage=${stage}`;
-    try { console.log(label); } catch (_error) {}
-    try { performance?.mark?.(label); } catch (_error) {}
-};
 const manabiTimelineShouldEmitMark = (event, payload = {}) => {
     if (globalThis.__manabiTimelineTraceAll === true) return true;
     if (payload?.force === true || payload?.error) return true;
@@ -5032,12 +5024,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     if (typeof builder !== 'function') {
-        manabiNativeLookupDiagnostic('ebook.nativeLookupTargets.builderMissing', {
-            reason,
-            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-            hasView: !!view,
-            hasHandler: !!messageHandlers?.nativeLookupHitTargetsUpdated,
-        });
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: false,
@@ -5052,18 +5038,13 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         return 0;
     }
     const targets = [];
-    let missingNodeCount = 0;
-    let missingRectCount = 0;
-    let builderRejectedCount = 0;
     view?.manabi_resetNativeLookupHitTargets?.();
     for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
         const rects = item?.rects?.length ? item.rects : (item?.rect ? [item.rect] : []);
         if (!item?.node) {
-            missingNodeCount += 1;
             continue;
         }
         if (rects.length === 0) {
-            missingRectCount += 1;
             continue;
         }
         const absoluteRects = [];
@@ -5078,8 +5059,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         const target = builder(item.node, absoluteRects, viewportPayload);
         if (target) {
             targets.push(target);
-        } else {
-            builderRejectedCount += 1;
         }
     }
     let surfaceRectTargetCount = 0;
@@ -5115,17 +5094,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         }
     }
     if (targets.length === 0) {
-        manabiNativeLookupDiagnostic('ebook.nativeLookupTargets.empty', {
-            reason,
-            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-            segmentSource: visibleSegmentsResult?.segmentCandidateSource ?? null,
-            missingNodeCount,
-            missingRectCount,
-            builderRejectedCount,
-            firstVisibleSegmentID: visibleSegmentsResult?.visibleSegments?.[0]?.node?.id ?? null,
-            frameLeft,
-            frameTop,
-        });
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: true,
@@ -5149,18 +5117,6 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         viewportHeight,
         viewportLeft,
         viewportTop,
-    });
-    manabiNativeLookupDiagnostic('ebook.nativeLookupTargets.posted', {
-        reason,
-        visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
-        targetCount: messageTargets.length,
-        missingNodeCount,
-        missingRectCount,
-        builderRejectedCount,
-        firstTargetID: messageTargets[0]?.elementId ?? null,
-        firstRectLeft: messageTargets[0]?.rects?.[0]?.left ?? null,
-        firstRectTop: messageTargets[0]?.rects?.[0]?.top ?? null,
-        hasHandler: !!messageHandlers?.nativeLookupHitTargetsUpdated,
     });
     manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
         reason,
@@ -8025,12 +7981,6 @@ class Reader {
     }
     #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
         if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
-            manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.deferred', {
-                reason,
-                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
-                bodyLoading: document.body?.classList?.contains?.('loading') === true,
-                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
-            });
             this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
             return;
         }
@@ -8064,14 +8014,19 @@ class Reader {
             const currentDocs = isDocumentLike(explicitDoc)
                 ? [explicitDoc]
                 : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-            manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.running', {
-                reason,
-                generation,
-                documentCount: currentDocs.length,
-            });
-            for (const doc of currentDocs) {
-                const visibleRange = this.#visibleRangeForDocument(doc);
-                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+            try {
+                for (const doc of currentDocs) {
+                    const visibleRange = this.#visibleRangeForDocument(doc);
+                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+                }
+            } finally {
+                // reader.open() resolves before WebKit's first didDisplay/columnization pass.
+                // Keep noncritical native work suppressed through this first visible target and
+                // status refresh, which is the deterministic point at which the page is ready
+                // for interaction. Later page refreshes find no active initial-load lease.
+                globalThis.__manabiFinishInitialForegroundCriticalSection?.(
+                    `nativeLookupRefresh.completed:${reason}`
+                );
             }
             const elapsedMs = performanceNowMs() - startedAt;
             if (globalThis.__manabiTimelineTraceAll === true || elapsedMs >= 50) {
@@ -8108,11 +8063,6 @@ class Reader {
     }
     completeLastPositionLoad(reason = 'unspecified') {
         this.hasLoadedLastPosition = true;
-        manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.restoreGateReleased', {
-            reason,
-            hadPendingRefresh: this.pendingNativeLookupHitTargetRefresh !== null,
-            bodyLoading: document.body?.classList?.contains?.('loading') === true,
-        });
         // didDisplay may have deferred visible lookup/status enrichment until the
         // restore position became authoritative. Flush at that state transition;
         // otherwise the first relocate is the next event that can hydrate it.
@@ -9390,14 +9340,6 @@ class Reader {
                     fractionTolerance: initialRestoreFractionTolerance,
                 }
             );
-            manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.initialPositionDecision', {
-                restoreLocatorKind,
-                hasInitialRestoreTarget,
-                navigationOK: navigationResult?.ok === true,
-                visibleContentSettled: displaySettled?.settled === true,
-                restoreSatisfied: initialRestoreWillBeMarkedHandled,
-                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
-            });
             if (initialRestoreWillBeMarkedHandled) {
                 this.initialDisplayNavigationPending = false;
                 this.completeLastPositionLoad('initial-display-restore-satisfied');
@@ -11713,7 +11655,11 @@ window.loadEBook = ({
         if (globalThis.__manabiInitialForegroundCriticalSectionToken === token) {
             globalThis.__manabiInitialForegroundCriticalSectionToken = null;
         }
+        if (globalThis.__manabiFinishInitialForegroundCriticalSection === finishInitialForegroundCriticalSection) {
+            globalThis.__manabiFinishInitialForegroundCriticalSection = null;
+        }
     };
+    globalThis.__manabiFinishInitialForegroundCriticalSection = finishInitialForegroundCriticalSection;
     try {
         globalThis.__manabiFinishEPUBLoadWatchdogs?.('new-load');
     } catch (_error) {}
@@ -11877,10 +11823,9 @@ window.loadEBook = ({
                 });
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreNotHandledAfterOpen');
                 finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
-                // A failed saved locator still leaves Foliate on its terminal fallback page.
-                // Treat that visible location as authoritative so interaction and status
-                // hydration are not held forever behind a restore that will not be retried.
-                reader.completeLastPositionLoad('loadEBook.initialRestoreNotHandledAfterOpen');
+                // The visible fallback remains interactive, but it is not a
+                // successful restore and must not overwrite the saved locator.
+                reader.hasLoadedLastPosition = false;
                 reader.setLoadingIndicator(false, settled?.settled === true
                     ? 'loadEBook.initialRestoreNotHandledAfterOpen.visibleContent'
                     : 'loadEBook.initialRestoreNotHandledAfterOpen.terminal');
@@ -11891,7 +11836,7 @@ window.loadEBook = ({
             ) {
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreDeferredTerminal');
                 finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
-                reader.completeLastPositionLoad('loadEBook.initialRestoreDeferredTerminal');
+                reader.hasLoadedLastPosition = false;
                 reader.setLoadingIndicator(false, settled?.settled === true
                     ? 'loadEBook.initialRestoreDeferredTerminal.visibleContent'
                     : 'loadEBook.initialRestoreDeferredTerminal.terminal');
@@ -11912,9 +11857,6 @@ window.loadEBook = ({
                 bookDir: globalThis.reader?.bookDir || null,
                 isRTL: !!globalThis.reader?.isRTL,
             }) ?? null;
-            // reader.open resolves after Foliate's initial display. This is the
-            // terminal release when visible enrichment did not finish the token.
-            finishInitialForegroundCriticalSection('loadEBook.reader-open-resolved');
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                 probe,
                 initialRestoreResult,
@@ -12034,7 +11976,10 @@ const finalizeInitialRestoreHandledWithoutNativeRestore = (reason = 'loadEBook.i
 window.loadLastPosition = async ({
     cfi,
     fractionalCompletion,
+    navigationTimeoutMs = 45000,
+    stateSettleTimeoutMs = 45000,
 }) => {
+    const previouslyHandledInitialRestore = globalThis.__manabiInitialRestoreHandled ?? null;
     ensureRestorePositionSaveUserInputTracking();
     globalThis.__manabiRestoreDebugLog?.('ebook.loadLastPosition.incoming', {
         incomingFractionType: typeof fractionalCompletion,
@@ -12046,8 +11991,12 @@ window.loadLastPosition = async ({
         ? Math.max(0, Math.min(1, fractionalCompletion))
         : null;
     globalThis.__manabiRestoreInProgress = true;
-    const restoreNavigationTimeoutMs = 45000;
-    const restoreStateSettleTimeoutMs = 45000;
+    const restoreNavigationTimeoutMs = Number.isFinite(navigationTimeoutMs) && navigationTimeoutMs > 0
+        ? navigationTimeoutMs
+        : 45000;
+    const restoreStateSettleTimeoutMs = Number.isFinite(stateSettleTimeoutMs) && stateSettleTimeoutMs > 0
+        ? stateSettleTimeoutMs
+        : 45000;
     const runRestoreNavigation = async (
         intent,
         operation,
@@ -12396,6 +12345,9 @@ window.loadLastPosition = async ({
             }), {
                 throwOnError: false,
             });
+            if (navigationResult?.ok !== true) {
+                throw navigationResult?.error ?? new Error('Synthetic restore navigation failed');
+            }
             await waitForPaintAfterNavigation();
             const visibleSettleResult = globalThis.reader.settleInitialDisplayFromVisibleContent?.('loadLastPosition.syntheticNavigationSettled');
             syntheticDisplaySettledForRestore = visibleSettleResult?.settled === true;
@@ -12438,18 +12390,8 @@ window.loadLastPosition = async ({
             }, {
                 throwOnError: false,
             });
-            if (navigationResult?.ok !== true && hasFractionalCompletion) {
-                await runRestoreNavigation({
-                    source: 'restore.spine-cfi-section-fallback',
-                    target: 'renderer.goTo',
-                    sectionIndex: spineOnlyRestoreSectionIndex,
-                    cfiLength: typeof cfi === 'string' ? cfi.length : 0,
-                    fraction: fractionalCompletion,
-                }, () => globalThis.reader.view.renderer.goTo?.({
-                    index: spineOnlyRestoreSectionIndex,
-                }), {
-                    throwOnError: false,
-                });
+            if (navigationResult?.ok !== true) {
+                throw navigationResult?.error ?? new Error('Spine restore navigation failed');
             }
             await waitForPaintAfterNavigation();
             const spineState = await waitForRestoreStateIfNeeded(
@@ -12500,31 +12442,7 @@ window.loadLastPosition = async ({
                     requestedFraction: hasFractionalCompletion ? safeRound(fractionalCompletion, 6) : null,
                     error: error?.message || String(error),
                 });
-                if (Number.isInteger(spineOnlyRestoreSectionIndex)) {
-                    await runRestoreNavigation({
-                        source: 'restore.cfi-spine-fallback',
-                        target: 'renderer.goTo',
-                        sectionIndex: spineOnlyRestoreSectionIndex,
-                        cfiLength: cfi.length,
-                        fraction: hasFractionalCompletion ? fractionalCompletion : null,
-                    }, async () => {
-                        const result = await globalThis.reader.view.renderer.goTo?.({
-                            index: spineOnlyRestoreSectionIndex,
-                        });
-                        if (hasFractionalCompletion) {
-                            await globalThis.reader.view.goToFraction(fractionalCompletion);
-                        }
-                        return result;
-                    }, {
-                        throwOnError: false,
-                    });
-                } else if (hasFractionalCompletion) {
-                    await runRestoreNavigation({
-                        source: 'restore.cfi-fraction-fallback',
-                        target: 'view.goToFraction',
-                        fraction: fractionalCompletion,
-                    }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
-                }
+                throw error ?? new Error('CFI restore navigation failed');
             }
             await waitForPaintAfterNavigation();
             const cfiState = await waitForRestoreStateIfNeeded(
@@ -12586,6 +12504,7 @@ window.loadLastPosition = async ({
                     currentFraction: typeof fallbackState.currentFraction === 'number' ? safeRound(fallbackState.currentFraction, 6) : null,
                     currentSectionIndex: fallbackState.sectionIndex ?? null,
                 });
+                throw error;
             }
         } else {
             await globalThis.reader?.displayInitialSection?.('loadLastPosition.noRestoreTarget');
@@ -12682,8 +12601,30 @@ window.loadLastPosition = async ({
         });
     } catch (error) {
         console.error(error);
-        const hasReaderContent = !!document.querySelector?.('foliate-view');
-        const hasRenderer = !!globalThis.reader?.view?.renderer;
+        if (globalThis.reader) {
+            globalThis.reader.hasLoadedLastPosition = false;
+        }
+        // A failed attempt must not replace the last locator that was already
+        // proven valid. Native persistence remains untouched as well.
+        globalThis.__manabiInitialRestoreHandled = previouslyHandledInitialRestore;
+        const failedState = captureRestoreState('failed');
+        manabiPublishInitialRestoreResult(manabiCreateInitialRestoreResult({
+            requestID: null,
+            terminalState: 'failed',
+            requestedLocator: restoreLocatorKind,
+            resolvedLocator: null,
+            requestedFraction: Number.isFinite(fractionalCompletion) ? fractionalCompletion : null,
+            requestedCFI: cfi,
+            location: {
+                fraction: typeof failedState.currentFraction === 'number' ? failedState.currentFraction : null,
+                sectionIndex: failedState.sectionIndex ?? null,
+            },
+            navigationOk: false,
+            error: error?.message || String(error),
+            reason: 'loadLastPosition.failed',
+        }));
+        finishInitialRestoreRenderReadyGateWithTerminalResult('loadLastPosition.failed');
+        throw error;
     } finally {
         globalThis.__manabiRestoreInProgress = false;
         if (globalThis.reader?.hasLoadedLastPosition === true) {
