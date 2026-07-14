@@ -21,3 +21,6 @@ export const ebookSegmentIdentifierAliases = (segmentNode, metadata = null) => {
     const stableID = ebookSegmentIdentity(segmentNode, metadata).stableID
     return stableID === null ? [] : [stableID]
 }
+
+export const ebookSentenceIdentifier = sentenceNode =>
+    nonEmptyString(sentenceNode?.getAttribute?.('sid'))

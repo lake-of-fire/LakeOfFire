@@ -8,6 +8,7 @@ import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
 } from './ebook-segment-identity.js'
@@ -2510,10 +2511,7 @@ const normalizeArticleReadingProgress = (articleReadingProgress = {}) => ({
 });
 
 const sentenceIdentifierForNode = (sentenceNode) => {
-    const sentenceIdentifier = sentenceNode?.getAttribute?.('sid') || sentenceNode?.getAttribute?.('h');
-    return typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0
-        ? sentenceIdentifier
-        : null;
+    return ebookSentenceIdentifier(sentenceNode);
 };
 
 const segmentIdentityForNode = (segmentNode) => {

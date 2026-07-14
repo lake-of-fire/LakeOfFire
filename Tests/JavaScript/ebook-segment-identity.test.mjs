@@ -2,9 +2,21 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-identity.js'
+
+test('uses only explicit sentence identity and never promotes a hash', () => {
+    const attributes = { sid: 'sentence-id', h: 'sentence-hash' }
+    const sentenceNode = {
+        getAttribute: name => attributes[name] ?? null,
+    }
+
+    assert.equal(ebookSentenceIdentifier(sentenceNode), 'sentence-id')
+    delete attributes.sid
+    assert.equal(ebookSentenceIdentifier(sentenceNode), null)
+})
 
 const segmentNode = id => ({
     id,
