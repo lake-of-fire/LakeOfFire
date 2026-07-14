@@ -9,6 +9,35 @@ import LakeOfFireContent
 import LakeOfFireCore
 import PersistedLRUCacheHybrid
 
+private struct ReaderEBookInitialRestoreBridgeRequest {
+    let requestID = UUID().uuidString
+    let cfi: String
+    let fractionalCompletion: Double?
+    let requestedLocator: String
+
+    init?(restore: ReaderContentEbookInitialRestore?) {
+        guard let restore else { return nil }
+        cfi = restore.cfi
+        fractionalCompletion = restore.fractionalCompletion.map(Double.init)
+        let hasCFI = !cfi.isEmpty
+        let hasFraction = (fractionalCompletion ?? 0) > 0
+        guard hasCFI || hasFraction else { return nil }
+        requestedLocator = hasCFI ? "cfi" : "fraction"
+    }
+
+    var javaScriptArgument: [String: any Sendable] {
+        var argument: [String: any Sendable] = [
+            "requestID": requestID,
+            "requestedLocator": requestedLocator,
+            "cfi": cfi,
+        ]
+        if let fractionalCompletion {
+            argument["fractionalCompletion"] = fractionalCompletion
+        }
+        return argument
+    }
+}
+
 public typealias ReaderShowOriginalWillBeginHandler = @MainActor @Sendable (_ contentURL: URL, _ pageURL: URL) async -> Void
 public struct ReaderNavigationVisibilityChange: Sendable {
     public let shouldHide: Bool
@@ -241,6 +270,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
             }
             guard let self else { return }
+            let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
             for attempt in 0..<24 {
                 try? await Task.sleep(nanoseconds: attempt == 0 ? 350_000_000 : 450_000_000)
                 if Task.isCancelled { return }
@@ -374,6 +405,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             const loadArgs = {};
                             loadArgs.url = fallbackURL;
                             loadArgs.layoutMode = fallbackLayoutMode;
+                            loadArgs.initialRestore = initialRestore;
                             window.loadEBook(loadArgs);
                             return JSON.stringify({
                                 state: "fallback-started",
@@ -393,6 +425,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         arguments: [
                             "url": loaderURL.absoluteString,
                             "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
+                            "initialRestore": initialRestoreRequest?.javaScriptArgument ?? NSNull(),
                         ],
                         in: frameInfo
                     )
@@ -1101,17 +1134,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "url": loaderURL.absoluteString,
                             "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
                         ]
-                        if let initialRestore {
-                            var restoreArguments: [String: any Sendable] = ["cfi": initialRestore.cfi]
-                            if let fractionalCompletion = initialRestore.fractionalCompletion {
-                                restoreArguments["fractionalCompletion"] = fractionalCompletion
-                            }
-                            loadArguments["initialRestore"] = restoreArguments
-                        }
+                        let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
+                        loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
                         try await scriptCaller.evaluateJavaScript(
                             """
-                            const fallbackURL = url;
-                            const fallbackLayoutMode = layoutMode;
                             window.loadEBook({ url, layoutMode, initialRestore });
                             """,
                             arguments: loadArguments,

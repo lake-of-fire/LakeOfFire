@@ -52,6 +52,59 @@ public struct ConsoleLogMessage {
     }
 }
 
+public struct ReaderContentEbookInitialRestoreResult: Sendable, Equatable {
+    public enum TerminalState: String, Sendable, Equatable {
+        case satisfied
+        case failed
+        case noTarget
+    }
+
+    public let requestID: String?
+    public let requestedLocator: String
+    public let terminalState: TerminalState
+    public let navigationOk: Bool
+    public let restoreSatisfied: Bool
+    public let handledFractionalCompletion: Double?
+    public let currentFractionalCompletion: Double?
+    public let handledCFI: String?
+    public let error: String?
+
+    public init?(payload: Any?) {
+        guard let payload = payload as? [String: Any],
+              let requestedLocator = payload["requestedLocator"] as? String,
+              let terminalStateValue = payload["terminalState"] as? String,
+              let terminalState = TerminalState(rawValue: terminalStateValue),
+              let navigationOk = payload["navigationOk"] as? Bool,
+              let restoreSatisfied = payload["restoreSatisfied"] as? Bool else {
+            return nil
+        }
+        requestID = payload["requestID"] as? String
+        self.requestedLocator = requestedLocator
+        self.terminalState = terminalState
+        self.navigationOk = navigationOk
+        self.restoreSatisfied = restoreSatisfied
+        handledFractionalCompletion = Self.finiteDouble(payload["handledFractionalCompletion"])
+        currentFractionalCompletion = Self.finiteDouble(payload["currentFractionalCompletion"])
+        handledCFI = payload["handledCFI"] as? String
+        error = payload["error"] as? String
+    }
+
+    private static func finiteDouble(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, !(value is Bool) else { return nil }
+        let result = number.doubleValue
+        return result.isFinite ? result : nil
+    }
+}
+
+public struct ReaderContentEbookInitialRestoreResultMessage: Sendable {
+    public let initialRestoreResult: ReaderContentEbookInitialRestoreResult?
+
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        initialRestoreResult = ReaderContentEbookInitialRestoreResult(payload: body["initialRestoreResult"])
+    }
+}
+
 public struct ReaderOnErrorMessage {
     public let message: String?
     public let source: URL

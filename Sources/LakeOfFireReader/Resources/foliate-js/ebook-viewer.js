@@ -12,7 +12,9 @@ import {
     ebookSegmentIdentifierAliases,
 } from './ebook-segment-identity.js'
 import {
+    makeInitialRestoreTerminalResult,
     makeSyntheticRestoreLocator,
+    normalizeInitialRestoreRequest,
     parseSyntheticRestoreLocator,
     restoreLocatorKind as classifyRestoreLocator,
     runRequiredRestoreNavigation,
@@ -8203,8 +8205,10 @@ window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
 window.loadEBook = ({
     url,
     layoutMode,
+    initialRestore,
 }) => {
     const requestedURL = typeof url === 'string' ? url : '';
+    const initialRestoreRequest = normalizeInitialRestoreRequest(initialRestore);
     if (
         requestedURL.length > 0
         && globalThis.manabiLoadEBookURL === requestedURL
@@ -8214,7 +8218,7 @@ window.loadEBook = ({
         const existingStartedAgeMs = existingStartedAt > 0 ? Date.now() - existingStartedAt : 0;
         if (globalThis.reader?.view?.renderer || existingStartedAgeMs < 2500) {
             globalThis.manabiLoadEBookLastState = 'duplicate-inflight';
-            globalThis.manabiPendingLoadEBookArgs = null;
+            globalThis.manabiPendingInitialRestoreRequest = initialRestoreRequest;
             return globalThis.manabiLoadEBookPromise;
         }
         globalThis.manabiLoadEBookLastState = 'duplicate-inflight-stale-restart';
@@ -8237,10 +8241,12 @@ window.loadEBook = ({
     globalThis.manabiLoadEBookStartedAt = Date.now();
     globalThis.manabiLoadEBookReady = false;
     globalThis.manabiLoadEBookLastState = 'start';
+    globalThis.manabiInitialRestoreResult = null;
     globalThis.manabiPendingLoadEBookArgs = {
         hasURL: typeof url === 'string' && url.length > 0,
         layoutMode: layoutMode || null,
     };
+    globalThis.manabiPendingInitialRestoreRequest = initialRestoreRequest;
     try {
         globalThis.__manabiFinishEPUBLoadWatchdogs?.('new-load');
     } catch (_error) {}
@@ -8303,9 +8309,27 @@ window.loadEBook = ({
             }
             globalThis.manabiLoadEBookLastState = 'reader-open-dispatch';
             await reader.open(source)
+            if (globalThis.manabiLoadEBookToken !== loadToken) return;
             if (!reader?.view?.renderer) {
                 throw new Error('reader-open-missing-renderer');
             }
+            const restoreRequest = globalThis.manabiPendingInitialRestoreRequest;
+            globalThis.manabiPendingInitialRestoreRequest = null;
+            let restoreSnapshot = null;
+            let restoreError = null;
+            try {
+                restoreSnapshot = await window.loadLastPosition(restoreRequest ?? {
+                    cfi: '',
+                    fractionalCompletion: 0,
+                });
+            } catch (error) {
+                restoreError = error;
+            }
+            globalThis.manabiInitialRestoreResult = makeInitialRestoreTerminalResult({
+                request: restoreRequest,
+                snapshot: restoreSnapshot,
+                error: restoreError,
+            });
         })
         .then(async () => {
             if (globalThis.manabiLoadEBookToken !== loadToken) return;
@@ -8319,6 +8343,7 @@ window.loadEBook = ({
             }) ?? null;
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({
                 probe,
+                initialRestoreResult: globalThis.manabiInitialRestoreResult,
             })
         })
         .catch((error) => {

@@ -37,6 +37,52 @@ export const restoreLocatorKind = ({ cfi, fractionalCompletion }) => {
     return Number.isFinite(fractionalCompletion) && fractionalCompletion > 0 ? 'fraction' : 'none'
 }
 
+export const normalizeInitialRestoreRequest = value => {
+    if (!value || typeof value !== 'object') return null
+
+    const requestID = typeof value.requestID === 'string' ? value.requestID.trim() : ''
+    const cfi = typeof value.cfi === 'string' ? value.cfi : ''
+    const fractionalCompletion = Number.isFinite(value.fractionalCompletion)
+        && value.fractionalCompletion > 0
+        && value.fractionalCompletion <= 1
+        ? value.fractionalCompletion
+        : null
+    const requestedLocator = cfi.length > 0 ? 'cfi' : (fractionalCompletion != null ? 'fraction' : 'none')
+
+    if (requestID.length === 0 || requestedLocator === 'none') return null
+    return {
+        requestID,
+        requestedLocator,
+        cfi,
+        fractionalCompletion,
+    }
+}
+
+export const makeInitialRestoreTerminalResult = ({ request, snapshot, error = null }) => {
+    const navigationOk = error == null
+    const currentFractionalCompletion = Number.isFinite(snapshot?.currentFractionalCompletion)
+        ? snapshot.currentFractionalCompletion
+        : null
+    const handledFractionalCompletion = Number.isFinite(snapshot?.handledFractionalCompletion)
+        ? snapshot.handledFractionalCompletion
+        : null
+    const handledCFI = typeof snapshot?.handledCFI === 'string' && snapshot.handledCFI.length > 0
+        ? snapshot.handledCFI
+        : null
+
+    return {
+        requestID: request?.requestID ?? null,
+        requestedLocator: request?.requestedLocator ?? 'none',
+        terminalState: request ? (navigationOk ? 'satisfied' : 'failed') : 'noTarget',
+        navigationOk,
+        restoreSatisfied: request != null && navigationOk,
+        handledFractionalCompletion,
+        currentFractionalCompletion,
+        handledCFI,
+        error: error == null ? null : String(error?.message ?? error),
+    }
+}
+
 export const shouldSkipScheduledReaderFractionGoTo = ({
     requiresUserInputBeforePositionSave,
     restoreSettlingMs,

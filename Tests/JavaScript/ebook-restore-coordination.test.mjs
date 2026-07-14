@@ -2,12 +2,85 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    makeInitialRestoreTerminalResult,
     makeSyntheticRestoreLocator,
+    normalizeInitialRestoreRequest,
     parseSyntheticRestoreLocator,
     restoreLocatorKind,
     runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js'
+
+test('initial restore requests derive locator identity from validated content', () => {
+    assert.deepEqual(normalizeInitialRestoreRequest({
+        requestID: ' request-1 ',
+        requestedLocator: 'fraction',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: 0.7,
+    }), {
+        requestID: 'request-1',
+        requestedLocator: 'cfi',
+        cfi: 'epubcfi(/6/14!)',
+        fractionalCompletion: 0.7,
+    })
+    assert.equal(normalizeInitialRestoreRequest({ requestID: '', cfi: 'epubcfi(/6/14!)' }), null)
+    assert.equal(normalizeInitialRestoreRequest({ requestID: 'request-2', cfi: '', fractionalCompletion: 2 }), null)
+})
+
+test('initial restore terminal results retain request correlation and snapshot', () => {
+    const request = normalizeInitialRestoreRequest({
+        requestID: 'request-3',
+        cfi: '',
+        fractionalCompletion: 0.4,
+    })
+    assert.deepEqual(makeInitialRestoreTerminalResult({
+        request,
+        snapshot: {
+            handledFractionalCompletion: 0.4,
+            currentFractionalCompletion: 0.4,
+            handledCFI: null,
+        },
+    }), {
+        requestID: 'request-3',
+        requestedLocator: 'fraction',
+        terminalState: 'satisfied',
+        navigationOk: true,
+        restoreSatisfied: true,
+        handledFractionalCompletion: 0.4,
+        currentFractionalCompletion: 0.4,
+        handledCFI: null,
+        error: null,
+    })
+})
+
+test('initial restore terminal results preserve navigation failures', () => {
+    const request = normalizeInitialRestoreRequest({
+        requestID: 'request-4',
+        cfi: 'epubcfi(/6/14!)',
+    })
+    const result = makeInitialRestoreTerminalResult({
+        request,
+        snapshot: null,
+        error: new Error('invalid saved CFI'),
+    })
+
+    assert.equal(result.terminalState, 'failed')
+    assert.equal(result.navigationOk, false)
+    assert.equal(result.restoreSatisfied, false)
+    assert.equal(result.error, 'invalid saved CFI')
+})
+
+test('default opening reports no requested restore without promoting it to success', () => {
+    const result = makeInitialRestoreTerminalResult({
+        request: null,
+        snapshot: { currentFractionalCompletion: 0 },
+    })
+
+    assert.equal(result.terminalState, 'noTarget')
+    assert.equal(result.navigationOk, true)
+    assert.equal(result.restoreSatisfied, false)
+    assert.equal(result.currentFractionalCompletion, 0)
+})
 
 test('synthetic restore locators round trip normalized section state', () => {
     const locator = makeSyntheticRestoreLocator({
