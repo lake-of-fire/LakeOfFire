@@ -4,6 +4,7 @@ import {
 createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
+import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import {
     Overlayer
 } from '../foliate-js/overlayer.js'
@@ -1013,39 +1014,6 @@ window.manabiApplyNavigationHiddenStateToEbookDocument = (reason = 'manual', exp
     };
 };
 
-const copyCustomReaderFontStyleToDocument = (sourceFontStyle, doc, reason = 'unknown') => {
-    if (!doc || doc === document) return false;
-    if (!sourceFontStyle) {
-        return false;
-    }
-    let targetFontStyle = doc.getElementById('mnb-custom-fonts-inline');
-    const sourceTag = sourceFontStyle.tagName?.toLowerCase();
-    const desiredTag = sourceTag === 'link' ? 'link' : 'style';
-    if (targetFontStyle && targetFontStyle.tagName?.toLowerCase() !== desiredTag) {
-        targetFontStyle.remove();
-        targetFontStyle = null;
-    }
-    if (!targetFontStyle) {
-        targetFontStyle = doc.createElement(desiredTag);
-        targetFontStyle.id = 'mnb-custom-fonts-inline';
-        (doc.head || doc.documentElement).appendChild(targetFontStyle);
-    }
-    if (desiredTag === 'link') {
-        targetFontStyle.rel = sourceFontStyle.rel || 'stylesheet';
-        targetFontStyle.href = sourceFontStyle.href;
-    } else {
-        targetFontStyle.textContent = sourceFontStyle.textContent || '';
-    }
-    for (const [key, value] of Object.entries(sourceFontStyle.dataset || {})) {
-        targetFontStyle.dataset[key] = value;
-    }
-    if (doc.documentElement && sourceFontStyle.dataset?.mnbInjectedFontFamily) {
-        doc.documentElement.dataset.mnbInjectedFontFamily = sourceFontStyle.dataset.mnbInjectedFontFamily;
-        doc.documentElement.dataset.mnbFontInjected = '1';
-    }
-    return true;
-};
-
 window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc = null) => {
     const docs = getLoadedEbookDocuments(explicitDoc);
     const sourceFontStyle = document.getElementById('mnb-custom-fonts-inline')
@@ -1053,7 +1021,7 @@ window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc
         || null;
     let forwardedCount = 0;
     for (const doc of docs) {
-        if (copyCustomReaderFontStyleToDocument(sourceFontStyle, doc, reason)) {
+        if (doc !== document && copyCustomReaderFontStyleToDocument(sourceFontStyle, doc, reason)) {
             forwardedCount += 1;
         }
     }
