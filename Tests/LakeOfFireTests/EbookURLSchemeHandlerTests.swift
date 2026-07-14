@@ -78,6 +78,17 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(response.value(forHTTPHeaderField: "Expires"), "0")
     }
 
+    func testMissingViewerAssetReturns404InsteadOfViewerHTMLFallback() throws {
+        let assetURL = try XCTUnwrap(URL(string: "ebook://ebook/load/viewer-assets/foliate-js/missing.js"))
+        let response = try XCTUnwrap(missingEbookViewerAssetResponse(for: assetURL))
+
+        XCTAssertEqual(response.statusCode, 404)
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertNil(missingEbookViewerAssetResponse(
+            for: try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/example.epub"))
+        ))
+    }
+
     func testForegroundProcessingWaitsForCachePublicationBeforeReturning() async throws {
         let writerGate = EBookProcessingGate()
         let completionCounter = EBookProcessorInvocationCounter()

@@ -112,6 +112,16 @@ func ebookHTTPResponse(
     )!
 }
 
+func missingEbookViewerAssetResponse(for url: URL) -> HTTPURLResponse? {
+    guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
+    return HTTPURLResponse(
+        url: url,
+        statusCode: 404,
+        httpVersion: nil,
+        headerFields: ["Cache-Control": "no-store"]
+    )
+}
+
 func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) -> Data? {
     if isCacheWarmer {
         return Data()
@@ -703,6 +713,14 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
                             urlSchemeTask.didReceive(response)
                             urlSchemeTask.didReceive(data)
+                            urlSchemeTask.didFinish()
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
+                } else if let missingAssetResponse = missingEbookViewerAssetResponse(for: url) {
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didReceive(missingAssetResponse)
                             urlSchemeTask.didFinish()
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }
