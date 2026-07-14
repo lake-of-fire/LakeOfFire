@@ -8,6 +8,10 @@ import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    ebookSegmentIdentity,
+    ebookSegmentIdentifierAliases,
+} from './ebook-segment-identity.js'
+import {
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
     restoreLocatorKind as classifyRestoreLocator,
@@ -2512,20 +2516,7 @@ const sentenceIdentifierForNode = (sentenceNode) => {
 
 const segmentIdentityForNode = (segmentNode) => {
     const metadata = segmentMetadataForNode(segmentNode);
-    const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
-    const stableID = typeof metadata?.sid === 'string' && metadata.sid.length > 0
-        ? metadata.sid
-        : (typeof metadata?.h === 'string' && metadata.h.length > 0 ? metadata.h : null);
-    const metadataElementID = typeof metadata?.i === 'string' && metadata.i.length > 0
-        ? metadata.i
-        : null;
-    return {
-        elementID,
-        metadataElementID,
-        stableID,
-        segmentIdentifier: stableID || elementID,
-        hasSidecarStableID: !!stableID,
-    };
+    return ebookSegmentIdentity(segmentNode, metadata);
 };
 
 const segmentIdentifierForNode = (segmentNode) => {
@@ -2534,20 +2525,7 @@ const segmentIdentifierForNode = (segmentNode) => {
 
 const segmentIdentifierAliasesForNode = (segmentNode) => {
     const metadata = segmentMetadataForNode(segmentNode);
-    const identity = segmentIdentityForNode(segmentNode);
-    const aliases = [];
-    const addAlias = (identifier) => {
-        if (typeof identifier !== 'string' || identifier.length === 0) return;
-        if (!aliases.includes(identifier)) aliases.push(identifier);
-    };
-    addAlias(identity.stableID);
-    const sentenceIdentifier = sentenceIdentifierForNode(segmentNode?.closest?.('mnb-sen'));
-    if (sentenceIdentifier && typeof identity.stableID === 'string' && !identity.stableID.includes('-')) {
-        addAlias(`${sentenceIdentifier}-${identity.stableID}`);
-    }
-    addAlias(identity.metadataElementID);
-    addAlias(identity.elementID);
-    return aliases;
+    return ebookSegmentIdentifierAliases(segmentNode, metadata);
 };
 
 const buildExampleSentenceForSegment = (segmentNode) => {
