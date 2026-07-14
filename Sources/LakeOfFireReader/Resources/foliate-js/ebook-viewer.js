@@ -6,6 +6,7 @@ createTOCView
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
+import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
     collectSegmentNodesInVisibleRange,
     collectViewportSampleSegmentNodes,
@@ -7676,6 +7677,10 @@ class Reader {
             detail,
             fallbackFraction: fraction,
         });
+        const progressFraction = ebookProgressFractionForRelocate({
+            relocateFraction: fraction,
+            authoritativeFraction: effectiveFraction,
+        });
         const currentPercent = typeof primaryLabelDiagnostics?.currentPercent === 'number'
             ? primaryLabelDiagnostics.currentPercent
             : null;
@@ -7795,7 +7800,7 @@ class Reader {
             if (!shouldPersistRelocatePosition) {
             } else {
                 this.#postUpdateReadingProgressMessage({
-                    fraction: Number.isFinite(effectiveFraction) ? effectiveFraction : fraction,
+                    fraction: progressFraction,
                     cfi: persistedLocator,
                     reason,
                     currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
