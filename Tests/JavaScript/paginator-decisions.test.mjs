@@ -7,9 +7,32 @@ import {
     pageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision,
     paginatorAnchorForLocalPage,
+    readerLoadPathsMatch,
+    revealPaginatorDocument,
     resolveBlankPageTarget,
     shouldSuppressPostPageTurnDuplicate,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator-decisions.js'
+
+test('reveals a document by removing its one-shot layout bootstrap', () => {
+    let removalCount = 0
+    const bootstrap = { remove: () => { removalCount += 1 } }
+    const document = {
+        getElementById: () => removalCount === 0 ? bootstrap : null,
+    }
+
+    assert.equal(revealPaginatorDocument(document), true)
+    assert.equal(revealPaginatorDocument(document), false)
+    assert.equal(removalCount, 1)
+})
+
+test('reader-load path matching normalizes encoding, queries, and relative prefixes', () => {
+    assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('item%2Fxhtml%2Fp-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml?cache=1#frag', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('./item/xhtml/p-003.xhtml', 'item/xhtml/p-003.xhtml'), true)
+    assert.equal(readerLoadPathsMatch('item/xhtml/p-003.xhtml', 'item/xhtml/p-004.xhtml'), false)
+    assert.equal(readerLoadPathsMatch(null, 'item/xhtml/p-003.xhtml'), false)
+})
 
 test('blank-page correction remains within content sentinels', () => {
     const blank = { textCharCount: 0, mediaCount: 0 }

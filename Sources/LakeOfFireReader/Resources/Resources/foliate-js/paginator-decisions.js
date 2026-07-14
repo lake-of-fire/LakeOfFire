@@ -1,6 +1,33 @@
 export const LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180
 export const POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240
 export const ENABLE_SINGLE_MEDIA_PAGE_NORMALIZATION = true
+export const PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID = 'mnb-paginator-layout-bootstrap'
+
+export const revealPaginatorDocument = doc => {
+    const bootstrapStyle = doc?.getElementById?.(PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID)
+    if (!bootstrapStyle) return false
+    bootstrapStyle.remove()
+    return true
+}
+
+export const normalizeReaderLoadPath = value => {
+    if (value == null) return null
+    let path = String(value)
+    try {
+        path = decodeURIComponent(path)
+    } catch (_error) {}
+    return path
+        .split('#')[0]
+        .split('?')[0]
+        .replace(/^\.?\//, '')
+        .replace(/\/{2,}/g, '/')
+}
+
+export const readerLoadPathsMatch = (lhs, rhs) => {
+    const left = normalizeReaderLoadPath(lhs)
+    const right = normalizeReaderLoadPath(rhs)
+    return left != null && right != null && left === right
+}
 
 export const lockedPageTurnQueueDecision = ({
     pendingQueueAllowed,

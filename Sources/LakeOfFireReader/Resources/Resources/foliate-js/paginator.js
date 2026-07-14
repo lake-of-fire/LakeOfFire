@@ -9,9 +9,12 @@ import {
     pageSummaryIsVisiblyBlank as manabiPageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision as manabiPageTurnBoundaryDecision,
     paginatorAnchorForLocalPage as manabiPaginatorAnchorForLocalPage,
+    readerLoadPathsMatch as manabiReaderLoadPathsMatch,
+    revealPaginatorDocument as manabiRevealPaginatorDocument,
     resolveBlankPageTarget as manabiResolveBlankPageTarget,
     shouldSuppressPostPageTurnDuplicate as manabiShouldSuppressPostPageTurnDuplicate,
 } from './paginator-decisions.js'
+import { installBookContentStyles } from './book-content-style.js'
 
 export {
     manabiNormalizeSingleMediaPageTarget,
@@ -23,35 +26,6 @@ export {
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_ENABLE_PAGINATOR_DIAGNOSTICS = false;
-const FOLIATE_BOOK_CONTENT_STYLE_ID = 'foliate-book-content-style';
-export const installBookContentStyles = (installationByDocument, doc, stylesPromise) => {
-    if (!doc?.head || !stylesPromise) return Promise.resolve(false)
-    const existingInstallation = installationByDocument.get(doc)
-    if (existingInstallation?.stylesPromise === stylesPromise) {
-        return existingInstallation.promise
-    }
-
-    const installation = { stylesPromise, promise: null }
-    const promise = Promise.resolve(stylesPromise).then(styles => {
-        if (installationByDocument.get(doc) !== installation) return false
-        let style = doc.getElementById(FOLIATE_BOOK_CONTENT_STYLE_ID)
-        if (style && style.localName !== 'style') {
-            style.remove()
-            style = null
-        }
-        if (!style) {
-            style = doc.createElement('style')
-            style.id = FOLIATE_BOOK_CONTENT_STYLE_ID
-            doc.head.prepend(style)
-        }
-        if (style.textContent !== styles) style.textContent = styles
-        return true
-    })
-    installation.promise = promise
-    installationByDocument.set(doc, installation)
-    return promise
-}
-const MANABI_PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID = 'mnb-paginator-layout-bootstrap';
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -93,12 +67,6 @@ const MANABI_ENABLE_PAGE_METRICS_CACHE = false;
 const MANABI_ENABLE_PAGE_TURN_BLANK_CORRECTION = false;
 const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
-const manabiRevealPaginatorDocument = doc => {
-    const bootstrapStyle = doc?.getElementById?.(MANABI_PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID);
-    if (!bootstrapStyle) return false;
-    bootstrapStyle.remove();
-    return true;
-};
 const manabiDocumentIsProcessedEbook = doc => {
     const body = doc?.body;
     const documentElement = doc?.documentElement;
@@ -263,23 +231,6 @@ const manabiReaderLoadSubpathFromURL = value => {
         return encodedSubpath.slice(0, 96)
     }
 };
-const manabiNormalizeReaderLoadPath = value => {
-    if (value == null) return null
-    let path = String(value)
-    try {
-        path = decodeURIComponent(path)
-    } catch (_error) {}
-    return path
-        .split('#')[0]
-        .split('?')[0]
-        .replace(/^\.?\//, '')
-        .replace(/\/{2,}/g, '/')
-}
-const manabiReaderLoadPathsMatch = (lhs, rhs) => {
-    const left = manabiNormalizeReaderLoadPath(lhs)
-    const right = manabiNormalizeReaderLoadPath(rhs)
-    return left != null && right != null && left === right
-}
 const manabiShouldEmitPaginatorFallbackReaderLoadLog = stage => {
     if (globalThis.__manabiReaderLoadVerbose === true || globalThis.__manabiPaginatorVerbosePageTurns === true) return true;
     if (typeof stage !== 'string') return false;
