@@ -328,7 +328,7 @@ const manabiSentenceArchiveEntryFromSidecarSegments = (segments) => {
             sentenceJMDictIDSet.add(primaryEntryID);
             sentenceJMDictIDs.push(primaryEntryID);
         }
-        const segmentIdentifier = segment.sid || segment.h || segment.i || '';
+        const segmentIdentifier = segment.sid || '';
         if (segmentIdentifier) {
             archiveSegments.push({
                 jmdictEntryIds: jmdictEntryIDs,
@@ -638,7 +638,7 @@ const visiblePrimeMetadataForElementID = (doc, index, elementID) => {
                 ...sidecarMetadata,
             };
             index.byElementID.set(elementID, mergedMetadata);
-            const segmentIdentifier = mergedMetadata.segmentIdentifier || mergedMetadata.i || null;
+            const segmentIdentifier = mergedMetadata.sid || null;
             if (typeof segmentIdentifier === 'string' && segmentIdentifier.length > 0 && index.bySegmentIdentifier instanceof Map) {
                 index.bySegmentIdentifier.set(segmentIdentifier, mergedMetadata);
             }
@@ -4773,12 +4773,14 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         if (typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0) {
             sentenceIdentifiers.add(sentenceIdentifier);
         }
-        const stableSegmentIdentifier = sourceMetadata.sid
-            || item?.segmentIdentifier
-            || null;
-        const segmentIdentifier = item?.segmentIdentifier
-            || segmentIdentifierForNode(node, visibleSegmentsResult?.segmentMetadataBootstrap, sourceMetadata)
-            || null;
+        const stableSegmentIdentifier = typeof sourceMetadata.sid === 'string' && sourceMetadata.sid.length > 0
+            ? sourceMetadata.sid
+            : null;
+        const segmentIdentifier = segmentIdentifierForNode(
+            node,
+            visibleSegmentsResult?.segmentMetadataBootstrap,
+            sourceMetadata
+        );
         if (!segmentIdentifier) { return; }
         const metadata = {
             ...sourceMetadata,
@@ -4795,7 +4797,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             byElementID.set(elementID, metadata);
         }
         addMetadataAlias(metadata, segmentIdentifier);
-        addMetadataAlias(metadata, metadata.i);
         addMetadataAlias(metadata, metadata.sid);
         for (const alias of item?.segmentIdentifierAliases || []) {
             addMetadataAlias(metadata, alias);
