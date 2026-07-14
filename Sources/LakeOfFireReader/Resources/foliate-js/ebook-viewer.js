@@ -8472,6 +8472,7 @@ window.loadLastPosition = async ({
     const restoreLocatorKind = syntheticRestoreLocator
         ? 'synthetic'
         : (typeof cfi === 'string' && cfi.length > 0 ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none'));
+    let handledCFI = null;
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
         if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
             return;
@@ -8523,13 +8524,16 @@ window.loadLastPosition = async ({
                 localSectionIndex: syntheticRestoreLocator.localSectionIndex,
                 rendererTotal: syntheticRestoreLocator.rendererTotal,
             });
+            handledCFI = typeof cfi === 'string' && cfi.length > 0 ? cfi : null;
         } else if (cfi.length > 0) {
             await runWithNavigationIntent({
                 source: 'restore.cfi',
                 target: 'view.goTo',
                 cfiLength: cfi.length,
                 fraction: hasFractionalCompletion ? fractionalCompletion : null,
-            }, () => globalThis.reader.view.goTo(cfi)).catch(async (e) => {
+            }, () => globalThis.reader.view.goTo(cfi)).then(() => {
+                handledCFI = cfi;
+            }).catch(async (e) => {
                 console.error(e)
                 if (hasFractionalCompletion) {
                     await runWithNavigationIntent({
@@ -8585,6 +8589,11 @@ window.loadLastPosition = async ({
 
         // Let the visible section finish rendering before warming secondary sections.
         scheduleDeferredCacheWarmerOpen('load-last-position-done', 2200);
+        return {
+            handledFractionalCompletion: doneState.currentFraction,
+            currentFractionalCompletion: doneState.currentFraction,
+            handledCFI,
+        };
     } finally {
         globalThis.__manabiRestoreInProgress = false;
         globalThis.__manabiSuppressNextRestoreRelocateSave = false;
