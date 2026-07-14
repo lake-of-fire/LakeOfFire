@@ -15,6 +15,37 @@ public struct EbookProcessedSectionPayload: Sendable {
     }
 }
 
+func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+    _ payload: EbookProcessedSectionPayload
+) -> Bool {
+    guard !payload.segmentSidecar.isEmpty else { return true }
+    guard let object = try? JSONSerialization.jsonObject(with: payload.segmentSidecar),
+          let root = object as? [String: Any],
+          (root["v"] as? NSNumber)?.intValue == 9,
+          let tables = root["t"] as? [String: Any],
+          let hashes = tables["h"] as? [String],
+          let sentenceIDs = tables["sid"] as? [String],
+          let segments = root["s"] as? [[Any]] else {
+        return false
+    }
+    guard !segments.isEmpty else { return true }
+
+    func nonEmptyTableValue(_ table: [String], tuple: [Any], index: Int) -> Bool {
+        guard tuple.indices.contains(index),
+              let tableIndex = tuple[index] as? NSNumber,
+              tableIndex.intValue >= 0,
+              table.indices.contains(tableIndex.intValue) else {
+            return false
+        }
+        return !table[tableIndex.intValue].isEmpty
+    }
+
+    return segments.allSatisfy { tuple in
+        nonEmptyTableValue(hashes, tuple: tuple, index: 1)
+            && nonEmptyTableValue(sentenceIDs, tuple: tuple, index: 9)
+    }
+}
+
 struct ReaderExternalSegmentSidecarEntry: Sendable {
     let data: Data
     let signature: String

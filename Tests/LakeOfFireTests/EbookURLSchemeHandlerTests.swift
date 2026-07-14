@@ -269,6 +269,20 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacyEncoded))
     }
 
+    func testProcessedSidecarCacheRequiresDurableIdentityForEverySegment() {
+        let valid = EbookProcessedSectionPayload(
+            documentHTML: Data(),
+            segmentSidecar: Data(#"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!runtime",0,null,null,null,null,null,null,null,0]]}"#.utf8)
+        )
+        let missingSentenceIdentity = EbookProcessedSectionPayload(
+            documentHTML: Data(),
+            segmentSidecar: Data(#"{"v":9,"t":{"h":["hash"],"sid":[]},"s":[["!runtime",0]]}"#.utf8)
+        )
+
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(valid))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(missingSentenceIdentity))
+    }
+
     func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
         let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
         let css = """

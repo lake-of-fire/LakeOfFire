@@ -942,11 +942,14 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     let cacheProbeOutcome: String
                     if let ebookProcessedTextCacheReader {
                         do {
-                            cachedPayload = try await ebookProcessedTextCacheReader(
+                            let candidate = try await ebookProcessedTextCacheReader(
                                 mainDocumentURL,
                                 sectionHref,
                                 processRequestKey.textFingerprint
                             )
+                            cachedPayload = candidate.flatMap {
+                                ebookProcessedSectionPayloadHasDurableSegmentIdentities($0) ? $0 : nil
+                            }
                             cacheProbeOutcome = cachedPayload == nil ? "miss" : "hit"
                         } catch {
                             cachedPayload = nil
