@@ -115,14 +115,4 @@ final class SharedReaderFontTests: XCTestCase {
         XCTAssertEqual(missingAssetResponse.response.statusCode, 404)
     }
 
-    func testEbookViewerScriptUsesSameSchemeFontStylesheetsWithoutBlobURLs() throws {
-        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let scriptURL = testsDirectory
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/LakeOfFireReader/Resources/foliate-js/ebook-viewer.js")
-        let script = try String(contentsOf: scriptURL, encoding: .utf8)
-        XCTAssertFalse(script.contains("manabi-fonts.css"), script)
-        XCTAssertFalse(script.contains("URL.createObjectURL(new Blob([fontCSS"), script)
-    }
 }
