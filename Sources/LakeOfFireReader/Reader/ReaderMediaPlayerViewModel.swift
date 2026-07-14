@@ -35,6 +35,20 @@ public enum AITTSMarkerApplyResultEvaluator {
     }
 }
 
+public enum ReaderTTSProgressEvaluator {
+    public static func fraction(text: String, spokenRange: NSRange?) -> Double {
+        guard let spokenRange,
+              spokenRange.location != NSNotFound,
+              spokenRange.location >= 0,
+              spokenRange.length >= 0 else { return 0 }
+        let textLength = text.utf16.count
+        guard textLength > 0 else { return 0 }
+        let (sum, overflowed) = spokenRange.location.addingReportingOverflow(spokenRange.length)
+        let spokenEnd = min(overflowed ? Int.max : sum, textLength)
+        return Double(spokenEnd) / Double(textLength)
+    }
+}
+
 @MainActor
 public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var isMediaPlayerPresented = false
@@ -612,12 +626,11 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         let locationFraction: Double
         if forceEndOfUtterance {
             locationFraction = 1
-        } else if let ttsCurrentCharacterRange {
-            let textLength = max(currentText.count, 1)
-            let spokenEnd = min(max(ttsCurrentCharacterRange.location + ttsCurrentCharacterRange.length, 0), textLength)
-            locationFraction = min(max(Double(spokenEnd) / Double(textLength), 0), 1)
         } else {
-            locationFraction = 0
+            locationFraction = ReaderTTSProgressEvaluator.fraction(
+                text: currentText,
+                spokenRange: ttsCurrentCharacterRange
+            )
         }
         let absoluteProgress = min(Double(boundedIndex) + locationFraction, upperBound)
         ttsProgressValue = absoluteProgress
