@@ -27,3 +27,19 @@ export const parseSyntheticRestoreLocator = value => {
         fractionInSection: rendererTotal > 1 ? localSectionIndex / (rendererTotal - 1) : 0,
     }
 }
+
+export const runRequiredRestoreNavigation = async operation => {
+    try {
+        return {
+            ok: true,
+            value: await operation(),
+            error: null,
+        }
+    } catch (error) {
+        return {
+            ok: false,
+            value: null,
+            error,
+        }
+    }
+}

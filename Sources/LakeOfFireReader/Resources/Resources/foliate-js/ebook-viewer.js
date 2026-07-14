@@ -10,6 +10,7 @@ import {
 import {
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
+    runRequiredRestoreNavigation,
 } from './ebook-restore-coordination.js'
 import {
     Overlayer
@@ -11950,21 +11951,22 @@ window.loadLastPosition = async ({
             throwOnError = true,
         } = {},
     ) => {
-        try {
-            const result = await runWithNavigationIntent(intent, operation, { timeoutMs });
+        const navigationResult = await runRequiredRestoreNavigation(
+            () => runWithNavigationIntent(intent, operation, { timeoutMs })
+        );
+        if (navigationResult.ok) {
             return {
                 ok: true,
-                result,
-            };
-        } catch (error) {
-            if (throwOnError) {
-                throw error;
-            }
-            return {
-                ok: false,
-                error,
+                result: navigationResult.value,
             };
         }
+        if (throwOnError) {
+            throw navigationResult.error;
+        }
+        return {
+            ok: false,
+            error: navigationResult.error,
+        };
     };
     const waitForFrames = async (count = 2) => {
         for (let index = 0; index < count; index += 1) {
