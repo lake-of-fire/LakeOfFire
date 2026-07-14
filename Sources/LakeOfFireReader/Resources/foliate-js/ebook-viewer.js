@@ -7,6 +7,10 @@ import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import {
+    collectSegmentNodesInVisibleRange,
+    collectViewportSampleSegmentNodes,
+} from './visible-segment-collection.js'
+import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
@@ -2733,6 +2737,15 @@ const viewportBoundsForReaderDocument = (doc) => {
 
 const segmentOrderCacheByDocument = new WeakMap();
 
+const isEbookContentDocument = (doc) => {
+    const href = doc?.location?.href || doc?.URL || '';
+    return doc?.defaultView?.manabi_isEbook === true
+        || doc?.body?.dataset?.isEbook === 'true'
+        || typeof doc?.body?.dataset?.mnbSourceHref === 'string'
+        || href.startsWith('blob:ebook://')
+        || href.startsWith('ebook://');
+};
+
 const orderedSegmentNodesForDocument = (doc) => {
     const cached = segmentOrderCacheByDocument.get(doc);
     if (cached?.root === doc.body) {
@@ -2777,7 +2790,10 @@ const rangeBoundarySegmentIndex = (visibleRange, boundary, orderedSegments) => {
     return null;
 };
 
-const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBounds) => {
+const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBounds, {
+    assumeInVisibleRange = false,
+    includeSegmentMetadata = true,
+} = {}) => {
     const visibleSegments = [];
     let hiddenTooltipCount = 0;
     let missingIdentifierCount = 0;
@@ -2792,7 +2808,10 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             hiddenTooltipCount += 1;
             continue;
         }
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+        const runtimeSegmentIdentifier = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
+        const segmentIdentifier = includeSegmentMetadata
+            ? segmentIdentifierForNode(segmentNode)
+            : runtimeSegmentIdentifier;
         if (!segmentIdentifier) {
             missingIdentifierCount += 1;
             continue;
@@ -2802,15 +2821,17 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
         const rect = rects[0] ?? null;
         rectMeasureCount += 1;
         rectMeasureElapsedMs += performance.now() - rectStartedAt;
-        const rangeStartedAt = performance.now();
-        let isInVisibleRange = false;
-        try {
-            visibleRangeCheckCount += 1;
-            isInVisibleRange = visibleRange.intersectsNode(segmentNode);
-            rangeCheckElapsedMs += performance.now() - rangeStartedAt;
-        } catch (_error) {
-            visibleRangeErrorCount += 1;
-            rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+        let isInVisibleRange = assumeInVisibleRange;
+        if (!assumeInVisibleRange) {
+            const rangeStartedAt = performance.now();
+            try {
+                visibleRangeCheckCount += 1;
+                isInVisibleRange = visibleRange.intersectsNode(segmentNode);
+                rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+            } catch (_error) {
+                visibleRangeErrorCount += 1;
+                rangeCheckElapsedMs += performance.now() - rangeStartedAt;
+            }
         }
         if (!isInVisibleRange || !rect) {
             outOfViewportCount += 1;
@@ -2822,7 +2843,9 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             rect,
             rects,
             segmentIdentifier,
-            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
+            segmentIdentifierAliases: includeSegmentMetadata
+                ? segmentIdentifierAliasesForNode(segmentNode)
+                : [runtimeSegmentIdentifier].filter(Boolean),
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
@@ -2839,10 +2862,40 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
     };
 };
 
-const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds) => {
+const isBroadEbookRangeRoot = (root, doc) => {
+    if (!root || !isEbookContentDocument(doc)) return false;
+    if (root === doc || root === doc.body || root === doc.documentElement) return true;
+    const tagName = root?.tagName?.toLowerCase?.() ?? '';
+    return tagName === 'body' || tagName === 'html';
+};
+
+const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds, {
+    includeSegmentMetadata = true,
+} = {}) => {
     if (!visibleRange || visibleRange.collapsed === true) {
         return null;
     }
+    const commonAncestor = visibleRange.commonAncestorContainer;
+    const commonAncestorElement = commonAncestor?.nodeType === Node.ELEMENT_NODE
+        ? commonAncestor
+        : commonAncestor?.parentElement;
+    if (!isBroadEbookRangeRoot(commonAncestorElement, doc)) {
+        const rangeSegmentNodes = collectSegmentNodesInVisibleRange(visibleRange);
+        if (rangeSegmentNodes?.length > 0) {
+            return {
+                ...measureVisibleSegmentsInWindow(rangeSegmentNodes, visibleRange, visibleBounds, {
+                    assumeInVisibleRange: true,
+                    includeSegmentMetadata,
+                }),
+                segmentNodes: rangeSegmentNodes,
+                segmentCandidateSource: 'sentinel-range',
+                orderedSegmentCount: rangeSegmentNodes.length,
+                boundedByWindow: true,
+            };
+        }
+    }
+    if (isEbookContentDocument(doc)) return null;
+
     const orderedSegments = orderedSegmentNodesForDocument(doc);
     const allSegmentNodes = orderedSegments.nodes;
     if (allSegmentNodes.length === 0) {
@@ -2863,7 +2916,9 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds) => {
         const windowStart = Math.max(0, anchorStart - expansionSize);
         const windowEnd = Math.min(allSegmentNodes.length - 1, anchorEnd + expansionSize);
         const segmentNodes = allSegmentNodes.slice(windowStart, windowEnd + 1);
-        const measured = measureVisibleSegmentsInWindow(segmentNodes, visibleRange, visibleBounds);
+        const measured = measureVisibleSegmentsInWindow(segmentNodes, visibleRange, visibleBounds, {
+            includeSegmentMetadata,
+        });
         const visibleIndexes = measured.visibleSegments
             .map((item) => orderedSegments.indexByNode.get(item.node))
             .filter((index) => Number.isFinite(index));
@@ -2892,7 +2947,10 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds) => {
     return null;
 };
 
-const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
+const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
+    viewportSampleDensity = 'normal',
+    includeSegmentMetadata = true,
+} = {}) => {
     if (!isDocumentLike(doc)) {
         return {
             visibleSegments: [],
@@ -2925,22 +2983,32 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
     const rangeCommonAncestorElement = rangeCommonAncestor?.nodeType === Node.ELEMENT_NODE
         ? rangeCommonAncestor
         : (rangeCommonAncestor?.parentElement || null);
+    const isEbookDoc = isEbookContentDocument(doc);
+    const isBroadEbookRange = isEbookDoc && useVisibleRange
+        && isBroadEbookRangeRoot(rangeCommonAncestorElement, doc);
     const expandedRangeResult = useVisibleRange
-        ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds)
+        ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeSegmentMetadata })
         : null;
-    const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? null;
-    const segmentSearchRoot = useVisibleRange && !expandedRangeResult && rangeCommonAncestorElement?.querySelectorAll
+    const viewportSampleSegmentNodes = isEbookDoc && !expandedRangeResult
+        ? collectViewportSampleSegmentNodes(doc, visibleBounds, { sampleDensity: viewportSampleDensity })
+        : null;
+    const boundedSegmentNodes = expandedRangeResult?.segmentNodes ?? viewportSampleSegmentNodes ?? null;
+    const segmentSearchRoot = useVisibleRange && !expandedRangeResult && !isBroadEbookRange
+        && rangeCommonAncestorElement?.querySelectorAll
         ? rangeCommonAncestorElement
         : doc;
-    const allSegmentNodes = boundedSegmentNodes || [
+    const allSegmentNodes = boundedSegmentNodes || (isEbookDoc && segmentSearchRoot === doc ? [] : [
             ...(segmentSearchRoot.matches?.('mnb-seg') ? [segmentSearchRoot] : []),
             ...Array.from(segmentSearchRoot.querySelectorAll?.('mnb-seg') ?? []),
-        ];
+        ]);
     const queryCompletedAt = performance.now();
     const ancestorSegmentCandidateCount = segmentSearchRoot === rangeCommonAncestorElement
         ? allSegmentNodes.length
         : null;
     const segmentCandidateSource = expandedRangeResult?.segmentCandidateSource
+        || (viewportSampleSegmentNodes ? `viewport-sample-${viewportSampleDensity}` : null)
+        || (isBroadEbookRange ? 'ebook-broad-range-empty' : null)
+        || (isEbookDoc && segmentSearchRoot === doc ? 'ebook-bounded-empty' : null)
         || (segmentSearchRoot === doc ? 'document' : 'range-ancestor');
     const visibleSegments = expandedRangeResult?.visibleSegments ? [...expandedRangeResult.visibleSegments] : [];
     let totalSegmentCount = expandedRangeResult ? allSegmentNodes.length : 0;
@@ -2958,7 +3026,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             hiddenTooltipCount += 1;
             continue;
         }
-        const segmentIdentifier = segmentIdentifierForNode(segmentNode);
+        const runtimeSegmentIdentifier = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
+        const segmentIdentifier = includeSegmentMetadata
+            ? segmentIdentifierForNode(segmentNode)
+            : runtimeSegmentIdentifier;
         if (!segmentIdentifier) {
             missingIdentifierCount += 1;
             continue;
@@ -2993,11 +3064,13 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
             rect,
             rects,
             segmentIdentifier,
-            segmentIdentifierAliases: segmentIdentifierAliasesForNode(segmentNode),
+            segmentIdentifierAliases: includeSegmentMetadata
+                ? segmentIdentifierAliasesForNode(segmentNode)
+                : [runtimeSegmentIdentifier].filter(Boolean),
             sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
-    if (useVisibleRange && visibleSegments.length === 0 && totalSegmentCount > 0) {
+    if (!isEbookDoc && useVisibleRange && visibleSegments.length === 0 && totalSegmentCount > 0) {
         const fallbackStartedAt = performance.now();
         const fallbackSegments = [];
         let fallbackHiddenTooltipCount = 0;
@@ -3053,6 +3126,10 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null) => {
         frameLeft: Number.isFinite(frameRect?.left) ? frameRect.left : 0,
         frameTop: Number.isFinite(frameRect?.top) ? frameRect.top : 0,
         totalSegmentCount,
+        segmentCandidateSource,
+        viewportSampleCount: viewportSampleSegmentNodes?.length ?? 0,
+        rectMeasureCount,
+        includesSegmentMetadata: includeSegmentMetadata,
         hiddenTooltipCount,
         missingIdentifierCount,
         outOfViewportCount,
@@ -7276,10 +7353,29 @@ class Reader {
             initialSettleResult,
             postFrameSettleResult,
         });
+        const initialRenderableProbe = (() => {
+            try {
+                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                if (!isDocumentLike(doc)) return null;
+                return collectVisibleSegmentNodesFromRange(doc, this.#visibleRangeForDocument(doc), {
+                    viewportSampleDensity: 'minimal',
+                    includeSegmentMetadata: false,
+                });
+            } catch (_error) {
+                return null;
+            }
+        })();
         this.setLoadingIndicator(false);
         this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
             initialSettleResult,
             postFrameSettleResult,
+            initialRenderableProbe: initialRenderableProbe ? {
+                candidateSource: initialRenderableProbe.segmentCandidateSource ?? null,
+                observedSegmentCount: initialRenderableProbe.totalSegmentCount ?? 0,
+                visibleSegmentCount: initialRenderableProbe.visibleSegments?.length ?? 0,
+                measuredSegmentGeometryCount: initialRenderableProbe.rectMeasureCount ?? 0,
+                includesSegmentMetadata: initialRenderableProbe.includesSegmentMetadata === true,
+            } : null,
         });
         setTimeout(() => {
             this.#postBookInsetSnapshot('didDisplay.loading-cleared.plus-250ms', {
@@ -7306,6 +7402,7 @@ class Reader {
         }
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true);
         this.#scheduleInitialPaginatorSettle('did-display');
+        this.#scheduleNativeLookupHitTargetRefreshSettle('didDisplay');
         postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
     #onLoad({
@@ -7476,9 +7573,6 @@ class Reader {
             currentPageURL: doc.location.href,
         })
         this.#schedulePageTrackingSync('document-load', doc, 2, isCacheWarmerDocument(doc) ? 0 : 128);
-        if (!isCacheWarmerDocument(doc)) {
-            this.#scheduleNativeLookupHitTargetRefreshSettle('document-load', doc);
-        }
         postReaderVisibilityProbe('reader.documentLoad', this.view, {
             documentURL: doc?.location?.href || null,
         });
