@@ -207,6 +207,9 @@ private let ebookHTMLTagName = UTF8Arrays.html
 private let ebookHeadTagName = UTF8Arrays.head
 private let ebookBodyTagName = UTF8Arrays.body
 private let ebookStyleAttributeName = UTF8Arrays.style
+private let ebookPaginatorLayoutBootstrapMarkup = Data(
+    #"<style id="mnb-paginator-layout-bootstrap">html{display:none!important}</style>"#.utf8
+)
 
 func ebookHTMLDataWithInjectedResponseMetadata(
     _ htmlData: Data,
@@ -214,7 +217,8 @@ func ebookHTMLDataWithInjectedResponseMetadata(
     writingHint: EBookProcessedSectionWritingHint?,
     bodyAttributes: [String: String],
     presentation: EbookSectionPresentation? = nil,
-    additionalHeadMarkup: Data? = nil
+    additionalHeadMarkup: Data? = nil,
+    suppressesInitialPaginatorLayout: Bool = false
 ) -> Data {
     var encodedBodyAttributes = presentation?.bodyAttributes ?? [:]
     encodedBodyAttributes.merge(bodyAttributes) { _, responseValue in responseValue }
@@ -237,6 +241,11 @@ func ebookHTMLDataWithInjectedResponseMetadata(
     var headPayload = Data("<base href=\"".utf8)
     appendEbookHTMLAttributeEscapedBytes(baseURL, to: &headPayload)
     headPayload.append(contentsOf: "\">".utf8)
+    if suppressesInitialPaginatorLayout {
+        // Foliate removes this after installing final column geometry, avoiding an
+        // otherwise wasted whole-document layout in the source document's styles.
+        headPayload.append(ebookPaginatorLayoutBootstrapMarkup)
+    }
     if let additionalHeadMarkup {
         headPayload.append(additionalHeadMarkup)
     }
@@ -1019,7 +1028,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         writingHint: writingHint,
                         bodyAttributes: responseBodyAttributes,
                         presentation: await sectionPresentation,
-                        additionalHeadMarkup: publishedSidecar.headDescriptor
+                        additionalHeadMarkup: publishedSidecar.headDescriptor,
+                        suppressesInitialPaginatorLayout: isDirectSectionLoad
                     )
                     let responseEncodeElapsedMs = Int(Date().timeIntervalSince(responseDecorationStartedAt) * 1000)
                     let responseReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)

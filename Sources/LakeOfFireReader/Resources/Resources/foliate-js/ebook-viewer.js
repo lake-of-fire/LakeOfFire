@@ -14,43 +14,6 @@ const MANABI_DISABLE_NAV_HIDDEN_LAYOUT_CLASSES = false;
 const MANABI_DISABLE_DYNAMIC_CHROME_INSETS = true;
 const MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS = false;
 
-const readerLoadSubpathFromURL = (value) => {
-    const documentURL = String(value ?? '');
-    if (!documentURL.includes('subpath=')) return null;
-    const encodedSubpath = documentURL.split('subpath=')[1]?.split('&')[0] ?? '';
-    try {
-        return decodeURIComponent(encodedSubpath).slice(0, 96);
-    } catch (_error) {
-        return encodedSubpath.slice(0, 96);
-    }
-};
-
-const readerLoadViewerSnapshot = (reader) => {
-    const view = reader?.view ?? null;
-    const renderer = view?.renderer ?? null;
-    const contents = renderer?.getContents?.() ?? [];
-    const firstContent = contents[0] ?? null;
-    const doc = firstContent?.doc ?? firstContent?.document ?? null;
-    const body = doc?.body ?? null;
-    const location = view?.lastLocation ?? null;
-    return {
-        bodyLoading: !!document.body?.classList?.contains?.('loading'),
-        renderReady: document.documentElement?.dataset?.mnbReaderRenderReady === '1',
-        contentIndex: firstContent?.index ?? null,
-        locationIndex: location?.index ?? null,
-        locationReason: location?.reason ?? null,
-        locationFraction: typeof location?.fraction === 'number' ? Number(location.fraction.toFixed(6)) : null,
-        locationCurrent: location?.location?.current ?? null,
-        locationTotal: location?.location?.total ?? null,
-        locationPageTurnDirection: location?.pageTurnDirection ?? null,
-        colorScheme: body?.dataset?.mnbColorScheme ?? null,
-        darkTheme: body?.dataset?.mnbDarkTheme ?? null,
-        foliateDirection: body?.dataset?.mnbFoliateWritingDirection ?? null,
-        foliateWritingMode: body?.dataset?.mnbFoliateWritingMode ?? null,
-        isRTL: reader?.isRTL ?? null,
-    };
-};
-
 const manabiReaderSegmentSelector = 'm-m';
 const manabiReaderSurfaceSelector = 'm-t';
 const manabiReaderSentenceSelector = 'm-s';
@@ -111,27 +74,114 @@ const manabiExpandCompactSegmentMetadata = (segment, tables) => {
         p: manabiSidecarTableValue(tables.p, segment?.[6], null),
         l: segment?.[7],
         x: manabiSidecarTableValue(tables.x, segment?.[8], null),
-        r: typeof segment?.[11] === 'boolean' ? segment[11] : null,
     };
 };
 
-const manabiExpandSegmentMetadataPayload = (payload) => {
-    if (payload?.v !== manabiSegmentSidecarParserVersion || !payload?.t || !Array.isArray(payload?.s)) {
-        return [];
+const manabiCompactSegmentMetadataTables = (payload) => ({
+    h: manabiSidecarTableArray(payload.t, 'h'),
+    j: manabiSidecarTableArray(payload.t, 'j'),
+    n: manabiSidecarTableArray(payload.t, 'n'),
+    s: manabiSidecarTableArray(payload.t, 's'),
+    ns: manabiSidecarTableArray(payload.t, 'ns'),
+    p: manabiSidecarTableArray(payload.t, 'p'),
+    x: manabiSidecarTableArray(payload.t, 'x'),
+    sid: manabiSidecarTableArray(payload.t, 'sid'),
+    pid: manabiSidecarTableArray(payload.t, 'pid'),
+});
+
+class ManabiLazySegmentMetadataMap extends Map {
+    constructor(payload) {
+        super();
+        this.compactSegments = [];
+        this.tables = null;
+        this.indexedSegmentCount = 0;
+        this.materializedSegmentCount = 0;
+        this.stableAliasesIndexed = false;
+        if (payload?.v !== manabiSegmentSidecarParserVersion || !payload?.t || !Array.isArray(payload?.s)) {
+            return;
+        }
+        this.compactSegments = payload.s;
+        this.tables = manabiCompactSegmentMetadataTables(payload);
+        for (let tupleIndex = 0; tupleIndex < payload.s.length; tupleIndex += 1) {
+            const compactSegment = payload.s[tupleIndex];
+            const elementID = manabiExpandSegmentIDToken(compactSegment?.[0]);
+            if (!elementID) continue;
+            const reference = tupleIndex + 1;
+            super.set(elementID, reference);
+            this.indexedSegmentCount += 1;
+        }
     }
-    const tables = {
-        h: manabiSidecarTableArray(payload.t, 'h'),
-        j: manabiSidecarTableArray(payload.t, 'j'),
-        n: manabiSidecarTableArray(payload.t, 'n'),
-        s: manabiSidecarTableArray(payload.t, 's'),
-        ns: manabiSidecarTableArray(payload.t, 'ns'),
-        p: manabiSidecarTableArray(payload.t, 'p'),
-        x: manabiSidecarTableArray(payload.t, 'x'),
-        sid: manabiSidecarTableArray(payload.t, 'sid'),
-        pid: manabiSidecarTableArray(payload.t, 'pid'),
-    };
-    return payload.s.map(segment => manabiExpandCompactSegmentMetadata(segment, tables));
-};
+
+    ensureStableAliasesIndexed() {
+        if (this.stableAliasesIndexed || !this.tables) return;
+        this.stableAliasesIndexed = true;
+        for (let tupleIndex = 0; tupleIndex < this.compactSegments.length; tupleIndex += 1) {
+            const compactSegment = this.compactSegments[tupleIndex];
+            const segmentHash = manabiSidecarTableValue(this.tables.h, compactSegment?.[1], null);
+            const sentenceID = manabiSidecarTableValue(this.tables.sid, compactSegment?.[9], null);
+            const stableID = stableSegmentID(sentenceID, segmentHash);
+            if (stableID) super.set(stableID, tupleIndex + 1);
+        }
+    }
+
+    get(identifier) {
+        let value = super.get(identifier);
+        if (value === undefined) {
+            this.ensureStableAliasesIndexed();
+            value = super.get(identifier);
+        }
+        if (!Number.isInteger(value)) return value;
+        const compactSegment = this.compactSegments[value - 1];
+        if (!compactSegment || !this.tables) return undefined;
+        const metadata = manabiExpandCompactSegmentMetadata(compactSegment, this.tables);
+        for (const alias of manabiSegmentMetadataAliases(metadata)) {
+            super.set(alias, metadata);
+        }
+        this.materializedSegmentCount += 1;
+        return metadata;
+    }
+
+    has(identifier) {
+        return this.get(identifier) !== undefined;
+    }
+}
+
+class ManabiLazySegmentScopeMap extends Map {
+    constructor(compactSegments, scopeTable, scopeTupleIndex) {
+        super();
+        this.compactSegments = compactSegments;
+        this.scopeTable = scopeTable;
+        this.scopeTupleIndex = scopeTupleIndex;
+        this.isIndexed = false;
+    }
+
+    ensureIndexed() {
+        if (this.isIndexed) return;
+        // Sentence and paragraph pickers are user-driven. Build their deterministic sidecar
+        // indexes on first use instead of allocating arrays for the whole section before paint.
+        this.isIndexed = true;
+        for (const compactSegment of this.compactSegments) {
+            const scopeID = manabiSidecarTableValue(
+                this.scopeTable,
+                compactSegment?.[this.scopeTupleIndex],
+                null
+            );
+            const elementID = manabiExpandSegmentIDToken(compactSegment?.[0]);
+            if (typeof scopeID !== 'string' || scopeID.length === 0 || !elementID) continue;
+            const existingSegmentIDs = super.get(scopeID);
+            if (existingSegmentIDs) {
+                existingSegmentIDs.push(elementID);
+            } else {
+                super.set(scopeID, [elementID]);
+            }
+        }
+    }
+
+    get(identifier) {
+        this.ensureIndexed();
+        return super.get(identifier);
+    }
+}
 
 const manabiSegmentMetadataAliases = (segment) => {
     const aliases = [];
@@ -160,14 +210,18 @@ const manabiSegmentMetadataSidecarSnapshot = (doc) => {
     const sidecarTexts = sidecars.length > 0
         ? sidecars.map(sidecar => sidecar.textContent || '')
         : (externalEntry?.payload ? [''] : []);
-    const sidecarSignature = externalEntry?.signature || sidecarTexts.map((text) => {
-        let hash = 2166136261;
-        for (let index = 0; index < text.length; index += 1) {
-            hash ^= text.charCodeAt(index);
-            hash = Math.imul(hash, 16777619);
-        }
-        return `${text.length}:${(hash >>> 0).toString(36)}`;
-    }).join('|');
+    // The Swift-produced sidecar node is immutable for the lifetime of its EPUB document, and
+    // cache reuse above is already guarded by node identity. Use an identity generation instead
+    // of hashing its large JSON text on the first visible load.
+    if (canonicalSidecar) {
+        doc.__manabiFoliateSegmentMetadataSidecarGeneration =
+            (doc.__manabiFoliateSegmentMetadataSidecarGeneration || 0) + 1;
+    }
+    const sidecarSignature = externalEntry?.signature
+        ? `external:${externalEntry.signature}`
+        : (canonicalSidecar
+            ? `canonical:${doc.__manabiFoliateSegmentMetadataSidecarGeneration}`
+            : 'none');
     const snapshot = {
         sidecars,
         sidecarTexts,
@@ -300,7 +354,7 @@ const directSegmentMetadataBootstrap = (doc) => {
     ) {
         return {
             byID: cachedByID,
-            idsByEntryID: new Map(),
+            idsByEntryID: doc.__manabiFoliateSegmentIDsByEntryID || new Map(),
             hasEntryIDs: doc.__manabiFoliateSegmentMetadataHasEntryIDs === true,
             segmentIDsBySentenceID: doc.__manabiFoliateSegmentIDsBySentenceID || new Map(),
             segmentIDsByParagraphID: doc.__manabiFoliateSegmentIDsByParagraphID || new Map(),
@@ -309,38 +363,28 @@ const directSegmentMetadataBootstrap = (doc) => {
             sentenceArchive: doc.__manabiFoliateSidecarSentenceArchive || new Map(),
         };
     }
-    const byID = new Map();
-    let hasEntryIDs = false;
-    const segmentIDsBySentenceID = new Map();
-    const segmentIDsByParagraphID = new Map();
-    const sentenceArchive = new Map();
+    const idsByEntryID = new Map();
     const segments = [];
-    const indexScopeID = (target, scopeID, segmentID) => {
-        if (typeof scopeID !== 'string' || scopeID.length === 0) return;
-        if (typeof segmentID !== 'string' || segmentID.length === 0) return;
-        if (!target.has(scopeID)) target.set(scopeID, []);
-        target.get(scopeID).push(segmentID);
-    };
-    for (let sidecarIndex = 0; sidecarIndex < sidecarTexts.length; sidecarIndex += 1) {
-        const sidecarText = sidecarTexts[sidecarIndex];
+    const sentenceArchive = new Map();
+    let payload = sidecarPayloads[0] ?? null;
+    if (!payload && sidecarTexts[0]) {
         try {
-            const payload = sidecarPayloads[sidecarIndex] ?? JSON.parse(sidecarText || '{}');
-            for (const segment of manabiExpandSegmentMetadataPayload(payload)) {
-                if (!segment?.i) continue;
-                const aliases = manabiSegmentMetadataAliases(segment);
-                for (const alias of aliases) {
-                    byID.set(alias, segment);
-                }
-                if (!hasEntryIDs) {
-                    hasEntryIDs = segment.j?.some?.(Number.isFinite) === true
-                        || segment.n?.some?.(Number.isFinite) === true;
-                }
-                segments.push(segment);
-                indexScopeID(segmentIDsBySentenceID, segment.sentenceID, segment.i);
-                indexScopeID(segmentIDsByParagraphID, segment.paragraphID || segment.pid, segment.i);
-            }
+            payload = JSON.parse(sidecarTexts[0]);
         } catch (_error) {}
     }
+    const byID = new ManabiLazySegmentMetadataMap(payload);
+    const segmentIDsBySentenceID = new ManabiLazySegmentScopeMap(
+        byID.compactSegments,
+        byID.tables?.sid ?? [],
+        9
+    );
+    const segmentIDsByParagraphID = new ManabiLazySegmentScopeMap(
+        byID.compactSegments,
+        byID.tables?.pid ?? [],
+        10
+    );
+    const tableHasEntryIDs = (table) => table?.some?.(entryIDs => entryIDs?.some?.(Number.isFinite) === true) === true;
+    const hasEntryIDs = tableHasEntryIDs(byID.tables?.j) || tableHasEntryIDs(byID.tables?.n);
     // Keep the existing Map contract while moving sentence string assembly to the lookup that
     // requests it. The segment index above makes each materialization sentence-local.
     const cachedSentenceArchiveEntry = sentenceArchive.get.bind(sentenceArchive);
@@ -360,14 +404,30 @@ const directSegmentMetadataBootstrap = (doc) => {
     doc.__manabiFoliateSegmentMetadataParserVersion = manabiSegmentSidecarParserVersion;
     doc.__manabiFoliateSegmentMetadataSignature = sidecarSignature;
     doc.__manabiFoliateSegmentMetadataByID = byID;
+    doc.__manabiFoliateSegmentIDsByEntryID = idsByEntryID;
     doc.__manabiFoliateSegmentMetadataHasEntryIDs = hasEntryIDs;
     doc.__manabiFoliateSegmentIDsBySentenceID = segmentIDsBySentenceID;
     doc.__manabiFoliateSegmentIDsByParagraphID = segmentIDsByParagraphID;
     doc.__manabiFoliateSegmentMetadataSegments = segments;
     doc.__manabiFoliateSidecarSentenceArchive = sentenceArchive;
+    // manabi_reader.js owns the general reader cache, but processed EPUB documents are
+    // immutable and use this compact bootstrap first. Publish the same lazy structures under
+    // that cache contract so a later lookup cannot eagerly expand the entire sidecar again.
+    doc.manabiSegmentMetadataParserVersion = manabiSegmentSidecarParserVersion;
+    doc.manabiSegmentMetadataByID = byID;
+    doc.manabiSegmentIDsByEntryID = idsByEntryID;
+    doc.manabiSegmentIDsBySentenceID = segmentIDsBySentenceID;
+    doc.manabiSegmentIDsByParagraphID = segmentIDsByParagraphID;
+    doc.manabiSegmentMetadataSegments = segments;
+    doc.manabiSegmentMetadataAggregates = null;
+    doc.manabiSidecarSentenceArchive = sentenceArchive;
+    doc.manabiSegmentMetadataSidecars = sidecars;
+    doc.manabiSegmentMetadataSidecarTexts = sidecarTexts;
+    doc.manabiSegmentMetadataSidecarSignature = sidecarSignature;
+    doc.manabiSegmentMetadataCacheGeneration = doc.manabiSegmentMetadataGeneration || 0;
     return {
         byID,
-        idsByEntryID: new Map(),
+        idsByEntryID,
         hasEntryIDs,
         segmentIDsBySentenceID,
         segmentIDsByParagraphID,
@@ -1300,95 +1360,10 @@ const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null, v
     };
 };
 
-const loadRectSnapshot = element => {
-    if (!element || typeof element.getBoundingClientRect !== 'function') return null;
-    const rect = element.getBoundingClientRect();
-    const round = value => Number.isFinite(value) ? Number(value.toFixed(1)) : null;
-    return {
-        x: round(rect.x),
-        y: round(rect.y),
-        width: round(rect.width),
-        height: round(rect.height),
-        top: round(rect.top),
-        right: round(rect.right),
-        bottom: round(rect.bottom),
-        left: round(rect.left),
-    };
-};
-
-const lookupPositionRectSnapshot = rect => {
-    if (!rect) return null;
-    const round = value => Number.isFinite(value) ? Number(value.toFixed(2)) : null;
-    return {
-        left: round(rect.left ?? rect.x),
-        top: round(rect.top ?? rect.y),
-        width: round(rect.width),
-        height: round(rect.height),
-        right: round(rect.right),
-        bottom: round(rect.bottom),
-    };
-};
-
-const postEBookSafeAreaTopSnapshot = (event, details = {}) => {
-    const readerStage = document.getElementById('reader-stage');
-    const navBar = document.getElementById('nav-bar');
-    const liveFoliateView = Array.from(document.querySelectorAll('foliate-view'))
-        .find((view) => view?.dataset?.isCache !== 'true') || null;
-    const renderer = liveFoliateView?.renderer ?? globalThis.reader?.view?.renderer ?? null;
-    const visibleFrame = Array.from(renderer?.shadowRoot?.querySelectorAll?.('iframe') ?? [])
-        .find((frame) => {
-            const rect = frame?.getBoundingClientRect?.();
-            return rect && rect.width > 0 && rect.height > 0;
-        }) ?? null;
-    const bodyStyle = document.body ? getComputedStyle(document.body) : null;
-    const htmlStyle = getComputedStyle(document.documentElement);
-    const payload = {
-        ...details,
-        bodyClass: document.body?.className || null,
-        htmlPaddingTop: htmlStyle?.paddingTop || null,
-        bodyPaddingTop: bodyStyle?.paddingTop || null,
-        bodyCssToolbarBottom: bodyStyle?.getPropertyValue('--mnb-toolbar-bottom-offset')?.trim() || null,
-        bodyCssReaderStageTop: bodyStyle?.getPropertyValue('--mnb-reader-stage-top-inset')?.trim() || null,
-        bodyCssReaderStageBottom: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
-        visualViewport: window.visualViewport ? {
-            width: roundLayoutNumber(window.visualViewport.width),
-            height: roundLayoutNumber(window.visualViewport.height),
-            offsetTop: roundLayoutNumber(window.visualViewport.offsetTop),
-            pageTop: roundLayoutNumber(window.visualViewport.pageTop),
-            scale: roundLayoutNumber(window.visualViewport.scale, 3),
-        } : null,
-        windowInnerHeight: roundLayoutNumber(window.innerHeight),
-        readerStageRect: lookupPositionRectSnapshot(readerStage?.getBoundingClientRect?.()),
-        navBarRect: lookupPositionRectSnapshot(navBar?.getBoundingClientRect?.()),
-        foliateViewRect: lookupPositionRectSnapshot(liveFoliateView?.getBoundingClientRect?.()),
-        rendererRect: lookupPositionRectSnapshot(renderer?.getBoundingClientRect?.()),
-        iframeRect: lookupPositionRectSnapshot(visibleFrame?.getBoundingClientRect?.()),
-    };
-    const key = JSON.stringify(payload);
-    if (globalThis.__manabiLastLookupPositionSafeAreaTopKey === key) return;
-    globalThis.__manabiLastLookupPositionSafeAreaTopKey = key;
-};
-
 const roundLayoutNumber = (value, digits = 1) => {
     const number = Number(value);
     return Number.isFinite(number) ? Number(number.toFixed(digits)) : null;
 };
-
-const layoutElementSnapshot = element => {
-    if (!element) return null;
-    return {
-        rect: loadRectSnapshot(element),
-        scrollLeft: roundLayoutNumber(element.scrollLeft),
-        scrollTop: roundLayoutNumber(element.scrollTop),
-        scrollWidth: roundLayoutNumber(element.scrollWidth),
-        scrollHeight: roundLayoutNumber(element.scrollHeight),
-        clientWidth: roundLayoutNumber(element.clientWidth),
-        clientHeight: roundLayoutNumber(element.clientHeight),
-        offsetWidth: roundLayoutNumber(element.offsetWidth),
-        offsetHeight: roundLayoutNumber(element.offsetHeight),
-    };
-};
-
 
 const manabiElementTextContainsJapanese = (element) => /[\u3040-\u30ff\u3400-\u9fff]/.test(element?.textContent ?? '');
 
@@ -1450,215 +1425,7 @@ const normalizeManabiSegmentWhitespace = (doc) => {
 };
 
 
-const collectEBookLayoutSnapshot = (view = globalThis.reader?.view ?? null, extra = {}) => {
-    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
-    const shadowRoot = renderer?.shadowRoot ?? null;
-    const container = shadowRoot?.getElementById?.('container') ?? shadowRoot?.querySelector?.('#container') ?? null;
-    const top = shadowRoot?.getElementById?.('top') ?? shadowRoot?.querySelector?.('#top') ?? null;
-    const header = shadowRoot?.getElementById?.('header') ?? shadowRoot?.querySelector?.('#header') ?? null;
-    const footer = shadowRoot?.getElementById?.('footer') ?? shadowRoot?.querySelector?.('#footer') ?? null;
-    const contents = renderer?.getContents?.() || [];
-    const primaryContent = contents.find?.(content =>
-        content?.doc?.body
-        || content?.document?.body
-        || content?.frame?.contentDocument?.body
-        || content?.iframe?.contentDocument?.body
-    ) ?? null;
-    const readerDoc = renderer?.view?.document
-        ?? renderer?.view?.doc
-        ?? primaryContent?.doc
-        ?? primaryContent?.document
-        ?? primaryContent?.frame?.contentDocument
-        ?? primaryContent?.iframe?.contentDocument
-        ?? null;
-    const readerRoot = readerDoc?.documentElement ?? null;
-    const readerBody = readerDoc?.body ?? null;
-    const readerBodyStyle = readerDoc?.defaultView && readerBody
-        ? readerDoc.defaultView.getComputedStyle(readerBody)
-        : null;
-    const visualViewport = window.visualViewport ?? null;
-
-    return {
-        ...extra,
-        href: location.href,
-        windowInnerWidth: roundLayoutNumber(window.innerWidth),
-        windowInnerHeight: roundLayoutNumber(window.innerHeight),
-        windowScrollX: roundLayoutNumber(window.scrollX),
-        windowScrollY: roundLayoutNumber(window.scrollY),
-        visualViewportWidth: roundLayoutNumber(visualViewport?.width),
-        visualViewportHeight: roundLayoutNumber(visualViewport?.height),
-        visualViewportOffsetTop: roundLayoutNumber(visualViewport?.offsetTop),
-        visualViewportPageTop: roundLayoutNumber(visualViewport?.pageTop),
-        visualViewportScale: roundLayoutNumber(visualViewport?.scale, 3),
-        bodyClass: document.body?.className || null,
-        rendererLocalName: renderer?.localName || null,
-        rendererFlow: renderer?.getAttribute?.('flow') || null,
-        rendererDir: renderer?.getAttribute?.('dir') || null,
-        rendererClass: renderer?.className || null,
-        rendererContentCount: contents.length,
-        rendererSnapshot: layoutElementSnapshot(renderer),
-        viewSnapshot: layoutElementSnapshot(view),
-        topSnapshot: layoutElementSnapshot(top),
-        containerSnapshot: layoutElementSnapshot(container),
-        headerRect: loadRectSnapshot(header),
-        footerRect: loadRectSnapshot(footer),
-        readerReadyState: readerDoc?.readyState || null,
-        readerRootClientWidth: roundLayoutNumber(readerRoot?.clientWidth),
-        readerRootClientHeight: roundLayoutNumber(readerRoot?.clientHeight),
-        readerRootScrollWidth: roundLayoutNumber(readerRoot?.scrollWidth),
-        readerRootScrollHeight: roundLayoutNumber(readerRoot?.scrollHeight),
-        readerBodyClientWidth: roundLayoutNumber(readerBody?.clientWidth),
-        readerBodyClientHeight: roundLayoutNumber(readerBody?.clientHeight),
-        readerBodyScrollWidth: roundLayoutNumber(readerBody?.scrollWidth),
-        readerBodyScrollHeight: roundLayoutNumber(readerBody?.scrollHeight),
-        readerWritingMode: readerBodyStyle?.writingMode || null,
-        readerDirection: readerBodyStyle?.direction || null,
-        readerColumnWidth: readerBodyStyle?.columnWidth || null,
-        readerColumnGap: readerBodyStyle?.columnGap || null,
-        readerColumnCount: readerBodyStyle?.columnCount || null,
-        visibleSegmentCount: document.querySelectorAll?.('[data-mnb-segment-id]').length ?? null,
-    };
-};
-
-const collectEBookLayoutSummary = (view = globalThis.reader?.view ?? null, extra = {}) => {
-    const renderer = view?.renderer ?? globalThis.reader?.view?.renderer ?? null;
-    const shadowRoot = renderer?.shadowRoot ?? null;
-    const container = shadowRoot?.getElementById?.('container') ?? shadowRoot?.querySelector?.('#container') ?? null;
-    const top = shadowRoot?.getElementById?.('top') ?? shadowRoot?.querySelector?.('#top') ?? null;
-    const body = document.body;
-    const bodyStyle = body ? getComputedStyle(body) : null;
-    const readerStage = document.getElementById('reader-stage');
-    const foliateView = Array.from(document.querySelectorAll('foliate-view'))
-        .find((candidate) => candidate?.dataset?.isCache !== 'true') ?? document.querySelector('foliate-view');
-    const loadingIndicator = document.getElementById('loading-indicator');
-    const readerStageRect = loadRectSnapshot(readerStage);
-    const foliateViewRect = loadRectSnapshot(foliateView);
-    const rendererRect = loadRectSnapshot(renderer);
-    const containerRect = loadRectSnapshot(container);
-    const topRect = loadRectSnapshot(top);
-    const loadingRect = loadRectSnapshot(loadingIndicator);
-    const loadingStyle = loadingIndicator ? getComputedStyle(loadingIndicator) : null;
-    return {
-        ...extra,
-        bodyLoading: !!body?.classList?.contains?.('loading'),
-        bodyLoadingVisual: !!body?.classList?.contains?.('loading-visual'),
-        bodyClass: body?.className || null,
-        windowInnerHeight: roundLayoutNumber(window.innerHeight),
-        visualViewportHeight: roundLayoutNumber(window.visualViewport?.height),
-        readerStageTopInset: bodyStyle?.getPropertyValue('--mnb-reader-stage-top-inset')?.trim() || null,
-        readerStageBottomInset: bodyStyle?.getPropertyValue('--mnb-reader-stage-bottom-inset')?.trim() || null,
-        toolbarLayoutBottomInset: bodyStyle?.getPropertyValue('--mnb-toolbar-layout-bottom-inset')?.trim() || null,
-        toolbarVisualBottomInset: bodyStyle?.getPropertyValue('--mnb-toolbar-visual-bottom-inset')?.trim() || null,
-        readerStageTop: readerStageRect?.top ?? null,
-        readerStageHeight: readerStageRect?.height ?? null,
-        foliateTop: foliateViewRect?.top ?? null,
-        foliateHeight: foliateViewRect?.height ?? null,
-        rendererTop: rendererRect?.top ?? null,
-        rendererHeight: rendererRect?.height ?? null,
-        paginatorTopHeight: topRect?.height ?? null,
-        containerTop: containerRect?.top ?? null,
-        containerHeight: containerRect?.height ?? null,
-        containerClientHeight: roundLayoutNumber(container?.clientHeight),
-        containerOffsetHeight: roundLayoutNumber(container?.offsetHeight),
-        loadingHidden: loadingIndicator?.hasAttribute?.('hidden') ?? null,
-        loadingDisplay: loadingStyle?.display || null,
-        loadingVisibility: loadingStyle?.visibility || null,
-        loadingRectHeight: loadingRect?.height ?? null,
-    };
-};
-
-
-
-const compactBookLayoutDetails = details => ({
-    reason: details.reason ?? null,
-    layoutMode: details.layoutMode ?? null,
-    writingDirection: details.writingDirection ?? null,
-    side: details.side ?? null,
-    method: details.method ?? null,
-    eventType: details.eventType ?? null,
-    rendererFlow: details.rendererFlow ?? null,
-    rendererDir: details.rendererDir ?? null,
-    rendererRect: details.rendererSnapshot?.rect ?? null,
-    viewRect: details.viewSnapshot?.rect ?? null,
-    containerRect: details.containerSnapshot?.rect ?? null,
-    containerScrollLeft: details.containerSnapshot?.scrollLeft ?? null,
-    containerScrollTop: details.containerSnapshot?.scrollTop ?? null,
-    containerScrollWidth: details.containerSnapshot?.scrollWidth ?? null,
-    containerScrollHeight: details.containerSnapshot?.scrollHeight ?? null,
-    readerRootClientWidth: details.readerRootClientWidth ?? null,
-    readerRootClientHeight: details.readerRootClientHeight ?? null,
-    readerRootScrollWidth: details.readerRootScrollWidth ?? null,
-    readerRootScrollHeight: details.readerRootScrollHeight ?? null,
-    readerBodyClientWidth: details.readerBodyClientWidth ?? null,
-    readerBodyClientHeight: details.readerBodyClientHeight ?? null,
-    readerBodyScrollWidth: details.readerBodyScrollWidth ?? null,
-    readerBodyScrollHeight: details.readerBodyScrollHeight ?? null,
-    readerWritingMode: details.readerWritingMode ?? null,
-    readerDirection: details.readerDirection ?? null,
-    readerColumnWidth: details.readerColumnWidth ?? null,
-    readerColumnGap: details.readerColumnGap ?? null,
-    readerColumnCount: details.readerColumnCount ?? null,
-    viewportWidth: details.visualViewportWidth ?? details.windowInnerWidth ?? null,
-    viewportHeight: details.visualViewportHeight ?? details.windowInnerHeight ?? null,
-});
-
-
-const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
-    const renderer = globalThis.reader?.view?.renderer ?? null;
-    const readerDoc = globalThis.reader?.view?.renderer?.view?.document ?? null;
-    const body = document.body;
-    const readerBody = readerDoc?.body ?? null;
-    const readerRoot = readerDoc?.documentElement ?? null;
-    const readerBodyStyle = readerDoc?.defaultView && readerBody
-        ? readerDoc.defaultView.getComputedStyle(readerBody)
-        : null;
-    return {
-        reason,
-        href: location.href,
-        bodyLoading: !!body?.classList?.contains?.('loading'),
-        hasReader: !!globalThis.reader,
-        hasView: !!globalThis.reader?.view,
-        hasRenderer: !!renderer,
-        rendererDisplay: renderer?.style?.display || null,
-        rendererFlow: renderer?.getAttribute?.('flow') || null,
-        rendererDir: renderer?.getAttribute?.('dir') || null,
-        rendererRect: loadRectSnapshot(renderer),
-        foliateViewRect: loadRectSnapshot(document.querySelector('foliate-view')),
-        loadingIndicatorRect: loadRectSnapshot(document.querySelector('#loading-indicator')),
-        windowInnerWidth: window.innerWidth,
-        windowInnerHeight: window.innerHeight,
-        visualViewportWidth: window.visualViewport?.width ?? null,
-        visualViewportHeight: window.visualViewport?.height ?? null,
-        sourceKind: globalThis.ebookSource?.kind || null,
-        sourceURL: globalThis.ebookSource?.url || null,
-        firstLiveSectionHref: globalThis.__manabiFirstLiveSectionHref || null,
-        liveProcessedSectionCount: globalThis.__manabiLiveProcessedSectionHrefs?.size ?? null,
-        liveSettledSectionCount: globalThis.__manabiLiveSettledSectionHrefs?.size ?? null,
-        inflightReplaceTextCount: globalThis.__manabiInflightReplaceTextCount ?? null,
-        readerDocumentURL: readerDoc?.location?.href || null,
-        readerDocumentReadyState: readerDoc?.readyState || null,
-        readerWritingMode: readerBodyStyle?.writingMode || null,
-        readerDirection: readerBodyStyle?.direction || null,
-        readerBodyClass: readerBody?.className || null,
-        readerBodySegmentCount: readerDoc?.querySelectorAll?.('m-m')?.length ?? null,
-        readerBodySentenceCount: readerDoc?.querySelectorAll?.('m-s')?.length ?? null,
-        readerDocumentClientWidth: readerRoot?.clientWidth ?? null,
-        readerDocumentClientHeight: readerRoot?.clientHeight ?? null,
-        ...extra,
-    };
-};
-
 const isCacheWarmerDocument = (doc) => doc?.body?.dataset?.isCacheWarmer === 'true';
-
-const captureEPUBOverlapState = () => ({
-    inflightReplaceTextCount: globalThis.__manabiInflightReplaceTextCount ?? 0,
-    inflightLiveReplaceTextCount: globalThis.__manabiInflightLiveReplaceTextCount ?? 0,
-    trackedWordsActiveCount: globalThis.__manabiTrackedWordsActiveCount ?? 0,
-    visibleStatusHydrationActiveCount: globalThis.__manabiVisibleStatusHydrationActiveCount ?? 0,
-    nativeLookupMainFrameTargetsActiveCount: globalThis.__manabiNativeLookupMainFrameTargetsActiveCount ?? 0,
-    foregroundNativeResourcePendingCount: globalThis.__manabiForegroundNativeResourcePendingCount ?? 0,
-    foregroundCriticalSectionCount: globalThis.__manabiForegroundCriticalSectionCount ?? 0,
-});
 
 const beginForegroundCriticalSection = (reason = 'unspecified') => {
     globalThis.__manabiForegroundCriticalSectionSequence =
@@ -2864,18 +2631,6 @@ const applyStoredChromeInsets = (reason = 'unknown', incomingState = null) => {
         source: nextState.source,
         revision: nextState.revision,
     });
-    if (reason === 'native-sync' || reason === 'reader.open' || reason === 'reader.didDisplay' || reason === 'setEbookViewerLayout') {
-        postEBookSafeAreaTopSnapshot('ebook.safeAreaTop.chromeInsetsApplied', {
-            reason,
-            incomingObscuredTopInset: incomingState?.obscuredTopInset ?? null,
-            appliedObscuredTopInset: nextState.obscuredTopInset,
-            appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
-            appliedObscuredBottomInset: nextState.obscuredBottomInset,
-            source: nextState.source,
-            revision: nextState.revision,
-            inheritedAncestorSource: shouldInheritPositiveAncestorState ? ancestorPositiveState?.source ?? null : null,
-        });
-    }
     const landscapeInsetKey = JSON.stringify({
         appliedObscuredTopInset: nextState.obscuredTopInset,
         appliedToolbarBottomOffset: nextState.toolbarBottomOffset,
@@ -3093,6 +2848,14 @@ const manabiTimelinePayload = payload => Object.entries(payload || {})
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}=${manabiTimelineValue(value)}`)
     .join(' ');
+const manabiNativeLookupDiagnostic = (stage, payload = {}) => {
+    const details = manabiTimelinePayload(payload);
+    const label = details.length > 0
+        ? `# JUL14 stage=${stage} ${details}`
+        : `# JUL14 stage=${stage}`;
+    try { console.log(label); } catch (_error) {}
+    try { performance?.mark?.(label); } catch (_error) {}
+};
 const manabiTimelineShouldEmitMark = (event, payload = {}) => {
     if (globalThis.__manabiTimelineTraceAll === true) return true;
     if (payload?.force === true || payload?.error) return true;
@@ -3355,10 +3118,6 @@ const summarizeElementLayout = (element) => {
         rect,
     };
 };
-
-const summarizeFoliateViewLayout = (_view) => null;
-
-const postReaderVisibilityProbe = (_stage, _view = null, _extra = null) => {};
 
 const isDocumentLike = (value) =>
     !!value
@@ -4004,6 +3763,7 @@ const visibleBoundsCollectionSignature = (visibleBounds) => {
 };
 const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, {
     includeClientRects = true,
+    includeSegmentMetadata = true,
     viewportSampleDensity = null,
     minimumViewportSampleSegmentCount = 0,
     seedSegmentSignature = null,
@@ -4014,6 +3774,7 @@ const visibleSegmentCollectionCacheKey = (doc, visibleRange, visibleBounds, {
         view?.__manabiVisibleSegmentCollectionGeneration ?? 0,
         view?.__manabiReaderRenderToken ?? '',
         includeClientRects ? 'rects' : 'bounds',
+        includeSegmentMetadata ? 'metadata' : 'runtime-identity',
         viewportSampleDensity || 'auto',
         minimumViewportSampleSegmentCount,
         seedSegmentSignature || 'no-seed',
@@ -4560,6 +4321,7 @@ const collectExpandedRangeSegments = (doc, visibleRange, visibleBounds, {
 
 const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     includeClientRects = true,
+    includeSegmentMetadata = true,
     reason = 'visible-segments',
     viewportSampleDensity = null,
     minimumViewportSampleSegmentCount = 0,
@@ -4629,6 +4391,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     const minimumEbookViewportSampleSegmentCount = Math.max(8, normalizedMinimumViewportSampleSegmentCount);
     const collectionCacheKey = visibleSegmentCollectionCacheKey(doc, visibleRange, visibleBounds, {
         includeClientRects,
+        includeSegmentMetadata,
         viewportSampleDensity: normalizedViewportSampleDensity,
         minimumViewportSampleSegmentCount: normalizedMinimumViewportSampleSegmentCount,
         seedSegmentSignature,
@@ -4644,7 +4407,12 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         }, 50);
         return cachedCollection;
     }
-    const bootstrap = segmentMetadataBootstrap(doc);
+    // A renderability-only probe needs a runtime DOM ID, not durable lookup
+    // identity. Avoid expanding the whole external sidecar until lookup/status
+    // enrichment actually asks for metadata.
+    const bootstrap = includeSegmentMetadata
+        ? segmentMetadataBootstrap(doc)
+        : emptySegmentMetadataBootstrap();
     const expandedRangeResult = useVisibleRange
         ? collectExpandedRangeSegments(doc, visibleRange, visibleBounds, { includeClientRects, bootstrap })
         : null;
@@ -4955,6 +4723,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         missingIdentifierCount,
         outOfViewportCount,
         includeClientRects,
+        includesSegmentMetadata: includeSegmentMetadata,
         segmentMetadataBootstrap: bootstrap,
     };
     cacheVisibleSegmentCollection(doc, collectionCacheKey, result);
@@ -4964,6 +4733,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
 const visiblePageSegmentCollectionModes = Object.freeze({
     initialRenderableProbe: Object.freeze({
         includeClientRects: false,
+        includeSegmentMetadata: false,
         postLookupTargets: false,
         prepareLookupIndex: false,
         hydrateStatuses: false,
@@ -5035,7 +4805,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         : [];
     const indexedNodes = new Set();
     const sentenceIdentifiers = new Set();
-    let rubyPresenceMarkedCount = 0;
     const surfaceTextForLookupSegment = (node) => {
         const surfaceText = Array.from(node?.querySelectorAll?.(manabiReaderSurfaceSelector) ?? [])
             .map(surfaceElement => surfaceElement.textContent || '')
@@ -5060,9 +4829,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         indexedNodes.add(node);
         const elementID = node.id || node.getAttribute?.('id') || null;
         const sourceMetadata = item?.segmentMetadata || segmentMetadataForNode(node, visibleSegmentsResult?.segmentMetadataBootstrap) || {};
-        if (sourceMetadata.r === true) {
-            rubyPresenceMarkedCount += 1;
-        }
         const sentenceNode = node.closest?.(manabiReaderSentenceSelector) || null;
         const sentenceIdentifier = item?.sentenceIdentifier
             || sentenceIdentifierForNode(sentenceNode)
@@ -5157,7 +4923,6 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         elementIDCount: byElementID.size,
         aliasCount: bySegmentIdentifier.size,
         entryIDKeyCount: idsByEntryID.size,
-        rubyPresenceMarkedCount,
         includeSurfaceText,
         firstVisibleElementID: visibleElementIDs[0] ?? null,
     }, 25);
@@ -5267,6 +5032,12 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
     if (typeof builder !== 'function') {
+        manabiNativeLookupDiagnostic('ebook.nativeLookupTargets.builderMissing', {
+            reason,
+            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+            hasView: !!view,
+            hasHandler: !!messageHandlers?.nativeLookupHitTargetsUpdated,
+        });
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: false,
@@ -5281,10 +5052,18 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         return 0;
     }
     const targets = [];
+    let missingNodeCount = 0;
+    let missingRectCount = 0;
+    let builderRejectedCount = 0;
     view?.manabi_resetNativeLookupHitTargets?.();
     for (const item of visibleSegmentsResult?.visibleSegments ?? []) {
         const rects = item?.rects?.length ? item.rects : (item?.rect ? [item.rect] : []);
-        if (!item?.node || rects.length === 0) {
+        if (!item?.node) {
+            missingNodeCount += 1;
+            continue;
+        }
+        if (rects.length === 0) {
+            missingRectCount += 1;
             continue;
         }
         const absoluteRects = [];
@@ -5299,6 +5078,8 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         const target = builder(item.node, absoluteRects, viewportPayload);
         if (target) {
             targets.push(target);
+        } else {
+            builderRejectedCount += 1;
         }
     }
     let surfaceRectTargetCount = 0;
@@ -5334,6 +5115,17 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         }
     }
     if (targets.length === 0) {
+        manabiNativeLookupDiagnostic('ebook.nativeLookupTargets.empty', {
+            reason,
+            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+            segmentSource: visibleSegmentsResult?.segmentCandidateSource ?? null,
+            missingNodeCount,
+            missingRectCount,
+            builderRejectedCount,
+            firstVisibleSegmentID: visibleSegmentsResult?.visibleSegments?.[0]?.node?.id ?? null,
+            frameLeft,
+            frameTop,
+        });
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: true,
@@ -5357,6 +5149,18 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         viewportHeight,
         viewportLeft,
         viewportTop,
+    });
+    manabiNativeLookupDiagnostic('ebook.nativeLookupTargets.posted', {
+        reason,
+        visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+        targetCount: messageTargets.length,
+        missingNodeCount,
+        missingRectCount,
+        builderRejectedCount,
+        firstTargetID: messageTargets[0]?.elementId ?? null,
+        firstRectLeft: messageTargets[0]?.rects?.[0]?.left ?? null,
+        firstRectTop: messageTargets[0]?.rects?.[0]?.top ?? null,
+        hasHandler: !!messageHandlers?.nativeLookupHitTargetsUpdated,
     });
     manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
         reason,
@@ -6060,16 +5864,8 @@ const getView = async (source) => {
     view.style.pointerEvents = 'auto';
     const readerStage = document.getElementById('reader-stage');
     (readerStage || document.body).append(view);
-    postReaderVisibilityProbe('getView:appended', view, {
-        parentID: view.parentElement?.id ?? null,
-        parentTag: view.parentElement?.tagName ?? null,
-    });
     forwardShadowErrors(view.shadowRoot);
     await view.open(book)
-    postReaderVisibilityProbe('getView:opened', view, {
-        bookDir: book?.dir || null,
-        sectionCount: Array.isArray(book?.sections) ? book.sections.length : null,
-    });
 
     // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
     const paginator = resolveFoliatePaginator(view);
@@ -6087,8 +5883,6 @@ const getView = async (source) => {
         }
     `;
         paginator.shadowRoot.appendChild(style);
-        postReaderVisibilityProbe('getView:paginator-ready', view);
-
         const sideNavWidth = 32;
         document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
         // Also set --side-nav-width on the inner view, so it propagates into the iframe's shadow DOM.
@@ -6930,7 +6724,6 @@ class Reader {
                 this.#visiblePageSegmentResult(doc, visibleRange, `visible-status:${reason}`, {
                     collectionMode: 'visibleStatusRefresh',
                     postIfCached: false,
-                    finishInitialCritical: false,
                 });
             }
         };
@@ -7544,7 +7337,6 @@ class Reader {
                 postLookupTargets: false,
                 prepareLookupIndex: false,
                 hydrateStatuses: false,
-                finishInitialCritical: false,
             }
         );
         if (syncGeneration !== this.visiblePageCollectionGeneration) {
@@ -8011,6 +7803,7 @@ class Reader {
     }
     #collectVisiblePageSegmentGeometry(doc, visibleRange = null, reason = 'visible-page-segment-result', {
         includeClientRects = true,
+        includeSegmentMetadata = true,
         viewportSampleDensity = null,
         minimumViewportSampleSegmentCount = 0,
         seedSegmentNodes = null,
@@ -8020,6 +7813,7 @@ class Reader {
     } = {}) {
         const result = collectVisibleSegmentNodesFromRange(doc, visibleRange, {
             includeClientRects,
+            includeSegmentMetadata,
             reason,
             viewportSampleDensity,
             minimumViewportSampleSegmentCount,
@@ -8027,7 +7821,7 @@ class Reader {
             seedSegmentSource,
             useOrderedDocumentWindow,
         });
-        return prepareVisibleSegmentsResult(result, doc);
+        return includeSegmentMetadata ? prepareVisibleSegmentsResult(result, doc) : result;
     }
     #prepareVisiblePageLookupIndex(doc, result, reason = 'unspecified', prepareLookupIndex = true, {
         includeSurfaceText = true,
@@ -8078,15 +7872,6 @@ class Reader {
             });
         }
     }
-    #finishVisiblePageSegmentCritical(reason = 'unspecified', finishInitialCritical = true) {
-        if (finishInitialCritical && globalThis.__manabiInitialForegroundCriticalSectionToken) {
-            finishForegroundCriticalSection(
-                globalThis.__manabiInitialForegroundCriticalSectionToken,
-                reason
-            );
-            globalThis.__manabiInitialForegroundCriticalSectionToken = null;
-        }
-    }
     #renderableContentProbeResult(doc, visibleRange = null, reason = 'initial-renderable-probe') {
         // This probe only decides whether content is ready to reveal. Finishing the
         // lookup/status critical section here can synchronously apply tracking state
@@ -8102,6 +7887,7 @@ class Reader {
         const {
             postIfCached = false,
             includeClientRects = true,
+            includeSegmentMetadata = true,
             postLookupTargets = true,
             prepareLookupIndex = true,
             hydrateStatuses = true,
@@ -8109,7 +7895,6 @@ class Reader {
             hydrateAdjacentStatusSegmentCount = 0,
             hydrateAllowPartialTrackedWords = false,
             hydrateRetainHiddenEbookStatusClasses = false,
-            finishInitialCritical = true,
             viewportSampleDensity = null,
             minimumViewportSampleSegmentCount = 0,
             seedSegmentNodes = null,
@@ -8130,6 +7915,7 @@ class Reader {
             && snapshot.generation === this.visiblePageCollectionGeneration
             && snapshot.doc === doc
             && snapshot.visibleRange === collectionVisibleRange
+            && (snapshot.includeSegmentMetadata === true || includeSegmentMetadata === false)
             && (snapshot.includeClientRects === effectiveIncludeClientRects || (snapshot.includeClientRects === true && effectiveIncludeClientRects === false))) {
             manabiTimelineMeasure('visibleSegments.snapshot', collectionStartedAt, {
                 reason,
@@ -8161,11 +7947,11 @@ class Reader {
                 allowPartialTrackedWords: hydrateAllowPartialTrackedWords,
                 retainHiddenEbookStatusClasses: hydrateRetainHiddenEbookStatusClasses,
             });
-            this.#finishVisiblePageSegmentCritical(`visible-segments-cached:${reason}`, finishInitialCritical);
             return snapshot.result;
         }
         const result = this.#collectVisiblePageSegmentGeometry(doc, collectionVisibleRange, reason, {
             includeClientRects: effectiveIncludeClientRects,
+            includeSegmentMetadata,
             viewportSampleDensity,
             minimumViewportSampleSegmentCount,
             seedSegmentNodes,
@@ -8192,7 +7978,6 @@ class Reader {
                 allowPartialTrackedWords: hydrateAllowPartialTrackedWords,
                 retainHiddenEbookStatusClasses: hydrateRetainHiddenEbookStatusClasses,
             });
-            this.#finishVisiblePageSegmentCritical(`visible-segments-preserved:${reason}`, finishInitialCritical);
             return snapshot.result;
         }
         this.visiblePageSegmentSnapshot = {
@@ -8200,6 +7985,7 @@ class Reader {
             doc,
             visibleRange: collectionVisibleRange,
             includeClientRects: effectiveIncludeClientRects,
+            includeSegmentMetadata,
             result,
             lookupIndex: this.#prepareVisiblePageLookupIndex(doc, result, reason, prepareLookupIndex, {
                 includeSurfaceText: includeLookupSurfaceText,
@@ -8235,11 +8021,16 @@ class Reader {
             allowPartialTrackedWords: hydrateAllowPartialTrackedWords,
             retainHiddenEbookStatusClasses: hydrateRetainHiddenEbookStatusClasses,
         });
-        this.#finishVisiblePageSegmentCritical(`visible-segments:${reason}`, finishInitialCritical);
         return result;
     }
     #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
         if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
+            manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.deferred', {
+                reason,
+                restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+                bodyLoading: document.body?.classList?.contains?.('loading') === true,
+                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+            });
             this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
             return;
         }
@@ -8273,6 +8064,11 @@ class Reader {
             const currentDocs = isDocumentLike(explicitDoc)
                 ? [explicitDoc]
                 : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+            manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.running', {
+                reason,
+                generation,
+                documentCount: currentDocs.length,
+            });
             for (const doc of currentDocs) {
                 const visibleRange = this.#visibleRangeForDocument(doc);
                 this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
@@ -8312,6 +8108,11 @@ class Reader {
     }
     completeLastPositionLoad(reason = 'unspecified') {
         this.hasLoadedLastPosition = true;
+        manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.restoreGateReleased', {
+            reason,
+            hadPendingRefresh: this.pendingNativeLookupHitTargetRefresh !== null,
+            bodyLoading: document.body?.classList?.contains?.('loading') === true,
+        });
         // didDisplay may have deferred visible lookup/status enrichment until the
         // restore position became authoritative. Flush at that state transition;
         // otherwise the first relocate is the next event that can hydrate it.
@@ -8643,7 +8444,6 @@ class Reader {
         this.hasSettledInitialPaginatorLayout = false;
         this.view = await getView(file)
         const initialRestore = options?.initialRestore ?? null;
-        postReaderVisibilityProbe('reader.open:view-assigned', this.view, null);
         globalThis.__manabiPostReaderDocStateEvent?.('reader.open.viewAssigned');
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
@@ -8673,9 +8473,6 @@ class Reader {
         //        this.view.renderer.next()
 
         $('#nav-bar').style.visibility = 'visible'
-        postReaderVisibilityProbe('reader.open:nav-visible', this.view, {
-            initialLayoutMode: typeof window.initialLayoutMode !== 'undefined' ? window.initialLayoutMode : null,
-        });
         this.buttons = {
             prev: document.getElementById('btn-prev-chapter'),
             next: document.getElementById('btn-next-chapter'),
@@ -9502,6 +9299,13 @@ class Reader {
                 rawFractionValue: initialRestore?.fractionalCompletion ?? null,
             });
             const navigationResult = await runInitialDisplayNavigation(intent, operation);
+            // With no saved locator, successfully dispatching the first-section navigation
+            // makes the position authoritative immediately. Keeping the restore gate closed
+            // here permanently defers initial lookup targets and tracking highlights because
+            // there is no later native loadLastPosition call required to release it.
+            if (!hasInitialRestoreTarget && navigationResult?.ok === true) {
+                this.completeLastPositionLoad('initial-display-no-restore-target');
+            }
             let displaySettled = this.#settleInitialDisplayFromVisibleContent(`${reason}.initialDisplay.navigationComplete`);
             const location = this.view?.lastLocation ?? null;
             const settledSectionIndex = typeof location?.section?.current === 'number'
@@ -9586,6 +9390,14 @@ class Reader {
                     fractionTolerance: initialRestoreFractionTolerance,
                 }
             );
+            manabiNativeLookupDiagnostic('ebook.nativeLookupRefresh.initialPositionDecision', {
+                restoreLocatorKind,
+                hasInitialRestoreTarget,
+                navigationOK: navigationResult?.ok === true,
+                visibleContentSettled: displaySettled?.settled === true,
+                restoreSatisfied: initialRestoreWillBeMarkedHandled,
+                hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+            });
             if (initialRestoreWillBeMarkedHandled) {
                 this.initialDisplayNavigationPending = false;
                 this.completeLastPositionLoad('initial-display-restore-satisfied');
@@ -9846,7 +9658,6 @@ class Reader {
                 postLookupTargets: false,
                 prepareLookupIndex: false,
                 hydrateStatuses: false,
-                finishInitialCritical: false,
             });
             refreshResults.push({
                 ...this.#lookupNavigationVisibleSegmentSummary(doc, result),
@@ -10555,7 +10366,6 @@ class Reader {
                     postLookupTargets: true,
                     prepareLookupIndex: true,
                     hydrateStatuses: true,
-                    finishInitialCritical: true,
                 }
             );
         }
@@ -10701,7 +10511,6 @@ class Reader {
                         postLookupTargets: false,
                         prepareLookupIndex: false,
                         hydrateStatuses: false,
-                        finishInitialCritical: false,
                     }
                 );
                 didDisplayNativeLookupTargetCount = visibleSegmentsResult?.nativeLookupTargetCount ?? null;
@@ -10802,7 +10611,6 @@ class Reader {
         }
         this.#applyHideNavigationDueToScrollToBookContent(this.navHUD?.hideNavigationDueToScroll === true, 'reader.didDisplay');
         this.#scheduleInitialPaginatorSettle('did-display');
-        postReaderVisibilityProbe('reader.didDisplay', this.view, null);
     }
     #onLoad({
         detail: {
@@ -11028,9 +10836,6 @@ class Reader {
         if (MANABI_ENABLE_EBOOK_PAGE_TRACKING_BUTTONS) {
             this.#schedulePageTrackingSync('document-load', doc, 2);
         }
-        postReaderVisibilityProbe('reader.documentLoad', this.view, {
-            documentURL: doc?.location?.href || null,
-        });
     }
 
     #resetSideNavChevrons() {
@@ -11157,6 +10962,7 @@ class Reader {
         }
         let relocatedVisibleSegmentsResult = null;
         const collectRelocatedVisibleTargets = ({
+            collectionMode = null,
             postLookupTargets = true,
             hydrateStatuses = true,
             hydrateSynchronously = null,
@@ -11251,9 +11057,11 @@ class Reader {
                     visibleRange,
                     `relocate.${markerReason}:${reason ?? 'unknown'}`,
                     {
-                        collectionMode: reason === 'page' && hydrateStatuses
-                            ? 'pageTurnStatusHydration'
-                            : (reason === 'page' ? 'pageTurnLookupTargets' : null),
+                        collectionMode: collectionMode ?? (
+                            reason === 'page' && hydrateStatuses
+                                ? 'pageTurnStatusHydration'
+                                : (reason === 'page' ? 'pageTurnLookupTargets' : null)
+                        ),
                         postIfCached: false,
                         includeClientRects,
                         postLookupTargets,
@@ -11263,7 +11071,6 @@ class Reader {
                         hydrateAdjacentStatusSegmentCount: pageTurnHydrationOptions.adjacentSegmentCount,
                         hydrateAllowPartialTrackedWords: pageTurnHydrationOptions.allowPartialTrackedWords,
                         hydrateRetainHiddenEbookStatusClasses: pageTurnHydrationOptions.retainHiddenEbookStatusClasses,
-                        finishInitialCritical: false,
                         seedSegmentNodes: useOrderedDocumentWindow ? null : seedSegmentNodes,
                         seedSegmentSource: useOrderedDocumentWindow ? null : seedSegmentSource,
                         useOrderedDocumentWindow,
@@ -11291,6 +11098,7 @@ class Reader {
                 // full layout before the loading cover can paint. didDisplay schedules
                 // that enrichment after the paint boundary.
                 collectRelocatedVisibleTargets({
+                    collectionMode: 'initialRenderableProbe',
                     postLookupTargets: false,
                     hydrateStatuses: false,
                     prepareLookupIndex: false,
@@ -11609,14 +11417,6 @@ class Reader {
         }
 
         await this.updateNavButtons();
-        if (typeof currentPercent === 'number') {
-        }
-        postReaderVisibilityProbe('reader.relocate', this.view, {
-            reason: detail?.reason || null,
-            fraction: safeRound(detail?.fraction),
-            currentLocation: detail?.location?.current ?? null,
-            totalLocation: detail?.location?.total ?? null,
-        });
 
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
@@ -11725,9 +11525,6 @@ window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
 //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
     applyStoredChromeInsets('setEbookViewerLayout');
-    postEBookSafeAreaTopSnapshot('ebook.safeAreaTop.setLayout', {
-        layoutMode,
-    });
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
@@ -12080,6 +11877,10 @@ window.loadEBook = ({
                 });
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreNotHandledAfterOpen');
                 finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreNotHandledAfterOpen');
+                // A failed saved locator still leaves Foliate on its terminal fallback page.
+                // Treat that visible location as authoritative so interaction and status
+                // hydration are not held forever behind a restore that will not be retried.
+                reader.completeLastPositionLoad('loadEBook.initialRestoreNotHandledAfterOpen');
                 reader.setLoadingIndicator(false, settled?.settled === true
                     ? 'loadEBook.initialRestoreNotHandledAfterOpen.visibleContent'
                     : 'loadEBook.initialRestoreNotHandledAfterOpen.terminal');
@@ -12090,6 +11891,7 @@ window.loadEBook = ({
             ) {
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreDeferredTerminal');
                 finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
+                reader.completeLastPositionLoad('loadEBook.initialRestoreDeferredTerminal');
                 reader.setLoadingIndicator(false, settled?.settled === true
                     ? 'loadEBook.initialRestoreDeferredTerminal.visibleContent'
                     : 'loadEBook.initialRestoreDeferredTerminal.terminal');

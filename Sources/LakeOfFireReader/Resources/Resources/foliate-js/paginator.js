@@ -1,7 +1,9 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
+const MANABI_ENABLE_PAGINATOR_DIAGNOSTICS = false;
 const FOLIATE_BOOK_CONTENT_STYLE_ID = 'foliate-book-content-style';
+const MANABI_PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID = 'mnb-paginator-layout-bootstrap';
 const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
 const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
@@ -46,6 +48,12 @@ const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const MANABI_LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180;
 const MANABI_POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240;
+const manabiRevealPaginatorDocument = doc => {
+    const bootstrapStyle = doc?.getElementById?.(MANABI_PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID);
+    if (!bootstrapStyle) return false;
+    bootstrapStyle.remove();
+    return true;
+};
 const manabiDocumentIsProcessedEbook = doc => {
     const body = doc?.body;
     const documentElement = doc?.documentElement;
@@ -169,7 +177,7 @@ const manabiTimelineMeasure = (
     if (elapsedMs < thresholdMs && globalThis.__manabiTimelineTraceAll !== true) {
         return elapsedMs;
     }
-    const label = manabiTimelineMark(event, { ...payload, elapsedMs });
+    const label = MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark(event, { ...payload, elapsedMs });
     try {
         performance?.measure?.(label, { start: startedAt, end: endedAt });
     } catch (_error) {}
@@ -233,7 +241,7 @@ const manabiApplyPreferredWritingDirectionToDocument = doc => {
     if (writingMode === 'vertical-rl') {
         documentElement.classList.add('vrtl');
     }
-    manabiTimelineMark('paginator.direction.preferredApplied', {
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.direction.preferredApplied', {
         href: doc.location?.href ?? null,
         observedDirection,
         observedWritingMode,
@@ -255,7 +263,7 @@ const manabiRememberObservedWritingDirection = (doc, direction) => {
     }
     globalThis.__manabiObservedBookWritingDirection = nextDirection;
     globalThis.__manabiObservedBookWritingMode = writingMode;
-    manabiTimelineMark('paginator.direction.observedBookDirection', {
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.direction.observedBookDirection', {
         href: doc?.location?.href ?? null,
         source,
         writingMode,
@@ -354,17 +362,17 @@ const manabiElementDiagnostics = (prefix, element, styleProperties = []) => {
 };
 const manabiRunPaginatorBoundary = async (stage, payload, operation, { logReaderLoad = false } = {}) => {
     const startedAt = manabiPerfNow();
-    manabiTimelineMark(`${stage}.start`, payload);
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark(`${stage}.start`, payload);
     if (logReaderLoad) {
-        manabiPaginatorReaderLoadLog(`${stage}.start`, payload);
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog(`${stage}.start`, payload);
     }
     try {
         const result = await operation();
         const elapsedMs = manabiRound(manabiPerfNow() - startedAt, 1);
         const finishedPayload = { ...payload, elapsedMs };
-        manabiTimelineMark(`${stage}.finish`, finishedPayload);
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark(`${stage}.finish`, finishedPayload);
         if (logReaderLoad) {
-            manabiPaginatorReaderLoadLog(`${stage}.finish`, finishedPayload);
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog(`${stage}.finish`, finishedPayload);
         }
         return result;
     } catch (error) {
@@ -373,9 +381,9 @@ const manabiRunPaginatorBoundary = async (stage, payload, operation, { logReader
             elapsedMs: manabiRound(manabiPerfNow() - startedAt, 1),
             error: error?.message || String(error),
         };
-        manabiTimelineMark(`${stage}.error`, errorPayload);
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark(`${stage}.error`, errorPayload);
         if (logReaderLoad) {
-            manabiPaginatorReaderLoadLog(`${stage}.error`, errorPayload);
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog(`${stage}.error`, errorPayload);
         }
         throw error;
     }
@@ -572,13 +580,13 @@ async function getBodylessComputedStyle(sourceDoc) {
                     source: 'bodyless-computed-style',
                 });
             } catch (_error) {}
-            manabiTimelineMeasure('bodylessStyle.cssFetch', cssFetchStartedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch', cssFetchStartedAt, {
                 href: originalInfo?.href ?? originalHref,
                 bytes: css.length,
             }, 25);
             link.href = blobUrl;
         } catch {
-            manabiTimelineMeasure('bodylessStyle.cssFetch.error', cssFetchStartedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch.error', cssFetchStartedAt, {
                 href: originalInfo?.href ?? originalHref,
             }, 25);
             link.remove();
@@ -616,7 +624,7 @@ async function getBodylessComputedStyle(sourceDoc) {
         iframe.onload = resolve;
         iframe.src = blobUrl;
     });
-    manabiTimelineMeasure('bodylessStyle.iframeLoad', iframeLoadStartedAt, {
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.iframeLoad', iframeLoadStartedAt, {
         stylesheetCount: stylesheetLinks.length,
     }, 25);
 
@@ -631,7 +639,7 @@ async function getBodylessComputedStyle(sourceDoc) {
     URL.revokeObjectURL(blobUrl);
     iframe.remove();
 
-    manabiTimelineMeasure('bodylessStyle.total', startedAt, {
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.total', startedAt, {
         stylesheetCount: stylesheetLinks.length,
     }, 25);
     return { bodylessStyle, bodylessDoc };
@@ -892,9 +900,9 @@ class View {
             src,
             cacheWarmer: this.#isCacheWarmer,
         };
-        manabiTimelineMark('paginator.view.load.start', basePayload);
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.load.start', basePayload);
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                 phase: 'load.start',
                 elapsedMs: 0,
                 iframeConnected: this.#iframe.isConnected,
@@ -902,7 +910,7 @@ class View {
             });
         }
         if (logReaderLoad) {
-            manabiPaginatorReaderLoadLog('paginator.view.load.start', basePayload);
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.load.start', basePayload);
         }
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
@@ -925,9 +933,9 @@ class View {
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                             href: this.document?.location?.href ?? null,
                         };
-                        manabiTimelineMark('paginator.view.iframeLoad', eventPayload);
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.iframeLoad', eventPayload);
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'iframeLoad',
                                 elapsedMs: eventPayload.elapsedMs,
                                 documentSubpath: manabiReaderLoadSubpathFromURL(this.document?.location?.href),
@@ -938,10 +946,10 @@ class View {
                             });
                         }
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.iframeLoad', eventPayload);
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.iframeLoad', eventPayload);
                         }
                         const doc = this.document
-                        manabiTimelineMark('paginator.view.nativeProcessing', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.nativeProcessing', {
                             ...basePayload,
                             cacheOutcome: doc?.body?.dataset?.mnbNativeCacheOutcome ?? null,
                             cacheProbeOutcome: doc?.body?.dataset?.mnbNativeCacheProbeOutcome ?? null,
@@ -970,7 +978,7 @@ class View {
                         const externalSidecarStartedAt = manabiPerfNow();
                         const externalSidecar = await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.();
                         const externalSidecarState = doc?.defaultView?.manabi_externalSegmentSidecarState ?? null;
-                        manabiTimelineMeasure('paginator.view.externalSidecar', externalSidecarStartedAt, {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.view.externalSidecar', externalSidecarStartedAt, {
                             ...basePayload,
                             force: true,
                             source: externalSidecar?.source ?? 'none',
@@ -988,7 +996,7 @@ class View {
                             { logReaderLoad }
                         )
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'afterLoad.finish',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                                 documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
@@ -1028,7 +1036,7 @@ class View {
                         } else {
                             directionSource = direction.source ?? directionSource;
                         }
-                        manabiTimelineMark('paginator.direction.inputs', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.direction.inputs', {
                             ...basePayload,
                             ...manabiWritingDirectionInputsForDocument(doc),
                             resolvedSource: directionSource,
@@ -1038,7 +1046,7 @@ class View {
                             resolvedRTL: direction?.rtl === true,
                         });
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.direction.resolved', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.direction.resolved', {
                                 cacheWarmer: this.#isCacheWarmer,
                                 source: directionSource,
                                 writingMode: direction?.writingMode ?? null,
@@ -1058,7 +1066,7 @@ class View {
                         this.#rtl = direction.rtl;
                         this.#directionReadyResolve?.();
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'direction.resolved',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                                 documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
@@ -1071,7 +1079,7 @@ class View {
                                 bodyClass: doc?.body?.className ?? null,
                             });
                         }
-                        manabiTimelineMark('paginator.direction', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.direction', {
                             source: directionSource,
                             writingMode: direction.writingMode,
                             direction: direction.direction,
@@ -1107,7 +1115,7 @@ class View {
                             } catch (error) {
                                 fontLoadError = error?.message || String(error);
                             }
-                            manabiTimelineMeasure('paginator.view.directionalFontReady', fontLoadStartedAt, {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.view.directionalFontReady', fontLoadStartedAt, {
                                 ...basePayload,
                                 family: directionalFontFamily,
                                 fontSize,
@@ -1136,7 +1144,7 @@ class View {
                             { logReaderLoad }
                         )
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'beforeRender.finish',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                                 documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
@@ -1159,7 +1167,7 @@ class View {
                         )
                         if (logReaderLoad) {
                             const includeLiveLayoutMetrics = manabiShouldIncludeLivePaginatorLayoutMetrics()
-                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'render.finish',
                                 elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                                 documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
@@ -1191,7 +1199,7 @@ class View {
                                 )
                             })
                         } else {
-                            manabiTimelineMark('paginator.view.fontsReadyExpand.skipLoaded', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.fontsReadyExpand.skipLoaded', {
                                 ...basePayload,
                                 href: doc?.location?.href ?? null,
                                 fontsStatus: doc.fonts?.status ?? null,
@@ -1202,9 +1210,9 @@ class View {
                             href: doc?.location?.href ?? null,
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         };
-                        manabiTimelineMark('paginator.view.load.finish', finishPayload);
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.load.finish', finishPayload);
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                                 phase: 'load.finish',
                                 elapsedMs: finishPayload.elapsedMs,
                                 documentSubpath: manabiReaderLoadSubpathFromURL(doc?.location?.href),
@@ -1215,7 +1223,7 @@ class View {
                             });
                         }
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.load.finish', finishPayload);
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.load.finish', finishPayload);
                         }
                         resolve()
                     } catch (error) {
@@ -1224,9 +1232,9 @@ class View {
                             elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                             error: error?.message || String(error),
                         };
-                        manabiTimelineMark('paginator.view.load.error', errorPayload);
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.load.error', errorPayload);
                         if (logReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.view.load.error', errorPayload);
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.load.error', errorPayload);
                         }
                         reject(error)
                     }
@@ -1239,9 +1247,9 @@ class View {
                         elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         error: error?.message || String(error),
                     };
-                    manabiTimelineMark('paginator.view.iframeError', errorPayload);
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.iframeError', errorPayload);
                     if (logReaderLoad) {
-                        manabiPaginatorReaderLoadLog('paginator.view.iframeError', errorPayload);
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.iframeError', errorPayload);
                     }
                     reject(error);
                 }
@@ -1251,9 +1259,9 @@ class View {
                 }
                 this.#iframe.addEventListener('load', onLoad, { once: true })
                 this.#iframe.addEventListener('error', onError, { once: true })
-                manabiTimelineMark('paginator.view.assignSrc', basePayload);
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.assignSrc', basePayload);
                 if (!this.#isCacheWarmer) {
-                    manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.lifecycle', {
                         phase: 'assignSrc',
                         elapsedMs: manabiRound(manabiPerfNow() - loadStartedAt, 1),
                         iframeConnected: this.#iframe.isConnected,
@@ -1261,7 +1269,7 @@ class View {
                     });
                 }
                 if (logReaderLoad) {
-                    manabiPaginatorReaderLoadLog('paginator.view.assignSrc', basePayload);
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.assignSrc', basePayload);
                 }
                 this.#iframe.src = src
             }
@@ -1315,9 +1323,9 @@ class View {
             rtl: !!this.#rtl,
         }
         if (this.#lastRenderSignature === renderSignature) {
-            manabiTimelineMark('paginator.view.render.skipSameSignature', renderPayload)
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.render.skipSameSignature', renderPayload)
             if (logReaderLoad) {
-                manabiPaginatorReaderLoadLog('paginator.view.render.skipSameSignature', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.render.skipSameSignature', {
                     ...renderPayload,
                     renderSignature,
                 });
@@ -1325,9 +1333,9 @@ class View {
             return
         }
         if (this.#renderInFlightSignature === renderSignature && this.#renderInFlightPromise) {
-            manabiTimelineMark('paginator.view.render.awaitSameSignature', renderPayload)
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.view.render.awaitSameSignature', renderPayload)
             if (logReaderLoad) {
-                manabiPaginatorReaderLoadLog('paginator.view.render.awaitSameSignature', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.view.render.awaitSameSignature', {
                     ...renderPayload,
                     renderSignature,
                 });
@@ -1408,6 +1416,9 @@ class View {
             'margin': 'auto',
         })
         this.setImageSize()
+        // Direct processed-section responses start hidden so WebKit does not lay
+        // out source styles before these final paginator styles are installed.
+        manabiRevealPaginatorDocument(doc)
         this.#debouncedExpand()
         //        await this.expand()
     }
@@ -1470,6 +1481,9 @@ class View {
         preMeasureGeometryChanged =
             manabiSetStyleIfChanged(this.#element.style, paginationOtherSide, '100%') || preMeasureGeometryChanged
         this.setImageSize()
+        // Reveal immediately before expand performs the first geometry read. The
+        // resulting layout therefore uses the final column and media styles once.
+        manabiRevealPaginatorDocument(doc)
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
@@ -1675,7 +1689,7 @@ class View {
         const scheduledPromise = new Promise((resolve, reject) => {
             requestAnimationFrame(async () => {
                 const rafStartedAt = manabiPerfNow();
-                manabiTimelineMeasure('paginator.expand.rafWait', expandStartedAt, {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.expand.rafWait', expandStartedAt, {
                     cacheWarmer: this.#isCacheWarmer,
                     column: this._column,
                     vertical: this.#vertical,
@@ -1703,7 +1717,7 @@ class View {
                     if (skipIfSignatureUnchanged
                         && this.#lastExpandSignature === expandSignature
                         && this.#lastExpandedMetrics?.loadingSettled === true) {
-                        manabiTimelineMark('paginator.expand.skipSameSignature', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.expand.skipSameSignature', {
                             cacheWarmer: this.#isCacheWarmer,
                             column: this._column,
                             vertical: this.#vertical,
@@ -1713,7 +1727,7 @@ class View {
                     }
                     const beforeExpandStartedAt = manabiPerfNow();
                     await this.onBeforeExpand()
-                    manabiTimelineMeasure('paginator.expand.beforeExpand', beforeExpandStartedAt, {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.expand.beforeExpand', beforeExpandStartedAt, {
                         cacheWarmer: this.#isCacheWarmer,
                         column: this._column,
                         vertical: this.#vertical,
@@ -1740,7 +1754,7 @@ class View {
                         const pageCount = Math.ceil(contentSize / this._size)
                         const expandedSize = pageCount * this._size
                         const remainder = this._size > 0 ? contentSize % this._size : null
-                        manabiTimelineMeasure('paginator.expand.contentMeasure', contentMeasureStartedAt, {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.expand.contentMeasure', contentMeasureStartedAt, {
                             cacheWarmer: this.#isCacheWarmer,
                             vertical: this.#vertical,
                             inlineProgression,
@@ -1782,7 +1796,7 @@ class View {
                                 this.#overlayer.redraw()
                             }
                         }
-                        manabiTimelineMeasure('paginator.expand.geometryApply', geometryApplyStartedAt, {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.expand.geometryApply', geometryApplyStartedAt, {
                             cacheWarmer: this.#isCacheWarmer,
                             vertical: this.#vertical,
                             inlineProgression,
@@ -1856,7 +1870,7 @@ class View {
                     this.#lastExpandedMetrics = expandedMetrics
                     const onExpandStartedAt = manabiPerfNow();
                     await this.onExpand(expandedMetrics)
-                    manabiTimelineMeasure('paginator.expand.onExpand', onExpandStartedAt, {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.expand.onExpand', onExpandStartedAt, {
                         cacheWarmer: this.#isCacheWarmer,
                         column: this._column,
                         vertical: this.#vertical,
@@ -1869,7 +1883,7 @@ class View {
                 } catch (error) {
                     reject(error)
                 } finally {
-                    manabiTimelineMeasure('paginator.expand.raf', expandStartedAt, {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.expand.raf', expandStartedAt, {
                         cacheWarmer: this.#isCacheWarmer,
                         column: this._column,
                         scrolled: !this._column,
@@ -2394,7 +2408,7 @@ export class Paginator extends HTMLElement {
             this.#top.classList.remove('reader-loading');
         }
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.loading.state', this.#displayLifecycleDiagnostics('loading.state', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.loading.state', this.#displayLifecycleDiagnostics('loading.state', {
                 reason,
                 isLoading,
             }))
@@ -2403,7 +2417,7 @@ export class Paginator extends HTMLElement {
                 for (const delayMs of [5000, 30000]) {
                     setTimeout(() => {
                         if (token !== this.#loadingWatchdogToken || !this.#isLoading) return
-                        manabiPaginatorReaderLoadLog('paginator.loading.watchdog', this.#displayLifecycleDiagnostics('loading.watchdog', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.loading.watchdog', this.#displayLifecycleDiagnostics('loading.watchdog', {
                             reason,
                             delayMs,
                             isLoading: this.#isLoading,
@@ -2603,7 +2617,7 @@ export class Paginator extends HTMLElement {
             inlineProgression: expandedMetrics.inlineProgression === true,
         })
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
-            manabiPaginatorReaderLoadLog('paginator.expand.metrics', this.#layoutMetricDiagnostics(this.#pageMetricsCache, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.expand.metrics', this.#layoutMetricDiagnostics(this.#pageMetricsCache, {
                 reason: 'expand',
                 contentRectWidth: expandedMetrics.contentRectWidth,
                 contentRectHeight: expandedMetrics.contentRectHeight,
@@ -3017,7 +3031,7 @@ export class Paginator extends HTMLElement {
                 const signature = this.#mediaVisualSignature(snapshot)
                 const changed = signature !== initialSignature
                 if (!changed && !snapshot.suspiciousMediaState && delayMs < 1000 && !manabiPaginatorVerbosePageTurns()) return
-                manabiPaginatorReaderLoadLog('paginator.mediaVisual.followUp', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.mediaVisual.followUp', {
                     ...snapshot,
                     changed,
                     changedFields: this.#mediaVisualChangedFields(initialSnapshot, snapshot),
@@ -3049,7 +3063,7 @@ export class Paginator extends HTMLElement {
                     eventType,
                 })
                 if (this.#shouldLogMediaVisualDiagnostics(snapshot, { displayBoundary: true })) {
-                    manabiPaginatorReaderLoadLog('paginator.mediaVisual.event', snapshot)
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.mediaVisual.event', snapshot)
                 }
             }
             element.addEventListener?.('load', () => logEvent('load'), { once: true })
@@ -3581,7 +3595,7 @@ export class Paginator extends HTMLElement {
                     elementBoxCount: summary?.elementBoxCount ?? null,
                     firstTextSample: summary?.textSamples?.[0] ?? null,
                 }));
-                manabiPaginatorReaderLoadLog('paginator.blankPageCorrection.decision', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.blankPageCorrection.decision', {
                     index,
                     requestedPage: scheduledPage,
                     resolvedPage: target,
@@ -3686,7 +3700,7 @@ export class Paginator extends HTMLElement {
             width,
             height
         } = await this.sizes()
-        manabiTimelineMeasure('paginator.beforeRender.sizes', sizesStartedAt, {
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.beforeRender.sizes', sizesStartedAt, {
             width,
             height,
             vertical,
@@ -3698,7 +3712,7 @@ export class Paginator extends HTMLElement {
         const doc = renderDocument ?? renderView?.document ?? null
         const typographyStartedAt = manabiPerfNow()
         const typographyMetrics = this.#typographyMetrics(renderView)
-        manabiTimelineMeasure('paginator.beforeRender.typography', typographyStartedAt, {
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.beforeRender.typography', typographyStartedAt, {
             fontSize: typographyMetrics.fontSize,
             lineHeight: typographyMetrics.lineHeight,
             inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
@@ -3861,7 +3875,7 @@ export class Paginator extends HTMLElement {
             divisor,
             typographySignature: this.#lastTypographyRenderSignature,
         }
-        manabiTimelineMeasure('paginator.beforeRender.total', beforeRenderStartedAt, {
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.beforeRender.total', beforeRenderStartedAt, {
             width,
             height,
             vertical,
@@ -3890,14 +3904,14 @@ export class Paginator extends HTMLElement {
             inlineCharacterAdvance: typographyMetrics.inlineCharacterAdvance,
         })
         if (this.#lastTypographyRenderSignature === signature && this.#view.layout) {
-            manabiTimelineMark('paginator.render.skipSameSignature', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.render.skipSameSignature', {
                 index: this.#index,
                 signature,
             })
             return
         }
         if (this.#renderInFlightTypographySignature === signature && this.#renderInFlightPromise) {
-            manabiTimelineMark('paginator.render.awaitSameSignature', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.render.awaitSameSignature', {
                 index: this.#index,
                 signature,
             })
@@ -3954,7 +3968,7 @@ export class Paginator extends HTMLElement {
         })
         if (this.#lastTypographyRenderSignature === currentSignature && this.#view.layout) {
             this.#lastRenderContainerSize = currentSize
-            manabiTimelineMark('paginator.renderIfContainerSizeChanged.skipSameSignature', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.renderIfContainerSizeChanged.skipSameSignature', {
                 reason,
                 previousWidth: previousSize?.width ?? null,
                 previousHeight: previousSize?.height ?? null,
@@ -3970,7 +3984,7 @@ export class Paginator extends HTMLElement {
                 signature: currentSignature,
             }
         }
-        manabiTimelineMark('paginator.renderIfContainerSizeChanged.render', {
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.renderIfContainerSizeChanged.render', {
             reason,
             previousWidth: previousSize?.width ?? null,
             previousHeight: previousSize?.height ?? null,
@@ -3980,7 +3994,7 @@ export class Paginator extends HTMLElement {
             currentSignature,
         })
         if (String(reason).includes('initial-paginator-settle') || String(reason).includes('did-display')) {
-            manabiPaginatorReaderLoadLog('paginator.renderIfContainerSizeChanged.render', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.renderIfContainerSizeChanged.render', {
                 reason,
                 previousWidth: previousSize?.width ?? null,
                 previousHeight: previousSize?.height ?? null,
@@ -4214,7 +4228,7 @@ export class Paginator extends HTMLElement {
             && cached.scrolled === this.scrolled
             && cached.vertical === this.#vertical
             && cached.rtl === this.#rtl) {
-            manabiTimelineMeasure('paginator.pageMetrics', startedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.pageMetrics', startedAt, {
                 cacheHit: true,
                 cacheWarmer: this.#isCacheWarmer,
                 index: cached.index,
@@ -4279,7 +4293,7 @@ export class Paginator extends HTMLElement {
                 this.#pageMetricsCache = metrics
             }
             if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.pageMetrics.compute', this.#layoutMetricDiagnostics(metrics, {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageMetrics.compute', this.#layoutMetricDiagnostics(metrics, {
                     cacheHit: false,
                     source: metricsSource,
                     computedSideProp: sideProp,
@@ -4289,7 +4303,7 @@ export class Paginator extends HTMLElement {
             }
             return metrics
         } finally {
-            manabiTimelineMeasure('paginator.pageMetrics', startedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.pageMetrics', startedAt, {
                 cacheHit: false,
                 cacheWarmer: this.#isCacheWarmer,
                 index: this.#index,
@@ -4610,7 +4624,7 @@ export class Paginator extends HTMLElement {
                     const actualStart = liveStart()
                     const actualMetrics = scrolledMetrics()
                     if (!this.#isCacheWarmer && Math.abs(actualStart - targetStart) > 0.5) {
-                        manabiPaginatorReaderLoadLog('paginator.scrollTo.actualStartMismatch', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.scrollTo.actualStartMismatch', {
                             reason,
                             index: this.#index,
                             scrollProp,
@@ -4685,7 +4699,7 @@ export class Paginator extends HTMLElement {
                 })
             })
         } finally {
-            manabiTimelineMeasure('paginator.scrollTo.raf', startedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.scrollTo.raf', startedAt, {
                 cacheWarmer: this.#isCacheWarmer,
                 index: this.#index,
                 reason,
@@ -4749,7 +4763,7 @@ export class Paginator extends HTMLElement {
                 || page >= metrics.pages - 1
             )
         ) {
-            manabiPaginatorReaderLoadLog('paginator.scrollToPage.target', this.#layoutMetricDiagnostics(metrics, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.scrollToPage.target', this.#layoutMetricDiagnostics(metrics, {
                 reason,
                 requestedPage: page,
                 targetPage: physicalTargetPage,
@@ -4864,7 +4878,7 @@ export class Paginator extends HTMLElement {
             const textPages = metrics.pages - 2
             const newPage = Math.round(anchor * (textPages - 1))
             if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
-                manabiPaginatorReaderLoadLog('paginator.scrollToAnchor.fractionTarget', this.#layoutMetricDiagnostics(metrics, {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.scrollToAnchor.fractionTarget', this.#layoutMetricDiagnostics(metrics, {
                     reason,
                     anchor,
                     textPages,
@@ -4873,7 +4887,7 @@ export class Paginator extends HTMLElement {
             }
             await this.#scrollToPage(newPage + 1, reason, undefined, metrics)
         } finally {
-            manabiTimelineMeasure('paginator.scrollToAnchor', startedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.scrollToAnchor', startedAt, {
                 cacheWarmer: this.#isCacheWarmer,
                 index: this.#index,
                 reason,
@@ -5065,13 +5079,13 @@ export class Paginator extends HTMLElement {
 
         const index = this.#index
         const logProgressInputs = payload => {
-            manabiTimelineMark('paginator.relocate.progressInputs', payload);
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.relocate.progressInputs', payload);
             if (
                 manabiPaginatorVerbosePageTurns()
                 || payload.fraction < 0
                 || payload.fraction > 1
             ) {
-                manabiPaginatorReaderLoadLog('paginator.relocate.progressInputs', payload);
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.relocate.progressInputs', payload);
             }
         };
         const detail = {
@@ -5142,13 +5156,13 @@ export class Paginator extends HTMLElement {
             pages: knownMetrics?.pages ?? null,
         })
         if (this.#isLoading && this.#lastRelocateDispatchSignature === relocateSignature) {
-            manabiTimelineMark('paginator.relocate.skipDuplicate', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.relocate.skipDuplicate', {
                 reason,
                 index,
                 fraction: detail.fraction,
                 size: detail.size,
             })
-            manabiPaginatorReaderLoadLog('paginator.relocate.skipDuplicate', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.relocate.skipDuplicate', {
                 reason,
                 index,
                 fraction: Number.isFinite(detail.fraction) ? manabiRound(detail.fraction, 6) : null,
@@ -5201,7 +5215,7 @@ export class Paginator extends HTMLElement {
     #dispatchForegroundPageTurnActivity(logicalDirection, { input = 'touch', source = 'paginator' } = {}) {
         if (logicalDirection !== 'forward' && logicalDirection !== 'backward') return;
         if (manabiPaginatorVerbosePageTurns()) {
-            manabiPaginatorReaderLoadLog('paginator.pageTurn.activity', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.activity', {
                 input,
                 source,
                 logicalDirection,
@@ -5283,7 +5297,7 @@ export class Paginator extends HTMLElement {
         this.#suspendOnExpandAnchor = false
         this.#setLoading(true, 'display.start')
         const displayStartedAt = manabiPerfNow();
-        manabiTimelineMark('paginator.display.start', {
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.display.start', {
             cacheWarmer: this.#isCacheWarmer,
         });
         let displayIndex = null;
@@ -5291,7 +5305,7 @@ export class Paginator extends HTMLElement {
         let displayError = null
         const shouldLogReaderLoad = manabiShouldLogPaginatorReaderLoad(this.#isCacheWarmer)
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.start', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.start', {
                 displayIndex,
             }))
         }
@@ -5318,7 +5332,7 @@ export class Paginator extends HTMLElement {
             ? 'function'
             : (anchor instanceof Range ? 'range' : typeof anchor))
         if (shouldLogReaderLoad) {
-            manabiPaginatorReaderLoadLog('paginator.display.promiseResolved', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.promiseResolved', {
                 index,
                 hasSrc: !!src,
                 anchorKind: displayAnchorKind,
@@ -5326,7 +5340,7 @@ export class Paginator extends HTMLElement {
             });
         }
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.inputResolved', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.inputResolved', {
                 targetIndex: index,
                 currentIndex: this.#index,
                 hasSrc: !!src,
@@ -5411,7 +5425,7 @@ export class Paginator extends HTMLElement {
                         zIndex: '-1',
                     })
                     if (!this.#isCacheWarmer) {
-                    manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.prepareReplacementView', {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.prepareReplacementView', {
                         targetIndex: index,
                         previousIndex,
                         previousDocumentSubpath: manabiReaderLoadSubpathFromURL(previousView?.document?.location?.href),
@@ -5424,13 +5438,13 @@ export class Paginator extends HTMLElement {
                 }
 
                 if (shouldLogReaderLoad) {
-                    manabiPaginatorReaderLoadLog('paginator.display.viewLoad.start', {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.viewLoad.start', {
                         index,
                         src,
                     });
                 }
                 if (!this.#isCacheWarmer) {
-                    manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeViewLoad', {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeViewLoad', {
                         targetIndex: index,
                         currentIndex: this.#index,
                         replacingExistingView: !!previousView,
@@ -5450,7 +5464,7 @@ export class Paginator extends HTMLElement {
                         anchorKind: displayAnchorKind,
                     })
                     if (this.#shouldLogMediaVisualDiagnostics(beforeLoadVisualSnapshot, { crossedSection: index !== this.#index, displayBoundary: true })) {
-                        manabiPaginatorReaderLoadLog('paginator.display.visualSnapshot', beforeLoadVisualSnapshot)
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.visualSnapshot', beforeLoadVisualSnapshot)
                         if (!beforeLoadVisualSnapshot?.staleDocumentSnapshot) {
                             this.#scheduleMediaVisualFollowUp(beforeLoadVisualSnapshot, {
                                 reason: 'beforeViewLoad',
@@ -5468,7 +5482,7 @@ export class Paginator extends HTMLElement {
                 // and is invalidated before #beforeRender.
                 const containerSizeWarmupStartedAt = manabiPerfNow()
                 void this.sizes().then(size => {
-                    manabiTimelineMeasure('paginator.display.containerSizeWarmup', containerSizeWarmupStartedAt, {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.display.containerSizeWarmup', containerSizeWarmupStartedAt, {
                         width: size?.width ?? null,
                         height: size?.height ?? null,
                         cacheWarmer: this.#isCacheWarmer,
@@ -5497,13 +5511,13 @@ export class Paginator extends HTMLElement {
                     throw error
                 }
                 if (shouldLogReaderLoad) {
-                    manabiPaginatorReaderLoadLog('paginator.display.viewLoad.finish', {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.viewLoad.finish', {
                         index,
                         src,
                     });
                 }
                 if (!this.#isCacheWarmer) {
-                    manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.afterViewLoad', {
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.afterViewLoad', {
                         targetIndex: index,
                         currentIndex: this.#index,
                         anchorKind: displayAnchorKind,
@@ -5531,13 +5545,13 @@ export class Paginator extends HTMLElement {
         }
         const scrollToAnchorStartedAt = manabiPerfNow();
         if (shouldLogReaderLoad) {
-            manabiPaginatorReaderLoadLog('paginator.display.scrollToAnchor.start', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.scrollToAnchor.start', {
                 index,
                 anchorKind: displayAnchorKind,
             });
         }
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeScrollToAnchor', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeScrollToAnchor', {
                 targetIndex: index,
                 currentIndex: this.#index,
                 anchorKind: displayAnchorKind,
@@ -5559,7 +5573,7 @@ export class Paginator extends HTMLElement {
                 textPageCount,
             })
             if (shouldLogReaderLoad) {
-                manabiPaginatorReaderLoadLog('paginator.display.localPage.anchorStored', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.localPage.anchorStored', {
                     index,
                     localPage: normalizedLocalPage,
                     targetLocalPage,
@@ -5572,7 +5586,7 @@ export class Paginator extends HTMLElement {
                 Math.abs((metrics.start ?? 0) - Math.abs(targetStart)) < 0.5
                 && metrics.page === targetPage
             if (alreadyAtTargetPage) {
-                manabiTimelineMark('paginator.display.localPage.skipSamePage', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.display.localPage.skipSamePage', {
                     index,
                     targetPage,
                     currentPage: metrics.page,
@@ -5588,14 +5602,14 @@ export class Paginator extends HTMLElement {
             await this.scrollToAnchor(resolvedAnchor, select)
         }
         if (shouldLogReaderLoad) {
-            manabiPaginatorReaderLoadLog('paginator.display.scrollToAnchor.finish', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.scrollToAnchor.finish', {
                 index,
                 anchorKind: displayAnchorKind,
                 elapsedMs: manabiRound(manabiPerfNow() - scrollToAnchorStartedAt, 1),
             });
         }
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.afterScrollToAnchor', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.afterScrollToAnchor', {
                 targetIndex: index,
                 currentIndex: this.#index,
                 anchorKind: displayAnchorKind,
@@ -5618,7 +5632,7 @@ export class Paginator extends HTMLElement {
                 previousViewForSectionSwap.element.remove()
             }
             if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.revealNewView', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.revealNewView', {
                     targetIndex: index,
                     previousIndex,
                     anchorKind: displayAnchorKind,
@@ -5633,13 +5647,13 @@ export class Paginator extends HTMLElement {
         }
         if (!this.#isCacheWarmer) {
         }
-                manabiTimelineMark('paginator.display.didDisplay.dispatch', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.display.didDisplay.dispatch', {
                     index,
                     anchorKind: displayAnchorKind,
                     cacheWarmer: this.#isCacheWarmer,
                 });
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeDidDisplay', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.beforeDidDisplay', {
                 targetIndex: index,
                 currentIndex: this.#index,
                 anchorKind: displayAnchorKind,
@@ -5654,7 +5668,7 @@ export class Paginator extends HTMLElement {
             elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
         })
         if (this.#shouldLogMediaVisualDiagnostics(displayVisualSnapshot, { displayBoundary: true })) {
-            manabiPaginatorReaderLoadLog('paginator.display.visualSnapshot', displayVisualSnapshot)
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.visualSnapshot', displayVisualSnapshot)
             this.#scheduleMediaVisualFollowUp(displayVisualSnapshot, {
                 reason: 'afterScrollBeforeDidDisplay',
                 phase: 'display',
@@ -5669,13 +5683,13 @@ export class Paginator extends HTMLElement {
             logReaderLoad: shouldLogReaderLoad,
         })
         if (shouldLogReaderLoad) {
-            manabiPaginatorReaderLoadLog('paginator.display.didDisplay.dispatched', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.didDisplay.dispatched', {
                 index,
                 anchorKind: displayAnchorKind,
             });
         }
         if (!this.#isCacheWarmer) {
-            manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.didDisplayDispatched', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.didDisplayDispatched', {
                 targetIndex: index,
                 currentIndex: this.#index,
                 anchorKind: displayAnchorKind,
@@ -5685,14 +5699,14 @@ export class Paginator extends HTMLElement {
         } catch (error) {
             displayError = error
             if (shouldLogReaderLoad) {
-                manabiPaginatorReaderLoadLog('paginator.display.error', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.error', {
                     index: displayIndex,
                     anchorKind: displayAnchorKind,
                     error: error?.message || String(error),
                 });
             }
             if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.error', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.error', {
                     targetIndex: displayIndex,
                     anchorKind: displayAnchorKind,
                     error: error?.message || String(error),
@@ -5704,14 +5718,14 @@ export class Paginator extends HTMLElement {
             this.#suspendOnExpandAnchor = false
             this.#setLoading(false, displayError ? 'display.error.finally' : 'display.complete.finally')
             if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.finally', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.display.lifecycle', this.#displayLifecycleDiagnostics('display.finally', {
                     targetIndex: displayIndex,
                     anchorKind: displayAnchorKind,
                     error: displayError?.message ?? null,
                     elapsedMs: manabiRound(manabiPerfNow() - displayStartedAt, 1),
                 }))
             }
-            manabiTimelineMeasure('paginator.display', displayStartedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.display', displayStartedAt, {
                 cacheWarmer: this.#isCacheWarmer,
                 index: displayIndex,
                 anchorKind: displayAnchorKind,
@@ -5738,7 +5752,7 @@ export class Paginator extends HTMLElement {
             : (anchor instanceof Range ? 'range' : typeof anchor));
         const shouldLogReaderLoad = manabiShouldLogPaginatorReaderLoad(this.#isCacheWarmer);
         if (shouldLogReaderLoad) {
-            manabiPaginatorReaderLoadLog('paginator.goTo.start', {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.goTo.start', {
                 fromIndex: currentIndex,
                 toIndex: index,
                 sectionID: this.sections?.[index]?.id ?? null,
@@ -5746,7 +5760,7 @@ export class Paginator extends HTMLElement {
                 anchorKind,
             });
         }
-        manabiTimelineMark('paginator.goTo.start', {
+        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.goTo.start', {
             cacheWarmer: this.#isCacheWarmer,
             fromIndex: currentIndex,
             toIndex: index,
@@ -5787,7 +5801,7 @@ export class Paginator extends HTMLElement {
                         }))
                     }
                     if (shouldLogReaderLoad) {
-                        manabiPaginatorReaderLoadLog('paginator.section.load.simplified', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.simplified', {
                             index,
                             sectionID: this.sections?.[index]?.id ?? null,
                         });
@@ -5836,12 +5850,12 @@ export class Paginator extends HTMLElement {
                         && this.#prefetchCache.get(index) === prefetchEntry
                     ) {
                         usedPrefetchPromise = true;
-                        manabiTimelineMark('paginator.section.load.prefetchReuse', {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.section.load.prefetchReuse', {
                             index,
                             sectionID: this.sections?.[index]?.id ?? null,
                         });
                         if (shouldLogReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.section.load.prefetchReuse', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.prefetchReuse', {
                                 index,
                                 sectionID: this.sections?.[index]?.id ?? null,
                             });
@@ -5849,7 +5863,7 @@ export class Paginator extends HTMLElement {
                         sectionLoadPromise = prefetchEntry.promise;
                     } else {
                         if (shouldLogReaderLoad) {
-                            manabiPaginatorReaderLoadLog('paginator.section.load.start', {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.start', {
                                 index,
                                 sectionID: this.sections?.[index]?.id ?? null,
                             });
@@ -5857,7 +5871,7 @@ export class Paginator extends HTMLElement {
                         sectionLoadPromise = this.sections[index].load()
                             .then(src => {
                                 if (shouldLogReaderLoad) {
-                                    manabiPaginatorReaderLoadLog('paginator.section.load.finish', {
+                                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.finish', {
                                         index,
                                         sectionID: this.sections?.[index]?.id ?? null,
                                         src,
@@ -5867,7 +5881,7 @@ export class Paginator extends HTMLElement {
                             })
                             .catch(error => {
                                 if (shouldLogReaderLoad) {
-                                    manabiPaginatorReaderLoadLog('paginator.section.load.error', {
+                                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.error', {
                                         index,
                                         sectionID: this.sections?.[index]?.id ?? null,
                                         error: error?.message || String(error),
@@ -5904,7 +5918,7 @@ export class Paginator extends HTMLElement {
             }
         } finally {
             if (shouldLogReaderLoad) {
-                manabiPaginatorReaderLoadLog('paginator.goTo.finish', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.goTo.finish', {
                     fromIndex: currentIndex,
                     toIndex: index,
                     sectionID: this.sections?.[index]?.id ?? null,
@@ -5912,7 +5926,7 @@ export class Paginator extends HTMLElement {
                     anchorKind,
                 });
             }
-            manabiTimelineMeasure('paginator.goTo', goToStartedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.goTo', goToStartedAt, {
                 cacheWarmer: this.#isCacheWarmer,
                 fromIndex: currentIndex,
                 toIndex: index,
@@ -5945,7 +5959,7 @@ export class Paginator extends HTMLElement {
         const previousSectionIndex = this.#adjacentIndex(-1)
         const blockedAtBookStart = previousSectionIndex == null && metrics.page <= 1
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
-            manabiPaginatorReaderLoadLog('paginator.pageTurn.prev.decision', this.#layoutMetricDiagnostics(metrics, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.prev.decision', this.#layoutMetricDiagnostics(metrics, {
                 distance: distance ?? null,
                 adjacentIndex: previousSectionIndex ?? null,
                 blockedAtBookStart,
@@ -5963,7 +5977,7 @@ export class Paginator extends HTMLElement {
         const textPageCount = Math.max(1, metrics.pages - 2)
         const textPage = Math.max(1, Math.min(textPageCount, metrics.page))
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
-            manabiPaginatorReaderLoadLog('paginator.pageTurn.prev.target', this.#layoutMetricDiagnostics(metrics, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.prev.target', this.#layoutMetricDiagnostics(metrics, {
                 requestedPage: metrics.page - 1,
                 resolvedPage: page,
                 adjacentIndex: previousSectionIndex ?? null,
@@ -5996,7 +6010,7 @@ export class Paginator extends HTMLElement {
         const nextSectionIndex = this.#adjacentIndex(1)
         const blockedAtBookEnd = nextSectionIndex == null && metrics.page >= metrics.pages - 2
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
-            manabiPaginatorReaderLoadLog('paginator.pageTurn.next.decision', this.#layoutMetricDiagnostics(metrics, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.next.decision', this.#layoutMetricDiagnostics(metrics, {
                 distance: distance ?? null,
                 adjacentIndex: nextSectionIndex ?? null,
                 blockedAtBookEnd,
@@ -6015,7 +6029,7 @@ export class Paginator extends HTMLElement {
         const textPageCount = Math.max(1, metrics.pages - 2)
         const textPage = Math.max(1, Math.min(textPageCount, metrics.page))
         if (!this.#isCacheWarmer && manabiPaginatorVerbosePageTurns()) {
-            manabiPaginatorReaderLoadLog('paginator.pageTurn.next.target', this.#layoutMetricDiagnostics(metrics, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.next.target', this.#layoutMetricDiagnostics(metrics, {
                 requestedPage: metrics.page + 1,
                 resolvedPage: page,
                 adjacentIndex: nextSectionIndex ?? null,
@@ -6041,7 +6055,7 @@ export class Paginator extends HTMLElement {
             metrics = await this.pageMetrics()
             return this.#adjacentIndex(1) == null && metrics.page >= metrics.pages - 2
         } finally {
-            manabiTimelineMeasure('paginator.atEnd', startedAt, {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('paginator.atEnd', startedAt, {
                 cacheWarmer: this.#isCacheWarmer,
                 index: this.#index,
                 page: metrics?.page,
@@ -6070,7 +6084,7 @@ export class Paginator extends HTMLElement {
         if (!options.bypassPostTurnDuplicateSuppression && this.#shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, turnStartedAt)) {
             const lastPageTurn = this.#lastSettledPageTurn
             if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.dropDuplicate', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.dropDuplicate', {
                     index: this.#index,
                     direction: dir > 0 ? 'forward' : 'backward',
                     reason: 'pageTurnDuplicateAfterSettle',
@@ -6101,7 +6115,7 @@ export class Paginator extends HTMLElement {
             })
             if (!queueDecision.shouldQueue) {
                 if (!this.#isCacheWarmer) {
-                    manabiPaginatorReaderLoadLog(
+                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog(
                         queueDecision.reason === 'pageTurnDuplicateDuringLock'
                             ? 'paginator.pageTurn.dropDuplicate'
                             : 'paginator.pageTurn.ignoreLocked',
@@ -6129,7 +6143,7 @@ export class Paginator extends HTMLElement {
                 this.#queuedPageTurn = { dir, distance, resolve, reject }
             })
             if (!this.#isCacheWarmer) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.queued', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.queued', {
                     index: this.#index,
                     direction: queuedDirection,
                     distance: distance ?? null,
@@ -6203,7 +6217,7 @@ export class Paginator extends HTMLElement {
                 }
             }
             if (!this.#isCacheWarmer && !didMove) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.noMove', this.#layoutMetricDiagnostics(finalMetrics ?? beforeMetrics, {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.noMove', this.#layoutMetricDiagnostics(finalMetrics ?? beforeMetrics, {
                     direction: dir > 0 ? 'forward' : 'backward',
                     shouldGo,
                     expectedCrossSection,
@@ -6225,7 +6239,7 @@ export class Paginator extends HTMLElement {
                     || (Number.isFinite(finalMetrics?.page) && Number.isFinite(finalMetrics?.pages) && (finalMetrics.page < 0 || finalMetrics.page >= finalMetrics.pages))
                 )
             ) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.anomaly', this.#layoutMetricDiagnostics(finalMetrics ?? beforeMetrics, {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.anomaly', this.#layoutMetricDiagnostics(finalMetrics ?? beforeMetrics, {
                     direction: dir > 0 ? 'forward' : 'backward',
                     shouldGo,
                     didMove,
@@ -6246,7 +6260,7 @@ export class Paginator extends HTMLElement {
                     || shouldGo
                 )
             ) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.settled', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.settled', {
                     ...this.#readerLoadPageTurnSummary(finalMetrics),
                     direction: dir,
                     shouldGo,
@@ -6268,7 +6282,7 @@ export class Paginator extends HTMLElement {
             this.#locked = false
             this.#lockedAt = null
             if (!this.#isCacheWarmer && queuedPageTurn) {
-                manabiPaginatorReaderLoadLog('paginator.pageTurn.dequeue', {
+                MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.dequeue', {
                     index: this.#index,
                     direction: queuedPageTurn.dir > 0 ? 'forward' : 'backward',
                     lockElapsedMs,
