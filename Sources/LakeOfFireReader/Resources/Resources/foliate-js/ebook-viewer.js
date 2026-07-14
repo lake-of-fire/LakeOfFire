@@ -8,6 +8,10 @@ import {
     ebookSegmentIdentifierAliases,
 } from './ebook-segment-identity.js'
 import {
+    makeSyntheticRestoreLocator,
+    parseSyntheticRestoreLocator,
+} from './ebook-restore-coordination.js'
+import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
@@ -585,41 +589,6 @@ const describeMarkReadNode = (node) => {
 };
 
 
-
-const MANABI_RESTORE_LOCATOR_PREFIX = 'mnb-loc-v1:';
-
-const makeSyntheticRestoreLocator = ({ sectionIndex, localSectionIndex, rendererTotal }) => {
-    if (![sectionIndex, localSectionIndex, rendererTotal].every((value) => Number.isFinite(value))) {
-        return null;
-    }
-    const normalizedSectionIndex = Math.max(0, Math.round(sectionIndex));
-    const normalizedRendererTotal = Math.max(1, Math.round(rendererTotal));
-    const normalizedLocalSectionIndex = Math.max(
-        0,
-        Math.min(normalizedRendererTotal - 1, Math.round(localSectionIndex))
-    );
-    return `${MANABI_RESTORE_LOCATOR_PREFIX}${normalizedSectionIndex}:${normalizedLocalSectionIndex}:${normalizedRendererTotal}`;
-};
-
-const parseSyntheticRestoreLocator = (value) => {
-    if (typeof value !== 'string' || !value.startsWith(MANABI_RESTORE_LOCATOR_PREFIX)) return null;
-    const parts = value.slice(MANABI_RESTORE_LOCATOR_PREFIX.length).split(':');
-    if (parts.length !== 3) return null;
-    const [sectionIndexRaw, localSectionIndexRaw, rendererTotalRaw] = parts.map((part) => Number(part));
-    if (![sectionIndexRaw, localSectionIndexRaw, rendererTotalRaw].every((value) => Number.isFinite(value))) {
-        return null;
-    }
-    const sectionIndex = Math.max(0, Math.round(sectionIndexRaw));
-    const rendererTotal = Math.max(1, Math.round(rendererTotalRaw));
-    const localSectionIndex = Math.max(0, Math.min(rendererTotal - 1, Math.round(localSectionIndexRaw)));
-    const fractionInSection = rendererTotal > 1 ? localSectionIndex / (rendererTotal - 1) : 0;
-    return {
-        sectionIndex,
-        localSectionIndex,
-        rendererTotal,
-        fractionInSection,
-    };
-};
 
 const parseSpineOnlyEpubCFI = (value) => {
     if (typeof value !== 'string') return null;
