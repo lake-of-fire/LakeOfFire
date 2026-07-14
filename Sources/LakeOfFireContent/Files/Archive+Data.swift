@@ -99,11 +99,48 @@ public struct ReaderPackageEntrySource: Sendable {
 
     public func mimeType(subpath rawSubpath: String) throws -> ReaderPackageEntryResponseMetadata {
         let subpath = try Self.sanitizeSubpath(rawSubpath)
-        let fileExtension = (subpath as NSString).pathExtension
+        let fileExtension = (subpath as NSString).pathExtension.lowercased()
+        if let metadata = Self.knownResponseMetadata(forExtension: fileExtension) {
+            return metadata
+        }
         let type = fileExtension.isEmpty ? nil : UTType(filenameExtension: fileExtension)
-        let mimeType = type?.preferredMIMEType ?? Self.fallbackMimeType(forExtension: fileExtension)
+        let mimeType = type?.preferredMIMEType ?? "application/octet-stream"
         let textEncodingName = Self.isUTF8TextType(utType: type, mimeType: mimeType) ? "utf-8" : nil
         return ReaderPackageEntryResponseMetadata(mimeType: mimeType, textEncodingName: textEncodingName)
+    }
+
+    private static func knownResponseMetadata(
+        forExtension fileExtension: String
+    ) -> ReaderPackageEntryResponseMetadata? {
+        let mimeType: String
+        switch fileExtension {
+        case "xhtml":
+            mimeType = "application/xhtml+xml"
+        case "html", "htm":
+            mimeType = "text/html"
+        case "opf":
+            mimeType = "application/oebps-package+xml"
+        case "ncx":
+            mimeType = "application/x-dtbncx+xml"
+        case "xml":
+            mimeType = "application/xml"
+        case "svg":
+            mimeType = "image/svg+xml"
+        case "css":
+            mimeType = "text/css"
+        case "js", "mjs":
+            mimeType = "text/javascript"
+        case "json":
+            mimeType = "application/json"
+        case "txt":
+            mimeType = "text/plain"
+        default:
+            return nil
+        }
+        return ReaderPackageEntryResponseMetadata(
+            mimeType: mimeType,
+            textEncodingName: "utf-8"
+        )
     }
 
     public static func sanitizeSubpath(_ rawSubpath: String) throws -> String {
@@ -181,31 +218,6 @@ public struct ReaderPackageEntrySource: Sendable {
             return ReaderPackageEntryMetadata(path: entry.path, size: Int(entry.uncompressedSize))
         }
         .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-    }
-
-    private static func fallbackMimeType(forExtension fileExtension: String) -> String {
-        switch fileExtension.lowercased() {
-        case "xhtml", "html", "htm":
-            return "application/xhtml+xml"
-        case "opf":
-            return "application/oebps-package+xml"
-        case "ncx":
-            return "application/x-dtbncx+xml"
-        case "xml":
-            return "application/xml"
-        case "svg":
-            return "image/svg+xml"
-        case "css":
-            return "text/css"
-        case "js", "mjs":
-            return "text/javascript"
-        case "json":
-            return "application/json"
-        case "txt":
-            return "text/plain"
-        default:
-            return "application/octet-stream"
-        }
     }
 
     private static func isUTF8TextType(utType: UTType?, mimeType: String) -> Bool {
