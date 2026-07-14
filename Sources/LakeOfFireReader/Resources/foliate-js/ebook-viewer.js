@@ -2188,12 +2188,18 @@ const segmentMetadataSidecarSnapshot = (doc) => {
     const primarySidecar = typeof doc?.getElementById === 'function'
         ? doc.getElementById('mnb-segment-metadata')
         : null;
-    const sidecars = primarySidecar
+    let sidecars = primarySidecar
         ? [primarySidecar]
         : Array.from(doc?.getElementsByTagName?.('script') || [])
             .filter((script) => script?.hasAttribute?.('data-mnb-seg-meta'));
+    const externalEntry = primarySidecar ? null : (doc?.manabiExternalSegmentSidecar ?? null);
+    if (sidecars.length === 0 && externalEntry?.sidecar) {
+        sidecars = [externalEntry.sidecar];
+    }
     const sidecarTexts = sidecars.map((sidecar) => sidecar.textContent || '');
-    const sidecarSignature = sidecarTexts.map((text) => String(text.length)).join('|');
+    const sidecarSignature = externalEntry?.signature
+        ? `external:${externalEntry.signature}`
+        : sidecarTexts.map((text) => String(text.length)).join('|');
     return { sidecars, sidecarTexts, sidecarSignature };
 };
 

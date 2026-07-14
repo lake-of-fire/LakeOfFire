@@ -407,6 +407,7 @@ class View {
                         const doc = this.document
 
                         await afterLoad?.(doc)
+                        await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.()
 
                         let direction = getDirectionFromDocument(doc);
                         let directionSource = 'document';

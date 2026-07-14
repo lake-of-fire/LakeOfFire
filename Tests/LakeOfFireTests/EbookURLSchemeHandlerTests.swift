@@ -36,6 +36,143 @@ private actor EBookProcessingGate {
 }
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testExternalizingCanonicalSidecarPublishesContentAddressedJSON() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let canonicalJSON = #"{"v":3,"t":{},"s":[]}"#
+        let aggregateJSON = #"{"count":0}"#
+        let html = """
+        <html><head><title>Test</title></head><body>
+        <script id="mnb-segment-metadata-aggregate">\(aggregateJSON)</script>
+        <script id="mnb-segment-metadata" type="application/json">\(canonicalJSON)</script>
+        </body></html>
+        """
+
+        let result = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(html.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertFalse(output.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertTrue(output.contains("id=\"mnb-segment-metadata-aggregate\""))
+        XCTAssertTrue(output.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertLessThan(
+            try XCTUnwrap(output.range(of: "meta name=\"mnb-segment-sidecar\"")?.lowerBound),
+            try XCTUnwrap(output.range(of: "</head>")?.lowerBound)
+        )
+        XCTAssertEqual(result.canonicalSidecarByteCount, canonicalJSON.utf8.count)
+        let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
+        let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: store
+        ))
+        XCTAssertEqual(served.data, Data(canonicalJSON.utf8))
+        XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(
+            served.response.value(forHTTPHeaderField: "X-Manabi-Sidecar-Signature"),
+            result.signature
+        )
+    }
+
+    func testExternalSidecarSurvivesMemoryEvictionAndStoreRestart() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let firstStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1
+        )
+        let firstHTML = """
+        <html><head></head><body>
+        <script id="mnb-segment-metadata">{"v":3,"t":{},"s":[]}</script>
+        </body></html>
+        """
+        let first = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(firstHTML.utf8),
+            scheme: .ebook,
+            store: firstStore
+        )
+        let endpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
+
+        let secondHTML = """
+        <html><body>
+        <script id="mnb-segment-metadata">{"v":3,"t":{},"s":[["1"]]}</script>
+        </body></html>
+        """
+        _ = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(secondHTML.utf8),
+            scheme: .ebook,
+            store: firstStore
+        )
+        XCTAssertNotNil(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: firstStore
+        ))
+
+        let restartedStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1
+        )
+        XCTAssertNotNil(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: restartedStore
+        ))
+        let token = endpoint.lastPathComponent
+        try Data("corrupt".utf8).write(to: directoryURL.appendingPathComponent(token), options: [.atomic])
+        let corruptedStore = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        XCTAssertNil(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: corruptedStore
+        ))
+        _ = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(firstHTML.utf8),
+            scheme: .ebook,
+            store: corruptedStore
+        )
+        XCTAssertNotNil(readerExternalSegmentSidecarResponse(
+            for: endpoint,
+            scheme: .ebook,
+            store: corruptedStore
+        ))
+        XCTAssertNil(readerExternalSegmentSidecarResponse(
+            for: URL(string: "ebook://ebook/processed-section-sidecar/not-a-token")!,
+            scheme: .ebook,
+            store: restartedStore
+        ))
+    }
+
+    func testProcessTextResponseExternalizesOnlyCanonicalSidecar() throws {
+        let canonicalJSON = #"{"v":3,"t":{},"s":[]}"#
+        let html = """
+        <html><head></head><body>
+        <script id="mnb-segment-metadata">\(canonicalJSON)</script>
+        </body></html>
+        """
+
+        let response = try XCTUnwrap(ebookProcessTextResponseData(
+            processedText: html,
+            isCacheWarmer: false
+        ))
+        let responseHTML = String(decoding: response, as: UTF8.self)
+
+        XCTAssertFalse(responseHTML.contains("id=\"mnb-segment-metadata\""))
+        XCTAssertTrue(responseHTML.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertEqual(
+            ebookProcessTextResponseData(processedText: html, isCacheWarmer: true),
+            Data()
+        )
+    }
+
     func testDirectSectionRequestPreservesUnicodeIdentityAndRejectsDuplicateOrUnsafeSubpaths() throws {
         var components = URLComponents()
         components.scheme = "ebook"

@@ -323,7 +323,10 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
     if isCacheWarmer {
         return Data()
     }
-    return processedText.data(using: .utf8)
+    return externalizingCanonicalReaderSegmentSidecar(
+        in: Array(processedText.utf8),
+        scheme: .ebook
+    ).documentHTML
 }
 
 actor EbookViewerAssetCache {
@@ -664,6 +667,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
             return
         }
+        if url.path.hasPrefix(ReaderExternalSegmentSidecarScheme.ebook.endpointPathPrefix) {
+            guard let sidecar = readerExternalSegmentSidecarResponse(for: url, scheme: .ebook) else {
+                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                return
+            }
+            urlSchemeTask.didReceive(sidecar.response)
+            urlSchemeTask.didReceive(sidecar.data)
+            urlSchemeTask.didFinish()
+            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+            return
+        }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
@@ -733,7 +748,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         ),
                         sourceHref: request.subpath
                     )
-                    let responseData = Data(responseText.utf8)
+                    guard let responseData = ebookProcessTextResponseData(
+                        processedText: responseText,
+                        isCacheWarmer: false
+                    ) else {
+                        throw CustomSchemeHandlerError.fileNotFound
+                    }
                     let response = ebookHTTPResponse(
                         url: url,
                         mimeType: "text/html",
