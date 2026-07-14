@@ -572,6 +572,14 @@ class View {
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
 
+        this.__manabiViewportMetricsGeneration = (this.__manabiViewportMetricsGeneration ?? 0) + 1
+        doc.defaultView?.manabi_seedViewportMetrics?.({
+            width: Number(layout.width) || 0,
+            height: Number(layout.height) || 0,
+            documentURL: doc.location?.href || doc.URL || null,
+            generation: this.__manabiViewportMetricsGeneration,
+        })
+
         doc.body.dataset.mnbFoliateWritingDirection = this.#vertical ? 'vertical' : 'horizontal'
         doc.body.classList.toggle('reader-vertical-writing', this.#vertical)
 
