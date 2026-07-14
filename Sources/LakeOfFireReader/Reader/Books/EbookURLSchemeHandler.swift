@@ -222,7 +222,13 @@ func ebookHTMLWithInjectedDirectSectionMetadata(
 }
 
 func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
-    url.path == "/processed-section" ? .userInitiated : .utility
+    guard url.path == "/processed-section" else { return .userInitiated }
+    guard let directItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.filter({
+        $0.name == "direct"
+    }), directItems.count == 1, directItems[0].value == "1" else {
+        return .utility
+    }
+    return .userInitiated
 }
 
 fileprivate func logEbookAsset(_ line: String) {

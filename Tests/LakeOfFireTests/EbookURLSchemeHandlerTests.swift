@@ -124,15 +124,34 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
     }
 
-    func testProcessedSectionUsesForegroundTaskPriority() throws {
-        XCTAssertEqual(
-            ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: "ebook://ebook/processed-section?sourceURL=x"))),
-            .userInitiated
-        )
-        XCTAssertEqual(
-            ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: "ebook://ebook/entries"))),
-            .utility
-        )
+    func testEbookSchemeTaskPriorityKeepsOnlyDirectSectionLoadsForeground() throws {
+        let foregroundURLs = [
+            "ebook://ebook/load/local/Books/test.epub",
+            "ebook://ebook/load/viewer-assets/foliate-js/paginator.js",
+            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=1",
+        ]
+        let utilityURLs = [
+            "ebook://ebook/processed-section?subpath=chapter.xhtml",
+            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=0",
+            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=true",
+            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct=1&direct=1",
+            "ebook://ebook/processed-section?subpath=chapter.xhtml&direct",
+        ]
+
+        for rawURL in foregroundURLs {
+            XCTAssertEqual(
+                ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: rawURL))),
+                .userInitiated,
+                rawURL
+            )
+        }
+        for rawURL in utilityURLs {
+            XCTAssertEqual(
+                ebookURLSchemeTaskPriority(for: try XCTUnwrap(URL(string: rawURL))),
+                .utility,
+                rawURL
+            )
+        }
     }
 
     func testEbookViewerAssetCacheReadsEachResolvedBundleURLOnce() async throws {
