@@ -260,6 +260,15 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(encoded.dropLast())))
     }
 
+    func testProcessedSidecarCacheEnvelopeRejectsPreStableIdentityVersion() throws {
+        let html = "<html><body><script id=\"mnb-segment-metadata\">{}</script></body></html>"
+        let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
+        var legacyEncoded = encodedEbookProcessedSectionCacheValue(payload)
+        legacyEncoded.replaceSubrange(0..<7, with: Array("MNBPSC2".utf8))
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacyEncoded))
+    }
+
     func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
         let doc = try SwiftSoup.parse("<html><head></head><body class=\"readability-mode\"><p>本文</p></body></html>")
         let css = """

@@ -227,7 +227,9 @@ struct ReaderPublishedSegmentSidecar: Sendable {
     let endpointURL: String?
 }
 
-private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC2".utf8)
+// Version 3 invalidates cached processed sections produced before durable `sid`
+// was mandatory for every ebook segment.
+private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC3".utf8)
 private let readerProcessedSegmentSidecarEnvelopeLengthByteCount = MemoryLayout<UInt64>.size
 
 func splitCanonicalReaderSegmentSidecar(

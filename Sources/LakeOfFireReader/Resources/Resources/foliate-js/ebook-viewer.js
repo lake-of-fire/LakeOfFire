@@ -4,6 +4,10 @@ createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import {
+    ebookSegmentIdentity,
+    ebookSegmentIdentifierAliases,
+} from './ebook-segment-identity.js'
+import {
     Overlayer
 } from '../foliate-js/overlayer.js'
 
@@ -3296,32 +3300,11 @@ const sentenceIdentifierForNode = (sentenceNode) => {
         : null;
 };
 
-const segmentElementIDForNode = (segmentNode) => {
-    const elementID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null;
-    return typeof elementID === 'string' && elementID.length > 0 ? elementID : null;
-};
-
 // Reader segment identity contract mirrors manabi_reader.js: the DOM id is compact
 // and runtime-scoped, while sidecar sid is the durable content identity.
-const segmentIdentityFromParts = (elementID, metadata = null) => {
-    const stableID = typeof metadata?.sid === 'string' && metadata.sid.length > 0
-        ? metadata.sid
-        : null;
-    const metadataElementID = typeof metadata?.i === 'string' && metadata.i.length > 0
-        ? metadata.i
-        : null;
-    return {
-        elementID,
-        metadataElementID,
-        stableID,
-        segmentIdentifier: stableID || elementID,
-        hasSidecarStableID: !!stableID,
-    };
-};
-
 const segmentIdentityForNode = (segmentNode, bootstrap = null, metadata = null) => {
     metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
-    return segmentIdentityFromParts(segmentElementIDForNode(segmentNode), metadata);
+    return ebookSegmentIdentity(segmentNode, metadata);
 };
 
 const segmentIdentifierForNode = (segmentNode, bootstrap = null, metadata = null) => {
@@ -3329,16 +3312,8 @@ const segmentIdentifierForNode = (segmentNode, bootstrap = null, metadata = null
 };
 
 const segmentIdentifierAliasesForNode = (segmentNode, bootstrap = null, metadata = null) => {
-    const identity = segmentIdentityForNode(segmentNode, bootstrap, metadata);
-    const aliases = [];
-    const addAlias = (identifier) => {
-        if (typeof identifier !== 'string' || identifier.length === 0) return;
-        if (!aliases.includes(identifier)) aliases.push(identifier);
-    };
-    addAlias(identity.stableID);
-    addAlias(identity.elementID);
-    addAlias(identity.metadataElementID);
-    return aliases;
+    metadata = metadata || segmentMetadataForNode(segmentNode, bootstrap);
+    return ebookSegmentIdentifierAliases(segmentNode, metadata);
 };
 
 const buildExampleSentenceForSegment = (segmentNode, bootstrap = null, metadata = null) => {
