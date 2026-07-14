@@ -7,6 +7,12 @@ import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
+import {
+    makeSyntheticRestoreLocator,
+    parseSyntheticRestoreLocator,
+    restoreLocatorKind as classifyRestoreLocator,
+    shouldSkipScheduledReaderFractionGoTo,
+} from './ebook-restore-coordination.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import {
     collectSegmentNodesInVisibleRange,
@@ -112,41 +118,6 @@ const describeMarkReadNode = (node) => {
             : [],
         segmentIdentifier: segmentIdentifierForNode(element),
         sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('mnb-sen') || null),
-    };
-};
-
-const MANABI_RESTORE_LOCATOR_PREFIX = 'mnb-loc-v1:';
-
-const makeSyntheticRestoreLocator = ({ sectionIndex, localSectionIndex, rendererTotal }) => {
-    if (![sectionIndex, localSectionIndex, rendererTotal].every((value) => Number.isFinite(value))) {
-        return null;
-    }
-    const normalizedSectionIndex = Math.max(0, Math.round(sectionIndex));
-    const normalizedRendererTotal = Math.max(1, Math.round(rendererTotal));
-    const normalizedLocalSectionIndex = Math.max(
-        0,
-        Math.min(normalizedRendererTotal - 1, Math.round(localSectionIndex))
-    );
-    return `${MANABI_RESTORE_LOCATOR_PREFIX}${normalizedSectionIndex}:${normalizedLocalSectionIndex}:${normalizedRendererTotal}`;
-};
-
-const parseSyntheticRestoreLocator = (value) => {
-    if (typeof value !== 'string' || !value.startsWith(MANABI_RESTORE_LOCATOR_PREFIX)) return null;
-    const parts = value.slice(MANABI_RESTORE_LOCATOR_PREFIX.length).split(':');
-    if (parts.length !== 3) return null;
-    const [sectionIndexRaw, localSectionIndexRaw, rendererTotalRaw] = parts.map((part) => Number(part));
-    if (![sectionIndexRaw, localSectionIndexRaw, rendererTotalRaw].every((value) => Number.isFinite(value))) {
-        return null;
-    }
-    const sectionIndex = Math.max(0, Math.round(sectionIndexRaw));
-    const rendererTotal = Math.max(1, Math.round(rendererTotalRaw));
-    const localSectionIndex = Math.max(0, Math.min(rendererTotal - 1, Math.round(localSectionIndexRaw)));
-    const fractionInSection = rendererTotal > 1 ? localSectionIndex / (rendererTotal - 1) : 0;
-    return {
-        sectionIndex,
-        localSectionIndex,
-        rendererTotal,
-        fractionInSection,
     };
 };
 
@@ -958,10 +929,10 @@ const shouldSkipScheduledReaderFractionGoToForRestoreSettling = (fraction) => {
     const restoreSettlingMs = typeof bookRestoreSettlingMs === 'function'
         ? bookRestoreSettlingMs()
         : Math.max(0, Number(globalThis.__manabiBookRestoreSettlingUntil || 0) - Date.now());
-    if (
-        globalThis.__manabiRequireUserInputBeforePositionSave === true
-        && restoreSettlingMs > 0
-    ) {
+    if (shouldSkipScheduledReaderFractionGoTo({
+        requiresUserInputBeforePositionSave: globalThis.__manabiRequireUserInputBeforePositionSave,
+        restoreSettlingMs,
+    })) {
         globalThis.manabiPostBookLog?.('position.schedule.skip', {
             reason: 'restore-settling',
             restoreSettlingMs,
@@ -8472,9 +8443,7 @@ window.loadLastPosition = async ({
     };
     const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
     const syntheticRestoreLocator = parseSyntheticRestoreLocator(cfi);
-    const restoreLocatorKind = syntheticRestoreLocator
-        ? 'synthetic'
-        : (typeof cfi === 'string' && cfi.length > 0 ? 'cfi' : (hasFractionalCompletion ? 'fraction' : 'none'));
+    const restoreLocatorKind = classifyRestoreLocator({ cfi, fractionalCompletion });
     let handledCFI = null;
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
         if (!hasFractionalCompletion || typeof restoreState?.currentFraction !== 'number') {
