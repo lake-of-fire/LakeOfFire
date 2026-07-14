@@ -3136,6 +3136,11 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
     };
 };
 
+const visibleSegmentCollectionDocumentIdentity = (doc) => ({
+    documentURL: doc?.location?.href || doc?.URL || null,
+    sidecarRevision: doc?.getElementById?.('mnb-segment-metadata')?.dataset?.mnbSidecarRevision || null,
+});
+
 const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const view = doc?.defaultView ?? null;
     const byElementID = new Map();
@@ -5636,10 +5641,13 @@ class Reader {
         prepareLookupIndex = true,
     } = {}) {
         const snapshot = this.visiblePageSegmentSnapshot;
+        const documentIdentity = visibleSegmentCollectionDocumentIdentity(doc);
         if (snapshot
             && snapshot.generation === this.visiblePageCollectionGeneration
             && snapshot.doc === doc
-            && snapshot.visibleRange === visibleRange) {
+            && snapshot.visibleRange === visibleRange
+            && snapshot.documentURL === documentIdentity.documentURL
+            && snapshot.sidecarRevision === documentIdentity.sidecarRevision) {
             if (prepareLookupIndex && !snapshot.lookupIndex) {
                 snapshot.lookupIndex = buildVisiblePageLookupIndex(doc, snapshot.result, reason);
             }
@@ -5662,6 +5670,8 @@ class Reader {
             generation: this.visiblePageCollectionGeneration,
             doc,
             visibleRange,
+            documentURL: documentIdentity.documentURL,
+            sidecarRevision: documentIdentity.sidecarRevision,
             result,
             lookupIndex,
         };
