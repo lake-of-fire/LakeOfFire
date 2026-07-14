@@ -99,7 +99,122 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let endpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
         let served = try XCTUnwrap(readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook))
         XCTAssertEqual(served.data, payload.segmentSidecar)
-        XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "public, max-age=31536000, immutable")
+        XCTAssertEqual(served.response.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+    }
+
+    func testPublishedSidecarRemainsAvailableForDocumentLifetime() throws {
+        let firstPayload = ebookTestPayload("<html></html>", sidecar: #"{"index":0}"#)
+        let first = publishingCanonicalReaderSegmentSidecar(firstPayload, scheme: .ebook)
+        let firstEndpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
+
+        // This exceeded the former entry limit and evicted an otherwise valid
+        // sidecar URL retained by the first document.
+        for index in 1...40 {
+            _ = publishingCanonicalReaderSegmentSidecar(
+                ebookTestPayload("<html></html>", sidecar: "{\"index\":\(index)}"),
+                scheme: .ebook
+            )
+        }
+
+        let served = try XCTUnwrap(
+            readerExternalSegmentSidecarResponse(for: firstEndpoint, scheme: .ebook)
+        )
+        XCTAssertEqual(served.data, firstPayload.segmentSidecar)
+    }
+
+    func testEvictedSidecarRegeneratesFromContentAddressedStorageAcrossStoreInstances() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let firstStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1
+        )
+        let firstPayload = ebookTestPayload("<html></html>", sidecar: #"{"index":0}"#)
+        let first = publishingCanonicalReaderSegmentSidecar(
+            firstPayload,
+            scheme: .ebook,
+            store: firstStore
+        )
+        let endpoint = try XCTUnwrap(first.endpointURL.flatMap(URL.init(string:)))
+
+        _ = publishingCanonicalReaderSegmentSidecar(
+            ebookTestPayload("<html></html>", sidecar: #"{"index":1}"#),
+            scheme: .ebook,
+            store: firstStore
+        )
+        XCTAssertEqual(
+            readerExternalSegmentSidecarResponse(
+                for: endpoint,
+                scheme: .ebook,
+                store: firstStore
+            )?.data,
+            firstPayload.segmentSidecar
+        )
+
+        let restartedStore = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: 1,
+            countLimit: 1
+        )
+        XCTAssertEqual(
+            readerExternalSegmentSidecarResponse(
+                for: endpoint,
+                scheme: .ebook,
+                store: restartedStore
+            )?.data,
+            firstPayload.segmentSidecar
+        )
+    }
+
+    func testSpeechProgressSaturatesOverflowingUTF16Range() {
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "A😀B",
+                spokenRange: NSRange(location: Int.max - 1, length: 10)
+            ),
+            1
+        )
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "本文",
+                spokenRange: NSRange(location: NSNotFound, length: 0)
+            ),
+            0
+        )
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "本文",
+                spokenRange: NSRange(location: -1, length: 1)
+            ),
+            0
+        )
+        XCTAssertEqual(
+            ReaderTTSProgressEvaluator.fraction(
+                text: "",
+                spokenRange: NSRange(location: 0, length: 1)
+            ),
+            0
+        )
+    }
+
+    func testUnversionedViewerAssetsDisableBrowserCaching() throws {
+        let response = ebookHTTPResponse(
+            url: try XCTUnwrap(URL(string: "ebook://ebook/load/viewer-assets/foliate-js/paginator.js")),
+            mimeType: "text/javascript",
+            byteCount: 123,
+            textEncodingName: "utf-8",
+            additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
+        )
+
+        XCTAssertEqual(
+            response.value(forHTTPHeaderField: "Cache-Control"),
+            "no-store, no-cache, must-revalidate"
+        )
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Pragma"), "no-cache")
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Expires"), "0")
     }
 
     func testExternalizingCanonicalSidecarLeavesHTMLWithoutCanonicalSidecarUnchanged() {

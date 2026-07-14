@@ -27,42 +27,119 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     private static let lowNibbleMask: UInt8 = 0x0F
 
     private let lock = NSLock()
-    private let totalByteLimit = 24 * 1024 * 1024
-    private let countLimit = 32
+    private let totalByteLimit: Int
+    private let countLimit: Int
+    private let directoryURL: URL
     private var entries = [String: ReaderExternalSegmentSidecarEntry]()
+    private var durableTokens = Set<String>()
     private var tokensInAccessOrder = [String]()
     private var totalBytes = 0
 
-    private init() {}
+    init(
+        directoryURL: URL = ReaderExternalSegmentSidecarStore.defaultDirectoryURL,
+        totalByteLimit: Int = 24 * 1024 * 1024,
+        countLimit: Int = 32
+    ) {
+        self.directoryURL = directoryURL
+        self.totalByteLimit = max(totalByteLimit, 1)
+        self.countLimit = max(countLimit, 1)
+        try? FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        var resourceURL = directoryURL
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        try? resourceURL.setResourceValues(resourceValues)
+    }
 
     func insert(_ data: Data) -> (token: String, signature: String) {
         let token = Self.contentToken(for: data)
         let signature = "sha256:\(data.count):\(token)"
         let entry = ReaderExternalSegmentSidecarEntry(data: data, signature: signature)
+        let isDurable = persistIfNeeded(data, token: token)
 
         lock.lock()
-        if let previous = entries.updateValue(entry, forKey: token) {
-            totalBytes -= previous.data.count
-        }
-        if let index = tokensInAccessOrder.firstIndex(of: token) {
-            tokensInAccessOrder.remove(at: index)
-        }
-        tokensInAccessOrder.append(token)
-        totalBytes += data.count
-        evictIfNeeded()
+        insertIntoMemory(entry, token: token, isDurable: isDurable)
         lock.unlock()
         return (token, signature)
     }
 
     func entry(for token: String) -> ReaderExternalSegmentSidecarEntry? {
+        guard Self.isValidToken(token) else { return nil }
         lock.lock()
-        defer { lock.unlock() }
-        guard let entry = entries[token] else { return nil }
-        if let index = tokensInAccessOrder.firstIndex(of: token) {
-            tokensInAccessOrder.remove(at: index)
-            tokensInAccessOrder.append(token)
+        if let entry = entries[token] {
+            touch(token)
+            lock.unlock()
+            return entry
         }
+        lock.unlock()
+
+        let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
+        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+              Self.contentToken(for: data) == token else {
+            return nil
+        }
+        let entry = ReaderExternalSegmentSidecarEntry(
+            data: data,
+            signature: "sha256:\(data.count):\(token)"
+        )
+        lock.lock()
+        insertIntoMemory(entry, token: token, isDurable: true)
+        lock.unlock()
         return entry
+    }
+
+    private func persistIfNeeded(_ data: Data, token: String) -> Bool {
+        let fileURL = directoryURL.appendingPathComponent(token, isDirectory: false)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            if let storedData = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+               Self.contentToken(for: storedData) == token {
+                return true
+            }
+        }
+        do {
+            try data.write(to: fileURL, options: [.atomic])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func insertIntoMemory(
+        _ entry: ReaderExternalSegmentSidecarEntry,
+        token: String,
+        isDurable: Bool
+    ) {
+        if let previous = entries.updateValue(entry, forKey: token) {
+            totalBytes -= previous.data.count
+        }
+        if isDurable {
+            durableTokens.insert(token)
+        } else {
+            durableTokens.remove(token)
+        }
+        touch(token)
+        totalBytes += entry.data.count
+        evictDurableEntriesIfNeeded()
+    }
+
+    private func touch(_ token: String) {
+        tokensInAccessOrder.removeAll { $0 == token }
+        tokensInAccessOrder.append(token)
+    }
+
+    private func evictDurableEntriesIfNeeded() {
+        while entries.count > countLimit || (totalBytes > totalByteLimit && entries.count > 1) {
+            guard let index = tokensInAccessOrder.firstIndex(where: durableTokens.contains) else {
+                break
+            }
+            let token = tokensInAccessOrder.remove(at: index)
+            durableTokens.remove(token)
+            if let removed = entries.removeValue(forKey: token) {
+                totalBytes -= removed.data.count
+            }
+        }
     }
 
     private static func contentToken(for data: Data) -> String {
@@ -76,14 +153,17 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         return String(decoding: tokenBytes, as: UTF8.self)
     }
 
-    private func evictIfNeeded() {
-        while entries.count > countLimit || (totalBytes > totalByteLimit && entries.count > 1) {
-            guard let token = tokensInAccessOrder.first else { break }
-            tokensInAccessOrder.removeFirst()
-            if let removed = entries.removeValue(forKey: token) {
-                totalBytes -= removed.data.count
+    private static func isValidToken(_ token: String) -> Bool {
+        token.utf8.count == SHA256.Digest.byteCount * 2
+            && token.utf8.allSatisfy {
+                ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
             }
-        }
+    }
+
+    private static var defaultDirectoryURL: URL {
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return root.appendingPathComponent("ManabiReaderSegmentSidecars-v1", isDirectory: true)
     }
 }
 
@@ -125,7 +205,7 @@ func readerExternalSegmentSidecarResponse(
         headerFields: [
             "Content-Type": "application/json; charset=utf-8",
             "Content-Length": "\(entry.data.count)",
-            "Cache-Control": "public, max-age=31536000, immutable",
+            "Cache-Control": "no-store",
             "X-Manabi-Sidecar-Signature": entry.signature,
         ]
     )!

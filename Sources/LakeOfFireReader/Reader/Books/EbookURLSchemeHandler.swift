@@ -10,6 +10,14 @@ import SwiftSoup
 import SwiftUtilities
 import LakeKit
 
+func ebookViewerAssetCacheHeaderFields() -> [String: String] {
+    [
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    ]
+}
+
 fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     if let body = request.httpBody, !body.isEmpty {
         return body
@@ -505,7 +513,7 @@ private func ebookHTMLOpenTagEnd(
     return nil
 }
 
-fileprivate func ebookHTTPResponse(
+func ebookHTTPResponse(
     url: URL,
     mimeType: String,
     byteCount: Int,
@@ -782,11 +790,10 @@ fileprivate actor EBookLoadingActor {
             mimeType: "text/html",
             byteCount: data.count,
             textEncodingName: "utf-8",
-            additionalHeaderFields: [
-                "Cache-Control": shouldEnablePageTurnInteractionDiagnostic
-                    ? "no-store"
-                    : "public, max-age=31536000, immutable",
-            ]
+            // Viewer URLs are stable across app updates. They cannot be
+            // advertised as immutable until the resource revision is part of
+            // the URL itself.
+            additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
         )
         return (response, data)
     }
@@ -1197,9 +1204,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         mimeType: mimeType,
                         byteCount: data.count,
                         textEncodingName: mimeType.hasPrefix("text/") ? "utf-8" : nil,
-                        additionalHeaderFields: [
-                            "Cache-Control": "public, max-age=31536000, immutable",
-                        ]
+                        // Bundle asset URLs are not revisioned across app
+                        // updates, so browser persistence must be disabled.
+                        additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
                     )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {

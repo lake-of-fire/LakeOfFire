@@ -56,9 +56,14 @@ public enum AITTSMarkerApplyResultEvaluator {
 
 public enum ReaderTTSProgressEvaluator {
     public static func fraction(text: String, spokenRange: NSRange?) -> Double {
-        guard let spokenRange else { return 0 }
-        let textLength = max(text.utf16.count, 1)
-        let spokenEnd = min(max(spokenRange.location + spokenRange.length, 0), textLength)
+        guard let spokenRange,
+              spokenRange.location != NSNotFound,
+              spokenRange.location >= 0,
+              spokenRange.length >= 0 else { return 0 }
+        let textLength = text.utf16.count
+        guard textLength > 0 else { return 0 }
+        let (sum, overflowed) = spokenRange.location.addingReportingOverflow(spokenRange.length)
+        let spokenEnd = min(max(overflowed ? Int.max : sum, 0), textLength)
         return min(max(Double(spokenEnd) / Double(textLength), 0), 1)
     }
 }
