@@ -5,6 +5,7 @@ import {
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
     restoreLocatorKind,
+    runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-restore-coordination.js'
 
@@ -63,4 +64,26 @@ test('scheduled fractional navigation waits for restore settling until user inpu
         requiresUserInputBeforePositionSave: true,
         restoreSettlingMs: 0,
     }), false)
+})
+
+test('required restore navigation preserves failure instead of promoting a fallback', async () => {
+    const failure = new Error('saved locator is invalid')
+    const result = await runRequiredRestoreNavigation(async () => {
+        throw failure
+    })
+
+    assert.equal(result.ok, false)
+    assert.equal(result.value, null)
+    assert.equal(result.error, failure)
+})
+
+test('required restore navigation returns the successful terminal value', async () => {
+    const value = { sectionIndex: 4, fraction: 0.5 }
+    const result = await runRequiredRestoreNavigation(async () => value)
+
+    assert.deepEqual(result, {
+        ok: true,
+        value,
+        error: null,
+    })
 })

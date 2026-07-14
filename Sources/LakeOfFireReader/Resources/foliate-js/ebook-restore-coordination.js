@@ -43,3 +43,19 @@ export const shouldSkipScheduledReaderFractionGoTo = ({
 }) => requiresUserInputBeforePositionSave === true
     && Number.isFinite(restoreSettlingMs)
     && restoreSettlingMs > 0
+
+export const runRequiredRestoreNavigation = async operation => {
+    try {
+        return {
+            ok: true,
+            value: await operation(),
+            error: null,
+        }
+    } catch (error) {
+        return {
+            ok: false,
+            value: null,
+            error,
+        }
+    }
+}

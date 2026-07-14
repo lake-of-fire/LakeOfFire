@@ -11,6 +11,7 @@ import {
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
     restoreLocatorKind as classifyRestoreLocator,
+    runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
@@ -8504,23 +8505,19 @@ window.loadLastPosition = async ({
             });
             handledCFI = typeof cfi === 'string' && cfi.length > 0 ? cfi : null;
         } else if (cfi.length > 0) {
-            await runWithNavigationIntent({
-                source: 'restore.cfi',
-                target: 'view.goTo',
-                cfiLength: cfi.length,
-                fraction: hasFractionalCompletion ? fractionalCompletion : null,
-            }, () => globalThis.reader.view.goTo(cfi)).then(() => {
-                handledCFI = cfi;
-            }).catch(async (e) => {
-                console.error(e)
-                if (hasFractionalCompletion) {
-                    await runWithNavigationIntent({
-                        source: 'restore.cfi-fallback',
-                        target: 'view.goToFraction',
-                        fraction: fractionalCompletion,
-                    }, () => globalThis.reader.view.goToFraction(fractionalCompletion))
-                }
-            });
+            const navigationResult = await runRequiredRestoreNavigation(() => runWithNavigationIntent(
+                {
+                    source: 'restore.cfi',
+                    target: 'view.goTo',
+                    cfiLength: cfi.length,
+                    fraction: hasFractionalCompletion ? fractionalCompletion : null,
+                },
+                () => globalThis.reader.view.goTo(cfi),
+            ));
+            if (!navigationResult.ok) {
+                throw navigationResult.error ?? new Error('CFI restore navigation failed');
+            }
+            handledCFI = cfi;
             await waitForFrames(2);
             const cfiState = captureRestoreState('after-cfi');
             await reconcileRestoreFractionIfNeeded(
@@ -8529,23 +8526,19 @@ window.loadLastPosition = async ({
                 'after-cfi-fraction-reconcile',
             );
         } else if (hasFractionalCompletion) {
-            try {
-                await runWithNavigationIntent({
+            const navigationResult = await runRequiredRestoreNavigation(() => runWithNavigationIntent(
+                {
                     source: 'restore.fraction',
                     target: 'view.goToFraction',
                     fraction: fractionalCompletion,
-                }, () => globalThis.reader.view.goToFraction(fractionalCompletion));
-                await waitForFrames(2);
-                const fractionState = captureRestoreState('after-fraction');
-            } catch (error) {
-                try {
-                    await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
-                } catch (nextError) {
-                    await globalThis.reader.view.renderer.nextSection();
-                }
-                await waitForFrames(2);
-                const fallbackState = captureRestoreState('after-default-next-fallback');
+                },
+                () => globalThis.reader.view.goToFraction(fractionalCompletion),
+            ));
+            if (!navigationResult.ok) {
+                throw navigationResult.error ?? new Error('Fraction restore navigation failed');
             }
+            await waitForFrames(2);
+            const fractionState = captureRestoreState('after-fraction');
         } else {
             try {
                 await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
@@ -8572,6 +8565,11 @@ window.loadLastPosition = async ({
             currentFractionalCompletion: doneState.currentFraction,
             handledCFI,
         };
+    } catch (error) {
+        if (globalThis.reader) {
+            globalThis.reader.hasLoadedLastPosition = false;
+        }
+        throw error;
     } finally {
         globalThis.__manabiRestoreInProgress = false;
         globalThis.__manabiSuppressNextRestoreRelocateSave = false;
