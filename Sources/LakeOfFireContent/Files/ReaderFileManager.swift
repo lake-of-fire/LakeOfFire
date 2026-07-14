@@ -1172,7 +1172,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             || transientRootPrefixes.contains(where: { rootComponent.hasPrefix($0) })
     }
 
-    private static func isMissingFileError(_ error: any Swift.Error) -> Bool {
+    static func isMissingFileError(_ error: any Swift.Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError {
             return true
