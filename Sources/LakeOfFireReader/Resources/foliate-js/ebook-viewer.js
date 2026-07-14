@@ -3120,6 +3120,8 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         byElementID,
         bySegmentIdentifier,
         idsByEntryID,
+        documentURL: doc?.location?.href || doc?.URL || null,
+        sidecarRevision: doc?.getElementById?.('mnb-segment-metadata')?.dataset?.mnbSidecarRevision || null,
         lookupPayloadByElementID: new Map(),
         lookupPayloadPrepared: false,
         reason,
