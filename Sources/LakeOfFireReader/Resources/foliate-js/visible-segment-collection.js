@@ -92,6 +92,25 @@ export const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
 
     if (!isMinimal) {
         for (const sampledSegment of [...candidates]) {
+            if (doc.body && typeof doc.createTreeWalker === 'function') {
+                const walker = doc.createTreeWalker(doc.body, SHOW_ELEMENT, {
+                    acceptNode: node => node.matches?.(segmentSelector) ? FILTER_ACCEPT : FILTER_SKIP,
+                });
+                walker.currentNode = sampledSegment;
+                for (let offset = 0; offset < 4; offset += 1) {
+                    const previous = walker.previousNode();
+                    if (!previous) break;
+                    append(previous);
+                }
+                walker.currentNode = sampledSegment;
+                for (let offset = 0; offset < 4; offset += 1) {
+                    const next = walker.nextNode();
+                    if (!next) break;
+                    append(next);
+                }
+                continue;
+            }
+
             const sentence = sampledSegment.closest?.(sentenceSelector);
             const sentenceSegments = Array.from(sentence?.children ?? [])
                 .filter((node) => node.matches?.(segmentSelector));

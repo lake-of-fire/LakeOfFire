@@ -21,6 +21,20 @@ const makeSegment = (id, order) => ({
     order,
 })
 
+const makeSegmentWalker = segments => ({
+    currentNode: null,
+    previousNode() {
+        const index = segments.indexOf(this.currentNode)
+        this.currentNode = index > 0 ? segments[index - 1] : null
+        return this.currentNode
+    },
+    nextNode() {
+        const index = segments.indexOf(this.currentNode)
+        this.currentNode = index >= 0 && index < segments.length - 1 ? segments[index + 1] : null
+        return this.currentNode
+    },
+})
+
 test('range traversal returns only intersecting Yomitan segments without a document query', () => {
     const segments = Array.from({ length: 11 }, (_, index) => makeSegment(`segment-${index}`, index))
     let documentQueryCount = 0
@@ -57,6 +71,8 @@ test('normal viewport sampling includes nearby tiny segments in document order',
     for (const segment of segments) segment.sentence = sentence
     let sampleCount = 0
     const doc = {
+        body: {},
+        createTreeWalker: () => makeSegmentWalker(segments),
         elementFromPoint() {
             sampleCount += 1
             return segments[5]
@@ -72,6 +88,33 @@ test('normal viewport sampling includes nearby tiny segments in document order',
 
     assert.equal(sampleCount, 42)
     assert.deepEqual(result.map(node => node.id), segments.slice(1).map(node => node.id))
+})
+
+test('normal viewport sampling crosses sentence boundaries with a bounded DOM-order window', () => {
+    const segments = Array.from({ length: 12 }, (_, index) => makeSegment(`segment-${index}`, index))
+    const firstSentence = { children: segments.slice(0, 6) }
+    const secondSentence = { children: segments.slice(6) }
+    for (const segment of firstSentence.children) segment.sentence = firstSentence
+    for (const segment of secondSentence.children) segment.sentence = secondSentence
+    let walkerCreationCount = 0
+    const doc = {
+        body: {},
+        createTreeWalker() {
+            walkerCreationCount += 1
+            return makeSegmentWalker(segments)
+        },
+        elementFromPoint: () => segments[6],
+    }
+
+    const result = collectViewportSampleSegmentNodes(doc, {
+        left: 0,
+        top: 0,
+        right: 390,
+        bottom: 844,
+    })
+
+    assert.equal(walkerCreationCount, 1)
+    assert.deepEqual(result.map(node => node.id), segments.slice(2, 11).map(node => node.id))
 })
 
 test('minimal viewport sampling has a fixed nine-point and eight-candidate budget', () => {
