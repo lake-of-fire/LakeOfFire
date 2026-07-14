@@ -18,7 +18,8 @@ public struct EbookProcessedSectionPayload: Sendable {
 func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
     _ payload: EbookProcessedSectionPayload
 ) -> Bool {
-    guard !payload.segmentSidecar.isEmpty else { return true }
+    let documentSegmentCount = generatedReaderSegmentCount(in: payload.documentHTML)
+    guard !payload.segmentSidecar.isEmpty else { return documentSegmentCount == 0 }
     guard let object = try? JSONSerialization.jsonObject(with: payload.segmentSidecar),
           let root = object as? [String: Any],
           (root["v"] as? NSNumber)?.intValue == 9,
@@ -28,7 +29,7 @@ func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
           let segments = root["s"] as? [[Any]] else {
         return false
     }
-    guard !segments.isEmpty else { return true }
+    guard segments.count == documentSegmentCount else { return false }
 
     func nonEmptyTableValue(_ table: [String], tuple: [Any], index: Int) -> Bool {
         guard tuple.indices.contains(index),
@@ -44,6 +45,17 @@ func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
         nonEmptyTableValue(hashes, tuple: tuple, index: 1)
             && nonEmptyTableValue(sentenceIDs, tuple: tuple, index: 9)
     }
+}
+
+private func generatedReaderSegmentCount(in documentHTML: Data) -> Int {
+    let openingTag = Data("<m-m".utf8)
+    var count = 0
+    var searchRange = documentHTML.startIndex..<documentHTML.endIndex
+    while let match = documentHTML.range(of: openingTag, options: [], in: searchRange) {
+        count += 1
+        searchRange = match.upperBound..<documentHTML.endIndex
+    }
+    return count
 }
 
 struct ReaderExternalSegmentSidecarEntry: Sendable {

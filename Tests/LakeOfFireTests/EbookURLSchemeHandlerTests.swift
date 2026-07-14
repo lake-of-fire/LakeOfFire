@@ -271,16 +271,41 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testProcessedSidecarCacheRequiresDurableIdentityForEverySegment() {
         let valid = EbookProcessedSectionPayload(
-            documentHTML: Data(),
+            documentHTML: Data("<m-m id=runtime>text</m-m>".utf8),
             segmentSidecar: Data(#"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!runtime",0,null,null,null,null,null,null,null,0]]}"#.utf8)
         )
         let missingSentenceIdentity = EbookProcessedSectionPayload(
-            documentHTML: Data(),
+            documentHTML: Data("<m-m id=runtime>text</m-m>".utf8),
             segmentSidecar: Data(#"{"v":9,"t":{"h":["hash"],"sid":[]},"s":[["!runtime",0]]}"#.utf8)
         )
 
         XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(valid))
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(missingSentenceIdentity))
+    }
+
+    func testProcessedSidecarCacheRejectsMissingOrIncompleteSegmentCoverage() {
+        let documentHTML = Data("<html><body><m-m id=a>A</m-m><m-m id=b>B</m-m></body></html>".utf8)
+        let missingSidecar = EbookProcessedSectionPayload(
+            documentHTML: documentHTML,
+            segmentSidecar: Data()
+        )
+        let emptySidecar = EbookProcessedSectionPayload(
+            documentHTML: documentHTML,
+            segmentSidecar: Data(#"{"v":9,"t":{"h":[],"sid":[]},"s":[]}"#.utf8)
+        )
+        let incompleteSidecar = EbookProcessedSectionPayload(
+            documentHTML: documentHTML,
+            segmentSidecar: Data(#"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["a",0,null,null,null,null,null,null,null,0]]}"#.utf8)
+        )
+        let segmentFreeDocument = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>Plain text</body></html>".utf8),
+            segmentSidecar: Data()
+        )
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(missingSidecar))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(emptySidecar))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incompleteSidecar))
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(segmentFreeDocument))
     }
 
     func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
