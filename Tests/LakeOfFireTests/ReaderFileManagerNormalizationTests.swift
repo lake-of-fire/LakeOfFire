@@ -3,6 +3,24 @@ import SwiftCloudDrive
 @testable import LakeOfFireContent
 
 final class ReaderFileManagerNormalizationTests: XCTestCase {
+    private final class SequencedRootProvider: @unchecked Sendable {
+        private let lock = NSLock()
+        private let roots: [URL]
+        private(set) var invocationCount = 0
+
+        init(roots: [URL]) {
+            self.roots = roots
+        }
+
+        func next() -> URL {
+            lock.withLock {
+                let root = roots[min(invocationCount, roots.count - 1)]
+                invocationCount += 1
+                return root
+            }
+        }
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ReaderFileManagerTests.\(UUID().uuidString)", isDirectory: true)
@@ -97,6 +115,21 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
 
         XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
+    }
+
+    @MainActor
+    func testLocalResolutionSnapshotsColdStartRootOnce() async throws {
+        let firstRoot = try temporaryDirectory()
+        let laterRoot = try temporaryDirectory()
+        let expectedURL = try writeFixture(relativePath: "Books/snapshot.epub", under: firstRoot)
+        let provider = SequencedRootProvider(roots: [firstRoot, laterRoot])
+        let manager = ReaderFileManager(defaultLocalRootURLProvider: provider.next)
+        let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/snapshot.epub"))
+
+        let resolvedURL = try await manager.resolveReadableLocalURL(forReaderBackingURL: readerURL)
+
+        XCTAssertEqual(resolvedURL.standardizedFileURL, expectedURL.standardizedFileURL)
+        XCTAssertEqual(provider.invocationCount, 1)
     }
 
     @MainActor
