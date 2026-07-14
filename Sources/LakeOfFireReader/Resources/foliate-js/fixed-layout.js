@@ -29,6 +29,14 @@ const getViewport = (doc, viewport) => {
     return { width: 1000, height: 2000 }
 }
 
+export const fixedLayoutContentDescriptor = frame => frame?.iframe ? {
+    index: frame.index,
+    generation: frame.generation,
+    doc: frame.iframe.contentDocument,
+    iframe: frame.iframe,
+    element: frame.element,
+} : null
+
 export class FixedLayout extends HTMLElement {
     #root = this.attachShadow({ mode: 'closed' })
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -52,6 +60,7 @@ export class FixedLayout extends HTMLElement {
     #right
     #center
     #side
+    #contentGeneration = 0
     constructor() {
         super()
 
@@ -68,7 +77,7 @@ export class FixedLayout extends HTMLElement {
         this.#resizeObserver.observe(this)
 //        this.#mutationObserver.observe(this.#root, { childList: true, subtree: true, attributes: true })
     }
-    async #createFrame({ index, src }) {
+    async #createFrame({ index, src }, generation) {
         const element = document.createElement('div')
         const iframe = document.createElement('iframe')
         element.append(iframe)
@@ -83,7 +92,7 @@ export class FixedLayout extends HTMLElement {
         iframe.setAttribute('scrolling', 'no')
         iframe.setAttribute('part', 'filter')
         this.#root.append(element)
-        if (!src) return { blank: true, element, iframe }
+        if (!src) return { blank: true, element, iframe, index, generation }
         return new Promise(resolve => {
             const onload = () => {
                 iframe.removeEventListener('load', onload)
@@ -91,7 +100,7 @@ export class FixedLayout extends HTMLElement {
                 this.dispatchEvent(new CustomEvent('load', { detail: { doc, index } }))
                 const { width, height } = getViewport(doc, this.defaultViewport)
                 resolve({
-                    element, iframe,
+                    element, iframe, index, generation,
                     width: parseFloat(width),
                     height: parseFloat(height),
                 })
@@ -149,17 +158,18 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async #showSpread({ left, right, center, side }) {
+        const generation = ++this.#contentGeneration
         this.#root.replaceChildren()
         this.#left = null
         this.#right = null
         this.#center = null
         if (center) {
-            this.#center = await this.#createFrame(center)
+            this.#center = await this.#createFrame(center, generation)
             this.#side = 'center'
             this.#render()
         } else {
-            this.#left = await this.#createFrame(left)
-            this.#right = await this.#createFrame(right)
+            this.#left = await this.#createFrame(left, generation)
+            this.#right = await this.#createFrame(right, generation)
             this.#side = side
             this.#render()
         }
@@ -292,10 +302,9 @@ export class FixedLayout extends HTMLElement {
         else return this.goToSpread(this.#index - 1, this.rtl ? 'left' : 'right', 'page')
     }
     getContents() {
-        return Array.from(this.#root.querySelectorAll('iframe'), frame => ({
-            doc: frame.contentDocument,
-            // TODO: index, overlayer
-        }))
+        return [this.#center, this.#left, this.#right]
+            .map(fixedLayoutContentDescriptor)
+            .filter(Boolean)
     }
     destroy() {
         this.#resizeObserver.unobserve(this)
