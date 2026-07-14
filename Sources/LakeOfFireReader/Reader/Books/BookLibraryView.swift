@@ -356,6 +356,17 @@ public class BookLibraryViewModel: ObservableObject {
     @MainActor
     public static func refreshDownloadedEditorsPicks(readerFileManager: ReaderFileManager = .shared) async {
         let (publications, _) = await Self.fetchPublications(from: Self.defaultOPDSURL)
+        await refreshDownloadedEditorsPicks(
+            publications: publications,
+            readerFileManager: readerFileManager
+        )
+    }
+
+    @MainActor
+    static func refreshDownloadedEditorsPicks(
+        publications: [Publication],
+        readerFileManager: ReaderFileManager = .shared
+    ) async {
         guard !publications.isEmpty else { return }
 
         var downloads = Set<Downloadable>()
@@ -369,7 +380,9 @@ public class BookLibraryViewModel: ObservableObject {
         }
         if !downloads.isEmpty {
             await DownloadController.shared.ensureDownloaded(downloads)
-            try? await readerFileManager.refreshAllFilesMetadata()
+            for download in downloads {
+                _ = try? await readerFileManager.ensureImported(downloadable: download)
+            }
         }
     }
 
