@@ -355,6 +355,54 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         }
     }
 
+    func testSectionPresentationReplacesStaleCachedSettingsAndRejectsUnknownFields() throws {
+        let html = """
+        <html><body data-mnb-romaji-mode-enabled="false" data-unknown="preserved"
+        style='font-size:12px;color:red'>本文</body></html>
+        """
+        let result = ebookHTMLApplyingSectionPresentation(
+            html,
+            presentation: EbookSectionPresentation(
+                revision: "ABC123",
+                bodyAttributes: [
+                    "data-mnb-romaji-mode-enabled": "true",
+                    "data-mnb-settings-initialized": "true",
+                    "data-not-allowlisted": "rejected"
+                ],
+                bodyStyleProperties: [
+                    "font-size": "24px",
+                    "font-weight": "600",
+                    "--mnb-content-font": "'YuKyokasho Yoko', 'YuKyokasho'",
+                    "position": "fixed"
+                ]
+            )
+        )
+        let body = try XCTUnwrap(SwiftSoup.parse(result).body())
+
+        XCTAssertEqual(try body.attr("data-mnb-romaji-mode-enabled"), "true")
+        XCTAssertEqual(try body.attr("data-mnb-settings-initialized"), "true")
+        XCTAssertEqual(try body.attr("data-mnb-presentation-schema-version"), "1")
+        XCTAssertEqual(try body.attr("data-mnb-presentation-revision"), "ABC123")
+        XCTAssertEqual(try body.attr("data-unknown"), "preserved")
+        XCTAssertFalse(body.hasAttr("data-not-allowlisted"))
+        let style = try body.attr("style")
+        XCTAssertTrue(style.contains("color:red"))
+        XCTAssertTrue(style.contains("font-size:24px!important"))
+        XCTAssertTrue(style.contains("font-weight:600!important"))
+        XCTAssertTrue(style.contains("--mnb-content-font:'YuKyokasho Yoko', 'YuKyokasho'!important"))
+        XCTAssertFalse(style.contains("position:fixed"))
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-romaji-mode-enabled=").count - 1, 1)
+        XCTAssertEqual(result.components(separatedBy: "font-size:24px!important").count - 1, 1)
+        XCTAssertEqual(
+            ebookHTMLApplyingSectionPresentation(result, presentation: EbookSectionPresentation(
+                revision: "ABC123",
+                bodyAttributes: ["data-mnb-romaji-mode-enabled": "true"],
+                bodyStyleProperties: ["font-size": "24px"]
+            )).components(separatedBy: "font-size:24px!important").count - 1,
+            1
+        )
+    }
+
     func testEbookSchemeTaskPriorityKeepsOnlyDirectSectionLoadsForeground() throws {
         let foregroundURLs = [
             "ebook://ebook/load/local/Books/test.epub",

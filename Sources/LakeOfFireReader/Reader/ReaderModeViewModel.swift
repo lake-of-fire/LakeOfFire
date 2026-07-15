@@ -1238,6 +1238,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     public var readerFileManager: ReaderFileManager?
     @Published public var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader? = nil
     @Published public var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter? = nil
+    @Published public var ebookSectionPresentationProvider: EbookSectionPresentationProvider? = nil
     @Published public var nativeEbookSectionPrewarmer: (@Sendable (URL, String, Bool) async throws -> EBookNativeSectionPrewarmResult)? = nil
     @Published public var processReadabilityContent: EbookReadabilityContentProcessor? = nil
     @Published public var processHTMLDocument: EbookHTMLDocumentProcessor? = nil
