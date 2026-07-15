@@ -187,13 +187,24 @@ struct ReaderExternalizedSegmentSidecarHTML: Sendable {
     let endpointURL: String?
 }
 
-func ebookProcessedHTMLHasDurableSegmentIdentities(_ processedHTML: String) -> Bool {
+func ebookProcessedHTMLHasDurableSegmentIdentities(
+    _ processedHTML: String,
+    store: ReaderExternalSegmentSidecarStore = .shared
+) -> Bool {
     let htmlBytes = Array(processedHTML.utf8)
     let generatedSegmentCount = generatedReaderSegmentCount(in: htmlBytes)
-    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) else {
+    let sidecarData: Data?
+    if let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) {
+        sidecarData = Data(htmlBytes[ranges.content])
+    } else if let token = externalReaderSegmentSidecarToken(in: htmlBytes) {
+        sidecarData = store.entry(for: token)?.data
+    } else {
+        sidecarData = nil
+    }
+    guard let sidecarData else {
         return generatedSegmentCount == 0
     }
-    guard let object = try? JSONSerialization.jsonObject(with: Data(htmlBytes[ranges.content])),
+    guard let object = try? JSONSerialization.jsonObject(with: sidecarData),
           let root = object as? [String: Any],
           (root["v"] as? NSNumber)?.intValue == 3,
           let tables = root["t"] as? [String: Any],
@@ -255,16 +266,39 @@ func externalizingCanonicalReaderSegmentSidecar(
             endpointURL: nil
         )
     }
-    let stored = store.insert(sidecar)
-    let endpointURL = scheme.endpointURL(token: stored.token)
-    let descriptorHTML = "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
-        + "data-mnb-segment-sidecar-signature=\"\(stored.signature)\">"
-    let descriptor = Data(descriptorHTML.utf8)
     let htmlData = Data(htmlBytes)
     var documentWithoutSidecar = Data()
     documentWithoutSidecar.reserveCapacity(htmlBytes.count - ranges.element.count)
     documentWithoutSidecar.append(htmlData[..<ranges.element.lowerBound])
     documentWithoutSidecar.append(htmlData[ranges.element.upperBound...])
+    return externalizingReaderSegmentSidecar(
+        documentHTML: documentWithoutSidecar.map { $0 },
+        canonicalSidecar: sidecar,
+        scheme: scheme,
+        store: store
+    )
+}
+
+func externalizingReaderSegmentSidecar(
+    documentHTML: [UInt8],
+    canonicalSidecar: Data,
+    scheme: ReaderExternalSegmentSidecarScheme,
+    store: ReaderExternalSegmentSidecarStore = .shared
+) -> ReaderExternalizedSegmentSidecarHTML {
+    guard !canonicalSidecar.isEmpty else {
+        return ReaderExternalizedSegmentSidecarHTML(
+            documentHTML: Data(documentHTML),
+            canonicalSidecarByteCount: 0,
+            signature: nil,
+            endpointURL: nil
+        )
+    }
+    let stored = store.insert(canonicalSidecar)
+    let endpointURL = scheme.endpointURL(token: stored.token)
+    let descriptorHTML = "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
+        + "data-mnb-segment-sidecar-signature=\"\(stored.signature)\">"
+    let descriptor = Data(descriptorHTML.utf8)
+    let documentWithoutSidecar = Data(documentHTML)
     let closingHead = Data("</head>".utf8)
     let openingBody = Data("<body".utf8)
     let insertionIndex = documentWithoutSidecar.range(of: closingHead)?.lowerBound
@@ -277,10 +311,22 @@ func externalizingCanonicalReaderSegmentSidecar(
     output.append(documentWithoutSidecar[insertionIndex...])
     return ReaderExternalizedSegmentSidecarHTML(
         documentHTML: output,
-        canonicalSidecarByteCount: sidecar.count,
+        canonicalSidecarByteCount: canonicalSidecar.count,
         signature: stored.signature,
         endpointURL: endpointURL
     )
+}
+
+private func externalReaderSegmentSidecarToken(in htmlBytes: [UInt8]) -> String? {
+    let endpointPrefix = Array("content=\"ebook://ebook/processed-section-sidecar/".utf8)
+    guard let prefixRange = Data(htmlBytes).range(of: Data(endpointPrefix)) else { return nil }
+    let tokenStart = prefixRange.upperBound
+    guard tokenStart < htmlBytes.count,
+          let tokenEnd = htmlBytes[tokenStart...].firstIndex(of: UInt8(ascii: "\"")) else {
+        return nil
+    }
+    let token = String(decoding: htmlBytes[tokenStart..<tokenEnd], as: UTF8.self)
+    return token.isEmpty ? nil : token
 }
 
 private func canonicalReaderSegmentSidecarRanges(

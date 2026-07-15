@@ -128,8 +128,17 @@ public func ebookTextProcessor(
         let usedDocumentPostprocessor = processHTMLDocument != nil
         var htmlBytes: [UInt8]
         if let processHTMLDocument {
-            htmlBytes = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+            let payload = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 try await processHTMLDocument(doc, isCacheWarmer)
+            }
+            if let canonicalSegmentSidecar = payload.canonicalSegmentSidecar {
+                htmlBytes = externalizingReaderSegmentSidecar(
+                    documentHTML: payload.documentHTML,
+                    canonicalSidecar: canonicalSegmentSidecar,
+                    scheme: .ebook
+                ).documentHTML.map { $0 }
+            } else {
+                htmlBytes = payload.documentHTML
             }
         } else {
             htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()

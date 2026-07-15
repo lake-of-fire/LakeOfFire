@@ -763,7 +763,17 @@ public actor EbookURLSchemeActor {
 
 public typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
 public typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, Bool, String?, EbookDocumentTransform) async throws -> SwiftSoup.Document
-public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> [UInt8]
+public struct EbookProcessedDocumentPayload: Sendable {
+    public let documentHTML: [UInt8]
+    public let canonicalSegmentSidecar: Data?
+
+    public init(documentHTML: [UInt8], canonicalSegmentSidecar: Data? = nil) {
+        self.documentHTML = documentHTML
+        self.canonicalSegmentSidecar = canonicalSegmentSidecar
+    }
+}
+
+public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> EbookProcessedDocumentPayload
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
 public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String

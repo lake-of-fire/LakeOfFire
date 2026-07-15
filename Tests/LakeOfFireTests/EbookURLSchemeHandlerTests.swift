@@ -36,6 +36,56 @@ private actor EBookProcessingGate {
 }
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testExternalizingTypedSidecarAvoidsEmbeddedJSONRoundTrip() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let canonicalJSON = #"{"v":3,"t":{"sid":["sentence"]},"s":[["!a",null,null,null,null,null,null,null,0]]}"#
+        let documentHTML = "<html><head></head><body><mnb-seg>A</mnb-seg></body></html>"
+
+        let result = externalizingReaderSegmentSidecar(
+            documentHTML: Array(documentHTML.utf8),
+            canonicalSidecar: Data(canonicalJSON.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertFalse(output.contains(canonicalJSON))
+        XCTAssertTrue(output.contains("meta name=\"mnb-segment-sidecar\""))
+        XCTAssertEqual(result.canonicalSidecarByteCount, canonicalJSON.utf8.count)
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(output, store: store))
+        let endpoint = try XCTUnwrap(result.endpointURL.flatMap(URL.init(string:)))
+        XCTAssertEqual(
+            readerExternalSegmentSidecarResponse(for: endpoint, scheme: .ebook, store: store)?.data,
+            Data(canonicalJSON.utf8)
+        )
+    }
+
+    func testDescriptorBackedCacheValidationRejectsMissingOrInvalidSidecar() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let documentHTML = "<html><head></head><body><mnb-seg>A</mnb-seg></body></html>"
+        let invalidJSON = #"{"v":3,"t":{"sid":[]},"s":[["!a"]]}"#
+        let invalid = externalizingReaderSegmentSidecar(
+            documentHTML: Array(documentHTML.utf8),
+            canonicalSidecar: Data(invalidJSON.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let invalidHTML = String(decoding: invalid.documentHTML, as: UTF8.self)
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(invalidHTML, store: store))
+
+        let missingHTML = invalidHTML.replacingOccurrences(
+            of: invalid.endpointURL ?? "",
+            with: "ebook://ebook/processed-section-sidecar/" + String(repeating: "0", count: 64)
+        )
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingHTML, store: store))
+    }
+
     func testExternalizingCanonicalSidecarPublishesContentAddressedJSON() throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
