@@ -6,6 +6,11 @@ createTOCView
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
+import {
+    classifyEbookRenderReadiness,
+    EbookRenderReadinessCoordinator,
+    waitForEbookRenderReadinessSignal,
+} from './ebook-render-readiness.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
@@ -4196,6 +4201,8 @@ class Reader {
     }
     #tocView
     #deferredOpenWork = new DeferredOpenWorkCoordinator()
+    #renderReadiness = new EbookRenderReadinessCoordinator()
+    renderReadinessGeneration = 0;
     #chevronFadeTimers = {
         l: null,
         r: null
@@ -5874,6 +5881,7 @@ class Reader {
     }
     async open(file) {
         const openGeneration = this.#deferredOpenWork.beginGeneration()
+        this.renderReadinessGeneration = this.#renderReadiness.begin();
         this.setLoadingIndicator(true);
         const readerOpenStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
@@ -7282,9 +7290,18 @@ class Reader {
         requestLookupCloseForPageMotion('renderer.goTo', {
             willLoadNewIndex: true,
         });
+        this.renderReadinessGeneration = this.#renderReadiness.begin(
+            Number.isInteger(goToDetail.index) ? goToDetail.index : null
+        );
         this.setLoadingIndicator(true);
     }
     async #onDidDisplay({}) {
+        const displayedIndex = getPrimaryRendererContentIndex(this.view?.renderer);
+        const renderReadinessGeneration = this.renderReadinessGeneration
+            || (this.renderReadinessGeneration = this.#renderReadiness.begin());
+        if (!this.#renderReadiness.validate(renderReadinessGeneration, displayedIndex).accepted) {
+            return;
+        }
         const navVisibilityBefore = captureNavVisibilityState();
         const shouldSkipSameIndexDidDisplay =
             (this.sameIndexGoToDidDisplaySkips || 0) > 0
@@ -7325,26 +7342,76 @@ class Reader {
         });
         const initialRenderableProbe = (() => {
             try {
-                const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
+                const renderer = this.view?.renderer ?? null;
+                const contents = renderer?.getContents?.() ?? [];
+                const currentIndex = getPrimaryRendererContentIndex(renderer);
+                const content = typeof currentIndex === 'number'
+                    ? contents.find(item => item?.index === currentIndex) ?? contents[0]
+                    : contents[0];
+                const doc = content?.doc ?? content?.document ?? null;
                 if (!isDocumentLike(doc)) return null;
-                return collectVisibleSegmentNodesFromRange(doc, this.#visibleRangeForDocument(doc), {
+                const visibleSegmentsResult = collectVisibleSegmentNodesFromRange(doc, this.#visibleRangeForDocument(doc), {
                     viewportSampleDensity: 'minimal',
                     includeSegmentMetadata: false,
                 });
+                return {
+                    doc,
+                    visibleSegmentsResult,
+                    readiness: classifyEbookRenderReadiness(doc, visibleSegmentsResult),
+                };
             } catch (_error) {
                 return null;
             }
         })();
+        let renderReadiness = initialRenderableProbe?.readiness ?? {
+            outcome: 'error',
+            reason: 'missing-active-document',
+            hasRenderableContent: false,
+        };
+        if (renderReadiness.outcome === 'pending' && initialRenderableProbe?.doc) {
+            const signal = await waitForEbookRenderReadinessSignal(initialRenderableProbe.doc);
+            if (signal !== 'timeout') {
+                const visibleSegmentsResult = collectVisibleSegmentNodesFromRange(
+                    initialRenderableProbe.doc,
+                    this.#visibleRangeForDocument(initialRenderableProbe.doc),
+                    { viewportSampleDensity: 'minimal', includeSegmentMetadata: false }
+                );
+                renderReadiness = classifyEbookRenderReadiness(initialRenderableProbe.doc, visibleSegmentsResult);
+            }
+            if (renderReadiness.outcome === 'pending') {
+                renderReadiness = {
+                    ...renderReadiness,
+                    outcome: 'error',
+                    reason: signal === 'timeout' ? 'render-readiness-timeout' : 'render-readiness-unresolved',
+                };
+            }
+        }
+        if (renderReadiness.hasRenderableContent === true) {
+            await this.#waitForAnimationFrames(1);
+        }
+        const readinessSettlement = this.#renderReadiness.settle(
+            renderReadinessGeneration,
+            renderReadiness,
+            displayedIndex
+        );
+        if (!readinessSettlement.accepted) {
+            return;
+        }
+        if (document.body?.dataset) {
+            document.body.dataset.manabiReaderRenderOutcome = readinessSettlement.outcome;
+        }
         this.setLoadingIndicator(false);
         this.#postBookInsetSnapshot('didDisplay.loading-cleared', {
             initialSettleResult,
             postFrameSettleResult,
-            initialRenderableProbe: initialRenderableProbe ? {
-                candidateSource: initialRenderableProbe.segmentCandidateSource ?? null,
-                observedSegmentCount: initialRenderableProbe.totalSegmentCount ?? 0,
-                visibleSegmentCount: initialRenderableProbe.visibleSegments?.length ?? 0,
-                measuredSegmentGeometryCount: initialRenderableProbe.rectMeasureCount ?? 0,
-                includesSegmentMetadata: initialRenderableProbe.includesSegmentMetadata === true,
+            renderReadiness,
+            readinessSettlement,
+            initialRenderableProbe: initialRenderableProbe?.visibleSegmentsResult ? {
+                candidateSource: initialRenderableProbe.visibleSegmentsResult.segmentCandidateSource ?? null,
+                observedSegmentCount: initialRenderableProbe.visibleSegmentsResult.totalSegmentCount ?? 0,
+                visibleSegmentCount: initialRenderableProbe.visibleSegmentsResult.visibleSegments?.length ?? 0,
+                measuredSegmentGeometryCount: initialRenderableProbe.visibleSegmentsResult.rectMeasureCount ?? 0,
+                includesSegmentMetadata: initialRenderableProbe.visibleSegmentsResult.includesSegmentMetadata === true,
             } : null,
         });
         setTimeout(() => {
