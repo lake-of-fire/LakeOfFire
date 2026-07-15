@@ -5768,7 +5768,10 @@ class Reader {
             }
         }
     }
-    setLoadingIndicator(visible, reason = 'unspecified') {
+    setLoadingIndicator(visible, reason = 'unspecified', {
+        paintCommitted = false,
+        terminal = false,
+    } = {}) {
         const body = document.body;
         if (!body) return;
         const loadingIndicator = document.getElementById('loading-indicator');
@@ -5777,11 +5780,9 @@ class Reader {
         if (nextVisible) {
             this.loadingPaintPending = true;
         } else if (this.loadingPaintPending) {
-            const isPaintBoundary = reason === 'didDisplay';
-            const isTerminalFailure = reason.includes('error')
-                || reason.includes('watchdog')
-                || reason.includes('timeout');
-            if (!isPaintBoundary && !isTerminalFailure) {
+            // Successful navigation waits for didDisplay; a terminal restore has
+            // no later paint event guaranteed to release this input-blocking cover.
+            if (!paintCommitted && !terminal) {
                 manabiTimelineMark('loadingIndicator.clearRetainedForPaint', {
                     reason,
                     previousVisible,
@@ -5832,6 +5833,14 @@ class Reader {
             timerPending: this.loadingVisualTimer != null,
         });
     }
+    finishRestoreLoading(settleResult, reason) {
+        const hasVisibleContent = settleResult?.settled === true;
+        this.setLoadingIndicator(
+            false,
+            `${reason}.${hasVisibleContent ? 'visibleContent' : 'terminal'}`,
+            { terminal: !hasVisibleContent }
+        );
+    }
     #tocView
     #bookForSidebarCover = null
     #sidebarCoverLoadPromise = null
@@ -5856,6 +5865,7 @@ class Reader {
     initialDisplaySettledResolve = null;
     displaySettledSequence = 0;
     displaySettledWaiters = [];
+    hasCompletedLastPositionLoadAttempt = false
     hasLoadedLastPosition = false
     markedAsFinished = false;
     showingCompletionButtons = false;
@@ -6618,7 +6628,7 @@ class Reader {
             this.nativeLookupHitTargetRefreshHandle = null;
         }
         this.nativeLookupHitTargetRefreshGeneration += 1;
-        if (!shouldResetNativeLookupTargets && this.hasLoadedLastPosition === true) {
+        if (!shouldResetNativeLookupTargets && this.hasCompletedLastPositionLoadAttempt === true) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         } else if (shouldResetNativeLookupTargets && globalThis.__manabiTimelineTraceAll === true) {
         }
@@ -6628,7 +6638,7 @@ class Reader {
         const isRestorePending =
             reason === 'document-load'
             && globalThis.reader
-            && globalThis.reader.hasLoadedLastPosition !== true;
+            && globalThis.reader.hasCompletedLastPositionLoadAttempt !== true;
         if (isRestorePending) {
             const diagnosticsKey = `restore-pending:${reason}`;
             if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
@@ -7912,12 +7922,12 @@ class Reader {
         }
         return globalThis.__manabiRestoreInProgress === true
             || document.body?.classList?.contains?.('loading') === true
-            || this.hasLoadedLastPosition !== true;
+            || this.hasCompletedLastPositionLoadAttempt !== true;
     }
     #deferNativeLookupHitTargetRefresh(reason = 'unspecified', explicitDoc = null) {
         this.pendingNativeLookupHitTargetRefresh = {
             reason,
-            explicitDoc: isDocumentLike(explicitDoc) && this.hasLoadedLastPosition === true ? explicitDoc : null,
+            explicitDoc: isDocumentLike(explicitDoc) && this.hasCompletedLastPositionLoadAttempt === true ? explicitDoc : null,
             deferredAtMs: performanceNowMs(),
         };
     }
@@ -7930,12 +7940,16 @@ class Reader {
         this.visiblePageSegmentSnapshot = null;
         this.#scheduleNativeLookupHitTargetRefreshSettle(`${pending.reason}.flush:${reason}`, pending.explicitDoc);
     }
+    completeLastPositionLoadAttempt(reason = 'unspecified') {
+        this.hasCompletedLastPositionLoadAttempt = true;
+        // didDisplay may have deferred visible lookup/status enrichment until the
+        // restore attempt became terminal. Flush at that state transition;
+        // otherwise a failed restore leaves the terminal visible page inert.
+        this.#flushPendingNativeLookupHitTargetRefresh(`last-position-attempt-completed:${reason}`);
+    }
     completeLastPositionLoad(reason = 'unspecified') {
         this.hasLoadedLastPosition = true;
-        // didDisplay may have deferred visible lookup/status enrichment until the
-        // restore position became authoritative. Flush at that state transition;
-        // otherwise the first relocate is the next event that can hydrate it.
-        this.#flushPendingNativeLookupHitTargetRefresh(`last-position-loaded:${reason}`);
+        this.completeLastPositionLoadAttempt(reason);
     }
     refreshNativeLookupHitTargets(reason = 'manual') {
         if (this.#shouldDeferNativeLookupHitTargetRefresh(reason)) {
@@ -8252,6 +8266,7 @@ class Reader {
         this.setLoadingIndicator(true, 'reader.open');
         installReaderPresentationState(options?.readerPresentationState ?? globalThis.__manabiReaderPresentationState, 'reader.open');
 
+        this.hasCompletedLastPositionLoadAttempt = false
         this.hasLoadedLastPosition = false
         this.#resetInitialDisplaySettledPromise();
         this.lastCFIPersistenceObservation = null;
@@ -10371,7 +10386,7 @@ class Reader {
             // first opportunity for that final geometry to paint; a second frame
             // repeats the same full-document layout on large vertical sections.
             markLoadingPaintBoundary('after-frame-1-before-clear');
-            this.setLoadingIndicator(false, 'didDisplay');
+            this.setLoadingIndicator(false, 'didDisplay', { paintCommitted: true });
             markReaderRenderReady('didDisplay.loading-cleared');
             markLoadingPaintBoundary('after-clear');
         }
@@ -10457,9 +10472,7 @@ class Reader {
             doc.fonts.ready.then(() => {
                 if (!isCacheWarmerDocument(doc) && doc.fonts.status === 'loaded') {
                     this.#invalidateVisiblePageSegmentSnapshot('document.fonts-ready');
-                    if (this.hasLoadedLastPosition !== true) {
-                        this.#scheduleNativeLookupHitTargetRefreshSettle('document.fonts-ready', doc);
-                    }
+                    this.#scheduleNativeLookupHitTargetRefreshSettle('document.fonts-ready', doc);
                 }
             }).catch((error) => {
             });
@@ -11664,9 +11677,7 @@ window.loadEBook = ({
                 if (shouldDeferReaderOpenLoadingClear) {
                     const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.pendingRestoreAfterApply');
                     finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.pendingRestoreAfterApply');
-                    reader.setLoadingIndicator(false, settled?.settled === true
-                        ? 'loadEBook.pendingRestoreAfterApply.visibleContent'
-                        : 'loadEBook.pendingRestoreAfterApply.terminal');
+                    reader.finishRestoreLoading(settled, 'loadEBook.pendingRestoreAfterApply');
                 }
                 globalThis.__manabiRestoreDebugLog?.('ebook.loadEBook.pendingRestore.finish', {
                     loadToken,
@@ -11696,9 +11707,8 @@ window.loadEBook = ({
                 // The visible fallback remains interactive, but it is not a
                 // successful restore and must not overwrite the saved locator.
                 reader.hasLoadedLastPosition = false;
-                reader.setLoadingIndicator(false, settled?.settled === true
-                    ? 'loadEBook.initialRestoreNotHandledAfterOpen.visibleContent'
-                    : 'loadEBook.initialRestoreNotHandledAfterOpen.terminal');
+                reader.completeLastPositionLoadAttempt('loadEBook.initialRestoreNotHandledAfterOpen');
+                reader.finishRestoreLoading(settled, 'loadEBook.initialRestoreNotHandledAfterOpen');
             } else if (
                 shouldDeferReaderOpenLoadingClear
                 && !globalThis.__manabiInitialRestoreHandled
@@ -11707,9 +11717,8 @@ window.loadEBook = ({
                 const settled = reader.settleInitialDisplayFromVisibleContent?.('loadEBook.initialRestoreDeferredTerminal');
                 finishInitialRestoreRenderReadyGateWithTerminalResult('loadEBook.initialRestoreDeferredTerminal');
                 reader.hasLoadedLastPosition = false;
-                reader.setLoadingIndicator(false, settled?.settled === true
-                    ? 'loadEBook.initialRestoreDeferredTerminal.visibleContent'
-                    : 'loadEBook.initialRestoreDeferredTerminal.terminal');
+                reader.completeLastPositionLoadAttempt('loadEBook.initialRestoreDeferredTerminal');
+                reader.finishRestoreLoading(settled, 'loadEBook.initialRestoreDeferredTerminal');
             }
         })
         .then(async () => {
@@ -11748,7 +11757,7 @@ window.loadEBook = ({
             }
             for (const candidateReader of new Set([reader, previousReader, globalThis.reader].filter(Boolean))) {
                 try {
-                    candidateReader?.setLoadingIndicator?.(false, 'loadEBook.error');
+                    candidateReader?.setLoadingIndicator?.(false, 'loadEBook.error', { terminal: true });
                 } catch (_error) {}
             }
             throw error;
@@ -12050,9 +12059,6 @@ window.loadLastPosition = async ({
             clearInitialRestoreRenderReadyGate(markReadyReason);
             markReaderRenderReady(markReadyReason);
         }
-        globalThis.reader?.setLoadingIndicator?.(false, reason);
-    };
-    const clearDispatchedNavigationLoading = (reason) => {
         globalThis.reader?.setLoadingIndicator?.(false, reason);
     };
     const reconcileRestoreFractionIfNeeded = async (restoreState, reason, stageOnReconcile) => {
@@ -12474,6 +12480,7 @@ window.loadLastPosition = async ({
         console.error(error);
         if (globalThis.reader) {
             globalThis.reader.hasLoadedLastPosition = false;
+            globalThis.reader.completeLastPositionLoadAttempt('loadLastPosition.failed');
         }
         // A failed attempt must not replace the last locator that was already
         // proven valid. Native persistence remains untouched as well.
@@ -12495,6 +12502,7 @@ window.loadLastPosition = async ({
             reason: 'loadLastPosition.failed',
         }));
         finishInitialRestoreRenderReadyGateWithTerminalResult('loadLastPosition.failed');
+        globalThis.reader?.setLoadingIndicator?.(false, 'loadLastPosition.failed', { terminal: true });
         throw error;
     } finally {
         globalThis.__manabiRestoreInProgress = false;
