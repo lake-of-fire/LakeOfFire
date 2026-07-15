@@ -5,6 +5,7 @@ createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
+import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
@@ -7380,6 +7381,7 @@ class Reader {
         }
     }) {
         applyStoredChromeInsets('reader.documentLoad');
+        applyLayoutSettingsToEbookDocument(document, doc);
         applyNavigationHiddenStateToEbookDocument(doc, 'document-load');
         const singleMediaInitialLayout = !isCacheWarmerDocument(doc)
             ? classifySingleMediaDocumentForInitialLayout(doc, 'document-load')
