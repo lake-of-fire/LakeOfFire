@@ -977,12 +977,16 @@ const applyNavigationHiddenStateToEbookDocument = (doc, reason = 'unknown') => {
         };
     }
     const hidden = globalThis.reader?.navHUD?.hideNavigationDueToScroll === true;
-    body.classList.toggle('nav-hidden', hidden);
-    body.classList.toggle('nav-hidden-due-to-scroll', hidden);
-    body.dataset.mnbNavigationHiddenDueToScroll = hidden ? 'true' : 'false';
+    const previousHidden = body.__manabiNavigationHiddenDueToScroll;
+    body.__manabiNavigationHiddenDueToScroll = hidden;
+    body.classList.remove('nav-hidden', 'nav-hidden-due-to-scroll');
+    delete body.dataset.mnbNavigationHiddenDueToScroll;
+    const refreshResult = body.ownerDocument?.defaultView
+        ?.manabi_refreshEbookTrackingPaintNavigationState?.(hidden, { source: reason });
     return {
         applied: true,
         hidden,
+        changed: previousHidden !== hidden || (refreshResult?.mutatedCount ?? 0) > 0,
     };
 };
 
