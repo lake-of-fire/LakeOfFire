@@ -248,32 +248,28 @@ struct EBookProcessedSectionWritingHint {
     let writingMode: String
 }
 
-fileprivate func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcessedSectionWritingHint? {
+func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcessedSectionWritingHint? {
     let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-    let direction = queryItems
-        .first(where: { $0.name == "mnbWritingDirection" })?
-        .value?
+    let directionItems = queryItems.filter { $0.name == "mnbWritingDirection" }
+    let writingModeItems = queryItems.filter { $0.name == "mnbWritingMode" }
+    guard directionItems.count == 1,
+          writingModeItems.count == 1 else { return nil }
+    let direction = directionItems[0].value?
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
     guard direction == "vertical" else { return nil }
-    let requestedWritingMode = queryItems
-        .first(where: { $0.name == "mnbWritingMode" })?
-        .value?
+    guard let requestedWritingMode = writingModeItems[0].value?
         .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-    let writingMode = requestedWritingMode == "vertical-lr" ? "vertical-lr" : "vertical-rl"
-    return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: writingMode)
+        .lowercased(),
+          requestedWritingMode == "vertical-lr" || requestedWritingMode == "vertical-rl" else {
+        return nil
+    }
+    return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: requestedWritingMode)
 }
 
 func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
     guard let writingHint else { return html }
-    guard let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]) else { return html }
-    let afterBodyName = bodyTagRange.upperBound
-    if afterBodyName < html.endIndex {
-        let nextCharacter = html[afterBodyName]
-        guard nextCharacter == ">" || nextCharacter == "/" || nextCharacter.isWhitespace else { return html }
-    }
-    guard let tagEnd = html[afterBodyName...].firstIndex(of: ">") else { return html }
+    guard let bodyTagRange = ebookOpeningTagRange(named: "body", in: html) else { return html }
 
     let attributes = [
         "data-mnb-writing-direction=\"\(ebookHTMLAttributeEscaped(writingHint.direction))\"",
@@ -283,7 +279,7 @@ func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookPr
     ].joined(separator: " ")
 
     var result = html
-    result.insert(contentsOf: " \(attributes)", at: tagEnd)
+    result.insert(contentsOf: " \(attributes)", at: result.index(before: bodyTagRange.upperBound))
     return result
 }
 
@@ -742,13 +738,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: false
                         )
                     }
-                    let responseText = ebookHTMLWithInjectedDirectSectionMetadata(
+                    let responseTextWithMetadata = ebookHTMLWithInjectedDirectSectionMetadata(
                         processedText,
                         baseURL: ebookProcessedSectionBaseURL(
                             sourceURL: request.sourceURL,
                             sectionHref: request.subpath
                         ),
                         sourceHref: request.subpath
+                    )
+                    let responseText = ebookHTMLWithInjectedPresentationHints(
+                        responseTextWithMetadata,
+                        writingHint: ebookProcessedSectionWritingHint(from: url)
                     )
                     guard let responseData = ebookProcessTextResponseData(
                         processedText: responseText,

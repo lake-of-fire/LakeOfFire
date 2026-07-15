@@ -3528,16 +3528,17 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
     const sizeMap = new Map(entries.map(function(entry) { return [entry.filename, entry.uncompressedSize]; }))
     const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
     const replaceText = makeReplaceText(isCacheWarmer)
-    const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer)
+    const loadText = async (name) => {
+        if (!entryNames.has(name)) {
+            return null
+        }
+        const response = await fetchNativeEntryResponse(url, name)
+        return readNativeEntryText(response)
+    }
+    const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer, loadText)
     return {
         entries,
-        loadText: async (name) => {
-            if (!entryNames.has(name)) {
-                return null
-            }
-            const response = await fetchNativeEntryResponse(url, name)
-            return readNativeEntryText(response)
-        },
+        loadText,
         loadBlob: async (name) => {
             if (!entryNames.has(name)) {
                 return null

@@ -315,6 +315,46 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
     }
 
+    func testDirectSectionPresentationHintInjectionPreservesProcessedDocument() {
+        let html = "<html><head></head><body data-note=\"2 > 1\" class=\"book\"><mnb-seg>本文</mnb-seg></body></html>"
+        let result = ebookHTMLWithInjectedPresentationHints(
+            html,
+            writingHint: EBookProcessedSectionWritingHint(
+                direction: "vertical",
+                writingMode: "vertical-lr"
+            )
+        )
+
+        XCTAssertEqual(
+            result,
+            "<html><head></head><body data-note=\"2 > 1\" class=\"book\" "
+                + "data-mnb-writing-direction=\"vertical\" "
+                + "data-mnb-writing-mode=\"vertical-lr\" "
+                + "data-mnb-foliate-writing-direction=\"vertical\" "
+                + "data-mnb-foliate-writing-mode=\"vertical-lr\">"
+                + "<mnb-seg>本文</mnb-seg></body></html>"
+        )
+    }
+
+    func testDirectSectionWritingHintRequiresOneCompleteNormalizedPair() throws {
+        let accepted = try XCTUnwrap(URL(string:
+            "ebook://ebook/processed-section?mnbWritingDirection=vertical&mnbWritingMode=vertical-lr"
+        ))
+        let acceptedHint = try XCTUnwrap(ebookProcessedSectionWritingHint(from: accepted))
+        XCTAssertEqual(acceptedHint.direction, "vertical")
+        XCTAssertEqual(acceptedHint.writingMode, "vertical-lr")
+
+        let rejectedURLs = [
+            "ebook://ebook/processed-section?mnbWritingDirection=vertical",
+            "ebook://ebook/processed-section?mnbWritingDirection=horizontal&mnbWritingMode=horizontal-tb",
+            "ebook://ebook/processed-section?mnbWritingDirection=vertical&mnbWritingMode=sideways-rl",
+            "ebook://ebook/processed-section?mnbWritingDirection=vertical&mnbWritingDirection=vertical&mnbWritingMode=vertical-rl"
+        ]
+        for rawURL in rejectedURLs {
+            XCTAssertNil(ebookProcessedSectionWritingHint(from: try XCTUnwrap(URL(string: rawURL))))
+        }
+    }
+
     func testEbookSchemeTaskPriorityKeepsOnlyDirectSectionLoadsForeground() throws {
         let foregroundURLs = [
             "ebook://ebook/load/local/Books/test.epub",

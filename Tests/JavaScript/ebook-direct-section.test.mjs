@@ -19,6 +19,23 @@ test('builds a direct processed-section URL without losing encoded or Unicode pa
     assert.equal(url.searchParams.get('direct'), '1')
 })
 
+test('carries only normalized vertical source-writing hints', () => {
+    const sourceURL = 'ebook://ebook/load/local/book.epub'
+    const verticalURL = new URL(processedSectionURLForHref(sourceURL, 'chapter.xhtml', {
+        direction: 'vertical',
+        writingMode: 'vertical-lr',
+    }))
+    assert.equal(verticalURL.searchParams.get('mnbWritingDirection'), 'vertical')
+    assert.equal(verticalURL.searchParams.get('mnbWritingMode'), 'vertical-lr')
+
+    const horizontalURL = new URL(processedSectionURLForHref(sourceURL, 'chapter.xhtml', {
+        direction: 'horizontal',
+        writingMode: 'horizontal-tb',
+    }))
+    assert.equal(horizontalURL.searchParams.has('mnbWritingDirection'), false)
+    assert.equal(horizontalURL.searchParams.has('mnbWritingMode'), false)
+})
+
 test('rejects missing direct-section identity', () => {
     assert.equal(processedSectionURLForHref('', 'chapter.xhtml'), null)
     assert.equal(processedSectionURLForHref('ebook://ebook/load/local/book.epub', ''), null)
@@ -26,12 +43,18 @@ test('rejects missing direct-section identity', () => {
 
 test('enables direct transport only for foreground native sections', async () => {
     const sourceURL = 'ebook://ebook/load/local/book.epub'
-    const foregroundResolver = makeDirectSectionURLResolver(sourceURL, false)
+    const foregroundResolver = makeDirectSectionURLResolver(sourceURL, false, async href => {
+        if (href === 'OPS/chapter.xhtml') {
+            return '<html><body style="writing-mode: vertical-rl"></body></html>'
+        }
+        return null
+    })
 
     assert.equal(typeof foregroundResolver, 'function')
-    assert.equal(
-        new URL(await foregroundResolver('OPS/chapter.xhtml')).searchParams.get('subpath'),
-        'OPS/chapter.xhtml',
-    )
+    const url = new URL(await foregroundResolver('OPS/chapter.xhtml', 'application/xhtml+xml'))
+    assert.equal(url.searchParams.get('subpath'), 'OPS/chapter.xhtml')
+    assert.equal(url.searchParams.get('mnbWritingDirection'), 'vertical')
+    assert.equal(url.searchParams.get('mnbWritingMode'), 'vertical-rl')
+    assert.equal(await foregroundResolver('OPS/image.svg', 'image/svg+xml'), null)
     assert.equal(makeDirectSectionURLResolver(sourceURL, true), null)
 })
