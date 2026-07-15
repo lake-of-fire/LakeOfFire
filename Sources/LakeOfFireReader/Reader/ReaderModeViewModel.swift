@@ -655,6 +655,7 @@ internal func readerContentPublicationDateFallback(for url: URL) async -> String
     return fallback
 }
 
+@MainActor
 internal func readerContentPublicationDateFallback(
     for content: any ReaderContentProtocol
 ) async -> String? {
