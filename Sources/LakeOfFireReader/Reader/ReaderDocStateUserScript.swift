@@ -257,7 +257,7 @@ struct ReaderDocStateUserScript {
                 childList: true,
                 subtree: true,
                 attributes: true,
-                attributeFilter: ["data-manabi-reader-render-ready"]
+                attributeFilter: ["data-mnb-reader-render-ready", "data-manabi-font-pending"]
             });
         }
         document.addEventListener("readystatechange", () => { postState("readystatechange"); });
