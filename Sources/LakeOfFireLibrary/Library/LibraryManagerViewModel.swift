@@ -146,53 +146,62 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 realm.objects(objectType)
                     .collectionPublisher
                     .subscribe(on: libraryDataQueue)
-                    .map { _ in }
+                    .map { @Sendable _ in }
                     .receive(on: RunLoop.main)
-                    .handleEvents(receiveOutput: { [weak self] _ in
+                    .handleEvents(receiveOutput: { @Sendable [weak self] _ in
                         Task { @MainActor [weak self] in
                             self?.invalidateOPMLExport()
                         }
                     })
-                    .sink(receiveCompletion: { _ in }, receiveValue: { _ in })
+                    .sink(
+                        receiveCompletion: { @Sendable _ in },
+                        receiveValue: { @Sendable _ in }
+                    )
                     .store(in: &cancellables)
             }
             
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.2), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.objectWillChange.send()
+                .sink(
+                    receiveCompletion: { @Sendable _ in },
+                    receiveValue: { @Sendable [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            self?.objectWillChange.send()
+                        }
                     }
-                })
+                )
                 .store(in: &cancellables)
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        let currentConfigurationID = self.libraryConfiguration?.id
-                        let newLibraryConfigurationID = try await { @RealmBackgroundActor in
-                            try await LibraryConfiguration.getConsolidatedOrCreate().id
-                        }()
-                        if newLibraryConfigurationID != currentConfigurationID {
-                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                            guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
-                            if self.isLibraryPresented {
+                .sink(
+                    receiveCompletion: { @Sendable _ in },
+                    receiveValue: { @Sendable [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            let currentConfigurationID = self.libraryConfiguration?.id
+                            let newLibraryConfigurationID = try await { @RealmBackgroundActor in
+                                try await LibraryConfiguration.getConsolidatedOrCreate().id
+                            }()
+                            if newLibraryConfigurationID != currentConfigurationID {
+                                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                                guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
+                                if self.isLibraryPresented {
+                                    self.objectWillChange.send()
+                                }
+                                self.libraryConfiguration = libraryConfiguration
+                            } else if self.isLibraryPresented {
                                 self.objectWillChange.send()
                             }
-                            self.libraryConfiguration = libraryConfiguration
-                        } else if self.isLibraryPresented {
-                            self.objectWillChange.send()
                         }
                     }
-                })
+                )
                 .store(in: &cancellables)
         }
     }

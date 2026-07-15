@@ -372,9 +372,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
                         try await refreshScripts()
@@ -385,9 +385,9 @@ public class LibraryDataManager: NSObject, @unchecked Sendable {
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
                         try await refreshScripts()

@@ -35,9 +35,9 @@ final class WebFeedButtonLibraryState: ObservableObject {
                 realm.objects(LibraryConfiguration.self)
                     .collectionPublisher
                     .subscribe(on: libraryDataQueue)
-                    .map { _ in }
+                    .map { @Sendable _ in }
                     .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
-                    .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                         Task { @RealmBackgroundActor [weak self] in
                             try await self?.refreshLibraryConfiguration()
                         }
@@ -48,9 +48,9 @@ final class WebFeedButtonLibraryState: ObservableObject {
                     .where { !$0.isDeleted }
                     .collectionPublisher
                     .subscribe(on: libraryDataQueue)
-                    .map { _ in }
+                    .map { @Sendable _ in }
                     .debounceLeadingTrailing(for: .seconds(0.1), scheduler: libraryDataQueue)
-                    .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                         Task { @RealmBackgroundActor [weak self] in
                             guard let self else { return }
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
