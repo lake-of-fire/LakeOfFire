@@ -173,6 +173,60 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
     }
 
+    func testProcessedHTMLCacheRequiresDurableIdentityForEveryGeneratedSegment() {
+        let valid = """
+        <html><body><mnb-seg>A</mnb-seg><mnb-seg>B</mnb-seg>
+        <script id="mnb-segment-metadata" type="application/json">
+        {"v":3,"t":{"sid":["sentence-a","sentence-b"]},"s":[["!a",null,null,null,null,null,null,null,0],["!b",null,null,null,null,null,null,null,1]]}
+        </script></body></html>
+        """
+        let missingStableIdentity = """
+        <html><body><mnb-seg>A</mnb-seg>
+        <script id="mnb-segment-metadata" type="application/json">
+        {"v":3,"t":{"sid":[]},"s":[["!a"]]}
+        </script></body></html>
+        """
+        let incompleteCoverage = """
+        <html><body><mnb-seg>A</mnb-seg><mnb-seg>B</mnb-seg>
+        <script id="mnb-segment-metadata" type="application/json">
+        {"v":3,"t":{"sid":["sentence-a"]},"s":[["!a",null,null,null,null,null,null,null,0]]}
+        </script></body></html>
+        """
+
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(valid))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingStableIdentity))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(incompleteCoverage))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities("<mnb-seg>A</mnb-seg>"))
+        XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities("<mnb-segment-metadata></mnb-segment-metadata>"))
+    }
+
+    func testProcessingRegeneratesCachedHTMLWithoutDurableSegmentIdentity() async throws {
+        let cachedHTML = "<html><body><mnb-seg>stale</mnb-seg></body></html>"
+        let regeneratedHTML = """
+        <html><body><mnb-seg>fresh</mnb-seg>
+        <script id="mnb-segment-metadata" type="application/json">
+        {"v":3,"t":{"sid":["sentence"]},"s":[["!fresh",null,null,null,null,null,null,null,0]]}
+        </script></body></html>
+        """
+        let actor = EBookProcessingActor(
+            ebookProcessedTextCacheReader: { _, _, _, _ in cachedHTML },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in regeneratedHTML },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw</body></html>",
+            isCacheWarmer: false
+        )
+
+        XCTAssertEqual(result, regeneratedHTML)
+    }
+
     func testDirectSectionRequestPreservesUnicodeIdentityAndRejectsDuplicateOrUnsafeSubpaths() throws {
         var components = URLComponents()
         components.scheme = "ebook"

@@ -187,6 +187,52 @@ struct ReaderExternalizedSegmentSidecarHTML: Sendable {
     let endpointURL: String?
 }
 
+func ebookProcessedHTMLHasDurableSegmentIdentities(_ processedHTML: String) -> Bool {
+    let htmlBytes = Array(processedHTML.utf8)
+    let generatedSegmentCount = generatedReaderSegmentCount(in: htmlBytes)
+    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) else {
+        return generatedSegmentCount == 0
+    }
+    guard let object = try? JSONSerialization.jsonObject(with: Data(htmlBytes[ranges.content])),
+          let root = object as? [String: Any],
+          (root["v"] as? NSNumber)?.intValue == 3,
+          let tables = root["t"] as? [String: Any],
+          let stableIDs = tables["sid"] as? [String],
+          let segments = root["s"] as? [[Any]],
+          segments.count == generatedSegmentCount else {
+        return false
+    }
+
+    return segments.allSatisfy { segment in
+        guard segment.indices.contains(8),
+              let stableIDIndex = segment[8] as? NSNumber,
+              stableIDIndex.intValue >= 0,
+              stableIDs.indices.contains(stableIDIndex.intValue) else {
+            return false
+        }
+        return !stableIDs[stableIDIndex.intValue].isEmpty
+    }
+}
+
+private func generatedReaderSegmentCount(in htmlBytes: [UInt8]) -> Int {
+    let openingTag = Array("<mnb-seg".utf8)
+    let tagDelimiters: Set<UInt8> = [9, 10, 13, 32, 47, 62]
+    var count = 0
+    var index = htmlBytes.startIndex
+    while index + openingTag.count <= htmlBytes.endIndex {
+        guard htmlBytes[index..<(index + openingTag.count)].elementsEqual(openingTag) else {
+            index += 1
+            continue
+        }
+        let delimiterIndex = index + openingTag.count
+        if delimiterIndex == htmlBytes.endIndex || tagDelimiters.contains(htmlBytes[delimiterIndex]) {
+            count += 1
+        }
+        index = delimiterIndex
+    }
+    return count
+}
+
 func externalizingCanonicalReaderSegmentSidecar(
     in htmlBytes: [UInt8],
     scheme: ReaderExternalSegmentSidecarScheme,

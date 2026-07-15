@@ -521,7 +521,7 @@ actor EBookProcessingActor {
                 location,
                 text,
                 resolvedContentFingerprint
-            ) {
+            ), ebookProcessedHTMLHasDurableSegmentIdentities(cachedResult) {
                 return cachedResult
             }
         }
@@ -797,6 +797,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             text,
                             processRequestKey.textFingerprint
                            ),
+                           ebookProcessedHTMLHasDurableSegmentIdentities(cachedText),
                            let cachedData = ebookProcessTextResponseData(processedText: cachedText, isCacheWarmer: false) {
                             let resp = HTTPURLResponse(
                                 url: url,
