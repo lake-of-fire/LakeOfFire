@@ -149,12 +149,11 @@ private struct ReaderSizeTrackingCacheBucket: Codable {
     }
 }
 
-private let readerPaginationSizeTrackingCache = PersistedLRUCache<String, ReaderSizeTrackingCacheBucket>(
+private let readerPaginationSizeTrackingCache = PersistedCache<String, ReaderSizeTrackingCacheBucket>(
     namespace: "reader-pagination-size-tracking-cache-v2",
     version: 2,
     totalBytesLimit: 20 * 1024 * 1024,
-    countLimit: 10_000,
-    inlineStorageThreshold: 64 * 1024
+    countLimit: 10_000
 )
 
 /// Opens the shared pagination cache before a reader view needs to install its message handlers.
