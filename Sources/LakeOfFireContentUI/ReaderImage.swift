@@ -35,6 +35,19 @@ fileprivate final class ReaderImageLoadTask: Nuke.Cancellable, @unchecked Sendab
     }
 }
 
+fileprivate final class ReaderImageLoadCallbacks: @unchecked Sendable {
+    let didReceiveData: (Data, URLResponse) -> Void
+    let completion: (Error?) -> Void
+
+    init(
+        didReceiveData: @escaping (Data, URLResponse) -> Void,
+        completion: @escaping (Error?) -> Void
+    ) {
+        self.didReceiveData = didReceiveData
+        self.completion = completion
+    }
+}
+
 fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable {
     private let defaultDataLoader: DataLoading = DataLoader()
     private let interceptor: @Sendable (URL) async throws -> Data?
@@ -45,13 +58,17 @@ fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable 
 
     func loadData(
         with request: URLRequest,
-        didReceiveData: @escaping @Sendable (Data, URLResponse) -> Void,
-        completion: @escaping @Sendable (Error?) -> Void
+        didReceiveData: @escaping (Data, URLResponse) -> Void,
+        completion: @escaping (Error?) -> Void
     ) -> any Nuke.Cancellable {
         let task = ReaderImageLoadTask()
+        let callbacks = ReaderImageLoadCallbacks(
+            didReceiveData: didReceiveData,
+            completion: completion
+        )
 
         guard let url = request.url else {
-            completion(NSError(domain: "ReaderImageDataLoader", code: 0, userInfo: nil))
+            callbacks.completion(NSError(domain: "ReaderImageDataLoader", code: 0, userInfo: nil))
             return task
         }
 
@@ -60,10 +77,10 @@ fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable 
                 if let data = try await interceptor(url) {
                     guard !Task.isCancelled else { return }
                     if let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) {
-                        didReceiveData(data, response)
-                        completion(nil)
+                        callbacks.didReceiveData(data, response)
+                        callbacks.completion(nil)
                     } else {
-                        completion(NSError(domain: "ReaderImageDataLoader", code: 0, userInfo: nil))
+                        callbacks.completion(NSError(domain: "ReaderImageDataLoader", code: 0, userInfo: nil))
                     }
                     return
                 }
@@ -75,8 +92,8 @@ fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable 
             guard !Task.isCancelled else { return }
             task.fallbackTask = defaultDataLoader.loadData(
                 with: request,
-                didReceiveData: didReceiveData,
-                completion: completion
+                didReceiveData: callbacks.didReceiveData,
+                completion: callbacks.completion
             )
         }
 

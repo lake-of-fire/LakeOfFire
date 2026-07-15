@@ -12,10 +12,11 @@ import UIKit
 #endif
 
 #if os(iOS)
+@MainActor
 private func currentReaderWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
         .compactMap { $0 as? UIWindowScene }
-        .flatMap(\.windows)
+        .flatMap { $0.windows }
         .first { $0.isKeyWindow }?
         .safeAreaInsets.top ?? 0
 }

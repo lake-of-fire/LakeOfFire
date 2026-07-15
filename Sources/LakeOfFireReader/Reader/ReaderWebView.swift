@@ -22,10 +22,11 @@ fileprivate let blockedHosts = Set([
 ])
 
 #if os(iOS)
+@MainActor
 private func currentWindowTopSafeAreaInset() -> CGFloat {
     UIApplication.shared.connectedScenes
         .compactMap { $0 as? UIWindowScene }
-        .flatMap(\.windows)
+        .flatMap { $0.windows }
         .first { $0.isKeyWindow }?
         .safeAreaInsets.top ?? 0
 }
