@@ -128,7 +128,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
     private func assertEnsureImportedIndexesBook(_ fixture: Fixture) async throws {
         let importedURL = try await assertEnsureImportedIndexesRealmMetadata(fixture)
         XCTAssertEqual(importedURL, fixture.expectedReaderURL)
-        try await fixture.manager.refreshAllFilesMetadata(force: true)
+        try await fixture.manager.refreshAllFilesMetadata()
         XCTAssertEqual(
             fixture.manager.files(ofTypes: [.epub, .epubZip])?.map(\.url),
             [fixture.expectedReaderURL]
@@ -140,7 +140,7 @@ final class DownloadableBookLibraryImportTests: XCTestCase {
         let importedURL = try await fixture.manager.ensureImported(downloadable: fixture.downloadable)
         let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
         let contentFile = try XCTUnwrap(realm.objects(ContentFile.self).where {
-            !$0.isDeleted && $0.url == fixture.expectedReaderURL.absoluteString
+            !$0.isDeleted && $0.url == fixture.expectedReaderURL
         }.first)
         XCTAssertEqual(contentFile.mimeType, "application/epub+zip")
         return importedURL

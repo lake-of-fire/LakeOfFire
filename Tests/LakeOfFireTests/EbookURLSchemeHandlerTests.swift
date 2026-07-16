@@ -1,4 +1,5 @@
 import XCTest
+import SwiftSoup
 @testable import LakeOfFireReader
 
 private actor EBookProcessorInvocationCounter {
@@ -677,7 +678,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result, "<html><body>neutral warmer result</body></html>")
     }
 
-    func testCacheWarmerCacheHitStillReturnsProcessedContent() async throws {
+    func testCacheWarmerProcessingReturnsProcessedContentToCaller() async throws {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
@@ -696,8 +697,13 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result, expectedHTML)
     }
 
-    func testCacheWarmerUsesPersistedProcessedTextWithoutReprocessing() async throws {
-        let expectedHTML = "<html><body><manabi-segment>persisted</manabi-segment></body></html>"
+    func testForegroundUsesPersistedProcessedTextWithoutReprocessing() async throws {
+        let expectedHTML = """
+        <html><body><mnb-seg>persisted</mnb-seg>
+        <script id="mnb-segment-metadata" type="application/json">
+        {"v":3,"t":{"sid":["sentence"]},"s":[["!persisted",null,null,null,null,null,null,null,0]]}
+        </script></body></html>
+        """
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheReader: { _, _, _, _ in expectedHTML },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
@@ -714,7 +720,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
             location: "item/xhtml/chapter.xhtml",
             text: "<html><body>raw</body></html>",
-            isCacheWarmer: true
+            isCacheWarmer: false
         )
 
         XCTAssertEqual(result, expectedHTML)

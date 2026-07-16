@@ -283,8 +283,10 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
+                .product(name: "SwiftSoup", package: "SwiftSoup"),
                 "LakeOfFireContent",
                 "LakeOfFireCore",
                 "LakeOfFireReader",

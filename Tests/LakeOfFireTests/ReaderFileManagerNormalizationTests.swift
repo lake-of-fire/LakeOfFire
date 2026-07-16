@@ -138,7 +138,8 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         let manager = ReaderFileManager(defaultLocalRootURLProvider: { fallbackRoot })
         let readerURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/missing.epub"))
 
-        XCTAssertEqual(try await manager.cloudDriveSyncStatus(readerFileURL: readerURL), .fileMissing)
+        let status = try await manager.cloudDriveSyncStatus(readerFileURL: readerURL)
+        XCTAssertEqual(status, .fileMissing)
     }
 
     @MainActor
