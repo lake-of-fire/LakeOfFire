@@ -22,5 +22,22 @@ export const ebookSegmentIdentifierAliases = (segmentNode, metadata = null) => {
     return stableID === null ? [] : [stableID]
 }
 
+export const indexUniqueEbookSegmentAlias = (
+    aliasesByIdentifier,
+    ambiguousIdentifiers,
+    identifier,
+    item,
+) => {
+    if (!identifier || ambiguousIdentifiers.has(identifier)) return false
+    const existingItem = aliasesByIdentifier.get(identifier)
+    if (existingItem && existingItem !== item) {
+        aliasesByIdentifier.delete(identifier)
+        ambiguousIdentifiers.add(identifier)
+        return false
+    }
+    aliasesByIdentifier.set(identifier, item)
+    return true
+}
+
 export const ebookSentenceIdentifier = sentenceNode =>
     nonEmptyString(sentenceNode?.getAttribute?.('sid'))

@@ -5,6 +5,7 @@ import {
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    indexUniqueEbookSegmentAlias,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-identity.js'
 
 test('uses only explicit sentence identity and never promotes a hash', () => {
@@ -70,4 +71,18 @@ test('preserves runtime and metadata IDs only as explicit mapping fields', () =>
     assert.equal(identity.elementID, 'attribute-id')
     assert.equal(identity.metadataElementID, 'metadata-element-id')
     assert.equal(identity.segmentIdentifier, 'stable-id')
+})
+
+test('rejects an alias shared by distinct runtime segments', () => {
+    const aliases = new Map()
+    const ambiguous = new Set()
+    const first = { node: segmentNode('runtime-a') }
+    const second = { node: segmentNode('runtime-b') }
+
+    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', first), true)
+    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', first), true)
+    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', second), false)
+    assert.equal(aliases.has('stable-id'), false)
+    assert.equal(ambiguous.has('stable-id'), true)
+    assert.equal(indexUniqueEbookSegmentAlias(aliases, ambiguous, 'stable-id', first), false)
 })

@@ -17,6 +17,7 @@ import {
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    indexUniqueEbookSegmentAlias,
 } from './ebook-segment-identity.js'
 import {
     makeInitialRestoreTerminalResult,
@@ -3117,6 +3118,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
     const view = doc?.defaultView ?? null;
     const byElementID = new Map();
     const bySegmentIdentifier = new Map();
+    const ambiguousSegmentIdentifiers = new Set();
     const idsByEntryID = new Map();
     const addEntryIDs = (elementID, entryIDs) => {
         if (!elementID || !Array.isArray(entryIDs)) { return; }
@@ -3145,10 +3147,20 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         };
         byElementID.set(elementID, item);
         if (segmentIdentifier) {
-            bySegmentIdentifier.set(segmentIdentifier, item);
+            indexUniqueEbookSegmentAlias(
+                bySegmentIdentifier,
+                ambiguousSegmentIdentifiers,
+                segmentIdentifier,
+                item,
+            );
         }
         for (const alias of segmentIdentifierAliasesForNode(node)) {
-            bySegmentIdentifier.set(alias, item);
+            indexUniqueEbookSegmentAlias(
+                bySegmentIdentifier,
+                ambiguousSegmentIdentifiers,
+                alias,
+                item,
+            );
         }
         addEntryIDs(elementID, metadata?.j);
         addEntryIDs(elementID, metadata?.n);
@@ -3173,6 +3185,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
     const index = {
         byElementID,
         bySegmentIdentifier,
+        ambiguousSegmentIdentifiers,
         idsByEntryID,
         documentURL: doc?.location?.href || doc?.URL || null,
         sidecarRevision: doc?.getElementById?.('mnb-segment-metadata')?.dataset?.mnbSidecarRevision || null,
