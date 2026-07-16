@@ -29,6 +29,10 @@ import {
 } from './ebook-restore-coordination.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import {
+    nativeLookupPublicationIdentityForDocument,
+    shouldRunNativeLookupRefresh,
+} from './ebook-native-lookup-publication.js'
+import {
     collectSegmentNodesInVisibleRange,
     collectViewportSampleSegmentNodes,
 } from './visible-segment-collection.js'
@@ -3193,7 +3197,8 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
 const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult, reason = 'unspecified') => {
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
-    const nativeLookupFrameKey = doc?.location?.href || doc?.URL || null;
+    const publicationIdentity = nativeLookupPublicationIdentityForDocument(doc);
+    const nativeLookupFrameKey = publicationIdentity?.frameKey ?? null;
     const viewportWidth = visibleSegmentsResult?.viewportWidth
         ?? window.visualViewport?.width
         ?? window.innerWidth
@@ -3226,6 +3231,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets: [],
             reason,
             nativeLookupFrameKey,
+            nativeLookupDocumentURL: publicationIdentity?.documentURL ?? null,
             isExplicitReset: false,
             visualViewportScale,
             viewportWidth,
@@ -3265,6 +3271,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         targets,
         reason,
         nativeLookupFrameKey,
+        nativeLookupDocumentURL: publicationIdentity?.documentURL ?? null,
         isExplicitReset: false,
         visualViewportScale,
         viewportWidth,
@@ -4242,6 +4249,8 @@ class Reader {
     visiblePageCollectionGeneration = 0;
     visiblePageSegmentSnapshot = null;
     nativeLookupHitTargetRefreshHandle = null;
+    nativeLookupHitTargetSettleHandle = null;
+    nativeLookupHitTargetRefreshGeneration = 0;
     displaySettledSequence = 0;
     displaySettledWaiters = [];
     lookupNavigationPageTurnActive = false;
@@ -4867,6 +4876,11 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
+        if (this.nativeLookupHitTargetSettleHandle) {
+            clearTimeout(this.nativeLookupHitTargetSettleHandle);
+            this.nativeLookupHitTargetSettleHandle = null;
+        }
+        this.nativeLookupHitTargetRefreshGeneration += 1;
         if (this.hasLoadedLastPosition === true) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
         }
@@ -5653,15 +5667,23 @@ class Reader {
         return result;
     }
     #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
+        const refreshGeneration = ++this.nativeLookupHitTargetRefreshGeneration;
         if (this.nativeLookupHitTargetRefreshHandle) {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
         this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
             this.nativeLookupHitTargetRefreshHandle = null;
-            const docs = isDocumentLike(explicitDoc)
-                ? [explicitDoc]
-                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+            const currentDocs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+            if (!shouldRunNativeLookupRefresh({
+                scheduledGeneration: refreshGeneration,
+                currentGeneration: this.nativeLookupHitTargetRefreshGeneration,
+                explicitDocument: isDocumentLike(explicitDoc) ? explicitDoc : null,
+                currentDocuments: currentDocs,
+            })) {
+                return;
+            }
+            const docs = isDocumentLike(explicitDoc) ? [explicitDoc] : currentDocs;
             for (const doc of docs) {
                 const visibleRange = this.#visibleRangeForDocument(doc);
                 this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
@@ -5671,7 +5693,15 @@ class Reader {
     refreshNativeLookupHitTargets(reason = 'manual') {
         this.visiblePageSegmentSnapshot = null;
         this.#scheduleNativeLookupHitTargetRefreshSettle(reason);
-        setTimeout(() => {
+        if (this.nativeLookupHitTargetSettleHandle) {
+            clearTimeout(this.nativeLookupHitTargetSettleHandle);
+        }
+        const settleGeneration = this.nativeLookupHitTargetRefreshGeneration;
+        this.nativeLookupHitTargetSettleHandle = setTimeout(() => {
+            this.nativeLookupHitTargetSettleHandle = null;
+            if (settleGeneration !== this.nativeLookupHitTargetRefreshGeneration) {
+                return;
+            }
             this.visiblePageSegmentSnapshot = null;
             this.#scheduleNativeLookupHitTargetRefreshSettle(`${reason}.settled`);
         }, 180);
