@@ -456,6 +456,7 @@
 		E084E0C1B577014CDFF67882 /* SwiftBackports.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5705314FAD87F2CF31281D27 /* SwiftBackports.framework */; };
 		E1BAA2F14CD392B8E3945BFF /* EbookURLSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5010620C692CE87ACA4385 /* EbookURLSchemeHandlerTests.swift */; };
 		E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
+		E220A9C74B8E6E8A75792DD7 /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
 		E22F512BF7790EBD017313F6 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		E3D82D0351917C276584D036 /* LakeOfFireContentUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
@@ -1271,6 +1272,7 @@
 		3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = AsyncView.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		3B999F3B6F3DC53882B4DD23 /* OPDSCatalogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPDSCatalogsView.swift; sourceTree = "<group>"; };
 		3BC9D8E2591A827A49A26CE5 /* WebMediaWebSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMediaWebSupportTests.swift; sourceTree = "<group>"; };
+		3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Realm.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		3EE283BF5F88F02673DE605B /* LakeOfFireOPDSTests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireOPDSTests-Info.plist"; sourceTree = "<group>"; };
 		3FF2E0FE2DC03E3D0F9EAA88 /* ContentFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentFile.swift; sourceTree = "<group>"; };
 		4033A8D7C0803299FF506B4F /* BookmarkButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkButton.swift; sourceTree = "<group>"; };
@@ -1741,6 +1743,7 @@
 				6F1EC32490186EB57307313D /* Pow.framework in Frameworks */,
 				F1659350C6D421067C6AE3A5 /* Puppy.framework in Frameworks */,
 				468B35A8F34A2EA0E0776045 /* RealModule.framework in Frameworks */,
+				E220A9C74B8E6E8A75792DD7 /* Realm.framework in Frameworks */,
 				BDC06A700E9394DE1FE880A8 /* RealmSwift.framework in Frameworks */,
 				EC8631B1CC61CDD7E7F4164F /* RealmSwiftGaps.framework in Frameworks */,
 				D4D2F9B2154AF9C37543C0EB /* SQLiteData.framework in Frameworks */,
@@ -2187,6 +2190,7 @@
 				A1C179BE8A90F664850C9605 /* Pow_Pow.bundle */,
 				0ACFBB587A7997D2F15BBE19 /* Pow.framework */,
 				20C17A774C69797FB2ECFDDC /* Puppy.framework */,
+				3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */,
 				197B226A7C5AD2C6872E5303 /* RealmDatabase_RealmCoreResources.bundle */,
 				AC5C42A82E2B2F82E77DE798 /* RealModule.framework */,
 				0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */,
