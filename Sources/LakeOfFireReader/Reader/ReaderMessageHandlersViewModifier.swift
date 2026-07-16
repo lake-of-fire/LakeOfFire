@@ -171,8 +171,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         inlineStorageThreshold: 64 * 1024
     )
     private let trackingSizeHistoryLimit = 10
-    fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?
-    fileprivate var ebookBootstrapFallbackURL: URL?
     fileprivate var automaticReadabilityTask: Task<Void, Never>?
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
@@ -244,201 +242,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     @MainActor
-    fileprivate func scheduleEbookViewerInitializationFallback(in frameInfo: WKFrameInfo? = nil) {
-        registerEbookViewerFrame(frameInfo)
-        let url = readerViewModel.state.pageURL
-        guard let scheme = url.scheme,
-              (scheme == "ebook" || scheme == "ebook-url"),
-              url.absoluteString.hasPrefix("\(scheme)://"),
-              url.isEBookURL,
-              let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))")
-        else {
-            return
-        }
-
-        if ebookBootstrapFallbackURL == loaderURL, ebookBootstrapFallbackTask != nil {
-            return
-        }
-        ebookBootstrapFallbackTask?.cancel()
-        ebookBootstrapFallbackURL = loaderURL
-        ebookBootstrapFallbackTask = Task { @MainActor [weak self] in
-            defer {
-                if self?.ebookBootstrapFallbackURL == loaderURL {
-                    self?.ebookBootstrapFallbackTask = nil
-                    self?.ebookBootstrapFallbackURL = nil
-                }
-            }
-            guard let self else { return }
-            let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
-            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
-            for attempt in 0..<24 {
-                try? await Task.sleep(nanoseconds: attempt == 0 ? 350_000_000 : 450_000_000)
-                if Task.isCancelled { return }
-                do {
-                    let result = try await scriptCaller.evaluateJavaScript(
-                        """
-                        return (() => {
-                            const fallbackURL = url;
-                            const fallbackLayoutMode = layoutMode;
-                            const startedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
-                            const startedAgeMs = startedAt > 0 ? (Date.now() - startedAt) : null;
-                            const hasReader = !!globalThis.reader;
-                            const hasView = !!globalThis.reader?.view;
-                            const hasRenderer = !!globalThis.reader?.view?.renderer;
-                            const hasSectionLayoutController = !!globalThis.manabiEbookSectionLayoutController
-                                || !!globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController;
-                            const hasLivePageRoot = !!document?.querySelector?.('.mnb-page-root');
-                            const hasLiveChunk = !!document?.querySelector?.('.mnb-page-root .mnb-page-column-chunk');
-                            const hasLiveChunkBody = !!document?.querySelector?.('.mnb-page-root .mnb-page-column-body');
-                            const hasLiveChunkText = (() => {
-                                const node = document?.querySelector?.('.mnb-page-root .mnb-page-column-chunk');
-                                const text = node?.textContent || '';
-                                return text.trim().length > 0;
-                            })();
-                            const hasPendingArgs = globalThis.manabiPendingLoadEBookArgs != null;
-                            const locationHref = document?.location?.href ?? null;
-                            const readyState = document?.readyState ?? null;
-                            const loadEBookLastState = globalThis.manabiLoadEBookLastState ?? null;
-                            const isTerminalFailure =
-                                (typeof loadEBookLastState === "string" && loadEBookLastState.startsWith("open-error:"))
-                                || loadEBookLastState === "open-watchdog-timeout";
-                            const isStaleStart = startedAgeMs !== null && startedAgeMs > 6000;
-                            if (
-                                hasRenderer
-                                || hasSectionLayoutController
-                                || hasLiveChunkBody
-                                || hasLiveChunkText
-                                || (hasLivePageRoot && hasLiveChunk)
-                            ) return JSON.stringify({
-                                state: "ready",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasSectionLayoutController,
-                                hasLivePageRoot,
-                                hasLiveChunk,
-                                hasLiveChunkBody,
-                                hasLiveChunkText,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (isTerminalFailure) {
-                                globalThis.manabiLoadEBookStarted = false;
-                                globalThis.manabiLoadEBookInFlight = false;
-                                globalThis.manabiEbookFallbackLoadRequested = false;
-                            }
-                            if (globalThis.manabiLoadEBookStarted && hasView && !isStaleStart) return JSON.stringify({
-                                state: "started-pending",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (globalThis.manabiLoadEBookStarted && hasReader && !isStaleStart) return JSON.stringify({
-                                state: "reader-created",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (globalThis.manabiLoadEBookStarted && !isStaleStart) return JSON.stringify({
-                                state: "started-no-reader",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (typeof window.loadEBook !== "function") return JSON.stringify({
-                                state: "loadEBook-missing",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: false,
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (globalThis.manabiEbookFallbackLoadRequested === true && !isStaleStart) return JSON.stringify({
-                                state: "fallback-start-already-requested",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                            if (globalThis.manabiEbookFallbackLoadRequested === true && isStaleStart) {
-                                globalThis.manabiEbookFallbackLoadRequested = false;
-                            }
-                            globalThis.manabiEbookFallbackLoadRequested = true;
-                            const loadArgs = {};
-                            loadArgs.url = fallbackURL;
-                            loadArgs.layoutMode = fallbackLayoutMode;
-                            loadArgs.initialRestore = initialRestore;
-                            window.loadEBook(loadArgs);
-                            return JSON.stringify({
-                                state: "fallback-started",
-                                startedAgeMs,
-                                hasReader,
-                                hasView,
-                                hasRenderer,
-                                hasPendingArgs,
-                                hasLoadEBookFunction: typeof window.loadEBook === "function",
-                                loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
-                                loadEBookReady: globalThis.manabiLoadEBookReady === true,
-                                readyState,
-                                locationHref,
-                            });
-                        })();
-                        """,
-                        arguments: [
-                            "url": loaderURL.absoluteString,
-                            "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
-                            "initialRestore": initialRestoreRequest?.javaScriptArgument ?? NSNull(),
-                        ],
-                        in: frameInfo
-                    )
-                    let state = String(describing: result ?? "nil")
-                    if state.contains(#""ready""#) {
-                        return
-                    }
-                } catch {
-                }
-            }
-        }
-    }
-
-    @MainActor
     private func registerEbookViewerFrame(_ frameInfo: WKFrameInfo?) {
         guard let frameInfo else { return }
         let pageURL = readerViewModel.state.pageURL
@@ -500,9 +303,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     if logMessage.hasPrefix("# CAROUSEL") {
                         print(logMessage)
                         Logger.shared.logger.info("\(logMessage)")
-                    }
-                    if logMessage.contains("\"module:posting-initialized\"") {
-                        scheduleEbookViewerInitializationFallback(in: message.frameInfo)
                     }
                     if logMessage.contains("\"reader.open:view-ready\"")
                         || logMessage.contains("\"loadEBook:posting-loaded\"")
@@ -1108,10 +908,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
                 guard let self else { return }
-                ebookBootstrapFallbackTask?.cancel()
-                ebookBootstrapFallbackTask = nil
                 registerEbookViewerFrame(message.frameInfo)
-                let url = readerViewModel.state.pageURL
+                let stateURL = readerViewModel.state.pageURL
+                let url = stateURL.isEBookURL ? stateURL : readerContent.pageURL
                 if let scheme = url.scheme,
                    (scheme == "ebook" || scheme == "ebook-url"),
                    url.absoluteString.hasPrefix("\(scheme)://"),
@@ -1370,15 +1169,6 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)
             }
-            .task(id: readerViewModel.state.pageURL) { @MainActor in
-                if !readerViewModel.state.pageURL.isEBookURL {
-                    readerMessageHandlers?.ebookBootstrapFallbackTask?.cancel()
-                    readerMessageHandlers?.ebookBootstrapFallbackTask = nil
-                    readerMessageHandlers?.ebookBootstrapFallbackURL = nil
-                } else {
-                    readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
-                }
-            }
             .task(id: readerContent.pageURL) {
                 await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
@@ -1392,7 +1182,7 @@ extension ReaderMessageHandlersViewModifier {
         guard pageURL.isEBookURL else { return }
         let shouldHide = hideNavigationDueToScroll.wrappedValue
         if reason == "binding", !force, !shouldHide {
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            await Task.yield()
             let settledPageURL = readerContent.pageURL
             let settledShouldHide = hideNavigationDueToScroll.wrappedValue
             if settledPageURL != pageURL || settledShouldHide != shouldHide {
