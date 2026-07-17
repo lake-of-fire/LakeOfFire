@@ -378,13 +378,54 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             writingHint: nil,
             bodyAttributes: ["data-response": "ready"],
             presentation: EbookSectionPresentation(
-                bodyAttributes: ["data-presentation": "current"],
-                bodyStyleDeclarations: "font-family:'Reader Font';font-size:18px;"
+                revision: "presentation-1",
+                bodyAttributes: ["data-mnb-dark-theme": "current"],
+                bodyStyleProperties: [
+                    "font-family": "'not allowlisted'",
+                    "font-size": "18px",
+                ]
             )
         ), as: UTF8.self)
 
         XCTAssertTrue(result.contains("<HEAD data-note=\"2>1\"><base href="))
-        XCTAssertTrue(result.contains("<BODY data-note='3>2' style='color:red;font-family:&#39;Reader Font&#39;;font-size:18px;' data-presentation=\"current\" data-response=\"ready\">"))
+        XCTAssertTrue(result.contains("<BODY data-note='3>2' style='color:red;font-size:18px!important;' data-mnb-dark-theme=\"current\" data-mnb-presentation-revision=\"presentation-1\" data-mnb-presentation-schema-version=\"1\" data-response=\"ready\">"))
+    }
+
+    func testResponseMetadataReplacesManagedPresentationAttributesBeforeLayout() {
+        let html = """
+        <html><head></head><body data-mnb-dark-theme="stale" data-mnb-settings-initialized="false" data-publisher="kept" style="color:red;font-size:9px">Text</body></html>
+        """
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: [:],
+            presentation: EbookSectionPresentation(
+                revision: "presentation-2",
+                bodyAttributes: [
+                    "data-mnb-dark-theme": "current",
+                    "data-mnb-settings-initialized": "true",
+                    "data-publisher": "not-allowlisted",
+                ],
+                bodyStyleProperties: [
+                    "font-size": "18px",
+                    "background": "red",
+                    "font-weight": "600;display:none",
+                ]
+            )
+        ), as: UTF8.self)
+
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-dark-theme=").count - 1, 1)
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-settings-initialized=").count - 1, 1)
+        XCTAssertTrue(result.contains("data-mnb-dark-theme=\"current\""))
+        XCTAssertTrue(result.contains("data-mnb-settings-initialized=\"true\""))
+        XCTAssertTrue(result.contains("data-mnb-presentation-schema-version=\"1\""))
+        XCTAssertTrue(result.contains("data-mnb-presentation-revision=\"presentation-2\""))
+        XCTAssertTrue(result.contains("data-publisher=\"kept\""))
+        XCTAssertFalse(result.contains("not-allowlisted"))
+        XCTAssertTrue(result.contains("style=\"color:red;font-size:9px;font-size:18px!important;\""))
+        XCTAssertFalse(result.contains("background:red"))
+        XCTAssertFalse(result.contains("display:none"))
     }
 
     func testNativeSectionPrewarmReadsEntryAndRunsCacheWarmerProcessor() async throws {

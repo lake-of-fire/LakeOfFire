@@ -52,10 +52,10 @@ public final class BookmarkStatusCache: ObservableObject {
                 realm.objects(Bookmark.self)
                     .collectionPublisher(keyPaths: ["isDeleted", "compoundKey"])
                     .subscribe(on: bookmarksQueue)
-                    .map { _ in }
+                    .map { @Sendable _ in }
                     .debounceLeadingTrailing(for: .seconds(0.2), scheduler: bookmarksQueue)
                     .receive(on: bookmarksQueue)
-                    .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                         Task { @RealmBackgroundActor [weak self] in
                             guard let self else { return }
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)

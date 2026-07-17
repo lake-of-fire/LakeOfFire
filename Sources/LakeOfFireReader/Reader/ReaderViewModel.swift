@@ -177,9 +177,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
             libraryRealm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: readerViewModelQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
                         let ref = ThreadSafeReference(to: libraryConfiguration)
@@ -203,10 +203,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
             libraryRealm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(1), scheduler: readerViewModelQueue)
                 .receive(on: readerViewModelQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         try await self?.updateScripts()
                     }

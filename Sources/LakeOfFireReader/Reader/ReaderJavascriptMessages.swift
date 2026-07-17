@@ -212,6 +212,7 @@ public struct NativeLookupHitTargetsMessage {
     public let rawTargetCount: Int
     public let scale: CGFloat
     public let nativeLookupFrameKey: String?
+    public let nativeLookupDocumentURL: String?
     public let viewportWidth: Any?
     public let viewportHeight: Any?
     public let viewportLeft: Any?
@@ -231,6 +232,8 @@ public struct NativeLookupHitTargetsMessage {
         self.rawTargetCount = rawTargets.count
         self.scale = scale
         self.nativeLookupFrameKey = (payload["nativeLookupFrameKey"] as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        self.nativeLookupDocumentURL = (payload["nativeLookupDocumentURL"] as? String)
             .flatMap { $0.isEmpty ? nil : $0 }
         self.viewportWidth = payload["viewportWidth"]
         self.viewportHeight = payload["viewportHeight"]

@@ -11,6 +11,10 @@ import {
     ebookSegmentIdentifierAliases,
 } from './ebook-segment-identity.js'
 import {
+    ebookDocumentFrameIdentity,
+    shouldPublishForDocumentFrame,
+} from './ebook-document-frame-identity.js'
+import {
     makeSyntheticRestoreLocator,
     parseSyntheticRestoreLocator,
     runRequiredRestoreNavigation,
@@ -4859,7 +4863,9 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const startedAt = performanceNowMs();
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
-    const nativeLookupFrameKey = doc?.location?.href || doc?.URL || null;
+    const publicationIdentity = ebookDocumentFrameIdentity(doc);
+    if (!publicationIdentity) return 0;
+    const nativeLookupFrameKey = publicationIdentity.frameKey;
     const viewportWidth = visibleSegmentsResult?.viewportWidth
         ?? window.visualViewport?.width
         ?? window.innerWidth
@@ -4980,6 +4986,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         targets: messageTargets,
         reason,
         nativeLookupFrameKey,
+        nativeLookupDocumentURL: publicationIdentity.documentURL,
         isExplicitReset: false,
         visualViewportScale,
         viewportWidth,
@@ -7873,15 +7880,23 @@ class Reader {
         if (globalThis.__manabiTimelineTraceAll === true) {
         }
         const runRefresh = async () => {
-            const docs = isDocumentLike(explicitDoc)
-                ? [explicitDoc]
-                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+            const attachedDocuments = this.#lookupContentWindows()
+                .map((view) => view.document)
+                .filter(isDocumentLike);
             // didDisplay means Foliate has already columnized a usable page. Do not
             // hold its first lookup/status pass behind fonts.ready: remote or custom
             // fonts can settle much later, leaving the initially visible page inert.
             // The document-load font callback schedules one corrective geometry pass
             // if font metrics actually finish after this provisional pass.
             if (generation !== this.nativeLookupHitTargetRefreshGeneration) {
+                return;
+            }
+            if (!shouldPublishForDocumentFrame({
+                scheduledGeneration: generation,
+                currentGeneration: this.nativeLookupHitTargetRefreshGeneration,
+                explicitDocument: isDocumentLike(explicitDoc) ? explicitDoc : null,
+                currentDocuments: attachedDocuments,
+            })) {
                 return;
             }
             const startedAt = performanceNowMs();
@@ -7892,7 +7907,7 @@ class Reader {
             }
             const currentDocs = isDocumentLike(explicitDoc)
                 ? [explicitDoc]
-                : this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+                : attachedDocuments;
             try {
                 for (const doc of currentDocs) {
                     const visibleRange = this.#visibleRangeForDocument(doc);
