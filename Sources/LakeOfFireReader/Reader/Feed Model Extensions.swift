@@ -52,10 +52,14 @@ public extension Feed {
     }
 
     public var latestHistoryRecordLastVisitedAtForFeedEntries: Date? {
+        latestHistoryRecordLastVisitedAtForFeedEntries(getEntries() ?? [])
+    }
+
+    private func latestHistoryRecordLastVisitedAtForFeedEntries(_ entries: [FeedEntry]) -> Date? {
         guard let historyRealm = try? Realm(configuration: ReaderContentLoader.historyRealmConfiguration) else {
             return nil
         }
-        let entryURLStrings = Set((getEntries() ?? []).map { $0.url.absoluteString })
+        let entryURLStrings = Set(entries.map { $0.url.absoluteString })
         guard !entryURLStrings.isEmpty else { return nil }
         return historyRealm.objects(HistoryRecord.self)
             .where { !$0.isDeleted }
@@ -65,7 +69,11 @@ public extension Feed {
     }
 
     public var effectiveFeedSeenDate: Date? {
-        [lastViewedAt, lastSeenFeedEntriesAt, latestHistoryRecordLastVisitedAtForFeedEntries]
+        resolvedFeedSeenDate(latestHistoryLastVisitedAt: latestHistoryRecordLastVisitedAtForFeedEntries)
+    }
+
+    private func resolvedFeedSeenDate(latestHistoryLastVisitedAt: Date?) -> Date? {
+        [lastViewedAt, lastSeenFeedEntriesAt, latestHistoryLastVisitedAt]
             .compactMap { $0 }
             .max()
     }
@@ -82,19 +90,15 @@ public extension Feed {
     }
 
     public var hasEntriesNewerThanLastViewedAt: Bool {
+        guard showsUnseenBadge else { return false }
         let entries = getEntries() ?? []
-        guard showsUnseenBadge else {
-            let result = false
-            return result
+        let latestHistoryLastVisitedAt = latestHistoryRecordLastVisitedAtForFeedEntries(entries)
+        guard let effectiveLastViewedAt = resolvedFeedSeenDate(
+            latestHistoryLastVisitedAt: latestHistoryLastVisitedAt
+        ) else {
+            return false
         }
-        let latestHistoryLastVisitedAt = latestHistoryRecordLastVisitedAtForFeedEntries
-        guard let effectiveLastViewedAt = effectiveFeedSeenDate else {
-            let result = false
-            return result
-        }
-        let latestEntryCreatedAt = entries.map(\.createdAt).max()
-        let result = entries.contains(where: { $0.createdAt > effectiveLastViewedAt })
-        return result
+        return entries.contains { $0.createdAt > effectiveLastViewedAt }
     }
 
     var shouldRefreshOnCategoryAppear: Bool {

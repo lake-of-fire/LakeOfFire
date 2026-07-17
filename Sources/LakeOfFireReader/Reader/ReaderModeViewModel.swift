@@ -60,13 +60,12 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
-private func currentReaderFontCSSValues() -> (
+private func readerFontCSSValues(horizontalFamily: String) -> (
     horizontalFamily: String,
     verticalFamily: String,
     horizontalCSSValue: String,
     verticalCSSValue: String
 ) {
-    let horizontalFamily = UserDefaults.standard.string(forKey: "readerFont") ?? "YuKyokasho"
     let verticalFamily = horizontalFamily == "YuKyokasho" ? "YuKyokasho Yoko" : horizontalFamily
     return (
         horizontalFamily,
@@ -339,9 +338,13 @@ internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) thr
     try doc.appendChild(styleElement)
 }
 
-internal func upsertInlineSharedReaderFontCSS(_ css: String, in doc: SwiftSoup.Document) throws {
+internal func upsertInlineSharedReaderFontCSS(
+    _ css: String,
+    in doc: SwiftSoup.Document,
+    horizontalFontFamily: String = "YuKyokasho"
+) throws {
     guard !css.isEmpty else { return }
-    let rawFontValues = currentReaderFontCSSValues()
+    let rawFontValues = readerFontCSSValues(horizontalFamily: horizontalFontFamily)
     let payload = readerModeSharedFontInlinePayloadCache.payload(
         css: css,
         fontValues: ReaderModeSharedFontCSSValues(
@@ -1147,6 +1150,8 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
+    /// In-memory presentation state supplied by the app's settings owner.
+    public var readerFontFamilyName = "YuKyokasho"
     @Published public var sharedFontCSSBase64: String?
     @Published public var sharedFontCSSBase64Provider: (() async -> String?)?
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
@@ -1417,7 +1422,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard #available(iOS 16.4, macOS 14, *) else {
             return
         }
-        let fontValues = currentReaderFontCSSValues()
+        let fontValues = readerFontCSSValues(horizontalFamily: readerFontFamilyName)
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
             (function() {

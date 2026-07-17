@@ -369,26 +369,10 @@ public struct ReaderContentBookCoverRenderedWidthPreferenceKey: PreferenceKey {
 }
 
 public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
-    @ObservedRealmObject var item: C
-    var appearance: ReaderContentCellAppearance
-    var customLeadingMenuOptions: ((C) -> AnyView)? = nil
-    var customMenuOptions: ((C) -> AnyView)? = nil
-
-    static var buttonSize: CGFloat { 26 }
-
-    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-    @Environment(\.readerContentCellStyle) private var readerContentCellStyle
-    @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
-    @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
-    @Environment(\.controlSize) private var controlSize
-#if DEBUG
-    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
-#endif
-
-    @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
-    @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
-    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    @State private var annotationStatus = ReaderContentCellAnnotationStatus()
+    @ObservedRealmObject private var item: C
+    private let appearance: ReaderContentCellAppearance
+    private let customLeadingMenuOptions: ((C) -> AnyView)?
+    private let customMenuOptions: ((C) -> AnyView)?
 
     public init(
         item: C,
@@ -422,6 +406,51 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
                 thumbnailCornerRadius: thumbnailCornerRadius
             )
         )
+    }
+
+    public var body: some View {
+        ReaderContentCellBody(
+            item: item,
+            appearance: appearance,
+            customLeadingMenuOptions: customLeadingMenuOptions,
+            customMenuOptions: customMenuOptions
+        )
+    }
+}
+
+/// Keeps Realm observation at the cell boundary so nested builders use one resolved object.
+private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
+    let item: C
+    var appearance: ReaderContentCellAppearance
+    var customLeadingMenuOptions: ((C) -> AnyView)? = nil
+    var customMenuOptions: ((C) -> AnyView)? = nil
+
+    static var buttonSize: CGFloat { 26 }
+
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    @Environment(\.readerContentCellStyle) private var readerContentCellStyle
+    @Environment(\.readerContentCellAnnotationStatusLoader) private var readerContentCellAnnotationStatusLoader
+    @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
+    @Environment(\.controlSize) private var controlSize
+#if DEBUG
+    @Environment(\.readerContentVideoMakerOpenAction) private var readerContentVideoMakerOpenAction
+#endif
+
+    @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
+    @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
+    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
+    @State private var annotationStatus = ReaderContentCellAnnotationStatus()
+
+    init(
+        item: C,
+        appearance: ReaderContentCellAppearance,
+        customLeadingMenuOptions: ((C) -> AnyView)? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil
+    ) {
+        self.item = item
+        self.appearance = appearance
+        self.customLeadingMenuOptions = customLeadingMenuOptions
+        self.customMenuOptions = customMenuOptions
     }
 
     private var buttonSize: CGFloat { Self.buttonSize }
@@ -1077,7 +1106,7 @@ public struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable
         }
     }
 
-    public var body: some View {
+    var body: some View {
         Group {
             if usesCompactControlSize {
                 compactLayout

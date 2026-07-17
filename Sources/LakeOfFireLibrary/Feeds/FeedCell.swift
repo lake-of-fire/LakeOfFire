@@ -43,27 +43,7 @@ public struct FeedCell: View {
     @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 40
     @ScaledMetric(relativeTo: .caption2) private var scaledNewBadgeHeight: CGFloat = 19
     
-    private var showsAudioIndicator: Bool {
-        cachedShowsAudioIndicator ?? feed.anyEntryHasAudio
-    }
-
-    private var showsUnreadIndicator: Bool {
-        feed.hasEntriesNewerThanLastViewedAt
-    }
-
-    private var showsStatusRow: Bool {
-        showsUnreadIndicator || showsAudioIndicator
-    }
-
-    private var showsDescription: Bool {
-        includesDescription && !(feed.markdownDescription?.isEmpty ?? true)
-    }
-
-    private var shouldCenterTitleWithIcon: Bool {
-        !showsStatusRow && !showsDescription
-    }
-
-    private var titleText: Text {
+    private func titleText(for feed: Feed) -> Text {
         if feed.title.isEmpty {
             return Text("Untitled Feed")
                 .foregroundColor(.secondary)
@@ -76,6 +56,13 @@ public struct FeedCell: View {
     }
     
     public var body: some View {
+        let feed = feed
+        let showsAudioIndicator = cachedShowsAudioIndicator ?? feed.anyEntryHasAudio
+        let showsUnreadIndicator = feed.hasEntriesNewerThanLastViewedAt
+        let showsStatusRow = showsUnreadIndicator || showsAudioIndicator
+        let showsDescription = includesDescription && !(feed.markdownDescription?.isEmpty ?? true)
+        let shouldCenterTitleWithIcon = !showsStatusRow && !showsDescription
+
         HStack(spacing: 0) {
             VStack(alignment: .leading) {
                 HStack(alignment: shouldCenterTitleWithIcon ? .center : .top, spacing: horizontalSpacing) {
@@ -86,7 +73,7 @@ public struct FeedCell: View {
                         .frame(width: scaledIconHeight, height: scaledIconHeight)
                         .padding(4)
                     VStack(alignment: .leading, spacing: 6) {
-                        titleText
+                        titleText(for: feed)
                             .font(.headline.bold())
 
                         if showsStatusRow {
