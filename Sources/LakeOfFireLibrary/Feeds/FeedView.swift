@@ -111,10 +111,10 @@ public class FeedViewModel: ObservableObject {
                 .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounce(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         await self?.reloadEntries(feedID: feedID, reason: "entriesChanged")
                     }
@@ -125,10 +125,10 @@ public class FeedViewModel: ObservableObject {
                 .where { $0.feedID.in(feedIDs) && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounce(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         await self?.reloadCollections(feedID: feedID, reason: "collectionsChanged")
                     }
@@ -139,10 +139,10 @@ public class FeedViewModel: ObservableObject {
                 .where { !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounce(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in}, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         await self?.reloadFollowedStatus(reason: "feedsChanged")
                         await self?.reloadEntries(feedID: feedID, reason: "feedsChanged")

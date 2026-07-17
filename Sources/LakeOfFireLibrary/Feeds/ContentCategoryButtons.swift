@@ -55,9 +55,9 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.5), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
                         let libraryConfigurationID = libraryConfiguration.id
@@ -74,9 +74,9 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
             realm.objects(FeedCategory.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.5), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.objectWillChange.send() // Refresh view for LibraryConfiguration's categories
                     }

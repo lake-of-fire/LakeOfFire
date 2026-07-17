@@ -159,9 +159,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .where { $0.feedID == feedID }
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.5), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)

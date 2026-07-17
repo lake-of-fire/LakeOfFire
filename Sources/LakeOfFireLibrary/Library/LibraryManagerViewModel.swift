@@ -185,23 +185,23 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 realm.objects(objectType)
                     .collectionPublisher
                     .subscribe(on: libraryDataQueue)
-                    .map { _ in }
+                    .map { @Sendable _ in }
                     .receive(on: RunLoop.main)
-                    .handleEvents(receiveOutput: { [weak self] changes in
+                    .handleEvents(receiveOutput: { @Sendable [weak self] changes in
                         Task { @MainActor [weak self] in
                             self?.invalidateOPMLExport()
                         }
                     })
-                    .sink(receiveCompletion: { _ in }, receiveValue: { _ in })
+                    .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable _ in })
                     .store(in: &cancellables)
             }
             
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.2), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.objectWillChange.send()
                     }
@@ -211,9 +211,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .map { _ in }
+                .map { @Sendable _ in }
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                .sink(receiveCompletion: { @Sendable _ in }, receiveValue: { @Sendable [weak self] _ in
                     Task { @MainActor [weak self] in
                         let currentConfigurationID = libraryConfiguration?.id
                         try await { @RealmBackgroundActor in
