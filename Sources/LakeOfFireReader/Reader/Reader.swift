@@ -539,9 +539,9 @@ func syncEbookViewerChromeInsets(
 
 fileprivate struct ThemeModifier: ViewModifier {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
-    @AppStorage("readerFontSize") internal var readerFontSize: Double?
-    @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
-    @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("readerFontSize") private var readerFontSize: Double?
+    let lightModeTheme: LightModeTheme
+    let darkModeTheme: DarkModeTheme
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
@@ -1152,7 +1152,9 @@ public struct Reader: View {
             onScrollBottomStateChanged: onScrollBottomStateChanged,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
             textSelection: $textSelection,
-            buildMenu: buildMenu
+            buildMenu: buildMenu,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
         )
 #if os(iOS)
         .readerStatusBarFadeForCurrentDevice(
@@ -1233,7 +1235,10 @@ public struct Reader: View {
             hideNavigationDueToScroll: $hideNavigationDueToScroll
         ))
         .modifier(ReaderStateChangeModifier())
-        .modifier(ThemeModifier())
+        .modifier(ThemeModifier(
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
+        ))
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
         .task(id: chromeInsetsTaskID) {

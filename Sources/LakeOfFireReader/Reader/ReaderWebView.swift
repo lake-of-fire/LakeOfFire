@@ -160,6 +160,8 @@ public struct ReaderWebView: View {
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
+    let lightModeTheme: LightModeTheme
+    let darkModeTheme: DarkModeTheme
     
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
@@ -204,7 +206,9 @@ public struct ReaderWebView: View {
         onScrollBottomStateChanged: (@MainActor (Bool) -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
-        buildMenu: BuildMenuType? = nil
+        buildMenu: BuildMenuType? = nil,
+        lightModeTheme: LightModeTheme = .white,
+        darkModeTheme: DarkModeTheme = .black
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
@@ -223,6 +227,8 @@ public struct ReaderWebView: View {
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
+        self.lightModeTheme = lightModeTheme
+        self.darkModeTheme = darkModeTheme
     }
     
     public var body: some View {
@@ -251,6 +257,8 @@ public struct ReaderWebView: View {
             textSelection: $textSelection,
             onScrollBottomStateChanged: onScrollBottomStateChanged,
             buildMenu: buildMenu,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme,
             scriptCaller: scriptCaller,
             userScripts: readerViewModel.allScripts,
             state: $readerViewModel.state,
@@ -297,6 +305,8 @@ fileprivate struct ReaderWebViewInternal: View {
     @Binding var textSelection: String?
     let onScrollBottomStateChanged: (@MainActor (Bool) -> Void)?
     var buildMenu: BuildMenuType?
+    let lightModeTheme: LightModeTheme
+    let darkModeTheme: DarkModeTheme
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
     @Binding var state: WebViewState
@@ -307,16 +317,16 @@ fileprivate struct ReaderWebViewInternal: View {
     let handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+#if os(iOS)
     @StateObject private var webViewPrewarmer = WebViewPrewarmer(
         warmUpCount: 1,
-        keepAliveCount: 1,
+        keepAliveCount: 0,
         defaultResetURL: URL(string: "about:blank")
     )
+#endif
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
-    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
 
     private var readerThemeBackgroundColor: Color {
         switch colorScheme {
@@ -366,6 +376,13 @@ fileprivate struct ReaderWebViewInternal: View {
     }
     
     public var body: some View {
+#if os(iOS)
+        let webViewPrewarmer: WebViewPrewarmer? = self.webViewPrewarmer
+#else
+        // A local macOS pool cannot warm before NSView construction. Loading its
+        // spare views here launches WebKit services synchronously during layout.
+        let webViewPrewarmer: WebViewPrewarmer? = nil
+#endif
         let resolvedObscuredInsets = totalObscuredInsets(
             additionalInsets: EdgeInsets(
                 top: max(0, additionalTopSafeAreaInset ?? 0),
