@@ -37,18 +37,26 @@ public extension Feed {
         getEntries()?.first?.hasAudio ?? false
     }
 
+    public var hasActiveEntries: Bool {
+        guard let realm else { return false }
+        return !activeEntries(in: realm).isEmpty
+    }
+
     public var anyEntryHasAudio: Bool {
         guard let realm else {
             print("Warning: Unexpectedly unmanaged object")
             return false
         }
-        return realm.objects(FeedEntry.self)
-            .where { $0.feedID == id && !$0.isDeleted }
+        return activeEntries(in: realm)
             .contains { $0.hasAudio }
     }
 
     public var latestEntryCreatedAt: Date? {
-        getEntries()?.map(\.createdAt).max()
+        guard let realm else {
+            return nil
+        }
+        return activeEntries(in: realm)
+            .max(of: \.createdAt)
     }
 
     public var latestHistoryRecordLastVisitedAtForFeedEntries: Date? {
@@ -103,12 +111,18 @@ public extension Feed {
 
     var shouldRefreshOnCategoryAppear: Bool {
         guard !hasRecentlyRefreshedEntries else { return false }
-        let entries = getEntries() ?? []
+        guard let realm else { return true }
+        let entries = activeEntries(in: realm)
         guard !entries.isEmpty else { return true }
         guard let lastViewedAt,
-              let latestEntryCreatedAt else {
+              let latestEntryCreatedAt = entries.max(of: \.createdAt) else {
             return false
         }
         return latestEntryCreatedAt < lastViewedAt
+    }
+
+    private func activeEntries(in realm: Realm) -> Results<FeedEntry> {
+        realm.objects(FeedEntry.self)
+            .where { $0.feedID == id && !$0.isDeleted }
     }
 }

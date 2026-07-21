@@ -78,6 +78,24 @@ final class FeedStateIndicatorTests: XCTestCase {
         XCTAssertFalse(laterAudioFeed.firstEntryHasAudio)
     }
 
+    func testActiveEntryQueriesConsistentlyExcludeDeletedEntries() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let feed = try makeManagedFeed(entries: [(date, date, true)])
+        let realm = try XCTUnwrap(feed.realm)
+
+        XCTAssertTrue(feed.hasActiveEntries)
+        XCTAssertTrue(feed.anyEntryHasAudio)
+        XCTAssertEqual(feed.latestEntryCreatedAt, date)
+
+        try realm.write {
+            realm.objects(FeedEntry.self).first?.isDeleted = true
+        }
+
+        XCTAssertFalse(feed.hasActiveEntries)
+        XCTAssertFalse(feed.anyEntryHasAudio)
+        XCTAssertNil(feed.latestEntryCreatedAt)
+    }
+
     func testHasEntriesNewerThanLastViewedAtUsesCreatedAt() throws {
         let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
         let feed = try makeManagedFeed(
