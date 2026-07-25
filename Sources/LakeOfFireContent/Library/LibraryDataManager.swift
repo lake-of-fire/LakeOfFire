@@ -74,6 +74,14 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 
     @MainActor
     public var downloadables: Set<Downloadable> {
+        Self.configuredDownloadables
+    }
+
+    /// Download descriptors depend only on process configuration, not managed
+    /// Realm fields. Keeping their construction static avoids sending a managed
+    /// `LibraryConfiguration` across actors merely to read this value.
+    @MainActor
+    public static var configuredDownloadables: Set<Downloadable> {
         guard !Self.securityApplicationGroupIdentifier.isEmpty else { fatalError("securityApplicationGroupIdentifier unset") }
         return Set(Self.opmlURLs.compactMap { url in
             if let downloadable = DownloadController.shared.assuredDownloads.first(where: { $0.url == url }) {
@@ -578,9 +586,13 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
-        Task.detached { @MainActor in
-            let downloadables = try await LibraryConfiguration.getConsolidatedOrCreate().downloadables
-            await DownloadController.shared.ensureDownloaded(downloadables)
+        // Creating/consolidating the Realm row remains part of this operation, but
+        // the descriptors themselves contain no Realm-backed state.
+        _ = try await LibraryConfiguration.getConsolidatedOrCreate()
+        Task { @MainActor in
+            await DownloadController.shared.ensureDownloaded(
+                LibraryConfiguration.configuredDownloadables
+            )
         }
     }
     
