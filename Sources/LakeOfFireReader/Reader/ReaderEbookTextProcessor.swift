@@ -3,8 +3,8 @@ import SwiftSoup
 
 private let ebookTextProcessorDetailedLoggingEnabled =
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
-private let ebookTextProcessorSegmentOpenTagBytes = Array("<mnb-seg".utf8)
-private let ebookTextProcessorSentenceOpenTagBytes = Array("<mnb-sen".utf8)
+private let ebookTextProcessorSegmentOpenTagBytes = Array("<m-m".utf8)
+private let ebookTextProcessorSentenceOpenTagBytes = Array("<m-s".utf8)
 
 @inline(__always)
 private func bodyStartsWithReaderSentinel(_ body: Element) -> Bool {

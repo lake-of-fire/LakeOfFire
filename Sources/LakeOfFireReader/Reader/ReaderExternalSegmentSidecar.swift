@@ -206,27 +206,36 @@ func ebookProcessedHTMLHasDurableSegmentIdentities(
     }
     guard let object = try? JSONSerialization.jsonObject(with: sidecarData),
           let root = object as? [String: Any],
-          (root["v"] as? NSNumber)?.intValue == 3,
+          (root["v"] as? NSNumber)?.intValue == 9,
           let tables = root["t"] as? [String: Any],
-          let stableIDs = tables["sid"] as? [String],
+          let segmentHashes = tables["h"] as? [String],
+          let sentenceIdentifiers = tables["sid"] as? [String],
           let segments = root["s"] as? [[Any]],
           segments.count == generatedSegmentCount else {
         return false
     }
 
+    var runtimeIDs = Set<String>()
     return segments.allSatisfy { segment in
-        guard segment.indices.contains(8),
-              let stableIDIndex = segment[8] as? NSNumber,
-              stableIDIndex.intValue >= 0,
-              stableIDs.indices.contains(stableIDIndex.intValue) else {
+        guard segment.indices.contains(9),
+              let runtimeIDToken = segment[0] as? String,
+              !runtimeIDToken.isEmpty,
+              runtimeIDs.insert(runtimeIDToken).inserted,
+              let segmentHashIndex = segment[1] as? NSNumber,
+              segmentHashIndex.intValue >= 0,
+              segmentHashes.indices.contains(segmentHashIndex.intValue),
+              !segmentHashes[segmentHashIndex.intValue].isEmpty,
+              let sentenceIdentifierIndex = segment[9] as? NSNumber,
+              sentenceIdentifierIndex.intValue >= 0,
+              sentenceIdentifiers.indices.contains(sentenceIdentifierIndex.intValue) else {
             return false
         }
-        return !stableIDs[stableIDIndex.intValue].isEmpty
+        return !sentenceIdentifiers[sentenceIdentifierIndex.intValue].isEmpty
     }
 }
 
 private func generatedReaderSegmentCount(in htmlBytes: [UInt8]) -> Int {
-    let openingTag = Array("<mnb-seg".utf8)
+    let openingTag = Array("<m-m".utf8)
     let tagDelimiters: Set<UInt8> = [9, 10, 13, 32, 47, 62]
     var count = 0
     var index = htmlBytes.startIndex

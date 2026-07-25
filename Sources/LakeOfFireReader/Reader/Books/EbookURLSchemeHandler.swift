@@ -195,10 +195,10 @@ func ebookHTMLWithInjectedDirectSectionMetadata(
 ) -> String {
     let escapedBaseURL = ebookHTMLAttributeEscaped(baseURL)
     let escapedSourceHref = ebookHTMLAttributeEscaped(sourceHref)
-    let sentenceAttribute = html.range(of: "<mnb-sen", options: [.caseInsensitive]) == nil
+    let sentenceAttribute = html.range(of: "<m-s", options: [.caseInsensitive]) == nil
         ? ""
         : " data-mnb-has-sentences=\"true\""
-    let segmentAttribute = html.range(of: "<mnb-seg", options: [.caseInsensitive]) == nil
+    let segmentAttribute = html.range(of: "<m-m", options: [.caseInsensitive]) == nil
         ? ""
         : " data-mnb-has-segments=\"true\""
     let bodyAttributes = " data-mnb-source-href=\"\(escapedSourceHref)\"\(sentenceAttribute)\(segmentAttribute)"
