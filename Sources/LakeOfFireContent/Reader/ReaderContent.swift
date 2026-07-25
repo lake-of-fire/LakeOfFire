@@ -50,6 +50,7 @@ public class ReaderContent: ObservableObject {
     public private(set) var snippetTitleIsGeneratedFromPrefix = false
 
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
+    private var loadingRequestID: UUID?
     private var loadingResolvedContentURL: URL?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
@@ -150,6 +151,17 @@ public class ReaderContent: ObservableObject {
             || contentURL.matchesReaderURL(resolvedContentURL)
     }
 
+    private func consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: URL) {
+        guard let suppressedTransientAboutBlankTargetURL,
+              matchesResolvedContentURL(
+                suppressedTransientAboutBlankTargetURL,
+                resolvedContentURL: resolvedContentURL
+              ) else {
+            return
+        }
+        self.suppressedTransientAboutBlankTargetURL = nil
+    }
+
     @MainActor
     public func suppressTransientAboutBlank(untilNextNonBlankLoad targetURL: URL) {
         let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
@@ -222,7 +234,9 @@ public class ReaderContent: ObservableObject {
             return
         }
 
-        if resolvedContentURL.absoluteString != "about:blank" {
+        if resolvedContentURL.absoluteString != "about:blank",
+           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
+           !matchesResolvedContentURL(suppressedTargetURL, resolvedContentURL: resolvedContentURL) {
             suppressedTransientAboutBlankTargetURL = nil
         }
 
@@ -245,11 +259,13 @@ public class ReaderContent: ObservableObject {
             let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
                 || pageURL.matchesReaderURL(displayURL)
             if pageAlreadyMatchesDisplay {
+                consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
                 logReaderLoad(
                     "stage=readerContent.load.reuseExistingContent.sameDisplay requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString) currentPageURL=\(pageURL.absoluteString)"
                 )
                 return
             }
+            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
             if !pageURL.matchesReaderURL(url) {
                 logReaderLoad(
                     "stage=readerContent.load.reuseExistingContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString)"
@@ -260,6 +276,7 @@ public class ReaderContent: ObservableObject {
         }
 
         if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+            consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
             logReaderLoad(
                 "stage=readerContent.load.usePreloadedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString) key=\(preloadedContent.compoundKey)"
             )
@@ -280,6 +297,8 @@ public class ReaderContent: ObservableObject {
         pageURL = displayURL
 
         loadingTask?.cancel()
+        let requestID = UUID()
+        loadingRequestID = requestID
         loadingResolvedContentURL = resolvedContentURL
         loadingTask = Task { @MainActor [weak self] in
             try Task.checkCancellation()
@@ -288,6 +307,12 @@ public class ReaderContent: ObservableObject {
                 true,
                 "ReaderContent.load"
             ) ?? ReaderContentLoader.unsavedHome
+            guard self?.loadingRequestID == requestID else {
+                logReaderLoad(
+                    "stage=readerContent.load.discardStaleContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
+                )
+                return nil
+            }
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 logReaderLoad(
                     "stage=readerContent.load.mismatchedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
@@ -295,15 +320,21 @@ public class ReaderContent: ObservableObject {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
             }
+            self?.consumeTransientAboutBlankSuppressionIfMatching(resolvedContentURL: resolvedContentURL)
             self?.content = content
             logReaderLoad(
                 "stage=readerContent.load.contentResolved requestURL=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
             )
             return content
         }
+        defer {
+            if loadingRequestID == requestID {
+                loadingTask = nil
+                loadingRequestID = nil
+                loadingResolvedContentURL = nil
+            }
+        }
         let loadedContent = try await loadingTask?.value
-        loadingTask = nil
-        loadingResolvedContentURL = nil
         let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
         logReaderLoad(
             "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
