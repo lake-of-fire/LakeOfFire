@@ -1,5 +1,5 @@
 {
-  "originHash" : "970e3142688c3151854546b72fb7e5f20ce1b5c29395bd3cd559e890279474f5",
+  "originHash" : "0c040454dc6c3511abca9d312603085b4bfd2b8c3f30b289a4b34bb0e3fc981b",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -197,15 +197,6 @@
       "state" : {
         "revision" : "600e187711e5fa4e8e2c0429cacee27e8e44f112",
         "version" : "20.0.4"
-      }
-    },
-    {
-      "identity" : "realmswiftgaps",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/RealmSwiftGaps.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "f2f5e54628b3474f281ae3d70fc3aaed471a9ecd"
       }
     },
     {

@@ -29,7 +29,7 @@ final class LibraryConfigurationActorBoundaryTests: XCTestCase {
         let configurationCount = try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
             return realm.objects(LibraryConfiguration.self).where { !$0.isDeleted }.count
-        }
+        }()
 
         XCTAssertEqual(configurationCount, 1)
     }
