@@ -92,8 +92,12 @@ fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable 
             guard !Task.isCancelled else { return }
             task.fallbackTask = defaultDataLoader.loadData(
                 with: request,
-                didReceiveData: callbacks.didReceiveData,
-                completion: callbacks.completion
+                didReceiveData: { data, response in
+                    callbacks.didReceiveData(data, response)
+                },
+                completion: { error in
+                    callbacks.completion(error)
+                }
             )
         }
 
