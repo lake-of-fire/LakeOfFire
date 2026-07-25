@@ -10,8 +10,8 @@ body:lang(ja),
 :lang(ja),
 body[data-mnb-has-sentences="true"],
 body[data-mnb-has-segments="true"],
-body[data-mnb-has-sentences="true"] mnb-sen,
-body[data-mnb-has-segments="true"] mnb-seg {
+body[data-mnb-has-sentences="true"] m-s,
+body[data-mnb-has-segments="true"] m-m {
     line-break: strict;
     -webkit-line-break: strict;
     word-break: normal;
@@ -44,8 +44,8 @@ body:lang(ja) :is(p, li, blockquote, dd),
 :lang(ja):is(p, li, blockquote, dd),
 body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
 body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
-body[data-mnb-has-sentences="true"] mnb-sen,
-body[data-mnb-has-segments="true"] mnb-seg {
+body[data-mnb-has-sentences="true"] m-s,
+body[data-mnb-has-segments="true"] m-m {
     --mnb-ruby-reserved-line-height: 1.8;
     line-height: var(--mnb-ruby-reserved-line-height) !important;
 }
@@ -85,12 +85,12 @@ h6 {
     color: inherit !important;
 }
 
-mnb-con,
-mnb-sen {
+m-c,
+m-s {
     display: contents !important;
 }
 
-mnb-sur {
+m-t {
     contain: style paint !important;
 }
 
@@ -101,8 +101,8 @@ body.reader-vertical-writing {
 }
 
 body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
-body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
+body.reader-vertical-writing m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+body.reader-vertical-writing m-t[data-mnb-horizontal-writing-island="true"] {
     --mnb-highlight-gradient-direction: to bottom;
 }
 
@@ -163,17 +163,17 @@ body.reader-vertical-writing .mnb-tate-sideways-latin {
     white-space: nowrap;
 }
 
-body.reader-vertical-writing ruby > mnb-sur {
+body.reader-vertical-writing ruby > m-t {
     display: inline !important;
 }
 
-body.reader-vertical-writing mnb-sur {
+body.reader-vertical-writing m-t {
     line-height: inherit !important;
 }
 
-mnb-sen ruby.mnb-gen > rt,
-mnb-sen ruby.mbn-src > rt,
-mnb-sen ruby.mbn-src-fwd > rt {
+m-s ruby.mnb-gen > rt,
+m-s ruby.mbn-src > rt,
+m-s ruby.mbn-src-fwd > rt {
     font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", system-ui !important;
 }
 

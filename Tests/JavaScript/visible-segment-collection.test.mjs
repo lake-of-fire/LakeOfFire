@@ -9,10 +9,10 @@ import {
 const makeSegment = (id, order) => ({
     id,
     nodeType: 1,
-    matches: selector => selector === 'mnb-seg',
+    matches: selector => selector === 'm-m',
     closest(selector) {
-        if (selector === 'mnb-seg') return this
-        if (selector === 'mnb-sen') return this.sentence ?? null
+        if (selector === 'm-m') return this
+        if (selector === 'm-s') return this.sentence ?? null
         return null
     },
     compareDocumentPosition(other) {

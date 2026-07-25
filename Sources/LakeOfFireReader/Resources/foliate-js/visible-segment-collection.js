@@ -14,7 +14,7 @@ export const compareSegmentNodesInDocumentOrder = (first, second) => {
     return 0;
 };
 
-export const collectSegmentNodesInVisibleRange = (visibleRange, segmentSelector = 'mnb-seg') => {
+export const collectSegmentNodesInVisibleRange = (visibleRange, segmentSelector = 'm-m') => {
     const doc = visibleRange?.commonAncestorContainer?.ownerDocument
         || visibleRange?.startContainer?.ownerDocument
         || visibleRange?.endContainer?.ownerDocument
@@ -50,8 +50,8 @@ export const collectSegmentNodesInVisibleRange = (visibleRange, segmentSelector 
 
 export const collectViewportSampleSegmentNodes = (doc, visibleBounds, {
     sampleDensity = 'normal',
-    segmentSelector = 'mnb-seg',
-    sentenceSelector = 'mnb-sen',
+    segmentSelector = 'm-m',
+    sentenceSelector = 'm-s',
 } = {}) => {
     if (!doc || !visibleBounds || typeof doc.elementFromPoint !== 'function') return null;
     const isMinimal = sampleDensity === 'minimal';

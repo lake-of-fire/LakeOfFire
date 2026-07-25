@@ -30,12 +30,12 @@ test('installs one identified style and reuses the same in-flight installation',
 
     const first = installBookContentStyles(document, stylesPromise)
     const repeated = installBookContentStyles(document, stylesPromise)
-    resolveStyles('mnb-sen { display: contents; }')
+    resolveStyles('m-s { display: contents; }')
 
     assert.equal(await first, true)
     assert.equal(await repeated, true)
     assert.equal(document.prependCount, 1)
-    assert.equal(document.getElementById(BOOK_CONTENT_STYLE_ID).textContent, 'mnb-sen { display: contents; }')
+    assert.equal(document.getElementById(BOOK_CONTENT_STYLE_ID).textContent, 'm-s { display: contents; }')
 })
 
 test('updates the existing style for a new resource revision without inserting another element', async () => {

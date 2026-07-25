@@ -29,14 +29,16 @@ public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiab
 struct ReaderContentIdentifiedItem<C: ReaderContentProtocol>: Identifiable {
     let id: String
     let content: C
+    let offset: Int
 }
 
 func readerContentIdentifiedItems<C: ReaderContentProtocol>(
     contents: [C],
     ids: [String]
 ) -> [ReaderContentIdentifiedItem<C>] {
-    zip(ids, contents).map { id, content in
-        ReaderContentIdentifiedItem(id: id, content: content)
+    assert(ids.count == contents.count, "Reader content IDs and values must remain aligned")
+    return contents.indices.map { index in
+        ReaderContentIdentifiedItem(id: ids[index], content: contents[index], offset: index)
     }
 }
 
@@ -667,7 +669,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     let appearance: ReaderContentListAppearance
     let isFirst: Bool
     let isLast: Bool
-    @ObservedObject var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentAppear: ((C) -> Void)?
@@ -865,16 +866,16 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     let onContentAppear: ((C) -> Void)?
     
     var body: some View {
-        let lastIndex = viewModel.filteredContents.indices.last
+        let contents = viewModel.filteredContents
         let items = readerContentIdentifiedItems(
-            contents: viewModel.filteredContents,
+            contents: contents,
             ids: viewModel.filteredContentIDs
         )
         Group {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            ForEach(items) { item in
                 let content = item.content
-                let isFirst = index == viewModel.filteredContents.startIndex
-                let isLast = lastIndex.map { index == $0 } ?? false
+                let isFirst = item.offset == contents.startIndex
+                let isLast = item.offset == contents.indices.last
                 ReaderContentInnerListItem(
                     content: content,
                     entrySelection: $entrySelection,
@@ -882,7 +883,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     appearance: appearance,
                     isFirst: isFirst,
                     isLast: isLast,
-                    viewModel: viewModel,
                     onRequestDelete: onRequestDelete,
                     customMenuOptions: customMenuOptions,
                     onContentAppear: onContentAppear
@@ -1063,7 +1063,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             contents: viewModel.filteredContents,
             ids: viewModel.filteredContentIDs
         )
-        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+        ForEach(items) { item in
             let content = item.content
             sectionWithSpacing(
                 Section {
@@ -1080,7 +1080,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         ),
                         isFirst: true,
                         isLast: true,
-                        viewModel: viewModel,
                         onRequestDelete: onRequestDelete,
                         customMenuOptions: customMenuOptions,
                         onContentAppear: onContentAppear
@@ -1089,7 +1088,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         useDefaultRowInsets: useDefaultRowInsets || separatedRowsUseGroupBox
                     )
                 } header: {
-                    if index == viewModel.filteredContents.startIndex,
+                    if item.offset == viewModel.filteredContents.startIndex,
                        !showEmptyState || rendersHeaderViewInSectionHeader {
                         contentSectionHeader
                     }
@@ -1341,7 +1340,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             ),
             isFirst: index == section.items.startIndex,
             isLast: index == lastIndex,
-            viewModel: viewModel,
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions,
             onContentAppear: onContentAppear
@@ -1355,13 +1353,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private func groupedRows(section: ReaderContentGroupingSection<C>) -> some View {
         let items = readerContentIdentifiedItems(contents: section.items, ids: section.itemIDs)
         if separateRowsIntoSections {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            ForEach(items) { item in
                 let content = item.content
                 sectionWithSpacing(
                     Section {
-                        groupedRowContent(section: section, index: index, content: content)
+                        groupedRowContent(section: section, index: item.offset, content: content)
                     } header: {
-                        if index == section.items.startIndex {
+                        if item.offset == section.items.startIndex {
                             Text(section.title)
                                 .foregroundStyle(.secondary)
                         }
@@ -1372,7 +1370,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             }
         } else {
             let lastIndex = section.items.indices.last ?? section.items.startIndex
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            ForEach(items) { item in
                 let content = item.content
                 ReaderContentInnerListItem(
                     content: content,
@@ -1385,9 +1383,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                         showsNewBadges: showsNewBadges,
                         wrapsContentInGroupBox: false
                     ),
-                    isFirst: index == section.items.startIndex,
-                    isLast: index == lastIndex,
-                    viewModel: viewModel,
+                    isFirst: item.offset == section.items.startIndex,
+                    isLast: item.offset == lastIndex,
                     onRequestDelete: onRequestDelete,
                     customMenuOptions: customMenuOptions,
                     onContentAppear: onContentAppear

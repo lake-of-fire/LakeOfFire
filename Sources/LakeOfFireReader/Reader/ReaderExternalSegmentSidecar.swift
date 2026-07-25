@@ -1,6 +1,71 @@
 import CryptoKit
 import Foundation
 
+public struct EbookProcessedSectionPayload: Sendable {
+    public let documentHTML: Data
+    public let segmentSidecar: Data
+
+    public init(documentHTML: Data, segmentSidecar: Data) {
+        self.documentHTML = documentHTML
+        self.segmentSidecar = segmentSidecar
+    }
+
+    public var combinedByteCount: Int {
+        documentHTML.count + segmentSidecar.count
+    }
+}
+
+public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+    _ payload: EbookProcessedSectionPayload
+) -> Bool {
+    let documentSegmentCount = generatedReaderSegmentCount(in: payload.documentHTML)
+    guard !payload.segmentSidecar.isEmpty else { return documentSegmentCount == 0 }
+    return readerSegmentSidecarHasDurableSegmentIdentities(
+        payload.segmentSidecar,
+        generatedSegmentCount: documentSegmentCount
+    )
+}
+
+private func readerSegmentSidecarHasDurableSegmentIdentities(
+    _ sidecar: Data,
+    generatedSegmentCount: Int
+) -> Bool {
+    guard let object = try? JSONSerialization.jsonObject(with: sidecar),
+          let root = object as? [String: Any],
+          (root["v"] as? NSNumber)?.intValue == 9,
+          let tables = root["t"] as? [String: Any],
+          let hashes = tables["h"] as? [String],
+          let sentenceIdentifiers = tables["sid"] as? [String],
+          let paragraphIdentifiers = tables["pid"] as? [String],
+          let segments = root["s"] as? [[Any]],
+          segments.count == generatedSegmentCount else {
+        return false
+    }
+
+    func hasNonEmptyValue(_ table: [String], tuple: [Any], index: Int) -> Bool {
+        guard tuple.indices.contains(index),
+              let tableIndex = tuple[index] as? NSNumber,
+              table.indices.contains(tableIndex.intValue) else {
+            return false
+        }
+        return !table[tableIndex.intValue].isEmpty
+    }
+
+    var runtimeIdentifierTokens = Set<String>()
+    return segments.allSatisfy { tuple in
+        guard tuple.count == 11,
+              let runtimeIdentifierToken = tuple.first as? String,
+              runtimeIdentifierToken.count > 1,
+              (runtimeIdentifierToken.first == "!" || runtimeIdentifierToken.first == "~"),
+              runtimeIdentifierTokens.insert(runtimeIdentifierToken).inserted else {
+            return false
+        }
+        return hasNonEmptyValue(hashes, tuple: tuple, index: 1)
+            && hasNonEmptyValue(sentenceIdentifiers, tuple: tuple, index: 9)
+            && hasNonEmptyValue(paragraphIdentifiers, tuple: tuple, index: 10)
+    }
+}
+
 struct ReaderExternalSegmentSidecarEntry: Sendable {
     let data: Data
     let signature: String
@@ -146,13 +211,24 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     }
 }
 
-enum ReaderExternalSegmentSidecarScheme: Sendable {
+enum ReaderExternalSegmentSidecarScheme: String, Sendable {
     case ebook
-
-    var endpointPathPrefix: String { "/processed-section-sidecar/" }
+    case internalReader = "internal"
 
     func endpointURL(token: String) -> String {
-        "ebook://ebook\(endpointPathPrefix)\(token)"
+        switch self {
+        case .ebook:
+            "ebook://ebook/processed-section-sidecar/\(token)"
+        case .internalReader:
+            "internal://local/reader-sidecar/\(token)"
+        }
+    }
+
+    var endpointPathPrefix: String {
+        switch self {
+        case .ebook: "/processed-section-sidecar/"
+        case .internalReader: "/reader-sidecar/"
+        }
     }
 }
 
@@ -187,6 +263,106 @@ struct ReaderExternalizedSegmentSidecarHTML: Sendable {
     let endpointURL: String?
 }
 
+struct ReaderPublishedSegmentSidecar: Sendable {
+    let documentHTML: Data
+    let headDescriptor: Data?
+    let canonicalSidecarByteCount: Int
+    let signature: String?
+    let endpointURL: String?
+}
+
+private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC3".utf8)
+private let readerProcessedSegmentSidecarEnvelopeLengthByteCount = MemoryLayout<UInt64>.size
+
+func splitCanonicalReaderSegmentSidecar(
+    from htmlBytes: [UInt8]
+) -> EbookProcessedSectionPayload? {
+    guard let ranges = canonicalReaderSegmentSidecarRanges(in: htmlBytes) else { return nil }
+    let sidecar = Data(htmlBytes[ranges.content])
+    guard !sidecar.isEmpty else { return nil }
+
+    var documentHTML = Data()
+    documentHTML.reserveCapacity(htmlBytes.count - ranges.element.count)
+    documentHTML.append(contentsOf: htmlBytes[..<ranges.element.lowerBound])
+    documentHTML.append(contentsOf: htmlBytes[ranges.element.upperBound...])
+    return EbookProcessedSectionPayload(documentHTML: documentHTML, segmentSidecar: sidecar)
+}
+
+public func encodedEbookProcessedSectionCacheValue(
+    _ payload: EbookProcessedSectionPayload
+) -> [UInt8] {
+    var bytes = readerProcessedSegmentSidecarEnvelopePrefix
+    bytes.reserveCapacity(
+        bytes.count
+            + (readerProcessedSegmentSidecarEnvelopeLengthByteCount * 2)
+            + payload.combinedByteCount
+    )
+    appendLittleEndianUInt64(UInt64(payload.documentHTML.count), to: &bytes)
+    appendLittleEndianUInt64(UInt64(payload.segmentSidecar.count), to: &bytes)
+    bytes.append(contentsOf: payload.documentHTML)
+    bytes.append(contentsOf: payload.segmentSidecar)
+    return bytes
+}
+
+public func decodedEbookProcessedSectionCacheValue(
+    _ bytes: [UInt8]
+) -> EbookProcessedSectionPayload? {
+    let headerByteCount = readerProcessedSegmentSidecarEnvelopePrefix.count
+        + (readerProcessedSegmentSidecarEnvelopeLengthByteCount * 2)
+    guard bytes.count >= headerByteCount,
+          bytes.starts(with: readerProcessedSegmentSidecarEnvelopePrefix) else {
+        return nil
+    }
+    var cursor = readerProcessedSegmentSidecarEnvelopePrefix.count
+    guard let documentLength = readLittleEndianUInt64(from: bytes, cursor: &cursor),
+          let sidecarLength = readLittleEndianUInt64(from: bytes, cursor: &cursor),
+          documentLength <= UInt64(Int.max),
+          sidecarLength <= UInt64(Int.max) else {
+        return nil
+    }
+    let documentByteCount = Int(documentLength)
+    let sidecarByteCount = Int(sidecarLength)
+    guard documentByteCount <= bytes.count - cursor,
+          sidecarByteCount == bytes.count - cursor - documentByteCount else {
+        return nil
+    }
+    let documentEnd = cursor + documentByteCount
+    return EbookProcessedSectionPayload(
+        documentHTML: Data(bytes[cursor..<documentEnd]),
+        segmentSidecar: Data(bytes[documentEnd...])
+    )
+}
+
+func publishingCanonicalReaderSegmentSidecar(
+    _ payload: EbookProcessedSectionPayload,
+    scheme: ReaderExternalSegmentSidecarScheme,
+    store: ReaderExternalSegmentSidecarStore = .shared
+) -> ReaderPublishedSegmentSidecar {
+    guard !payload.segmentSidecar.isEmpty else {
+        return ReaderPublishedSegmentSidecar(
+            documentHTML: payload.documentHTML,
+            headDescriptor: nil,
+            canonicalSidecarByteCount: 0,
+            signature: nil,
+            endpointURL: nil
+        )
+    }
+    let stored = store.insert(payload.segmentSidecar)
+    let endpointURL = scheme.endpointURL(token: stored.token)
+    let descriptor = Data(
+        "<meta name=\"mnb-segment-sidecar\" content=\"\(endpointURL)\" "
+            .appending("data-mnb-segment-sidecar-signature=\"\(stored.signature)\">")
+            .utf8
+    )
+    return ReaderPublishedSegmentSidecar(
+        documentHTML: payload.documentHTML,
+        headDescriptor: descriptor,
+        canonicalSidecarByteCount: payload.segmentSidecar.count,
+        signature: stored.signature,
+        endpointURL: endpointURL
+    )
+}
+
 func ebookProcessedHTMLHasDurableSegmentIdentities(
     _ processedHTML: String,
     store: ReaderExternalSegmentSidecarStore = .shared
@@ -204,34 +380,10 @@ func ebookProcessedHTMLHasDurableSegmentIdentities(
     guard let sidecarData else {
         return generatedSegmentCount == 0
     }
-    guard let object = try? JSONSerialization.jsonObject(with: sidecarData),
-          let root = object as? [String: Any],
-          (root["v"] as? NSNumber)?.intValue == 9,
-          let tables = root["t"] as? [String: Any],
-          let segmentHashes = tables["h"] as? [String],
-          let sentenceIdentifiers = tables["sid"] as? [String],
-          let segments = root["s"] as? [[Any]],
-          segments.count == generatedSegmentCount else {
-        return false
-    }
-
-    var runtimeIDs = Set<String>()
-    return segments.allSatisfy { segment in
-        guard segment.indices.contains(9),
-              let runtimeIDToken = segment[0] as? String,
-              !runtimeIDToken.isEmpty,
-              runtimeIDs.insert(runtimeIDToken).inserted,
-              let segmentHashIndex = segment[1] as? NSNumber,
-              segmentHashIndex.intValue >= 0,
-              segmentHashes.indices.contains(segmentHashIndex.intValue),
-              !segmentHashes[segmentHashIndex.intValue].isEmpty,
-              let sentenceIdentifierIndex = segment[9] as? NSNumber,
-              sentenceIdentifierIndex.intValue >= 0,
-              sentenceIdentifiers.indices.contains(sentenceIdentifierIndex.intValue) else {
-            return false
-        }
-        return !sentenceIdentifiers[sentenceIdentifierIndex.intValue].isEmpty
-    }
+    return readerSegmentSidecarHasDurableSegmentIdentities(
+        sidecarData,
+        generatedSegmentCount: generatedSegmentCount
+    )
 }
 
 private func generatedReaderSegmentCount(in htmlBytes: [UInt8]) -> Int {
@@ -249,6 +401,21 @@ private func generatedReaderSegmentCount(in htmlBytes: [UInt8]) -> Int {
             count += 1
         }
         index = delimiterIndex
+    }
+    return count
+}
+
+private func generatedReaderSegmentCount(in documentHTML: Data) -> Int {
+    let openingTag = Data("<m-m".utf8)
+    let tagDelimiters: Set<UInt8> = [9, 10, 13, 32, 47, 62]
+    var count = 0
+    var searchRange = documentHTML.startIndex..<documentHTML.endIndex
+    while let match = documentHTML.range(of: openingTag, options: [], in: searchRange) {
+        if match.upperBound == documentHTML.endIndex
+            || tagDelimiters.contains(documentHTML[match.upperBound]) {
+            count += 1
+        }
+        searchRange = match.upperBound..<documentHTML.endIndex
     }
     return count
 }
@@ -368,4 +535,24 @@ private func canonicalReaderSegmentSidecarRanges(
         openingTag.lowerBound..<closingTag.upperBound,
         (openingTagEnd + 1)..<closingTag.lowerBound
     )
+}
+
+@inline(__always)
+private func appendLittleEndianUInt64(_ value: UInt64, to bytes: inout [UInt8]) {
+    for shift in stride(from: 0, to: UInt64.bitWidth, by: UInt8.bitWidth) {
+        bytes.append(UInt8(truncatingIfNeeded: value >> UInt64(shift)))
+    }
+}
+
+@inline(__always)
+private func readLittleEndianUInt64(from bytes: [UInt8], cursor: inout Int) -> UInt64? {
+    guard cursor <= bytes.count - readerProcessedSegmentSidecarEnvelopeLengthByteCount else {
+        return nil
+    }
+    var value: UInt64 = 0
+    for offset in 0..<readerProcessedSegmentSidecarEnvelopeLengthByteCount {
+        value |= UInt64(bytes[cursor + offset]) << UInt64(offset * UInt8.bitWidth)
+    }
+    cursor += readerProcessedSegmentSidecarEnvelopeLengthByteCount
+    return value
 }

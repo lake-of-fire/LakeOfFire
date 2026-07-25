@@ -55,16 +55,19 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
 
     func testMissingExternalSidecarForcesProcessingRegeneration() async throws {
         let counter = SidecarProcessorInvocationCounter()
-        let missingToken = String(repeating: "a", count: 64)
-        let cachedHTML = """
-        <html><head><meta name="mnb-segment-sidecar" content="ebook://ebook/processed-section-sidecar/\(missingToken)"></head><body><m-m id="runtime">猫</m-m></body></html>
-        """
+        let cachedPayload = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body><m-m id=\"runtime\">猫</m-m></body></html>".utf8),
+            segmentSidecar: Data()
+        )
         let regeneratedHTML = inlineHTML(sidecarData: validSidecarData(runtimeIDToken: "!runtime"))
+        let regeneratedPayload = try XCTUnwrap(
+            splitCanonicalReaderSegmentSidecar(from: Array(regeneratedHTML.utf8))
+        )
         let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in cachedHTML },
+            ebookProcessedTextCacheReader: { _, _, _, _ in cachedPayload },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
                 await counter.increment()
-                return regeneratedHTML
+                return regeneratedPayload
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -80,7 +83,8 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         )
 
         let invocationCount = await counter.value()
-        XCTAssertEqual(result, regeneratedHTML)
+        XCTAssertEqual(result.documentHTML, regeneratedPayload.documentHTML)
+        XCTAssertEqual(result.segmentSidecar, regeneratedPayload.segmentSidecar)
         XCTAssertEqual(invocationCount, 1)
     }
 

@@ -3194,7 +3194,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 )
             }
 
-            let processedSegmentCount = (try? doc.getElementsByTag("mnb-seg").size()) ?? 0
+            let processedSegmentCount = (try? doc.getElementsByTag("m-m").size()) ?? 0
             let processedBodyExists = doc.body() != nil
             let processedBodyClasses = (try? doc.body()?.className()) ?? ""
             let processedBodyClassesForFrameInjection: String = {

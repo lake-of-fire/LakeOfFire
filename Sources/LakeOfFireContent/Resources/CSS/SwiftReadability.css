@@ -114,8 +114,8 @@ body.readability-mode:lang(ja),
 body.readability-mode #reader-header:lang(ja),
 body.readability-mode #reader-content:lang(ja),
 body.readability-mode #reader-content :lang(ja),
-body.readability-mode mnb-sen,
-body.readability-mode mnb-seg {
+body.readability-mode m-s,
+body.readability-mode m-m {
     line-break: strict;
     -webkit-line-break: strict;
     word-break: normal;
@@ -128,11 +128,11 @@ body.readability-mode #reader-content [data-readability-carousel-slide] figcapti
     color: var(--theme-secondary-text, -apple-system-secondary-label);
 }
 
-body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:not(:has(mnb-seg)) {
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:not(:has(m-m)) {
     font: -apple-system-caption1;
 }
 
-body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:has(mnb-seg) {
+body.readability-mode #reader-content [data-readability-carousel-slide] figcaption:has(m-m) {
     font-size: 0.8em;
 }
 

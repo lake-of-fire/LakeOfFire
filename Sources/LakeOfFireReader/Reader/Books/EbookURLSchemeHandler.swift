@@ -528,14 +528,14 @@ enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedE
 
 actor EBookProcessTextRequestDeduper {
     private enum ProcessTextOutcome: Sendable {
-        case success(String)
+        case success(EbookProcessedSectionPayload)
         case cancelled
         case failure(String)
     }
 
     private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
 
-    private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
+    private func resolve(_ outcome: ProcessTextOutcome) throws -> EbookProcessedSectionPayload {
         switch outcome {
         case .success(let responseText):
             return responseText
@@ -554,8 +554,8 @@ actor EBookProcessTextRequestDeduper {
 
     func process(
         key: EBookProcessTextRequestKey,
-        operation: @Sendable () async throws -> String
-    ) async throws -> (responseText: String, didCoalesce: Bool) {
+        operation: @Sendable () async throws -> EbookProcessedSectionPayload
+    ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool) {
         if inFlightWaitersByKey[key] != nil {
             let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
@@ -637,7 +637,7 @@ actor EBookProcessingActor {
     ) async throws -> EBookNativeSectionPrewarmResult {
         let entryData = try source.readEntry(subpath: sectionHref)
         let entryText = String(decoding: entryData, as: UTF8.self)
-        let processedText = try await process(
+        let processedPayload = try await process(
             contentURL: contentURL,
             location: sectionHref,
             text: entryText,
@@ -646,7 +646,7 @@ actor EBookProcessingActor {
         return EBookNativeSectionPrewarmResult(
             sectionHref: sectionHref,
             requestBytes: entryData.count,
-            responseBytes: processedText.utf8.count
+            responseBytes: processedPayload.combinedByteCount
         )
     }
 
@@ -657,7 +657,7 @@ actor EBookProcessingActor {
         contentFingerprint: String? = nil,
         isCacheWarmer: Bool,
         shouldReadProcessedCache: Bool = true
-    ) async throws -> String {
+    ) async throws -> EbookProcessedSectionPayload {
         let resolvedContentFingerprint = contentFingerprint ?? EBookProcessTextRequestKey(
             contentURL: contentURL,
             location: location,
@@ -670,12 +670,15 @@ actor EBookProcessingActor {
                 location,
                 text,
                 resolvedContentFingerprint
-            ), ebookProcessedHTMLHasDurableSegmentIdentities(cachedResult) {
+            ), ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedResult) {
                 return cachedResult
             }
         }
         guard let ebookTextProcessor else {
-            return text
+            return EbookProcessedSectionPayload(
+                documentHTML: Data(text.utf8),
+                segmentSidecar: Data()
+            )
         }
 
         let result = try await ebookTextProcessor(
@@ -690,6 +693,7 @@ actor EBookProcessingActor {
             processHTML
         )
         if !isCacheWarmer,
+           ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
            let ebookProcessedTextCacheWriter {
             await ebookProcessedTextCacheWriter(contentURL, location, text, resolvedContentFingerprint, result)
         }
@@ -776,9 +780,9 @@ public struct EbookProcessedDocumentPayload: Sendable {
 public typealias EbookHTMLDocumentProcessor = @Sendable (SwiftSoup.Document, Bool) async throws -> EbookProcessedDocumentPayload
 public typealias EbookHTMLBytesProcessor = @Sendable ([UInt8], Bool) async -> [UInt8]
 public typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
-public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> String
-public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> String?
-public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, String) async -> Void
+public typealias EbookTextProcessor = @Sendable (URL, String, String, String?, Bool, EbookReadabilityContentProcessor?, EbookHTMLDocumentProcessor?, EbookHTMLBytesProcessor?, EbookHTMLProcessor?) async throws -> EbookProcessedSectionPayload
+public typealias EbookProcessedTextCacheReader = @Sendable (URL, String, String, String?) async throws -> EbookProcessedSectionPayload?
+public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String, String?, EbookProcessedSectionPayload) async -> Void
 public typealias EbookSectionPresentationProvider = @Sendable () async -> EbookSectionPresentation
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
@@ -884,7 +888,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         location: request.subpath,
                         text: sourceText
                     )
-                    let (processedText, _) = try await self.processTextRequestDeduper.process(
+                    let (processedPayload, _) = try await self.processTextRequestDeduper.process(
                         key: processRequestKey
                     ) {
                         let processingActor = EBookProcessingActor(
@@ -904,6 +908,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             isCacheWarmer: false
                         )
                     }
+                    guard ebookProcessedSectionPayloadHasDurableSegmentIdentities(processedPayload) else {
+                        throw CustomSchemeHandlerError.fileNotFound
+                    }
+                    let processedText = String(
+                        decoding: externalizingReaderSegmentSidecar(
+                            documentHTML: Array(processedPayload.documentHTML),
+                            canonicalSidecar: processedPayload.segmentSidecar,
+                            scheme: .ebook
+                        ).documentHTML,
+                        as: UTF8.self
+                    )
                     let responseTextWithMetadata = ebookHTMLWithInjectedDirectSectionMetadata(
                         processedText,
                         baseURL: ebookProcessedSectionBaseURL(
@@ -961,14 +976,24 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         )
                         if !isCacheWarmer,
                            let ebookProcessedTextCacheReader,
-                           let cachedText = try? await ebookProcessedTextCacheReader(
+                           let cachedPayload = try? await ebookProcessedTextCacheReader(
                             contentURL,
                             replacedTextLocation,
                             text,
                             processRequestKey.textFingerprint
                            ),
-                           ebookProcessedHTMLHasDurableSegmentIdentities(cachedText),
-                           let cachedData = ebookProcessTextResponseData(processedText: cachedText, isCacheWarmer: false) {
+                           ebookProcessedSectionPayloadHasDurableSegmentIdentities(cachedPayload),
+                           let cachedData = ebookProcessTextResponseData(
+                            processedText: String(
+                                decoding: externalizingReaderSegmentSidecar(
+                                    documentHTML: Array(cachedPayload.documentHTML),
+                                    canonicalSidecar: cachedPayload.segmentSidecar,
+                                    scheme: .ebook
+                                ).documentHTML,
+                                as: UTF8.self
+                            ),
+                            isCacheWarmer: false
+                           ) {
                             let resp = HTTPURLResponse(
                                 url: url,
                                 mimeType: nil,
@@ -985,9 +1010,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                             return
                         }
-                        let respText: String
+                        let responsePayload: EbookProcessedSectionPayload
                         do {
-                            (respText, _) = try await self.processTextRequestDeduper.process(
+                            (responsePayload, _) = try await self.processTextRequestDeduper.process(
                                 key: processRequestKey
                             ) {
                                 let processingActor = EBookProcessingActor(
@@ -1017,7 +1042,28 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                             return
                         }
-                        if let respData = ebookProcessTextResponseData(processedText: respText, isCacheWarmer: isCacheWarmer) {
+                        if !isCacheWarmer,
+                           !ebookProcessedSectionPayloadHasDurableSegmentIdentities(responsePayload) {
+                            await { @MainActor in
+                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                    urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                }
+                            }()
+                            return
+                        }
+                        let responseText = String(
+                            decoding: externalizingReaderSegmentSidecar(
+                                documentHTML: Array(responsePayload.documentHTML),
+                                canonicalSidecar: responsePayload.segmentSidecar,
+                                scheme: .ebook
+                            ).documentHTML,
+                            as: UTF8.self
+                        )
+                        if let respData = ebookProcessTextResponseData(
+                            processedText: responseText,
+                            isCacheWarmer: isCacheWarmer
+                        ) {
                             let resp = HTTPURLResponse(
                                 url: url,
                                 mimeType: nil,

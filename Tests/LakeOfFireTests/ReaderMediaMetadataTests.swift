@@ -1,8 +1,44 @@
 import XCTest
+import AVFoundation
 import RealmSwift
 import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
+
+@MainActor
+private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
+    var delegate: (any AVSpeechSynthesizerDelegate)?
+    var isSpeaking = false
+    var isPaused = false
+    private(set) var spokenUtterances = [AVSpeechUtterance]()
+
+    func speak(_ utterance: AVSpeechUtterance) {
+        spokenUtterances.append(utterance)
+        isSpeaking = true
+        isPaused = false
+    }
+
+    func stopSpeaking(at boundary: AVSpeechBoundary) -> Bool {
+        let wasActive = isSpeaking || isPaused
+        isSpeaking = false
+        isPaused = false
+        return wasActive
+    }
+
+    func pauseSpeaking(at boundary: AVSpeechBoundary) -> Bool {
+        guard isSpeaking else { return false }
+        isSpeaking = false
+        isPaused = true
+        return true
+    }
+
+    func continueSpeaking() -> Bool {
+        guard isPaused else { return false }
+        isPaused = false
+        isSpeaking = true
+        return true
+    }
+}
 
 final class ReaderMediaMetadataTests: XCTestCase {
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
@@ -298,6 +334,100 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertTrue(viewModel.hasPreparedAITTS)
         XCTAssertFalse(viewModel.isPlaying)
         XCTAssertEqual(viewModel.ttsUtteranceCount, 2)
+    }
+
+    @MainActor
+    func testAITTSQueueDeduplicatesSentenceIdentifiersBeforeIndexing() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer)
+        )
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [
+                ReaderTTSUtterance(sentenceIdentifier: "s1", text: "First."),
+                ReaderTTSUtterance(sentenceIdentifier: "s1", text: "Duplicate."),
+                ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Second."),
+            ],
+            autoplay: false
+        ))
+
+        XCTAssertEqual(viewModel.ttsUtteranceCount, 2)
+        viewModel.seekAITTS(toSentenceIdentifier: "s2", shouldPlay: false)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s2")
+        XCTAssertEqual(viewModel.ttsCurrentSentenceText, "Second.")
+    }
+
+    @MainActor
+    func testAITTSPlaybackKeepsOnlyBoundedUtterancesInFlight() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer)
+        )
+        let utterances = (0..<20).map {
+            ReaderTTSUtterance(sentenceIdentifier: "s\($0)", text: "Sentence \($0).")
+        }
+
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: false))
+        viewModel.playAITTS()
+
+        XCTAssertEqual(synthesizer.spokenUtterances.count, 8)
+    }
+
+    @MainActor
+    func testAITTSQueueReplenishesOneUtteranceWhenOneFinishes() throws {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer)
+        )
+        let utterances = (0..<10).map {
+            ReaderTTSUtterance(sentenceIdentifier: "s\($0)", text: "Sentence \($0).")
+        }
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: false))
+        viewModel.playAITTS()
+        let firstUtterance = try XCTUnwrap(synthesizer.spokenUtterances.first)
+
+        viewModel.handleSpeechSynthesizerDidFinish(
+            firstUtterance,
+            synthesizerIsSpeaking: synthesizer.isSpeaking
+        )
+
+        XCTAssertEqual(synthesizer.spokenUtterances.count, 9)
+        XCTAssertEqual(synthesizer.spokenUtterances.last?.speechString, "Sentence 8.")
+    }
+
+    @MainActor
+    func testAITTSIgnoresStaleCallbacksAfterQueueReplacement() throws {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer)
+        )
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [
+                ReaderTTSUtterance(sentenceIdentifier: "old", text: "Old."),
+                ReaderTTSUtterance(sentenceIdentifier: "old-2", text: "Old two."),
+            ],
+            autoplay: false
+        ))
+        viewModel.playAITTS()
+        let staleUtterance = try XCTUnwrap(synthesizer.spokenUtterances.first)
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [ReaderTTSUtterance(sentenceIdentifier: "new", text: "New.")],
+            autoplay: false
+        ))
+        viewModel.handleSpeechSynthesizerDidFinish(
+            staleUtterance,
+            synthesizerIsSpeaking: synthesizer.isSpeaking
+        )
+        viewModel.handleSpeechSynthesizerDidCancel(
+            staleUtterance,
+            synthesizerIsSpeaking: synthesizer.isSpeaking
+        )
+
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "new")
+        XCTAssertEqual(viewModel.ttsCurrentSentenceText, "New.")
+        XCTAssertFalse(viewModel.isPlaying)
     }
 
     @RealmBackgroundActor

@@ -146,7 +146,7 @@ struct ReaderUnhandledTapUserScript {
         if (suppressUntil > Date.now()) {
             return;
         }
-        const targetClosestSegment = event.target?.closest?.('mnb-seg')?.getAttribute?.('id') ?? null;
+        const targetClosestSegment = event.target?.closest?.('m-m')?.getAttribute?.('id') ?? null;
         if (targetClosestSegment) {
             return;
         }

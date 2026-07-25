@@ -136,7 +136,7 @@ const describeMarkReadNode = (node) => {
             ? element.className.split(/\s+/).filter(Boolean).slice(0, 4)
             : [],
         segmentIdentifier: segmentIdentifierForNode(element),
-        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('mnb-sen') || null),
+        sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('m-s') || null),
     };
 };
 
@@ -325,8 +325,8 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         }
         const responseTextLength = html.length;
         const transformStartedAt = performanceNowMs();
-        const sentenceCount = (html.match(/<mnb-sen\b/g) || []).length;
-        const segmentCount = (html.match(/<mnb-seg\b/g) || []).length;
+        const sentenceCount = (html.match(/<m-s\b/g) || []).length;
+        const segmentCount = (html.match(/<m-m\b/g) || []).length;
         html = injectBodyDatasetAttributes(html, {
             'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
             'data-mnb-source-href': href,
@@ -686,8 +686,8 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
         readerWritingMode: readerBodyStyle?.writingMode || null,
         readerDirection: readerBodyStyle?.direction || null,
         readerBodyClass: readerBody?.className || null,
-        readerBodySegmentCount: readerDoc?.querySelectorAll?.('mnb-seg')?.length ?? null,
-        readerBodySentenceCount: readerDoc?.querySelectorAll?.('mnb-sen')?.length ?? null,
+        readerBodySegmentCount: readerDoc?.querySelectorAll?.('m-m')?.length ?? null,
+        readerBodySentenceCount: readerDoc?.querySelectorAll?.('m-s')?.length ?? null,
         readerDocumentClientWidth: readerRoot?.clientWidth ?? null,
         readerDocumentClientHeight: readerRoot?.clientHeight ?? null,
         ...extra,
@@ -836,7 +836,7 @@ const classifySingleMediaDocumentForInitialLayout = (doc, reason = 'unknown') =>
         .filter((element) => {
             if (element?.nodeType !== 1) return false;
             if (element.matches(mediaSelector)) return false;
-            if (element.closest('mnb-seg, .mnb-tracking-container')) return false;
+            if (element.closest('m-m, .mnb-tracking-container')) return false;
             if (element.matches('.h-valign-width, .v-valign-height, .inline-width, .inline-height')) return false;
             const tagName = element.tagName?.toLowerCase?.() ?? '';
             if (tagName === 'br' || tagName === 'script' || tagName === 'style') return false;
@@ -2273,72 +2273,78 @@ const segmentMetadataTableValue = (table, index, fallback = null) => (
         : fallback
 );
 
-const expandSegmentIDToken = (token, version) => {
-    if (typeof token !== 'string' || token.length === 0) return null;
-    if (version === 3) return token.startsWith('!') ? token.slice(1) : `mnb-s${token}`;
-    return token;
+const segmentMetadataParserVersion = 9;
+
+const expandSegmentIDToken = (token) => {
+    if (typeof token !== 'string' || token.length <= 1) return null;
+    if (token.startsWith('!')) return token.slice(1);
+    if (token.startsWith('~')) return `_m${token.slice(1)}`;
+    return null;
 };
 
-const segmentMetadataTableArray = (tables, shortKey, longKey) => (
+const segmentMetadataTableArray = (tables, shortKey) => (
     Array.isArray(tables?.[shortKey])
         ? tables[shortKey]
-        : (Array.isArray(tables?.[longKey]) ? tables[longKey] : [])
+        : []
 );
 
 const compactSegmentMetadataTables = (compactTables) => ({
-    h: segmentMetadataTableArray(compactTables, 'h', 'segmentHashes'),
-    sid: segmentMetadataTableArray(compactTables, 'sid', 'stableIDs'),
-    j: segmentMetadataTableArray(compactTables, 'j', 'jmdictEntryIDs'),
-    n: segmentMetadataTableArray(compactTables, 'n', 'jmnedictEntryIDs'),
-    s: segmentMetadataTableArray(compactTables, 's', 'jmdictSearchStrings'),
-    ns: segmentMetadataTableArray(compactTables, 'ns', 'jmnedictSearchStrings'),
-    p: segmentMetadataTableArray(compactTables, 'p', 'partsOfSpeech'),
+    h: segmentMetadataTableArray(compactTables, 'h'),
+    j: segmentMetadataTableArray(compactTables, 'j'),
+    n: segmentMetadataTableArray(compactTables, 'n'),
+    s: segmentMetadataTableArray(compactTables, 's'),
+    ns: segmentMetadataTableArray(compactTables, 'ns'),
+    p: segmentMetadataTableArray(compactTables, 'p'),
+    x: segmentMetadataTableArray(compactTables, 'x'),
+    sid: segmentMetadataTableArray(compactTables, 'sid'),
+    pid: segmentMetadataTableArray(compactTables, 'pid'),
 });
 
-const segmentMetadataFromCompactTuple = (segment, tables, version) => {
-    const segmentHash = version === 3
-        ? segmentMetadataTableValue(tables.h, segment?.[1], null)
-        : segment?.[1];
-    const stableSegmentIdentifier = version === 3
-        ? segmentMetadataTableValue(tables.sid, segment?.[8], segmentHash)
-        : segmentHash;
+const compactSegmentMetadataTupleIsExactV9 = (segment, tables) => {
+    if (!Array.isArray(segment) || segment.length !== 11) return false;
+    const token = segment[0];
+    if (
+        typeof token !== 'string'
+        || token.length <= 1
+        || (token[0] !== '!' && token[0] !== '~')
+    ) {
+        return false;
+    }
+    return [
+        segmentMetadataTableValue(tables.h, segment[1], null),
+        segmentMetadataTableValue(tables.sid, segment[9], null),
+        segmentMetadataTableValue(tables.pid, segment[10], null),
+    ].every((value) => typeof value === 'string' && value.length > 0);
+};
+
+const segmentMetadataFromCompactTuple = (segment, tables) => {
+    const segmentHash = segmentMetadataTableValue(tables.h, segment?.[1], null);
+    const sentenceIdentifier = segmentMetadataTableValue(tables.sid, segment?.[9], null);
+    const paragraphIdentifier = segmentMetadataTableValue(tables.pid, segment?.[10], null);
     return {
-        i: expandSegmentIDToken(segment?.[0], version),
+        i: expandSegmentIDToken(segment?.[0]),
         h: segmentHash,
-        sid: stableSegmentIdentifier,
+        sid: sentenceIdentifier && segmentHash
+            ? `${sentenceIdentifier}-${segmentHash}`
+            : null,
+        sentenceID: sentenceIdentifier,
+        paragraphID: paragraphIdentifier,
+        pid: paragraphIdentifier,
         j: segmentMetadataTableValue(tables.j, segment?.[2], []),
         n: segmentMetadataTableValue(tables.n, segment?.[3], []),
         s: segmentMetadataTableValue(tables.s, segment?.[4], null),
         ns: segmentMetadataTableValue(tables.ns, segment?.[5], null),
         p: segmentMetadataTableValue(tables.p, segment?.[6], null),
         l: segment?.[7],
+        x: segmentMetadataTableValue(tables.x, segment?.[8], null),
     };
 };
 
-const segmentMetadataFromLegacyEntry = (segment) => ({
-    i: typeof segment?.i === 'string' ? segment.i : null,
-    h: typeof segment?.h === 'string' ? segment.h : null,
-    sid: typeof segment?.h === 'string' ? segment.h : (typeof segment?.sid === 'string' ? segment.sid : null),
-    j: Array.isArray(segment?.j) ? segment.j : [],
-    n: Array.isArray(segment?.n) ? segment.n : [],
-    s: typeof segment?.s === 'string' ? segment.s : null,
-    ns: typeof segment?.ns === 'string' ? segment.ns : null,
-    p: typeof segment?.p === 'string' ? segment.p : null,
-    l: Number.isInteger(segment?.l) ? segment.l : null,
-});
-
 const expandSegmentMetadataPayload = (payload) => {
-    const version = payload?.v ?? payload?.version;
-    const compactTables = payload?.t ?? payload?.tables;
-    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
-    if ((version === 2 || version === 3) && compactTables && Array.isArray(compactSegments)) {
-        const tables = compactSegmentMetadataTables(compactTables);
-        return compactSegments.map((segment) => segmentMetadataFromCompactTuple(segment, tables, version));
-    }
-    if (Array.isArray(payload)) {
-        return payload.map(segmentMetadataFromLegacyEntry);
-    }
-    return [];
+    if (payload?.v !== segmentMetadataParserVersion || !payload?.t || !Array.isArray(payload?.s)) return [];
+    const tables = compactSegmentMetadataTables(payload.t);
+    if (!payload.s.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))) return [];
+    return payload.s.map((segment) => segmentMetadataFromCompactTuple(segment, tables));
 };
 
 const segmentMetadataPayloadLookupState = (payload) => {
@@ -2371,23 +2377,24 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
             }
         }
     };
-    const version = payload?.v ?? payload?.version;
-    const compactTables = payload?.t ?? payload?.tables;
-    const compactSegments = Array.isArray(payload?.s) ? payload.s : payload?.segments;
-    if ((version === 2 || version === 3) && compactTables && Array.isArray(compactSegments)) {
-        const tables = compactSegmentMetadataTables(compactTables);
+    const compactSegments = payload?.s;
+    if (payload?.v === segmentMetadataParserVersion && payload?.t && Array.isArray(compactSegments)) {
+        const tables = compactSegmentMetadataTables(payload.t);
+        if (!compactSegments.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))) {
+            return null;
+        }
         const state = segmentMetadataPayloadLookupState(payload);
         if (state?.byID?.has(segmentID)) {
             const cachedIndex = state.byID.get(segmentID);
             const cachedSegment = compactSegments[cachedIndex];
-            return cachedSegment ? segmentMetadataFromCompactTuple(cachedSegment, tables, version) : null;
+            return cachedSegment ? segmentMetadataFromCompactTuple(cachedSegment, tables) : null;
         }
         if (state?.complete === true) {
             return null;
         }
         for (let index = (state?.scannedThrough ?? -1) + 1; index < compactSegments.length; index += 1) {
             const segment = compactSegments[index];
-            const metadata = segmentMetadataFromCompactTuple(segment, tables, version);
+            const metadata = segmentMetadataFromCompactTuple(segment, tables);
             cacheSegmentMetadataAliases(metadata, index, state);
             if (state) state.scannedThrough = index;
             if (metadata?.i !== segmentID && metadata?.sid !== segmentID) continue;
@@ -2395,26 +2402,6 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
         }
         if (state) state.complete = true;
         return null;
-    }
-    if (Array.isArray(payload)) {
-        const state = segmentMetadataPayloadLookupState(payload);
-        if (state?.byID?.has(segmentID)) {
-            const cachedIndex = state.byID.get(segmentID);
-            const cachedSegment = payload[cachedIndex];
-            return cachedSegment ? segmentMetadataFromLegacyEntry(cachedSegment) : null;
-        }
-        if (state?.complete === true) {
-            return null;
-        }
-        for (let index = (state?.scannedThrough ?? -1) + 1; index < payload.length; index += 1) {
-            const segment = payload[index];
-            const metadata = segmentMetadataFromLegacyEntry(segment);
-            cacheSegmentMetadataAliases(metadata, index, state);
-            if (state) state.scannedThrough = index;
-            if (metadata?.i !== segmentID && metadata?.sid !== segmentID) continue;
-            return metadata;
-        }
-        if (state) state.complete = true;
     }
     return null;
 };
@@ -2544,7 +2531,7 @@ const segmentIdentifierAliasesForNode = (segmentNode) => {
 };
 
 const buildExampleSentenceForSegment = (segmentNode) => {
-    const sentenceNode = segmentNode?.closest?.('mnb-sen');
+    const sentenceNode = segmentNode?.closest?.('m-s');
     if (!(sentenceNode instanceof Element)) {
         return {
             sentenceHTML: null,
@@ -2552,7 +2539,7 @@ const buildExampleSentenceForSegment = (segmentNode) => {
         };
     }
     const sentenceJMDictIDs = new Set();
-    for (const nestedSegment of sentenceNode.querySelectorAll('mnb-seg')) {
+    for (const nestedSegment of sentenceNode.querySelectorAll('m-m')) {
         for (const entryID of segmentEntryIDsForNode(nestedSegment, 'jmdict')) {
             sentenceJMDictIDs.add(entryID);
         }
@@ -2724,7 +2711,7 @@ const orderedSegmentNodesForDocument = (doc) => {
     if (cached?.root === doc.body) {
         return cached;
     }
-    const nodes = Array.from(doc.querySelectorAll?.('mnb-seg') ?? []);
+    const nodes = Array.from(doc.querySelectorAll?.('m-m') ?? []);
     const indexByNode = new Map();
     nodes.forEach((node, index) => {
         indexByNode.set(node, index);
@@ -2746,13 +2733,13 @@ const rangeBoundarySegmentIndex = (visibleRange, boundary, orderedSegments) => {
         ? visibleRange.endContainer
         : visibleRange.endContainer?.parentElement;
     const element = boundary === 'end' ? endElement : startElement;
-    const directSegment = element?.closest?.('mnb-seg');
+    const directSegment = element?.closest?.('m-m');
     if (directSegment && orderedSegments.indexByNode.has(directSegment)) {
         return orderedSegments.indexByNode.get(directSegment);
     }
-    const sentence = element?.closest?.('mnb-sen');
+    const sentence = element?.closest?.('m-s');
     if (sentence?.nodeType === Node.ELEMENT_NODE) {
-        const sentenceSegments = Array.from(sentence.querySelectorAll?.('mnb-seg') ?? []);
+        const sentenceSegments = Array.from(sentence.querySelectorAll?.('m-m') ?? []);
         const segment = boundary === 'end'
             ? sentenceSegments[sentenceSegments.length - 1]
             : sentenceSegments[0];
@@ -2810,7 +2797,7 @@ const measureVisibleSegmentsInWindow = (segmentNodes, visibleRange, visibleBound
             outOfViewportCount += 1;
             continue;
         }
-        const sentenceNode = segmentNode.closest('mnb-sen');
+        const sentenceNode = segmentNode.closest('m-s');
         visibleSegments.push({
             node: segmentNode,
             rect,
@@ -2971,8 +2958,8 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
         ? rangeCommonAncestorElement
         : doc;
     const allSegmentNodes = boundedSegmentNodes || (isEbookDoc && segmentSearchRoot === doc ? [] : [
-            ...(segmentSearchRoot.matches?.('mnb-seg') ? [segmentSearchRoot] : []),
-            ...Array.from(segmentSearchRoot.querySelectorAll?.('mnb-seg') ?? []),
+            ...(segmentSearchRoot.matches?.('m-m') ? [segmentSearchRoot] : []),
+            ...Array.from(segmentSearchRoot.querySelectorAll?.('m-m') ?? []),
         ]);
     const queryCompletedAt = performance.now();
     const ancestorSegmentCandidateCount = segmentSearchRoot === rangeCommonAncestorElement
@@ -3031,7 +3018,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
             outOfViewportCount += 1;
             continue;
         }
-        const sentenceNode = segmentNode.closest('mnb-sen');
+        const sentenceNode = segmentNode.closest('m-s');
         visibleSegments.push({
             node: segmentNode,
             rect,
@@ -3070,7 +3057,7 @@ const collectVisibleSegmentNodesFromRange = (doc, visibleRange = null, {
                 fallbackOutOfViewportCount += 1;
                 continue;
             }
-            const sentenceNode = segmentNode.closest('mnb-sen');
+            const sentenceNode = segmentNode.closest('m-s');
             fallbackSegments.push({
                 node: segmentNode,
                 rect,
@@ -3138,7 +3125,7 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
         if (!elementID || byElementID.has(elementID)) { return; }
         const metadata = segmentMetadataForNode(node);
         const segmentIdentifier = segmentIdentifierForNode(node);
-        const sentenceNode = node.closest?.('mnb-sen') ?? null;
+        const sentenceNode = node.closest?.('m-s') ?? null;
         const item = {
             node,
             metadata,
@@ -3176,9 +3163,9 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
             visibleElementIDs.push(elementID);
         }
         addSegmentNode(node);
-        const sentenceNode = node?.closest?.('mnb-sen') ?? null;
+        const sentenceNode = node?.closest?.('m-s') ?? null;
         if (!sentenceNode?.querySelectorAll) { continue; }
-        for (const sibling of sentenceNode.querySelectorAll('mnb-seg')) {
+        for (const sibling of sentenceNode.querySelectorAll('m-m')) {
             addSegmentNode(sibling);
         }
     }
@@ -3424,8 +3411,8 @@ const buildVisiblePageTrackingStates = async (doc, articleReadingProgress, visib
             });
         }
         if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
-            const sentenceNode = item.node.closest('mnb-sen');
-            const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('mnb-seg') || [])
+            const sentenceNode = item.node.closest('m-s');
+            const allSegmentIdentifierAliasSets = Array.from(sentenceNode?.querySelectorAll?.('m-m') || [])
                 .map((segmentNode) => segmentIdentifierAliasesForNode(segmentNode))
                 .filter((aliases) => aliases.length > 0);
             sentencesByIdentifier.set(item.sentenceIdentifier, allSegmentIdentifierAliasSets);
@@ -3776,8 +3763,8 @@ const getCSSForBookContent = ({
     :lang(ja),
     body[data-mnb-has-sentences="true"],
     body[data-mnb-has-segments="true"],
-    body[data-mnb-has-sentences="true"] mnb-sen,
-    body[data-mnb-has-segments="true"] mnb-seg {
+    body[data-mnb-has-sentences="true"] m-s,
+    body[data-mnb-has-segments="true"] m-m {
         line-break: strict;
         -webkit-line-break: strict;
         word-break: normal;
@@ -3808,8 +3795,8 @@ const getCSSForBookContent = ({
     :lang(ja):is(p, li, blockquote, dd),
     body[data-mnb-has-sentences="true"] :is(p, li, blockquote, dd),
     body[data-mnb-has-segments="true"] :is(p, li, blockquote, dd),
-    body[data-mnb-has-sentences="true"] mnb-sen,
-    body[data-mnb-has-segments="true"] mnb-seg {
+    body[data-mnb-has-sentences="true"] m-s,
+    body[data-mnb-has-segments="true"] m-m {
         /*
            Reserve ruby annotation space even on lines without <rt>. WebKit's
            ruby layout otherwise lets mixed ruby/non-ruby Japanese text fall
@@ -3847,16 +3834,16 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
-    mnb-con,
-    mnb-sen {
+    m-c,
+    m-s {
         display: contents !important;
     }
 
-    mnb-sur {
+    m-t {
         contain: style paint !important;
     }
 
-    mnb-seg {
+    m-m {
         /* Keep book segments atomic so page turns never split a segment across pages. */
         display: inline-block !important;
         contain: style paint !important;
@@ -3873,8 +3860,8 @@ const getCSSForBookContent = ({
         --mnb-highlight-gradient-direction: to right;
     }
     body.reader-vertical-writing [data-mnb-horizontal-writing-island="true"],
-    body.reader-vertical-writing mnb-seg[data-mnb-horizontal-writing-island="true"] > mnb-sur,
-    body.reader-vertical-writing mnb-sur[data-mnb-horizontal-writing-island="true"] {
+    body.reader-vertical-writing m-m[data-mnb-horizontal-writing-island="true"] > m-t,
+    body.reader-vertical-writing m-t[data-mnb-horizontal-writing-island="true"] {
         --mnb-highlight-gradient-direction: to bottom;
     }
     body.reader-vertical-writing [data-mnb-display-token="1"] {
@@ -3948,14 +3935,14 @@ const getCSSForBookContent = ({
         inherits: true;
         initial-value: transparent;
     }
-    body.reader-vertical-writing ruby > mnb-sur {
+    body.reader-vertical-writing ruby > m-t {
         display: inline !important;
     }
-    body.reader-vertical-writing mnb-sur {
+    body.reader-vertical-writing m-t {
         /*
            Preserve the ruby-reserved vertical line grid. The app stylesheet
-           normally tightens mnb-sur to 1em for highlight bounds, but in vertical
-           EPUB layout that can collapse adjacent line boxes after mnb-seg is
+           normally tightens m-t to 1em for highlight bounds, but in vertical
+           EPUB layout that can collapse adjacent line boxes after m-m is
            restored.
         */
         line-height: inherit !important;
@@ -3975,7 +3962,7 @@ const getCSSForBookContent = ({
         page-break-inside: auto !important;
         -webkit-column-break-inside: auto !important;
     }
-    body.reader-vertical-writing:not([data-is-ebook="true"]) mnb-seg:not(:has(rt)) {
+    body.reader-vertical-writing:not([data-is-ebook="true"]) m-m:not(:has(rt)) {
         /*
            In vertical WebKit layout, line-height fixes the paragraph grid, but
            an inline no-ruby segment's own rect still only covers the base glyph.
@@ -3987,20 +3974,20 @@ const getCSSForBookContent = ({
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known),
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known),
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) {
         background: transparent !important;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > m-t {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > m-t,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > m-t {
         border-radius: var(--segment-match-border-radius);
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
@@ -4010,35 +3997,35 @@ const getCSSForBookContent = ({
             --word-tracking-learning-highlight-nav-conditional 350ms ease,
             --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):is(.mnb-learning, .mnb-read, .mnb-known, .mnb-unseen) > m-t {
         transition:
             --word-tracking-unknown-highlight-nav-conditional 350ms ease,
             --word-tracking-familiar-highlight-nav-conditional 350ms ease,
             --word-tracking-learning-highlight-nav-conditional 350ms ease,
             --word-tracking-known-highlight-nav-conditional 350ms ease;
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > m-t,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted):not(.mnb-read):not(.mnb-learning):not(.mnb-known) > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-unknown-highlight-nav-conditional) 0%, var(--word-tracking-unknown-highlight-nav-conditional) 50%, var(--word-tracking-unknown-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > m-t,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="familiar"], [data-mnb-show-familiar="true"]) m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-read:not(.mnb-learning):not(.mnb-known) > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-familiar-highlight-nav-conditional) 0%, var(--word-tracking-familiar-highlight-nav-conditional) 50%, var(--word-tracking-familiar-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > m-t,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"] m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-learning > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-learning-highlight-nav-conditional) 0%, var(--word-tracking-learning-highlight-nav-conditional) 50%, var(--word-tracking-learning-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur,
-    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) mnb-seg:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > mnb-sur {
+    body.reader-vertical-writing[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-subscription-is-active="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > m-t,
+    body.reader-vertical-writing:not([data-mnb-subscription-is-active="true"])[data-mnb-tracking-enabled="true"][data-mnb-tracking-highlights-enabled="true"][data-mnb-ebook-subscription-preview-page="true"]:is([data-mnb-status-filter="known"], [data-mnb-show-known="true"]) m-m:not(:has(rt)):not(.mnb-selected):not(.mnb-highlighted).mnb-known > m-t {
         background: linear-gradient(var(--mnb-highlight-gradient-direction, to bottom), var(--word-tracking-known-highlight-nav-conditional) 0%, var(--word-tracking-known-highlight-nav-conditional) 50%, var(--word-tracking-known-highlight, transparent) 100%);
     }
-    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected {
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m:not(:has(rt)).mnb-selected {
         background: transparent !important;
         background-color: transparent !important;
         background-image: none !important;
     }
-    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] mnb-seg:not(:has(rt)).mnb-selected > mnb-sur {
+    body.reader-vertical-writing[data-mnb-lookup-highlight-mode="word"] m-m:not(:has(rt)).mnb-selected > m-t {
         background: var(--theme-selection-color) !important;
         background-color: var(--theme-selection-color) !important;
         background-image: none !important;
@@ -4047,9 +4034,9 @@ const getCSSForBookContent = ({
         -webkit-box-decoration-break: clone;
     }
 
-    mnb-sen ruby.mnb-gen > rt,
-    mnb-sen ruby.mbn-src > rt,
-    mnb-sen ruby.mbn-src-fwd > rt {
+    m-s ruby.mnb-gen > rt,
+    m-s ruby.mbn-src > rt,
+    m-s ruby.mbn-src-fwd > rt {
         /*
            Keep Manabi-owned ruby annotations in the historical Japanese sans stack.
            Reader-selected surface fonts such as YuKyokasho should apply to the
@@ -4066,9 +4053,9 @@ const getCSSForBookContent = ({
     body[data-mnb-romaji-mode-enabled="true"] rt,
     body[data-mnb-romaji-mode-enabled="true"] rt *,
     body[data-mnb-romaji-mode-enabled="true"] rt .tt-outline-char::before,
-    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt,
-    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt *,
-    body[data-mnb-romaji-mode-enabled="true"] mnb-seg ruby > rt .tt-outline-char::before,
+    body[data-mnb-romaji-mode-enabled="true"] m-m ruby > rt,
+    body[data-mnb-romaji-mode-enabled="true"] m-m ruby > rt *,
+    body[data-mnb-romaji-mode-enabled="true"] m-m ruby > rt .tt-outline-char::before,
     body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt,
     body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt *,
     body[data-mnb-romaji-mode-enabled="true"] ruby.mnb-gen > rt .tt-outline-char::before {
@@ -4078,7 +4065,7 @@ const getCSSForBookContent = ({
         color: var(--theme-text-color) !important;
     }
 
-    body.reader-is-single-media-element-without-text *:not(.mnb-tracking-container *):not(mnb-seg *) {
+    body.reader-is-single-media-element-without-text *:not(.mnb-tracking-container *):not(m-m *) {
         max-height: 99vh;
     }
     body.reader-is-single-media-element-without-text :is(.h-valign-width, .v-valign-height) {
@@ -5118,13 +5105,13 @@ class Reader {
                 optimisticReadSegmentCount: this.optimisticReadSegmentIdentifiers.size,
             };
         }
-        const segmentIdentifiers = Array.from(doc.querySelectorAll('mnb-seg'))
+        const segmentIdentifiers = Array.from(doc.querySelectorAll('m-m'))
             .map((segmentNode) => segmentIdentifierForNode(segmentNode))
             .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
-        const segmentIdentifierAliasSets = Array.from(doc.querySelectorAll('mnb-seg'))
+        const segmentIdentifierAliasSets = Array.from(doc.querySelectorAll('m-m'))
             .map((segmentNode) => ({
                 aliases: segmentIdentifierAliasesForNode(segmentNode),
-                sentenceIdentifier: sentenceIdentifierForNode(segmentNode.closest?.('mnb-sen')),
+                sentenceIdentifier: sentenceIdentifierForNode(segmentNode.closest?.('m-s')),
             }))
             .filter((item) => item.aliases.length > 0);
         if (segmentIdentifiers.length === 0) {
@@ -5179,7 +5166,7 @@ class Reader {
         if (!isDocumentLike(doc)) {
             return null;
         }
-        const segmentNodes = Array.from(doc.querySelectorAll('mnb-seg'))
+        const segmentNodes = Array.from(doc.querySelectorAll('m-m'))
             .filter((segmentNode) => !segmentNode.closest('.tippy-box'));
         const segmentsByIdentifier = new Map();
         const sentenceIdentifiers = new Set();
@@ -5203,7 +5190,7 @@ class Reader {
                 skippedMissingSearchStringCount += 1;
                 continue;
             }
-            const sentenceNode = segmentNode.closest('mnb-sen');
+            const sentenceNode = segmentNode.closest('m-s');
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
             if (sentenceIdentifier) {
                 sentenceIdentifiers.add(sentenceIdentifier);
@@ -7569,7 +7556,7 @@ class Reader {
             };
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
                 const target = event.target;
-                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-t, .m-m, .mnb-sentence, ruby, rt');
                 const now = Date.now();
                 if (shouldSuppressSyntheticMouseBlankTap(event, now)) {
                     return;
@@ -7608,7 +7595,7 @@ class Reader {
             };
             const handleBlankPointerTouchStart = (event) => {
                 const target = event.target;
-                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], mnb-sur, .mnb-seg, .mnb-sentence, ruby, rt');
+                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-t, .m-m, .mnb-sentence, ruby, rt');
                 if (excludedTarget) {
                     clearPendingBlankPointerTap();
                     return;
@@ -8198,8 +8185,8 @@ class CacheWarmer {
             index,
         }
     }) {
-        const sentenceNodes = Array.from(doc?.querySelectorAll?.('mnb-sen') || []);
-        const segmentNodes = Array.from(doc?.querySelectorAll?.('mnb-seg') || []);
+        const sentenceNodes = Array.from(doc?.querySelectorAll?.('m-s') || []);
+        const segmentNodes = Array.from(doc?.querySelectorAll?.('m-m') || []);
         const indexedSectionHref =
             Number.isInteger(index)
             ? this.view?.book?.sections?.[index]?.href || null

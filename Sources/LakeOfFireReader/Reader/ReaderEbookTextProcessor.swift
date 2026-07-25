@@ -72,7 +72,7 @@ public func ebookTextProcessor(
     processHTMLDocument: EbookHTMLDocumentProcessor?,
     processHTMLBytes: EbookHTMLBytesProcessor?,
     processHTML: EbookHTMLProcessor?
-) async throws -> String {
+) async throws -> EbookProcessedSectionPayload {
     var sectionLocationComponents = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
     var sectionLocationQueryItems = sectionLocationComponents?.queryItems ?? []
     sectionLocationQueryItems.removeAll { $0.name == "subpath" }
@@ -109,7 +109,10 @@ public func ebookTextProcessor(
 
         guard var doc else {
             print("Error: Unexpectedly failed to receive doc")
-            return content
+            return EbookProcessedSectionPayload(
+                documentHTML: Data(content.utf8),
+                segmentSidecar: Data()
+            )
         }
 
         try processForReaderMode(
@@ -125,25 +128,47 @@ public func ebookTextProcessor(
         )
         doc = preprocessEbookContent(doc: doc)
 
-        let usedDocumentPostprocessor = processHTMLDocument != nil
-        var htmlBytes: [UInt8]
+        var payload: EbookProcessedSectionPayload
         if let processHTMLDocument {
-            let payload = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+            let processed = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 try await processHTMLDocument(doc, isCacheWarmer)
             }
-            if let canonicalSegmentSidecar = payload.canonicalSegmentSidecar {
-                htmlBytes = externalizingReaderSegmentSidecar(
-                    documentHTML: payload.documentHTML,
-                    canonicalSidecar: canonicalSegmentSidecar,
-                    scheme: .ebook
-                ).documentHTML.map { $0 }
-            } else {
-                htmlBytes = payload.documentHTML
-            }
+            payload = EbookProcessedSectionPayload(
+                documentHTML: Data(processed.documentHTML),
+                segmentSidecar: processed.canonicalSegmentSidecar ?? Data()
+            )
         } else {
-            htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()
+            var htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()
+            if let processHTMLBytes {
+                htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                    await processHTMLBytes(
+                        htmlBytes,
+                        isCacheWarmer
+                    )
+                }
+            }
+            payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes)
+                ?? EbookProcessedSectionPayload(
+                    documentHTML: Data(htmlBytes),
+                    segmentSidecar: Data()
+                )
         }
+
+        if let processHTML {
+            let html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                await processHTML(
+                    String(decoding: payload.documentHTML, as: UTF8.self),
+                    isCacheWarmer
+                )
+            }
+            payload = EbookProcessedSectionPayload(
+                documentHTML: Data(html.utf8),
+                segmentSidecar: payload.segmentSidecar
+            )
+        }
+
         if ebookTextProcessorDetailedLoggingEnabled {
+            let htmlBytes = Array(payload.documentHTML)
             print(
                 "# EPUB",
                 "ebookTextProcessor.output",
@@ -155,32 +180,16 @@ public func ebookTextProcessor(
             )
         }
 
-        if !usedDocumentPostprocessor, let processHTMLBytes {
-            htmlBytes = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
-                await processHTMLBytes(
-                    htmlBytes,
-                    isCacheWarmer
-                )
-            }
-        }
-
-        if let processHTML {
-            let html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
-                await processHTML(
-                    String(decoding: htmlBytes, as: UTF8.self),
-                    isCacheWarmer
-                )
-            }
-            htmlBytes = Array(html.utf8)
-        }
-
-        return String(decoding: htmlBytes, as: UTF8.self)
+        return payload
     } catch {
         if ebookTextProcessorDetailedLoggingEnabled {
             debugPrint("Error processing readability content for ebook", error)
         }
     }
-    return content
+    return EbookProcessedSectionPayload(
+        documentHTML: Data(content.utf8),
+        segmentSidecar: Data()
+    )
 }
 
 private func bytePatternCount(_ needle: [UInt8], in haystack: [UInt8]) -> Int {

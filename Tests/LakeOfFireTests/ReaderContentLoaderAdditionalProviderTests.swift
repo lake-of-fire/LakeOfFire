@@ -228,7 +228,7 @@ final class ReaderContentLoaderAdditionalProviderTests: XCTestCase {
 
         let contentURL = try XCTUnwrap(URL(string: "https://example.com/article"))
         let imageURL = try XCTUnwrap(URL(string: "https://example.com/image.jpg"))
-        let html = "<html><body><mnb-seg>本文</mnb-seg></body></html>"
+        let html = "<html><body><m-m>本文</m-m></body></html>"
         let realm = try await Realm(configuration: configuration)
         let content = Bookmark()
         content.url = contentURL

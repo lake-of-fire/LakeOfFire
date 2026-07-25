@@ -36,14 +36,24 @@ private actor EBookProcessingGate {
     }
 }
 
+private func ebookTestPayload(
+    _ documentHTML: String,
+    sidecar: String = ""
+) -> EbookProcessedSectionPayload {
+    EbookProcessedSectionPayload(
+        documentHTML: Data(documentHTML.utf8),
+        segmentSidecar: Data(sidecar.utf8)
+    )
+}
+
 final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalizingTypedSidecarAvoidsEmbeddedJSONRoundTrip() throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":3,"t":{"sid":["sentence"]},"s":[["!a",null,null,null,null,null,null,null,0]]}"#
-        let documentHTML = "<html><head></head><body><mnb-seg>A</mnb-seg></body></html>"
+        let canonicalJSON = #"{"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0]]}"#
+        let documentHTML = "<html><head></head><body><m-m>A</m-m></body></html>"
 
         let result = externalizingReaderSegmentSidecar(
             documentHTML: Array(documentHTML.utf8),
@@ -69,8 +79,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let documentHTML = "<html><head></head><body><mnb-seg>A</mnb-seg></body></html>"
-        let invalidJSON = #"{"v":3,"t":{"sid":[]},"s":[["!a"]]}"#
+        let documentHTML = "<html><head></head><body><m-m>A</m-m></body></html>"
+        let invalidJSON = #"{"v":9,"t":{"sid":[]},"s":[["!a"]]}"#
         let invalid = externalizingReaderSegmentSidecar(
             documentHTML: Array(documentHTML.utf8),
             canonicalSidecar: Data(invalidJSON.utf8),
@@ -92,7 +102,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
-        let canonicalJSON = #"{"v":3,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
         let aggregateJSON = #"{"count":0}"#
         let html = """
         <html><head><title>Test</title></head><body>
@@ -141,7 +151,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         let firstHTML = """
         <html><head></head><body>
-        <script id="mnb-segment-metadata">{"v":3,"t":{},"s":[]}</script>
+        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[]}</script>
         </body></html>
         """
         let first = externalizingCanonicalReaderSegmentSidecar(
@@ -153,7 +163,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let secondHTML = """
         <html><body>
-        <script id="mnb-segment-metadata">{"v":3,"t":{},"s":[["1"]]}</script>
+        <script id="mnb-segment-metadata">{"v":9,"t":{},"s":[["1"]]}</script>
         </body></html>
         """
         _ = externalizingCanonicalReaderSegmentSidecar(
@@ -203,7 +213,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testProcessTextResponseExternalizesOnlyCanonicalSidecar() throws {
-        let canonicalJSON = #"{"v":3,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":9,"t":{},"s":[]}"#
         let html = """
         <html><head></head><body>
         <script id="mnb-segment-metadata">\(canonicalJSON)</script>
@@ -226,42 +236,110 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testProcessedHTMLCacheRequiresDurableIdentityForEveryGeneratedSegment() {
         let valid = """
-        <html><body><mnb-seg>A</mnb-seg><mnb-seg>B</mnb-seg>
+        <html><body><m-m>A</m-m><m-m>B</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":3,"t":{"sid":["sentence-a","sentence-b"]},"s":[["!a",null,null,null,null,null,null,null,0],["!b",null,null,null,null,null,null,null,1]]}
+        {"v":9,"t":{"h":["hash-a","hash-b"],"sid":["sentence-a","sentence-b"],"pid":["paragraph-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!b",1,null,null,null,null,null,null,null,1,0]]}
         </script></body></html>
         """
         let missingStableIdentity = """
-        <html><body><mnb-seg>A</mnb-seg>
+        <html><body><m-m>A</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":3,"t":{"sid":[]},"s":[["!a"]]}
+        {"v":9,"t":{"sid":[]},"s":[["!a"]]}
         </script></body></html>
         """
         let incompleteCoverage = """
-        <html><body><mnb-seg>A</mnb-seg><mnb-seg>B</mnb-seg>
+        <html><body><m-m>A</m-m><m-m>B</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":3,"t":{"sid":["sentence-a"]},"s":[["!a",null,null,null,null,null,null,null,0]]}
+        {"v":9,"t":{"h":["hash-a"],"sid":["sentence-a"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}
         </script></body></html>
         """
 
         XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(valid))
         XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(missingStableIdentity))
         XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(incompleteCoverage))
-        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities("<mnb-seg>A</mnb-seg>"))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities("<m-m>A</m-m>"))
         XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities("<mnb-segment-metadata></mnb-segment-metadata>"))
     }
 
+    func testProcessedSectionEnvelopeRoundTripsSeparatedDocumentAndSidecar() throws {
+        let payload = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body><m-m id=\"runtime\">猫</m-m></body></html>".utf8),
+            segmentSidecar: Data(
+                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!runtime",0,null,null,null,null,null,null,null,0,0]]}"#.utf8
+            )
+        )
+
+        let encoded = encodedEbookProcessedSectionCacheValue(payload)
+        let decoded = try XCTUnwrap(decodedEbookProcessedSectionCacheValue(encoded))
+
+        XCTAssertEqual(decoded.documentHTML, payload.documentHTML)
+        XCTAssertEqual(decoded.segmentSidecar, payload.segmentSidecar)
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(decoded))
+    }
+
+    func testProcessedSectionEnvelopeRejectsLegacyAndTruncatedValues() {
+        let payload = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>猫</body></html>".utf8),
+            segmentSidecar: Data()
+        )
+        let encoded = encodedEbookProcessedSectionCacheValue(payload)
+        var legacy = encoded
+        legacy.replaceSubrange(0..<7, with: Array("MNBPSC2".utf8))
+
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacy))
+        XCTAssertNil(decodedEbookProcessedSectionCacheValue(Array(encoded.dropLast())))
+    }
+
+    func testProcessedSectionDurabilityRequiresExactV9SegmentCoverage() {
+        let document = Data("<m-m id=\"a\">猫</m-m><m-m id=\"b\">犬</m-m>".utf8)
+        let incomplete = EbookProcessedSectionPayload(
+            documentHTML: document,
+            segmentSidecar: Data(
+                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#.utf8
+            )
+        )
+        let legacy = EbookProcessedSectionPayload(
+            documentHTML: document,
+            segmentSidecar: Data(
+                #"{"v":3,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0],["!b",0,null,null,null,null,null,null,null,0]]}"#.utf8
+            )
+        )
+        let duplicateRuntimeIdentifier = EbookProcessedSectionPayload(
+            documentHTML: document,
+            segmentSidecar: Data(
+                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!a",0,null,null,null,null,null,null,null,0,0],["!a",0,null,null,null,null,null,null,null,0,0]]}"#.utf8
+            )
+        )
+        let transitionalTenFieldTuple = EbookProcessedSectionPayload(
+            documentHTML: Data("<m-m id=\"a\">猫</m-m>".utf8),
+            segmentSidecar: Data(
+                #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#.utf8
+            )
+        )
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incomplete))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(legacy))
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(duplicateRuntimeIdentifier)
+        )
+        XCTAssertFalse(
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities(transitionalTenFieldTuple)
+        )
+    }
+
     func testProcessingRegeneratesCachedHTMLWithoutDurableSegmentIdentity() async throws {
-        let cachedHTML = "<html><body><mnb-seg>stale</mnb-seg></body></html>"
+        let cachedPayload = ebookTestPayload("<html><body><m-m>stale</m-m></body></html>")
         let regeneratedHTML = """
-        <html><body><mnb-seg>fresh</mnb-seg>
+        <html><body><m-m>fresh</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":3,"t":{"sid":["sentence"]},"s":[["!fresh",null,null,null,null,null,null,null,0]]}
+        {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!fresh",0,null,null,null,null,null,null,null,0,0]]}
         </script></body></html>
         """
         let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in cachedHTML },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in regeneratedHTML },
+            ebookProcessedTextCacheReader: { _, _, _, _ in cachedPayload },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
+                ebookTestPayload(regeneratedHTML)
+            },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
             processHTMLBytes: nil,
@@ -275,7 +353,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: false
         )
 
-        XCTAssertEqual(result, regeneratedHTML)
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), regeneratedHTML)
     }
 
     func testDirectSectionRequestPreservesUnicodeIdentityAndRejectsDuplicateOrUnsafeSubpaths() throws {
@@ -338,7 +416,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testDirectSectionMetadataInjectionPreservesDocumentBytesAndInstallsPathBackedBase() {
         let html = """
         <!doctype html><HTML data-note='1>0'><HEAD><base href="old/"></HEAD><BODY class="book">
-        <mnb-sen><mnb-seg>本文</mnb-seg></mnb-sen></BODY></HTML>
+        <m-s><m-m>本文</m-m></m-s></BODY></HTML>
         """
         let result = ebookHTMLWithInjectedDirectSectionMetadata(
             html,
@@ -353,7 +431,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             "<BODY class=\"book\" data-mnb-source-href=\"OPS/chapter.xhtml\" "
                 + "data-mnb-has-sentences=\"true\" data-mnb-has-segments=\"true\">"
         ))
-        XCTAssertTrue(result.contains("<mnb-sen><mnb-seg>本文</mnb-seg></mnb-sen>"))
+        XCTAssertTrue(result.contains("<m-s><m-m>本文</m-m></m-s>"))
 
         XCTAssertEqual(
             ebookHTMLWithInjectedDirectSectionMetadata(
@@ -367,7 +445,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     func testDirectSectionPresentationHintInjectionPreservesProcessedDocument() {
-        let html = "<html><head></head><body data-note=\"2 > 1\" class=\"book\"><mnb-seg>本文</mnb-seg></body></html>"
+        let html = "<html><head></head><body data-note=\"2 > 1\" class=\"book\"><m-m>本文</m-m></body></html>"
         let result = ebookHTMLWithInjectedPresentationHints(
             html,
             writingHint: EBookProcessedSectionWritingHint(
@@ -383,7 +461,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 + "data-mnb-writing-mode=\"vertical-lr\" "
                 + "data-mnb-foliate-writing-direction=\"vertical\" "
                 + "data-mnb-foliate-writing-mode=\"vertical-lr\">"
-                + "<mnb-seg>本文</mnb-seg></body></html>"
+                + "<m-m>本文</m-m></body></html>"
         )
     }
 
@@ -545,7 +623,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             ebookProcessedTextCacheWriter: { _, _, _, _, _ in
                 await writerGate.waitUntilReleased()
             },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in "processed" },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload("processed") },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
             processHTMLBytes: nil,
@@ -573,8 +651,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(completionCountBeforeRelease, 0)
 
         await writerGate.release()
-        let processedText = try await processingTask.value
-        XCTAssertEqual(processedText, "processed")
+        let processedPayload = try await processingTask.value
+        XCTAssertEqual(String(decoding: processedPayload.documentHTML, as: UTF8.self), "processed")
         let completionCountAfterRelease = await completionCounter.value()
         XCTAssertEqual(completionCountAfterRelease, 1)
     }
@@ -591,17 +669,17 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let first = try await deduper.process(key: key) {
             let invocation = await counter.increment()
-            return "<html><body>processed-\(invocation)</body></html>"
+            return ebookTestPayload("<html><body>processed-\(invocation)</body></html>")
         }
         let second = try await deduper.process(key: key) {
             let invocation = await counter.increment()
-            return "<html><body>processed-\(invocation)</body></html>"
+            return ebookTestPayload("<html><body>processed-\(invocation)</body></html>")
         }
         let invocationCount = await counter.value()
 
-        XCTAssertEqual(first.responseText, "<html><body>processed-1</body></html>")
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "<html><body>processed-1</body></html>")
         XCTAssertFalse(first.didCoalesce)
-        XCTAssertEqual(second.responseText, "<html><body>processed-2</body></html>")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "<html><body>processed-2</body></html>")
         XCTAssertFalse(second.didCoalesce)
         XCTAssertEqual(invocationCount, 2)
     }
@@ -631,22 +709,22 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 _ = await counter.increment()
                 started.fulfill()
                 await gate.waitUntilReleased()
-                return "<html><body>processed</body></html>"
+                return ebookTestPayload("<html><body>processed</body></html>")
             }
         }
         await fulfillment(of: [started], timeout: 1)
         let foregroundTask = Task {
             try await deduper.process(key: foregroundKey) {
                 _ = await counter.increment()
-                return "<html><body>foreground</body></html>"
+                return ebookTestPayload("<html><body>foreground</body></html>")
             }
         }
         await gate.release()
 
         let cacheWarmerResult = try await cacheWarmerTask.value
         let foregroundResult = try await foregroundTask.value
-        XCTAssertEqual(cacheWarmerResult.responseText, "<html><body>processed</body></html>")
-        XCTAssertEqual(foregroundResult.responseText, "<html><body>foreground</body></html>")
+        XCTAssertEqual(String(decoding: cacheWarmerResult.payload.documentHTML, as: UTF8.self), "<html><body>processed</body></html>")
+        XCTAssertEqual(String(decoding: foregroundResult.payload.documentHTML, as: UTF8.self), "<html><body>foreground</body></html>")
         XCTAssertFalse(cacheWarmerResult.didCoalesce)
         XCTAssertFalse(foregroundResult.didCoalesce)
         let invocationCount = await counter.value()
@@ -657,11 +735,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheReader: { _, _, _, _ in
                 XCTFail("Cache warmers must not consume live presentation HTML")
-                return "<html><body>live presentation</body></html>"
+                return ebookTestPayload("<html><body>live presentation</body></html>")
             },
             ebookTextProcessor: { _, _, _, _, isCacheWarmer, _, _, _, _ in
                 XCTAssertTrue(isCacheWarmer)
-                return "<html><body>neutral warmer result</body></html>"
+                return ebookTestPayload("<html><body>neutral warmer result</body></html>")
             },
             processReadabilityContent: nil,
             processHTMLBytes: nil,
@@ -675,13 +753,13 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: true
         )
 
-        XCTAssertEqual(result, "<html><body>neutral warmer result</body></html>")
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), "<html><body>neutral warmer result</body></html>")
     }
 
     func testCacheWarmerProcessingReturnsProcessedContentToCaller() async throws {
         let expectedHTML = "<html><body><manabi-segment>cached</manabi-segment></body></html>"
         let actor = EBookProcessingActor(
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload(expectedHTML) },
             processReadabilityContent: nil,
             processHTMLBytes: nil,
             processHTML: nil
@@ -694,21 +772,24 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: true
         )
 
-        XCTAssertEqual(result, expectedHTML)
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), expectedHTML)
     }
 
     func testForegroundUsesPersistedProcessedTextWithoutReprocessing() async throws {
         let expectedHTML = """
-        <html><body><mnb-seg>persisted</mnb-seg>
+        <html><body><m-m>persisted</m-m>
         <script id="mnb-segment-metadata" type="application/json">
-        {"v":3,"t":{"sid":["sentence"]},"s":[["!persisted",null,null,null,null,null,null,null,0]]}
+        {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},"s":[["!persisted",0,null,null,null,null,null,null,null,0,0]]}
         </script></body></html>
         """
         let actor = EBookProcessingActor(
-            ebookProcessedTextCacheReader: { _, _, _, _ in expectedHTML },
+            ebookProcessedTextCacheReader: { _, _, _, _ in
+                let split = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(expectedHTML.utf8)))
+                return split
+            },
             ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
                 XCTFail("A persisted cache hit should bypass ebook text processing")
-                return "<html><body>unexpected processed value</body></html>"
+                return ebookTestPayload("<html><body>unexpected processed value</body></html>")
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -723,7 +804,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: false
         )
 
-        XCTAssertEqual(result, expectedHTML)
+        let expectedPayload = try XCTUnwrap(
+            splitCanonicalReaderSegmentSidecar(from: Array(expectedHTML.utf8))
+        )
+        XCTAssertEqual(result.documentHTML, expectedPayload.documentHTML)
+        XCTAssertEqual(result.segmentSidecar, expectedPayload.segmentSidecar)
     }
 
     func testProcessingCanSkipCacheReadAfterCallerAlreadyMissed() async throws {
@@ -731,9 +816,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheReader: { _, _, _, _ in
                 XCTFail("The scheme handler already performed this cache read")
-                return "<html><body>unexpected cached value</body></html>"
+                return ebookTestPayload("<html><body>unexpected cached value</body></html>")
             },
-            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in expectedHTML },
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in ebookTestPayload(expectedHTML) },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
             processHTMLBytes: nil,
@@ -748,7 +833,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             shouldReadProcessedCache: false
         )
 
-        XCTAssertEqual(result, expectedHTML)
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), expectedHTML)
     }
 
     func testCacheWarmerProcessTextResponseDoesNotReturnProcessedContent() throws {
@@ -783,6 +868,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             isCacheWarmer: true
         )
 
-        XCTAssertEqual(result, originalText)
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
     }
 }

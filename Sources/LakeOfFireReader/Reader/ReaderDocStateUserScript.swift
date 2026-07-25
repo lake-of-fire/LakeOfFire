@@ -59,7 +59,7 @@ struct ReaderDocStateUserScript {
                 state: trackingStateForSegment(segment),
                 className: segment.className || null,
                 textSample: typeof segment.textContent === "string" ? segment.textContent.trim().slice(0, 48) : null,
-                hasSurface: segment.querySelector("mnb-sur") !== null,
+                hasSurface: segment.querySelector("m-t") !== null,
                 hiddenReason: hiddenReason(segment),
                 jlptLevel: segment.dataset?.jlptLevel ?? null,
                 lookup: segment.dataset?.jmdictSearchString ?? null
@@ -86,8 +86,8 @@ struct ReaderDocStateUserScript {
         }
         function summarizeTracking(readerContent) {
             const root = readerContent ?? document;
-            const segments = Array.from(root.querySelectorAll("mnb-seg"));
-            const surfaces = Array.from(root.querySelectorAll("mnb-sur"));
+            const segments = Array.from(root.querySelectorAll("m-m"));
+            const surfaces = Array.from(root.querySelectorAll("m-t"));
             const trackedWords = (typeof document.manabi_trackedWords === "object" && document.manabi_trackedWords) ? document.manabi_trackedWords : null;
             const trackedWordKeys = trackedWords ? Object.keys(trackedWords) : [];
             const counts = {
@@ -110,7 +110,7 @@ struct ReaderDocStateUserScript {
                 } else {
                     counts.visibleSegments += 1;
                 }
-                if (!segment.querySelector("mnb-sur")) {
+                if (!segment.querySelector("m-t")) {
                     counts.segmentsWithoutSurface += 1;
                 }
             }
