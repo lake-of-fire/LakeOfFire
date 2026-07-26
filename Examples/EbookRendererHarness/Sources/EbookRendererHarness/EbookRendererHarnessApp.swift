@@ -827,7 +827,7 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 ]
             )
             _ = try await scriptCaller.evaluateJavaScript(
-                "window.setEbookViewerWritingDirection(direction)",
+                "await window.setEbookViewerWritingDirection(direction)",
                 arguments: ["direction": writingDirection.rawValue]
             )
             appendEvent(

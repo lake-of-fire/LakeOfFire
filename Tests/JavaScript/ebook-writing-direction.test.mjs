@@ -44,6 +44,26 @@ test('resolves linked and inline styles in document order with CSS precedence', 
     assert.deepEqual(direction, { direction: 'vertical', writingMode: 'vertical-rl' })
 })
 
+test('resolves child combinators and functional pseudo classes with CSS specificity', async () => {
+    const direction = await rawSectionWritingDirection({
+        href: 'OPS/Text/chapter.xhtml',
+        html: `
+            <html class="book"><head>
+            <style>
+                :where(html.book) > body:is(.chapter, .appendix) {
+                    writing-mode: horizontal-tb;
+                }
+                html.book > body:not(.hltr) {
+                    writing-mode: vertical-rl;
+                }
+            </style>
+            </head><body class="chapter"></body></html>
+        `,
+    })
+
+    assert.deepEqual(direction, { direction: 'vertical', writingMode: 'vertical-rl' })
+})
+
 test('resolves nested stylesheet imports in cascade order without following cycles or print imports', async () => {
     const requested = []
     const sources = new Map([
@@ -131,4 +151,45 @@ test('caches direction only within one loader generation and coalesces requests'
     const replacementGeneration = makeRawSectionWritingDirectionResolver({ loadText })
     await replacementGeneration('OPS/chapter.xhtml')
     assert.equal(loadCount, 2)
+})
+
+test('does not publish a suspended stylesheet result into a replacement loader generation', async () => {
+    let releaseOriginalStylesheet
+    const originalStylesheet = new Promise(resolve => {
+        releaseOriginalStylesheet = resolve
+    })
+    const originalGeneration = makeRawSectionWritingDirectionResolver({
+        loadText: async href => {
+            if (href === 'OPS/chapter.xhtml') {
+                return '<html><head><link rel="stylesheet" href="book.css"></head><body></body></html>'
+            }
+            assert.equal(href, 'OPS/book.css')
+            return originalStylesheet
+        },
+    })
+    const originalResolution = originalGeneration('OPS/chapter.xhtml')
+
+    const replacementGeneration = makeRawSectionWritingDirectionResolver({
+        loadText: async href => {
+            if (href === 'OPS/chapter.xhtml') {
+                return '<html><head><link rel="stylesheet" href="book.css"></head><body></body></html>'
+            }
+            assert.equal(href, 'OPS/book.css')
+            return 'body { writing-mode: horizontal-tb; }'
+        },
+    })
+    assert.deepEqual(
+        await replacementGeneration('OPS/chapter.xhtml'),
+        { direction: 'horizontal', writingMode: 'horizontal-tb' },
+    )
+
+    releaseOriginalStylesheet('body { writing-mode: vertical-rl; }')
+    assert.deepEqual(
+        await originalResolution,
+        { direction: 'vertical', writingMode: 'vertical-rl' },
+    )
+    assert.deepEqual(
+        await replacementGeneration('OPS/chapter.xhtml'),
+        { direction: 'horizontal', writingMode: 'horizontal-tb' },
+    )
 })

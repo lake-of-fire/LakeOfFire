@@ -106,7 +106,12 @@ private let nestedResourceDocumentHTML = """
 </body></html>
 """
 
-private let nestedResourceStylesheet = "body { background-color: rgb(1, 2, 3); }"
+private let nestedResourceStylesheet = """
+body {
+    background-color: rgb(1, 2, 3);
+    writing-mode: vertical-rl;
+}
+"""
 
 private let nestedResourceImage = """
 <svg xmlns="http://www.w3.org/2000/svg" width="4" height="3">
@@ -1261,6 +1266,22 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 /foliate-js\\/ebook-package-media\\.js$/,
                 "PDFJSWeb/standard_fonts/LiberationSans-Regular.ttf"
             );
+            const writingDirectionModuleURL = mediaBootstrap.src.replace(
+                /ebook-package-media\\.js$/,
+                "ebook-paginator-writing-direction.js"
+            );
+            const writingDirectionModule = await import(writingDirectionModuleURL);
+            const sourceWritingMode = getComputedStyle(document.body).writingMode;
+            const horizontalOverride = writingDirectionModule.applyPaginatorWritingDirectionOverride(
+                document,
+                "horizontal"
+            );
+            const horizontalWritingMode = getComputedStyle(document.body).writingMode;
+            const restoredOverride = writingDirectionModule.applyPaginatorWritingDirectionOverride(
+                document,
+                "original"
+            );
+            const restoredWritingMode = getComputedStyle(document.body).writingMode;
             let fontLoadError = null;
             let fontLoadStatus = null;
             try {
@@ -1290,11 +1311,17 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 fontLoadError,
                 fontLoadStatus,
                 fontURL,
+                horizontalOverride,
+                horizontalWritingMode,
                 mediaBootstrapError,
                 mediaBootstrapState: document.documentElement.dataset.mnbPackageMediaState ?? null,
                 mediaBootstrapStatus,
                 mediaBootstrapURL: mediaBootstrap?.src ?? null,
                 missingStatus,
+                restoredOverride,
+                restoredWritingMode,
+                sourceWritingMode,
+                writingDirectionModuleURL,
                 bodyText: document.body.textContent.trim(),
             };
             """,
@@ -1321,6 +1348,14 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue((values["fontURL"] as? String)?.contains("/load/viewer-assets/") == true)
         XCTAssertTrue((values["fontURL"] as? String)?.hasSuffix(
             "/PDFJSWeb/standard_fonts/LiberationSans-Regular.ttf"
+        ) == true)
+        XCTAssertEqual(values["sourceWritingMode"] as? String, "vertical-rl")
+        XCTAssertEqual(values["horizontalOverride"] as? String, "horizontal")
+        XCTAssertEqual(values["horizontalWritingMode"] as? String, "horizontal-tb")
+        XCTAssertEqual(values["restoredOverride"] as? String, "original")
+        XCTAssertEqual(values["restoredWritingMode"] as? String, "vertical-rl")
+        XCTAssertTrue((values["writingDirectionModuleURL"] as? String)?.hasSuffix(
+            "/foliate-js/ebook-paginator-writing-direction.js"
         ) == true)
         XCTAssertTrue(values["mediaBootstrapError"] is NSNull)
         XCTAssertEqual(values["mediaBootstrapState"] as? String, "ready")

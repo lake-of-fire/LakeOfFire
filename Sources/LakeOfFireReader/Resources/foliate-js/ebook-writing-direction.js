@@ -33,17 +33,184 @@ const elementDescriptor = (html, tagName) => {
     }
 }
 
-const selectorSpecificity = selector => {
-    const ids = selector.match(/#[\w-]+/g)?.length ?? 0
-    const classes = selector.match(/\.[\w-]+|\[[^\]]+\]|:(?!root\b)[\w-]+/g)?.length ?? 0
-    const elements = selector.match(/(^|[\s>+~,(])(html|body)(?=$|[\s>+~.#[:])/gi)?.length ?? 0
-    return ids * 100 + classes * 10 + elements
+const splitTopLevel = (source, separator = ',') => {
+    const values = []
+    let start = 0
+    let parentheses = 0
+    let brackets = 0
+    let quote = null
+    let escaped = false
+    const text = String(source ?? '')
+    for (let index = 0; index < text.length; index += 1) {
+        const character = text[index]
+        if (escaped) {
+            escaped = false
+            continue
+        }
+        if (character === '\\') {
+            escaped = true
+            continue
+        }
+        if (quote) {
+            if (character === quote) quote = null
+            continue
+        }
+        if (character === '"' || character === "'") {
+            quote = character
+            continue
+        }
+        if (character === '(') parentheses += 1
+        else if (character === ')') parentheses = Math.max(0, parentheses - 1)
+        else if (character === '[') brackets += 1
+        else if (character === ']') brackets = Math.max(0, brackets - 1)
+        else if (character === separator && parentheses === 0 && brackets === 0) {
+            values.push(text.slice(start, index))
+            start = index + 1
+        }
+    }
+    values.push(text.slice(start))
+    return values
 }
 
-const matchesSimpleSelector = (selector, element) => {
+const firstFunctionalPseudo = source => {
+    const match = /:(not|is|where)\(/i.exec(source)
+    if (!match) return null
+    const open = match.index + match[0].length - 1
+    let depth = 1
+    let quote = null
+    let escaped = false
+    for (let index = open + 1; index < source.length; index += 1) {
+        const character = source[index]
+        if (escaped) {
+            escaped = false
+            continue
+        }
+        if (character === '\\') {
+            escaped = true
+            continue
+        }
+        if (quote) {
+            if (character === quote) quote = null
+            continue
+        }
+        if (character === '"' || character === "'") {
+            quote = character
+            continue
+        }
+        if (character === '(') depth += 1
+        if (character === ')') depth -= 1
+        if (depth === 0) {
+            return {
+                name: match[1].toLowerCase(),
+                start: match.index,
+                end: index + 1,
+                arguments: source.slice(open + 1, index),
+            }
+        }
+    }
+    return { malformed: true }
+}
+
+const selectorSpecificity = selector => {
+    let value = String(selector ?? '')
+    let functionalSpecificity = 0
+    while (true) {
+        const functionalPseudo = firstFunctionalPseudo(value)
+        if (!functionalPseudo || functionalPseudo.malformed) break
+        if (functionalPseudo.name !== 'where') {
+            functionalSpecificity += Math.max(
+                0,
+                ...splitTopLevel(functionalPseudo.arguments).map(selectorSpecificity),
+            )
+        }
+        value = `${value.slice(0, functionalPseudo.start)} ${value.slice(functionalPseudo.end)}`
+    }
+    const ids = value.match(/#[\w-]+/g)?.length ?? 0
+    const classes = value.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+(?:\([^)]*\))?/g)?.length ?? 0
+    const elements = value
+        .match(/(^|[\s>+~,(])([a-z][\w-]*)(?=$|[\s>+~.#[:])/gi)
+        ?.length ?? 0
+    return ids * 100 + classes * 10 + elements + functionalSpecificity
+}
+
+const selectorComponents = selector => {
+    const compounds = []
+    const combinators = []
+    let current = ''
+    let pendingCombinator = null
+    let parentheses = 0
+    let brackets = 0
+    let quote = null
+    let escaped = false
+    const flush = () => {
+        const compound = current.trim()
+        current = ''
+        if (!compound) return
+        if (compounds.length > 0) combinators.push(pendingCombinator ?? ' ')
+        compounds.push(compound)
+        pendingCombinator = null
+    }
+
+    for (const character of String(selector ?? '')) {
+        if (escaped) {
+            current += character
+            escaped = false
+            continue
+        }
+        if (character === '\\') {
+            current += character
+            escaped = true
+            continue
+        }
+        if (quote) {
+            current += character
+            if (character === quote) quote = null
+            continue
+        }
+        if (character === '"' || character === "'") {
+            current += character
+            quote = character
+            continue
+        }
+        if (character === '(') parentheses += 1
+        else if (character === ')') parentheses = Math.max(0, parentheses - 1)
+        else if (character === '[') brackets += 1
+        else if (character === ']') brackets = Math.max(0, brackets - 1)
+        const isTopLevel = parentheses === 0 && brackets === 0
+        if (isTopLevel && (character === '+' || character === '~')) return null
+        if (isTopLevel && character === '>') {
+            flush()
+            if (compounds.length === 0) return null
+            pendingCombinator = '>'
+            continue
+        }
+        if (isTopLevel && /\s/.test(character)) {
+            if (current.trim()) {
+                flush()
+                pendingCombinator = ' '
+            }
+            continue
+        }
+        current += character
+    }
+    flush()
+    if (compounds.length === 0 || combinators.length !== compounds.length - 1) return null
+    return { compounds, combinators }
+}
+
+const matchesSimpleSelector = (selector, element, root) => {
     let value = selector.trim()
     if (!value || value === '*') return true
-    if (value.includes(':not(') || value.includes(':is(') || value.includes(':where(')) return false
+    if (value.includes('::')) return false
+    while (true) {
+        const functionalPseudo = firstFunctionalPseudo(value)
+        if (!functionalPseudo) break
+        if (functionalPseudo.malformed) return false
+        const argumentsMatch = splitTopLevel(functionalPseudo.arguments)
+            .some(argument => matchesSelector(argument, element, root))
+        if (functionalPseudo.name === 'not' ? argumentsMatch : !argumentsMatch) return false
+        value = `${value.slice(0, functionalPseudo.start)}${value.slice(functionalPseudo.end)}`
+    }
     if (value === ':root') return element.tagName === 'html'
     value = value.replace(/:root/g, element.tagName === 'html' ? 'html' : '__not_root__')
     value = value.replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
@@ -72,13 +239,18 @@ const matchesSimpleSelector = (selector, element) => {
 }
 
 const matchesSelector = (selector, element, root) => {
-    const normalized = selector.trim()
-    if (!normalized || /[>+~]/.test(normalized)) return false
-    const parts = normalized.split(/\s+/)
-    if (!matchesSimpleSelector(parts.at(-1), element)) return false
-    if (parts.length === 1) return true
-    return element.tagName === 'body'
-        && parts.slice(0, -1).every(part => matchesSimpleSelector(part, root))
+    const components = selectorComponents(selector)
+    if (!components) return false
+    const { compounds, combinators } = components
+    if (!matchesSimpleSelector(compounds.at(-1), element, root)) return false
+    let ancestor = element
+    for (let index = compounds.length - 2; index >= 0; index -= 1) {
+        if (ancestor.tagName !== 'body') return false
+        ancestor = root
+        if (combinators[index] !== ' ' && combinators[index] !== '>') return false
+        if (!matchesSimpleSelector(compounds[index], ancestor, root)) return false
+    }
+    return true
 }
 
 const declarationsFrom = source => {
@@ -124,7 +296,7 @@ const cssRules = function* (source) {
             yield* cssRules(body)
             continue
         }
-        yield { selectors: prelude.split(','), body }
+        yield { selectors: splitTopLevel(prelude), body }
     }
 }
 
