@@ -1,8 +1,13 @@
 import Foundation
 import SwiftSoup
 
-private let ebookTextProcessorDetailedLoggingEnabled =
+private let ebookTextProcessorDetailedLoggingEnabled: Bool = {
+#if DEBUG
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
+#else
+    false
+#endif
+}()
 private let ebookTextProcessorSegmentOpenTagBytes = Array("<m-m".utf8)
 private let ebookTextProcessorSentenceOpenTagBytes = Array("<m-s".utf8)
 

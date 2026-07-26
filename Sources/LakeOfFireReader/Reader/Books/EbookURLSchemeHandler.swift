@@ -9,6 +9,14 @@ import LakeOfFireCore
 import LakeOfFireContent
 import LakeOfFireFiles
 
+private let ebookPageTurnInteractionDiagnosticsEnabled: Bool = {
+#if DEBUG
+    ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
+#else
+    false
+#endif
+}()
+
 fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
     if let body = request.httpBody, !body.isEmpty {
         return body
@@ -663,8 +671,7 @@ fileprivate actor EBookLoadingActor {
         sharedFontCSSBase64 _: String?,
         sharedFontCSSBase64Provider _: SharedFontCSSBase64Provider?
     ) async throws -> (HTTPURLResponse, Data) {
-        let shouldEnablePageTurnInteractionDiagnostic =
-            ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
+        let shouldEnablePageTurnInteractionDiagnostic = ebookPageTurnInteractionDiagnosticsEnabled
         var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
         html = try ebookViewerHTMLApplyingAssetRevision(
             html,
@@ -768,7 +775,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
         guard let url = urlSchemeTask.request.url else { return }
         let mainDocumentURL = urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil"
-        if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+        if ebookPageTurnInteractionDiagnosticsEnabled {
             logEbookAsset("# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)")
         }
         let sharedReaderFontAsset = self.sharedReaderFontAsset
@@ -1174,7 +1181,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 ),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? await EbookViewerAssetCache.shared.data(for: fileUrl) {
-                    if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                    if ebookPageTurnInteractionDiagnosticsEnabled {
                         logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
                     }
                     let response = ebookHTTPResponse(
@@ -1202,7 +1209,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
-                        if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                        if ebookPageTurnInteractionDiagnosticsEnabled {
                             logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
                         }
                         do {
@@ -1229,7 +1236,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                         }
                 } else {
-                    if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                    if ebookPageTurnInteractionDiagnosticsEnabled {
                         logEbookAsset("# EBOOKASSET missing url=\(url.absoluteString)")
                     }
                     await { @MainActor in
@@ -1273,7 +1280,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 subdirectory: subdirectory
             )
         }.first
-        if resolvedURL == nil, ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+        if resolvedURL == nil, ebookPageTurnInteractionDiagnosticsEnabled {
             logEbookAsset("# EBOOKASSET resolveMiss url=\(url.absoluteString) assetName=\(assetName) ext=\(assetExtension) dir=\(assetDirectory)")
         }
         return resolvedURL

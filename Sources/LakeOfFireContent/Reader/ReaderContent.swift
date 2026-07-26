@@ -1,8 +1,6 @@
 import SwiftUI
 import Combine
-
-private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInternalReaderLoader.traceID"
-private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
+import SwiftUIWebView
 
 private func logReaderLoad(_ message: String) {
 #if DEBUG
@@ -200,15 +198,6 @@ public class ReaderContent: ObservableObject {
         return preloadedContent
     }
 
-    private func activeInternalLoaderWaitContext() -> (traceID: String, requestURL: String)? {
-        let defaults = UserDefaults.standard
-        guard let traceID = defaults.string(forKey: activeInternalReaderLoaderTraceIDKey),
-              let requestURL = defaults.string(forKey: activeInternalReaderLoaderURLKey) else {
-            return nil
-        }
-        return (traceID, requestURL)
-    }
-
     @MainActor
     public func load(url: URL) async throws {
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
@@ -227,9 +216,9 @@ public class ReaderContent: ObservableObject {
         }
 
         if resolvedContentURL.absoluteString == "about:blank",
-           let activeInternalLoaderWait = activeInternalLoaderWaitContext() {
+           WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad {
             logReaderLoad(
-                "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString) activeLoaderURL=\(activeInternalLoaderWait.requestURL) traceID=\(activeInternalLoaderWait.traceID)"
+                "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString)"
             )
             return
         }
