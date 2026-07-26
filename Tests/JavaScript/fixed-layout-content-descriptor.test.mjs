@@ -332,6 +332,110 @@ test('rejects an older delayed target after newer same-book navigation', async (
     )
 })
 
+test('suppresses an older target failure after newer same-book navigation', async () => {
+    let rejectOriginalTarget
+    const originalTarget = new Promise((_, reject) => {
+        rejectOriginalTarget = reject
+    })
+    const sections = [
+        { load: async () => 'failed-delayed-target.xhtml' },
+        { load: async () => 'current-after-target-failure.xhtml' },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+    const originalNavigation = layout.goTo(originalTarget)
+
+    const currentNavigation = layout.goTo({ index: 1 })
+    const currentIframe = await nextPendingIframe('current-after-target-failure.xhtml')
+    currentIframe.finishLoading(fixedLayoutDocument('current after target failure'))
+    await currentNavigation
+
+    rejectOriginalTarget(new Error('obsolete target failed'))
+    await assert.doesNotReject(originalNavigation)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['current after target failure'],
+    )
+})
+
+test('suppresses an older section-load failure after replacement navigation', async () => {
+    let rejectOriginalSection
+    let markOriginalSectionLoadStarted
+    const originalSectionSource = new Promise((_, reject) => {
+        rejectOriginalSection = reject
+    })
+    const originalSectionLoadStarted = new Promise(resolve => {
+        markOriginalSectionLoadStarted = resolve
+    })
+    const sections = [
+        {
+            load: () => {
+                markOriginalSectionLoadStarted()
+                return originalSectionSource
+            },
+        },
+        { load: async () => 'current-after-section-failure.xhtml' },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+
+    const originalNavigation = layout.goTo({ index: 0 })
+    await originalSectionLoadStarted
+    const currentNavigation = layout.goTo({ index: 1 })
+    const currentIframe = await nextPendingIframe('current-after-section-failure.xhtml')
+    currentIframe.finishLoading(fixedLayoutDocument('current after section failure'))
+    await currentNavigation
+
+    rejectOriginalSection(new Error('obsolete section failed'))
+    await assert.doesNotReject(originalNavigation)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['current after section failure'],
+    )
+})
+
+test('propagates failures owned by the current target and section generation', async () => {
+    const targetLayout = new FixedLayout()
+    targetLayout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [{ load: async () => 'unused.xhtml' }],
+    })
+    await assert.rejects(
+        targetLayout.goTo(Promise.reject(new Error('current target failed'))),
+        /current target failed/,
+    )
+
+    const sectionLayout = new FixedLayout()
+    sectionLayout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [{
+            load: async () => {
+                throw new Error('current section failed')
+            },
+        }],
+    })
+    await assert.rejects(
+        sectionLayout.goTo({ index: 0 }),
+        /current section failed/,
+    )
+})
+
 test('normalizes a string rendition viewport before fixed-layout scaling', async () => {
     const layout = new FixedLayout()
     layout.open({

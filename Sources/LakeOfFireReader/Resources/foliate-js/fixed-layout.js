@@ -341,16 +341,29 @@ export class FixedLayout extends HTMLElement {
         let didShowSpread = false
         if (spread.center) {
             const index = this.book.sections.indexOf(spread.center)
-            const src = await spread.center?.load?.()
+            let src
+            try {
+                src = await spread.center?.load?.()
+            } catch (error) {
+                if (generation !== this.#contentGeneration) return
+                throw error
+            }
             if (generation !== this.#contentGeneration) return
             didShowSpread = await this.#showSpread({ center: { index, src } }, generation)
         } else {
             const indexL = this.book.sections.indexOf(spread.left)
             const indexR = this.book.sections.indexOf(spread.right)
-            const [srcL, srcR] = await Promise.all([
-                spread.left?.load?.(),
-                spread.right?.load?.(),
-            ])
+            let srcL
+            let srcR
+            try {
+                [srcL, srcR] = await Promise.all([
+                    spread.left?.load?.(),
+                    spread.right?.load?.(),
+                ])
+            } catch (error) {
+                if (generation !== this.#contentGeneration) return
+                throw error
+            }
             if (generation !== this.#contentGeneration) return
             const left = { index: indexL, src: srcL }
             const right = { index: indexR, src: srcR }
@@ -367,12 +380,21 @@ export class FixedLayout extends HTMLElement {
     async goTo(target) {
         const { book } = this
         const targetResolutionGeneration = ++this.#targetResolutionGeneration
-        const resolved = await target
+        let resolved
+        try {
+            resolved = await target
+        } catch (error) {
+            if (
+                book !== this.book
+                || targetResolutionGeneration !== this.#targetResolutionGeneration
+            ) return
+            throw error
+        }
         if (
             book !== this.book
             || targetResolutionGeneration !== this.#targetResolutionGeneration
         ) return
-        const section = book.sections[resolved.index]
+        const section = book.sections[resolved?.index]
         if (!section) return
         const spread = this.getSpreadOf(section)
         if (!spread) return
