@@ -369,13 +369,22 @@ func ebookProcessTextResponseData(processedText: String, isCacheWarmer: Bool) ->
 actor EbookViewerAssetCache {
     static let shared = EbookViewerAssetCache()
 
+    typealias DataLoader = @Sendable (URL) throws -> Data
+
     private var dataByFileURL = [URL: Data]()
+    private let dataLoader: DataLoader
+
+    init(dataLoader: @escaping DataLoader = {
+        try Data(contentsOf: $0, options: [.mappedIfSafe])
+    }) {
+        self.dataLoader = dataLoader
+    }
 
     func data(for fileURL: URL) throws -> Data {
         if let cachedData = dataByFileURL[fileURL] {
             return cachedData
         }
-        let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+        let data = try dataLoader(fileURL)
         dataByFileURL[fileURL] = data
         return data
     }

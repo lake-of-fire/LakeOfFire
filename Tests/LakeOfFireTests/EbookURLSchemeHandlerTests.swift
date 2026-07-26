@@ -49,6 +49,23 @@ private actor EBookProcessorInvocationCounter {
     }
 }
 
+private final class SynchronousInvocationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    func value() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
 private actor EBookProcessingGate {
     private var releaseContinuation: CheckedContinuation<Void, Never>?
     private var isWaiting = false
@@ -957,6 +974,33 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let secondRead = try await cache.data(for: secondURL)
         XCTAssertEqual(cachedRead, Data("first-revision".utf8))
         XCTAssertEqual(secondRead, Data("second-asset".utf8))
+    }
+
+    func testEbookViewerAssetCacheCoalescesConcurrentReads() async throws {
+        let fileURL = URL(fileURLWithPath: "/bundle/foliate-js/ebook-viewer.js")
+        let expectedData = Data("viewer-module".utf8)
+        let invocationCounter = SynchronousInvocationCounter()
+        let cache = EbookViewerAssetCache { requestedURL in
+            XCTAssertEqual(requestedURL, fileURL)
+            invocationCounter.increment()
+            return expectedData
+        }
+
+        let values = try await withThrowingTaskGroup(of: Data.self) { group in
+            for _ in 0..<32 {
+                group.addTask {
+                    try await cache.data(for: fileURL)
+                }
+            }
+            var values = [Data]()
+            for try await value in group {
+                values.append(value)
+            }
+            return values
+        }
+
+        XCTAssertEqual(values, Array(repeating: expectedData, count: 32))
+        XCTAssertEqual(invocationCounter.value(), 1)
     }
 
     func testEbookViewerHTMLUsesOneRevisionForPreloadAndModuleExecution() throws {
