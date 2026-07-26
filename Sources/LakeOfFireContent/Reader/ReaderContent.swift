@@ -134,7 +134,7 @@ public class ReaderContent: ObservableObject {
         }
 
         if resolvedContentURL.absoluteString == "about:blank",
-           WebViewReaderLoadActivity.shared.hasPendingLoad {
+           WebViewReaderLoadActivity.shared.hasPendingPreProvisionalLoad {
             return
         }
 
