@@ -1,7 +1,11 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 import { installBookContentStyles } from './book-content-style.js'
-import { paginatorDirectionFromDocument } from './ebook-paginator-writing-direction.js'
+import {
+    applyPaginatorWritingDirectionOverride,
+    normalizePaginatorWritingDirection,
+    paginatorDirectionFromDocument,
+} from './ebook-paginator-writing-direction.js'
 import {
     lockedPageTurnQueueDecision as manabiLockedPageTurnQueueDecision,
     normalizeSingleMediaPageTarget as manabiNormalizeSingleMediaPageTarget,
@@ -217,6 +221,13 @@ async function getDirection({ bodylessStyle, bodylessDoc }) {
     return { vertical, verticalRTL, rtl };
 }
 
+const resolvedPaginatorDirectionForDocument = async doc => {
+    const directDirection = paginatorDirectionFromDocument(doc)
+    if (directDirection) return directDirection
+    const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
+    return getDirection({ bodylessStyle, bodylessDoc })
+}
+
 const makeMarginals = (length, part) => Array.from({
     length
 }, () => {
@@ -378,17 +389,8 @@ class View {
                         await afterLoad?.(doc)
                         await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.()
 
-                        let direction = paginatorDirectionFromDocument(doc);
-                        let directionSource = 'document';
-                        if (!direction) {
-                            const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
-                            direction = await getDirection({ bodylessStyle, bodylessDoc });
-                            directionSource = 'bodyless-iframe';
-                        }
-                        this.#vertical = direction.vertical;
-                        this.#verticalRTL = direction.verticalRTL;
-                        this.#rtl = direction.rtl;
-                        this.#directionReadyResolve?.();
+                        const direction = await resolvedPaginatorDirectionForDocument(doc)
+                        this.setDirection(direction)
 
                         this.#contentRange.selectNodeContents(doc.body)
 
@@ -754,6 +756,12 @@ class View {
     get overlayer() {
         return this.#overlayer
     }
+    setDirection({ vertical, verticalRTL, rtl }) {
+        this.#vertical = vertical
+        this.#verticalRTL = verticalRTL
+        this.#rtl = rtl
+        this.#directionReadyResolve?.()
+    }
     destroy() {
         if (this.document) this.#resizeObserver.unobserve(this.document.body)
         //        if (this.document) this.#mutationObserver.disconnect()
@@ -829,6 +837,8 @@ export class Paginator extends HTMLElement {
     #isLoading = false
     #locked = false // while true, prevent any further navigation
     #styles
+    #writingDirectionOverride = 'original'
+    #writingDirectionUpdate = Promise.resolve()
     #bookContentStylesPromise = null
     #styleMap = new WeakMap()
     #scrollBounds
@@ -1862,6 +1872,7 @@ export class Paginator extends HTMLElement {
 
         await this.#view.render(await this.#beforeRender({
             vertical: this.#vertical,
+            verticalRTL: this.#verticalRTL,
             rtl: this.#rtl,
         }))
         //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
@@ -2800,6 +2811,10 @@ export class Paginator extends HTMLElement {
                     })
                 } else {
                     await this.#installStyleElementsForDocument(doc)
+                    applyPaginatorWritingDirectionOverride(
+                        doc,
+                        this.#writingDirectionOverride,
+                    )
                     //                    console.log("#display... await onLoad")
                     await onLoad?.({
                         doc,
@@ -3242,6 +3257,46 @@ export class Paginator extends HTMLElement {
             doc: this.#view.document,
         }]
         return []
+    }
+    setWritingDirectionOverride(value) {
+        const writingDirection = normalizePaginatorWritingDirection(value)
+        this.#writingDirectionOverride = writingDirection
+        const update = this.#writingDirectionUpdate.then(
+            () => this.#applyWritingDirectionOverride(writingDirection),
+        )
+        this.#writingDirectionUpdate = update.catch(() => {})
+        return update
+    }
+    async #applyWritingDirectionOverride(writingDirection) {
+        const view = this.#view
+        const doc = view?.document
+        if (!doc) return { rendered: false, writingDirection }
+
+        applyPaginatorWritingDirectionOverride(doc, writingDirection)
+        const direction = await resolvedPaginatorDirectionForDocument(doc)
+        if (view !== this.#view || doc !== this.#view?.document) {
+            return { rendered: false, reason: 'replaced', writingDirection }
+        }
+
+        const changed =
+            direction.vertical !== this.#vertical
+            || direction.verticalRTL !== this.#verticalRTL
+            || direction.rtl !== this.#rtl
+        this.#vertical = direction.vertical
+        this.#verticalRTL = direction.verticalRTL
+        this.#rtl = direction.rtl
+        if (!changed) return { rendered: false, reason: 'unchanged', writingDirection }
+
+        view.setDirection(direction)
+        this.#cachedSizes = null
+        this.#sizesPromise = null
+        this.#cachedStart = null
+        this.#viewSizePromise = null
+        this.#view.cachedViewSize = null
+        this.#view.cachedSizes = null
+        this.#invalidateVisibleRangeCache()
+        await this.render()
+        return { rendered: true, writingDirection }
     }
     setStyles(styles) {
         this.#styles = styles

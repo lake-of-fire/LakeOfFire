@@ -12,6 +12,7 @@ import {
     waitForEbookRenderReadinessSignal,
 } from './ebook-render-readiness.js'
 import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
+import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
     ebookSentenceIdentifier,
@@ -3691,6 +3692,11 @@ const getView = async (source, isCacheWarmer) => {
         view.style.pointerEvents = 'none'
     }
     await view.open(book, isCacheWarmer)
+    if (!isCacheWarmer) {
+        await view.renderer?.setWritingDirectionOverride?.(
+            globalThis.manabiEbookViewerWritingDirection ?? 'original',
+        )
+    }
     postReaderVisibilityProbe('getView:opened', view, {
         isCacheWarmer: !!isCacheWarmer,
         bookDir: book?.dir || null,
@@ -8275,29 +8281,18 @@ window.setEbookViewerLayout = (layoutMode) => {
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('layout-change');
 }
 
-window.setEbookViewerWritingDirection = (writingDirection) => {
+window.setEbookViewerWritingDirection = async writingDirection => {
     invalidateCacheWarmerWork()
     const renderer = globalThis.reader?.view?.renderer ?? null;
-    const contents = renderer?.getContents?.() || [];
-    const applyWritingDirectionToDocument = (doc) => {
-        const body = doc?.body;
-        if (!body) return false;
-        if (writingDirection === 'vertical') {
-            body.dataset.mnbWritingDirection = 'vertical';
-        } else if (writingDirection === 'horizontal') {
-            body.dataset.mnbWritingDirection = 'horizontal';
-        } else {
-            body.removeAttribute('data-mnb-writing-direction');
-        }
-        try {
-            doc.defaultView?.manabiApplyVerticalWritingCheck?.();
-        } catch (_error) {}
-        return true;
-    };
-    for (const content of contents) {
-        applyWritingDirectionToDocument(content?.doc ?? content?.document ?? null);
-    }
+    const result = await applyEbookViewerWritingDirection({
+        renderer,
+        value: writingDirection,
+        onNormalized: value => {
+            globalThis.manabiEbookViewerWritingDirection = value
+        },
+    })
     globalThis.manabiInvalidateVisiblePageSegmentSnapshot?.('writing-direction-change');
+    return result.renderResult
 }
 
 window.loadNextCacheWarmerSection = async (settledSectionHrefs = []) => {
