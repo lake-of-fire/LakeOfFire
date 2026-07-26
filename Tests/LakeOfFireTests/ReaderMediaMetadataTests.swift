@@ -40,6 +40,15 @@ private final class FakeReaderSpeechSynthesizer: ReaderSpeechSynthesizing {
     }
 }
 
+@MainActor
+private final class FakeReadAloudAudioSessionLease: ReaderReadAloudAudioSessionLease {
+    private(set) var releaseCount = 0
+
+    func release() throws {
+        releaseCount += 1
+    }
+}
+
 final class ReaderMediaMetadataTests: XCTestCase {
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
         let realmURL = FileManager.default.temporaryDirectory
@@ -449,6 +458,93 @@ final class ReaderMediaMetadataTests: XCTestCase {
         viewModel.invalidateReadAloudForEbookSectionChange(5)
         XCTAssertFalse(viewModel.hasPreparedAITTS)
         XCTAssertFalse(viewModel.isMediaPlayerPresented)
+    }
+
+    @MainActor
+    func testReadAloudAudioSessionLeaseFollowsPlaybackLifecycle() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let firstLease = FakeReadAloudAudioSessionLease()
+        let secondLease = FakeReadAloudAudioSessionLease()
+        var leases = [firstLease, secondLease]
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: {
+                leases.removeFirst()
+            }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+
+        viewModel.playAITTS()
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(firstLease.releaseCount, 0)
+
+        viewModel.pauseAITTS()
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(firstLease.releaseCount, 1)
+
+        viewModel.playAITTS()
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(secondLease.releaseCount, 0)
+
+        viewModel.stopAITTSIfNeeded()
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(secondLease.releaseCount, 1)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+    }
+
+    @MainActor
+    func testReadAloudDoesNotStartWhenAudioSessionLeaseCannotBeAcquired() {
+        enum TestError: Error { case rejected }
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: {
+                throw TestError.rejected
+            }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+
+        viewModel.playAITTS()
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertTrue(synthesizer.spokenUtterances.isEmpty)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+    }
+
+    @MainActor
+    func testReadAloudReleasesAudioSessionLeaseAfterFinalUtterance() throws {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let lease = FakeReadAloudAudioSessionLease()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { lease }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+        let utterance = try XCTUnwrap(synthesizer.spokenUtterances.first)
+
+        viewModel.handleSpeechSynthesizerDidFinish(
+            utterance,
+            synthesizerIsSpeaking: false
+        )
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(lease.releaseCount, 1)
     }
 
     @RealmBackgroundActor
