@@ -54,6 +54,10 @@ export class TOCProgress {
     }
 }
 
+const normalizedUnitFraction = value => Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : (value === Number.POSITIVE_INFINITY ? 1 : 0)
+
 export class SectionProgress {
     constructor(sections, sizePerLoc, sizePerTimeUnit) {
         this.sizes = sections.map(section => {
@@ -79,10 +83,15 @@ export class SectionProgress {
         const { sizes, sizePerLoc, sizePerTimeUnit, sizeTotal } = this
         const sizeInSection = sizes[index] ?? 0
         const sizeBefore = this.sectionStarts[index] ?? 0
-        const size = sizeBefore + fractionInSection * sizeInSection
-        const nextSize = size + pageFraction * sizeInSection
+        const normalizedFractionInSection = normalizedUnitFraction(fractionInSection)
+        const normalizedPageFraction = normalizedUnitFraction(pageFraction)
+        const size = sizeBefore + normalizedFractionInSection * sizeInSection
+        const nextSize = Math.min(
+            sizeTotal,
+            size + normalizedPageFraction * sizeInSection,
+        )
         const remainingTotal = sizeTotal - size
-        const remainingSection = (1 - fractionInSection) * sizeInSection
+        const remainingSection = (1 - normalizedFractionInSection) * sizeInSection
         return {
             fraction: sizeTotal > 0 ? nextSize / sizeTotal : 0,
             section: {
@@ -106,9 +115,7 @@ export class SectionProgress {
         const { linearSections, sizeTotal } = this
         if (linearSections.length === 0 || sizeTotal <= 0) return [0, 0]
 
-        const normalizedFraction = Number.isFinite(fraction)
-            ? Math.max(0, Math.min(1, fraction))
-            : (fraction === Number.POSITIVE_INFINITY ? 1 : 0)
+        const normalizedFraction = normalizedUnitFraction(fraction)
         if (normalizedFraction <= 0) return [linearSections[0].index, 0]
         if (normalizedFraction >= 1) {
             return [linearSections[linearSections.length - 1].index, 1]

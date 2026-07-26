@@ -55,6 +55,29 @@ test('clamps non-finite and out-of-range fractions', () => {
     assert.deepEqual(progress.getSection(10), [2, 1])
 })
 
+test('normalizes forward progress fractions before deriving location and time', () => {
+    const progress = new SectionProgress([section(100), section(100)], 10, 10)
+
+    assert.deepEqual(progress.getProgress(1, Number.NaN, Number.POSITIVE_INFINITY), {
+        fraction: 1,
+        section: { current: 1, total: 2 },
+        location: { current: 10, next: 20, total: 20 },
+        time: { section: 10, total: 10 },
+    })
+    assert.deepEqual(progress.getProgress(1, -10, Number.NEGATIVE_INFINITY), {
+        fraction: 0.5,
+        section: { current: 1, total: 2 },
+        location: { current: 10, next: 10, total: 20 },
+        time: { section: 10, total: 10 },
+    })
+    assert.deepEqual(progress.getProgress(1, 10, 10), {
+        fraction: 1,
+        section: { current: 1, total: 2 },
+        location: { current: 20, next: 20, total: 20 },
+        time: { section: 0, total: 0 },
+    })
+})
+
 test('round trips monotonic progress across positive sections', () => {
     const progress = new SectionProgress([
         section(75),
