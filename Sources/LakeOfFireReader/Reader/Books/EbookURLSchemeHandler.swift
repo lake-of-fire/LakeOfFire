@@ -362,8 +362,13 @@ fileprivate actor EBookLoadingActor {
         sharedFontCSSBase64 _: String?,
         sharedFontCSSBase64Provider _: (() async -> String?)?
     ) async throws -> (HTTPURLResponse, Data) {
-        let shouldEnablePageTurnInteractionDiagnostic =
+        let shouldEnablePageTurnInteractionDiagnostic: Bool = {
+#if DEBUG
             ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
+#else
+            false
+#endif
+        }()
         let data: Data
         if shouldEnablePageTurnInteractionDiagnostic {
             var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
