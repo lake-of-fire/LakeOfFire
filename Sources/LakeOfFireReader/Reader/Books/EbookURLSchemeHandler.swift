@@ -1,5 +1,6 @@
 import SwiftUI
 @preconcurrency import WebKit
+import CryptoKit
 import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
@@ -196,6 +197,110 @@ func missingEbookViewerAssetResponse(for url: URL) -> HTTPURLResponse? {
         statusCode: 404,
         httpVersion: nil,
         headerFields: ["Cache-Control": "no-store"]
+    )
+}
+
+let ebookViewerAssetCacheHeaderFields = [
+    "Cache-Control": "public, max-age=31536000, immutable",
+]
+
+private let ebookViewerAssetRevisionPlaceholder = "__MNB_VIEWER_ASSET_REVISION__"
+private let ebookViewerAssetResourceSchemaVersion = 1
+
+enum EbookViewerAssetRevisionError: Error {
+    case invalidRevision
+    case invalidViewerHTML
+}
+
+func ebookViewerAssetRevision(
+    applicationIdentifier: String,
+    applicationVersion: String,
+    applicationBuild: String,
+    resourceSchemaVersion: Int
+) -> String {
+    let identity = [
+        applicationIdentifier,
+        applicationVersion,
+        applicationBuild,
+        String(resourceSchemaVersion),
+    ].joined(separator: "\u{0}")
+    let digest = SHA256.hash(data: Data(identity.utf8))
+    let digestPrefix = digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    return "v\(resourceSchemaVersion)-\(digestPrefix)"
+}
+
+func ebookViewerHTMLApplyingAssetRevision(
+    _ html: String,
+    revision: String
+) throws -> String {
+    guard revision.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else {
+        throw EbookViewerAssetRevisionError.invalidRevision
+    }
+    guard html.components(separatedBy: ebookViewerAssetRevisionPlaceholder).count - 1 == 2 else {
+        throw EbookViewerAssetRevisionError.invalidViewerHTML
+    }
+    return html.replacingOccurrences(
+        of: ebookViewerAssetRevisionPlaceholder,
+        with: revision
+    )
+}
+
+func ebookViewerAssetRelativePath(
+    from url: URL,
+    activeRevision: String
+) -> String? {
+    guard url.scheme == "ebook",
+          url.host == "ebook" else {
+        return nil
+    }
+    let prefix = "/load/viewer-assets/"
+    guard let encodedPath = URLComponents(
+        url: url,
+        resolvingAgainstBaseURL: false
+    )?.percentEncodedPath else {
+        return nil
+    }
+    guard encodedPath.hasPrefix(prefix) else {
+        return nil
+    }
+    let encodedComponents = encodedPath
+        .dropFirst(prefix.count)
+        .split(separator: "/", omittingEmptySubsequences: false)
+    guard encodedComponents.count >= 2 else {
+        return nil
+    }
+    let components = encodedComponents.compactMap {
+        String($0).removingPercentEncoding
+    }
+    guard components.count == encodedComponents.count,
+          components[0] == activeRevision else {
+        return nil
+    }
+    let assetComponents = components.dropFirst()
+    guard assetComponents.allSatisfy({
+        !$0.isEmpty &&
+        $0 != "." &&
+        $0 != ".." &&
+        !$0.contains("/") &&
+        !$0.contains("\\") &&
+        !$0.contains("\u{0}")
+    }) else {
+        return nil
+    }
+    return assetComponents.joined(separator: "/")
+}
+
+private func currentEbookViewerAssetRevision() -> String {
+    let bundle = Bundle.main
+    return ebookViewerAssetRevision(
+        applicationIdentifier: bundle.bundleIdentifier ?? "unknown-application",
+        applicationVersion: bundle.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "0",
+        applicationBuild: bundle.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String ?? "0",
+        resourceSchemaVersion: ebookViewerAssetResourceSchemaVersion
     )
 }
 
@@ -493,14 +598,18 @@ fileprivate actor EBookLoadingActor {
     func loadViewerFile(
         at viewerHtmlPath: String,
         originalURL: URL,
+        assetRevision: String,
         sharedFontCSSBase64 _: String?,
         sharedFontCSSBase64Provider _: SharedFontCSSBase64Provider?
     ) async throws -> (HTTPURLResponse, Data) {
         let shouldEnablePageTurnInteractionDiagnostic =
             ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-        let data: Data
+        var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
+        html = try ebookViewerHTMLApplyingAssetRevision(
+            html,
+            revision: assetRevision
+        )
         if shouldEnablePageTurnInteractionDiagnostic {
-            var html = try String(contentsOfFile: viewerHtmlPath, encoding: .utf8)
             let diagnosticPayload = """
             <script>
             (function() {
@@ -517,15 +626,9 @@ fileprivate actor EBookLoadingActor {
             } else {
                 html.append(diagnosticPayload)
             }
-            guard let encodedHTML = html.data(using: .utf8) else {
-                throw EbookLoadingError.fileNotFound
-            }
-            data = encodedHTML
-        } else {
-            data = try Data(
-                contentsOf: URL(fileURLWithPath: viewerHtmlPath),
-                options: [.mappedIfSafe]
-            )
+        }
+        guard let data = html.data(using: .utf8) else {
+            throw EbookLoadingError.fileNotFound
         }
         let mimeType = "text/html"
         let response = HTTPURLResponse(
@@ -987,7 +1090,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } else if url.pathComponents.starts(with: ["/", "load"]) {
                 // Bundle file.
-                if let fileUrl = Self.bundleURLFromWebURL(url),
+                let assetRevision = currentEbookViewerAssetRevision()
+                if let fileUrl = Self.bundleURLFromWebURL(
+                    url,
+                    activeRevision: assetRevision
+                ),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? await EbookViewerAssetCache.shared.data(for: fileUrl) {
                     if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
@@ -998,11 +1105,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         mimeType: mimeType,
                         byteCount: data.count,
                         textEncodingName: mimeType.hasPrefix("text/") ? "utf-8" : nil,
-                        additionalHeaderFields: [
-                            "Cache-Control": "no-store, no-cache, must-revalidate",
-                            "Pragma": "no-cache",
-                            "Expires": "0",
-                        ]
+                        additionalHeaderFields: ebookViewerAssetCacheHeaderFields
                     )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
@@ -1029,6 +1132,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             let (response, data) = try await EBookLoadingActor().loadViewerFile(
                                 at: viewerHtmlPath,
                                 originalURL: url,
+                                assetRevision: assetRevision,
                                 sharedFontCSSBase64: sharedFontCSSBase64,
                                 sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
                             )
@@ -1067,11 +1171,20 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
-    nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {
-        guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
-        let assetName = url.deletingPathExtension().lastPathComponent
-        let assetExtension = url.lakePathExtension
-        let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
+    nonisolated private static func bundleURLFromWebURL(
+        _ url: URL,
+        activeRevision: String
+    ) -> URL? {
+        guard let relativePath = ebookViewerAssetRelativePath(
+            from: url,
+            activeRevision: activeRevision
+        ) else {
+            return nil
+        }
+        let relativeURL = URL(fileURLWithPath: relativePath)
+        let assetName = relativeURL.deletingPathExtension().lastPathComponent
+        let assetExtension = relativeURL.lakePathExtension
+        let assetDirectory = relativeURL.deletingLastPathComponent().relativePath
         let resolvedURL = [
             assetDirectory,
             "Resources/\(assetDirectory)",
@@ -1141,12 +1254,5 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
     nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {
         return UTType(filenameExtension: url.lakePathExtension)?.preferredMIMEType ?? "application/octet-stream"
-    }
-}
-
-fileprivate extension String {
-    func deletingPrefix(_ prefix: String) -> String {
-        guard self.hasPrefix(prefix) else { return self }
-        return String(self.dropFirst(prefix.count))
     }
 }

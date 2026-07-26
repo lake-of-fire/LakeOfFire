@@ -804,25 +804,89 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(secondRead, Data("second-asset".utf8))
     }
 
-    func testEbookBundleResourceResponseDisablesCaching() throws {
+    func testEbookViewerHTMLUsesOneRevisionForPreloadAndModuleExecution() throws {
+        let html = """
+        <html>
+        <head>
+        <link rel="modulepreload" href="/load/viewer-assets/__MNB_VIEWER_ASSET_REVISION__/foliate-js/ebook-viewer.js">
+        </head>
+        <body>
+        <script src="/load/viewer-assets/__MNB_VIEWER_ASSET_REVISION__/foliate-js/ebook-viewer.js" type="module"></script>
+        </body>
+        </html>
+        """
+
+        let revisedHTML = try ebookViewerHTMLApplyingAssetRevision(html, revision: "v1-abc123")
+
+        XCTAssertFalse(revisedHTML.contains("__MNB_VIEWER_ASSET_REVISION__"))
+        XCTAssertEqual(
+            revisedHTML.components(
+                separatedBy: "/load/viewer-assets/v1-abc123/foliate-js/ebook-viewer.js"
+            ).count - 1,
+            2
+        )
+    }
+
+    func testEbookViewerAssetPathRequiresCurrentRevisionAndSafeComponents() throws {
+        let currentURL = try XCTUnwrap(URL(
+            string: "ebook://ebook/load/viewer-assets/v1-current/foliate-js/ui/tree.js"
+        ))
+        XCTAssertEqual(
+            ebookViewerAssetRelativePath(from: currentURL, activeRevision: "v1-current"),
+            "foliate-js/ui/tree.js"
+        )
+
+        let rejectedURLs = [
+            "ebook://ebook/load/viewer-assets/foliate-js/ui/tree.js",
+            "ebook://ebook/load/viewer-assets/v1-stale/foliate-js/ui/tree.js",
+            "ebook://ebook/load/viewer-assets/v1-current/foliate-js/%2E%2E/secret.js",
+            "ebook://ebook/load/viewer-assets/v1-current/foliate-js/%5Csecret.js",
+            "ebook://ebook/load/viewer-assets/v1-current/",
+        ]
+        for rawURL in rejectedURLs {
+            XCTAssertNil(
+                ebookViewerAssetRelativePath(
+                    from: try XCTUnwrap(URL(string: rawURL)),
+                    activeRevision: "v1-current"
+                ),
+                rawURL
+            )
+        }
+    }
+
+    func testEbookViewerAssetRevisionChangesWithApplicationBuild() {
+        let firstRevision = ebookViewerAssetRevision(
+            applicationIdentifier: "com.example.reader",
+            applicationVersion: "3.0",
+            applicationBuild: "100",
+            resourceSchemaVersion: 1
+        )
+        let nextBuildRevision = ebookViewerAssetRevision(
+            applicationIdentifier: "com.example.reader",
+            applicationVersion: "3.0",
+            applicationBuild: "101",
+            resourceSchemaVersion: 1
+        )
+
+        XCTAssertNotEqual(firstRevision, nextBuildRevision)
+        XCTAssertTrue(firstRevision.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+    }
+
+    func testEbookBundleResourceResponseUsesImmutableCachingForRevisionedURL() throws {
         let response = ebookHTTPResponse(
-            url: URL(string: "ebook://ebook/load/viewer-assets/ebook-viewer.js")!,
+            url: URL(string: "ebook://ebook/load/viewer-assets/v1-current/ebook-viewer.js")!,
             mimeType: "text/javascript",
             byteCount: 123,
             textEncodingName: "utf-8",
-            additionalHeaderFields: [
-                "Cache-Control": "no-store, no-cache, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            ]
+            additionalHeaderFields: ebookViewerAssetCacheHeaderFields
         )
 
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Type"), "text/javascript; charset=utf-8")
         XCTAssertEqual(response.value(forHTTPHeaderField: "Content-Length"), "123")
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "no-store, no-cache, must-revalidate")
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Pragma"), "no-cache")
-        XCTAssertEqual(response.value(forHTTPHeaderField: "Expires"), "0")
+        XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "public, max-age=31536000, immutable")
+        XCTAssertNil(response.value(forHTTPHeaderField: "Pragma"))
+        XCTAssertNil(response.value(forHTTPHeaderField: "Expires"))
     }
 
     func testMissingViewerAssetReturns404InsteadOfViewerHTMLFallback() throws {
