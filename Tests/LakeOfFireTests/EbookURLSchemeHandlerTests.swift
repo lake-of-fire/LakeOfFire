@@ -905,6 +905,113 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(invocationCount, 2)
     }
 
+    func testProcessTextRequestDeduperCoalescesEquivalentInFlightRequests() async throws {
+        let key = EBookProcessTextRequestKey(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            text: "<html><body>raw</body></html>"
+        )
+        let counter = EBookProcessorInvocationCounter()
+        let gate = EBookProcessingGate()
+        let started = expectation(description: "Processing starts")
+        let deduper = EBookProcessTextRequestDeduper()
+
+        let firstTask = Task {
+            try await deduper.process(key: key) {
+                _ = await counter.increment()
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return ebookTestPayload("<html><body>shared</body></html>")
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+        let secondTask = Task {
+            try await deduper.process(key: key) {
+                XCTFail("Equivalent in-flight work should reuse the active operation")
+                return ebookTestPayload("<html><body>duplicate</body></html>")
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        let waiterCount = await deduper.inFlightWaiterCountForTesting(key: key)
+        XCTAssertEqual(waiterCount, 1)
+        await gate.release()
+
+        let first = try await firstTask.value
+        let second = try await secondTask.value
+        XCTAssertEqual(first.payload.documentHTML, second.payload.documentHTML)
+        XCTAssertEqual(first.payload.segmentSidecar, second.payload.segmentSidecar)
+        XCTAssertFalse(first.didCoalesce)
+        XCTAssertTrue(second.didCoalesce)
+        let invocationCount = await counter.value()
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testCancelledCoalescedWaiterDoesNotCancelOrAwaitOwner() async throws {
+        let key = EBookProcessTextRequestKey(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            text: "<html><body>raw</body></html>"
+        )
+        let gate = EBookProcessingGate()
+        let started = expectation(description: "Owner processing starts")
+        let waiterFinished = expectation(description: "Canceled waiter finishes")
+        let deduper = EBookProcessTextRequestDeduper()
+
+        let ownerTask = Task {
+            try await deduper.process(key: key) {
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return ebookTestPayload("<html><body>owner</body></html>")
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+        let waiterTask = Task {
+            defer { waiterFinished.fulfill() }
+            do {
+                _ = try await deduper.process(key: key) {
+                    XCTFail("A coalesced waiter must not start duplicate work")
+                    return ebookTestPayload("<html><body>duplicate</body></html>")
+                }
+                XCTFail("A canceled waiter must not receive the owner's result")
+            } catch is CancellationError {
+                return
+            } catch {
+                XCTFail("Expected CancellationError, received \(error)")
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        waiterTask.cancel()
+        await fulfillment(of: [waiterFinished], timeout: 1)
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) == 0 {
+                break
+            }
+            await Task.yield()
+        }
+        let remainingWaiterCount = await deduper.inFlightWaiterCountForTesting(key: key)
+        XCTAssertEqual(remainingWaiterCount, 0)
+
+        await gate.release()
+        let owner = try await ownerTask.value
+        XCTAssertEqual(
+            String(decoding: owner.payload.documentHTML, as: UTF8.self),
+            "<html><body>owner</body></html>"
+        )
+        XCTAssertFalse(owner.didCoalesce)
+    }
+
     func testForegroundAndCacheWarmerRequestsDoNotCoalesceModeSpecificOutput() async throws {
         let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
         let text = "<html><body>raw</body></html>"

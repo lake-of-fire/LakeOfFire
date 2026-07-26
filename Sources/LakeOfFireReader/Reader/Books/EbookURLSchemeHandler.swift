@@ -264,7 +264,39 @@ actor EBookProcessTextRequestDeduper {
         case failure(String)
     }
 
-    private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
+    private final class ProcessTextWaiter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<ProcessTextOutcome, Never>?
+        private var outcome: ProcessTextOutcome?
+
+        func install(_ continuation: CheckedContinuation<ProcessTextOutcome, Never>) {
+            lock.lock()
+            if let outcome {
+                lock.unlock()
+                continuation.resume(returning: outcome)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+
+        func resolve(_ outcome: ProcessTextOutcome) {
+            lock.lock()
+            guard self.outcome == nil else {
+                lock.unlock()
+                return
+            }
+            self.outcome = outcome
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(returning: outcome)
+        }
+    }
+
+    private var inFlightWaitersByKey: [
+        EBookProcessTextRequestKey: [UUID: ProcessTextWaiter]
+    ] = [:]
 
     private func resolve(_ outcome: ProcessTextOutcome) throws -> EbookProcessedSectionPayload {
         switch outcome {
@@ -283,18 +315,37 @@ actor EBookProcessTextRequestDeduper {
     }
 #endif
 
+    private func removeWaiter(
+        key: EBookProcessTextRequestKey,
+        waiterID: UUID
+    ) {
+        inFlightWaitersByKey[key]?.removeValue(forKey: waiterID)
+    }
+
     func process(
         key: EBookProcessTextRequestKey,
         operation: @Sendable () async throws -> EbookProcessedSectionPayload
     ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool) {
         if inFlightWaitersByKey[key] != nil {
-            let response = await withCheckedContinuation { continuation in
-                inFlightWaitersByKey[key, default: []].append(continuation)
+            try Task.checkCancellation()
+            let waiterID = UUID()
+            let waiter = ProcessTextWaiter()
+            inFlightWaitersByKey[key]?[waiterID] = waiter
+            let response = await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    waiter.install(continuation)
+                }
+            } onCancel: {
+                waiter.resolve(.cancelled)
+                Task {
+                    await self.removeWaiter(key: key, waiterID: waiterID)
+                }
             }
             return (try resolve(response), true)
         }
 
-        inFlightWaitersByKey[key] = []
+        try Task.checkCancellation()
+        inFlightWaitersByKey[key] = [:]
         let response: ProcessTextOutcome
         do {
             response = .success(try await operation())
@@ -303,9 +354,11 @@ actor EBookProcessTextRequestDeduper {
         } catch {
             response = .failure(error.localizedDescription)
         }
-        let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
+        let waiters = inFlightWaitersByKey
+            .removeValue(forKey: key)
+            .map { Array($0.values) } ?? []
         for waiter in waiters {
-            waiter.resume(returning: response)
+            waiter.resolve(response)
         }
         let resolvedResponse = try resolve(response)
         return (resolvedResponse, false)
