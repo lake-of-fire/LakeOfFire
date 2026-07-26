@@ -522,7 +522,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
-    func testReadAloudReleasesAudioSessionLeaseAfterFinalUtterance() throws {
+    func testReadAloudReleasesAudioSessionLeaseAfterFinalUtteranceDespiteTransientSynthesizerState() throws {
         let synthesizer = FakeReaderSpeechSynthesizer()
         let lease = FakeReadAloudAudioSessionLease()
         let viewModel = ReaderMediaPlayerViewModel(
@@ -540,11 +540,132 @@ final class ReaderMediaMetadataTests: XCTestCase {
 
         viewModel.handleSpeechSynthesizerDidFinish(
             utterance,
-            synthesizerIsSpeaking: false
+            synthesizerIsSpeaking: true
         )
 
         XCTAssertFalse(viewModel.isPlaying)
         XCTAssertEqual(lease.releaseCount, 1)
+    }
+
+    @MainActor
+    func testClosingReadAloudRetainsPreparedQueueForManualResume() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.requestAutoplay()
+
+        viewModel.closePlaybackPresentation()
+
+        XCTAssertFalse(viewModel.isMediaPlayerPresented)
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertNil(viewModel.autoplayRequestToken)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+    }
+
+    @MainActor
+    func testBackgroundPauseKeepsReadAloudPreparedForManualResume() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let lease = FakeReadAloudAudioSessionLease()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { lease }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+        viewModel.requestAutoplay()
+
+        viewModel.pauseReadAloudForBackgroundIfNeeded()
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertNil(viewModel.autoplayRequestToken)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertTrue(viewModel.isMediaPlayerPresented)
+        XCTAssertEqual(lease.releaseCount, 1)
+    }
+
+    @MainActor
+    func testSavedReadAloudPositionIsScopedByEbookSection() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        let contentKey = "read-aloud-sections-\(UUID().uuidString)"
+        viewModel.registerPlaybackStart(contentKey: contentKey)
+        let utterances = [
+            ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One."),
+            ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two."),
+        ]
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: utterances,
+                ebookSectionIndex: 4,
+                autoplay: false
+            )
+        )
+        viewModel.seekAITTS(toSentenceIdentifier: "s2", shouldPlay: false)
+
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: utterances,
+                ebookSectionIndex: 5,
+                autoplay: false
+            )
+        )
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
+
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: utterances,
+                ebookSectionIndex: 4,
+                autoplay: false
+            )
+        )
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s2")
+        viewModel.seekAITTS(toProgressValue: 2, shouldPlay: false)
+    }
+
+    @MainActor
+    func testSeekingReadAloudToEndClearsSavedResumePosition() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        viewModel.registerPlaybackStart(contentKey: "read-aloud-end-\(UUID().uuidString)")
+        let utterances = [
+            ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One."),
+            ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two."),
+        ]
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: false))
+        viewModel.seekAITTS(toSentenceIdentifier: "s2", shouldPlay: false)
+        viewModel.seekAITTS(toProgressValue: 2, shouldPlay: false)
+
+        XCTAssertTrue(viewModel.presentAITTS(utterances: utterances, autoplay: false))
+
+        XCTAssertEqual(viewModel.ttsProgressValue, 0)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
+    }
+
+    @MainActor
+    func testReadAloudIgnoresNonFiniteSeekValues() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [
+                    ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One."),
+                    ReaderTTSUtterance(sentenceIdentifier: "s2", text: "Two."),
+                ],
+                autoplay: false
+            )
+        )
+
+        viewModel.seekAITTS(toProgressValue: .nan, shouldPlay: false)
+        viewModel.seekAITTS(toProgressValue: .infinity, shouldPlay: false)
+
+        XCTAssertEqual(viewModel.ttsProgressValue, 0)
+        XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
     }
 
     @RealmBackgroundActor

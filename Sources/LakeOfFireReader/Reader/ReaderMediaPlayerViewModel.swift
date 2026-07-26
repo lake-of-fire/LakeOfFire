@@ -142,6 +142,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var ttsVoiceLanguage = "ja-JP"
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
+    private static let readAloudPositionsKey = "readerReadAloudPlaybackPositions"
 
     public override convenience init() {
         self.init(readAloudController: ReaderReadAloudController())
@@ -398,6 +399,27 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
+    public func closePlaybackPresentation() {
+        cancelAutoplayRequest(reason: "closePlaybackPresentation")
+        if playbackSource == .aiTextToSpeech {
+            persistReadAloudPosition()
+            stopAITTSIfNeeded()
+        }
+        isPlaying = false
+        isMediaPlayerPresented = false
+    }
+
+    @MainActor
+    public func pauseReadAloudForBackgroundIfNeeded() {
+        cancelAutoplayRequest(reason: "background")
+        guard playbackSource == .aiTextToSpeech else { return }
+        if isPlaying || readAloudController.isSpeaking {
+            pauseAITTS()
+        }
+        isPlaying = false
+    }
+
+    @MainActor
     @discardableResult
     public func presentAITTS(
         utterances: [ReaderTTSUtterance],
@@ -418,6 +440,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         playbackSource = .aiTextToSpeech
         isMediaPlayerPresented = true
         ttsPreparedEbookSectionIndex = ebookSectionIndex
+        restoreReadAloudPositionIfAvailable()
         if autoplay {
             requestAutoplay()
         }
@@ -548,11 +571,12 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             debugPrint("# READALOUD ai.pause.skip", "reason=notSpeaking")
             return
         }
-        guard readAloudController.pauseSpeaking(at: .word) else {
+        guard readAloudController.pauseSpeaking(at: .immediate) else {
             debugPrint("# READALOUD ai.pause.failed")
             return
         }
         isPlaying = false
+        persistReadAloudPosition()
         deactivateReadAloudAudioSession()
         debugPrint("# READALOUD ai.pause")
     }
@@ -564,7 +588,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func seekAITTS(toProgressValue value: Double, shouldPlay: Bool) {
-        guard !ttsUtterances.isEmpty else { return }
+        guard value.isFinite, !ttsUtterances.isEmpty else { return }
         let upperBound = max(ttsProgressUpperBound, 1)
         let clamped = min(max(value, 0), upperBound)
         let endScrubEpsilon = 0.001
@@ -603,6 +627,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsCurrentSentenceIdentifier = utterance.sentenceIdentifier
         ttsCurrentSentenceText = utterance.text
         updateAITTSProgress()
+        persistReadAloudPosition()
 
         stopAITTSSynthesizerForQueueSwap()
 
@@ -627,6 +652,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         deactivateReadAloudAudioSession()
         isPlaying = false
         updateAITTSProgress(forceEndOfUtterance: true)
+        clearPersistedReadAloudPosition()
     }
 
     @MainActor
@@ -647,6 +673,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             isPlaying = true
             registerPlaybackStart(contentKey: currentContentKey)
             updateAITTSProgress()
+            persistReadAloudPosition()
             debugPrint(
                 "# READALOUD ai.speak.queued",
                 "startIndex=\(startIndex)",
@@ -669,6 +696,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
         updateAITTSProgress()
+        persistReadAloudPosition()
         debugPrint(
             "# READALOUD ai.speak.queued",
             "startIndex=\(startIndex)",
@@ -728,6 +756,56 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsProgressValue = absoluteProgress
         ttsCurrentSentenceIdentifier = ttsUtterances[boundedIndex].sentenceIdentifier
         ttsCurrentSentenceText = ttsUtterances[boundedIndex].text
+    }
+
+    private var readAloudPositionStorageKey: String? {
+        guard let currentContentKey else { return nil }
+        let sectionComponent = ttsPreparedEbookSectionIndex.map(String.init) ?? "article"
+        return "\(currentContentKey)|\(sectionComponent)"
+    }
+
+    private func persistReadAloudPosition() {
+        guard let storageKey = readAloudPositionStorageKey,
+              hasPreparedAITTS,
+              ttsProgressValue.isFinite,
+              ttsProgressValue >= 0 else {
+            return
+        }
+        var positions = UserDefaults.standard.dictionary(forKey: Self.readAloudPositionsKey) ?? [:]
+        positions[storageKey] = ttsProgressValue
+        UserDefaults.standard.set(positions, forKey: Self.readAloudPositionsKey)
+    }
+
+    private func restoreReadAloudPositionIfAvailable() {
+        guard let storageKey = readAloudPositionStorageKey,
+              let number = UserDefaults.standard.dictionary(forKey: Self.readAloudPositionsKey)?[storageKey] as? NSNumber,
+              !ttsUtterances.isEmpty else {
+            return
+        }
+        let progress = number.doubleValue
+        guard progress.isFinite,
+              progress >= 0,
+              progress < Double(ttsUtterances.count) else {
+            clearPersistedReadAloudPosition()
+            return
+        }
+        let index = Int(floor(progress))
+        ttsCurrentUtteranceIndex = index
+        ttsCurrentCharacterRange = nil
+        ttsCurrentSentenceIdentifier = ttsUtterances[index].sentenceIdentifier
+        ttsCurrentSentenceText = ttsUtterances[index].text
+        updateAITTSProgress()
+    }
+
+    private func clearPersistedReadAloudPosition() {
+        guard let storageKey = readAloudPositionStorageKey else { return }
+        var positions = UserDefaults.standard.dictionary(forKey: Self.readAloudPositionsKey) ?? [:]
+        positions.removeValue(forKey: storageKey)
+        if positions.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.readAloudPositionsKey)
+        } else {
+            UserDefaults.standard.set(positions, forKey: Self.readAloudPositionsKey)
+        }
     }
 
     @MainActor
@@ -798,6 +876,7 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
         updateAITTSProgress()
+        persistReadAloudPosition()
         debugPrint(
             "# READALOUD ai.delegate.didStart",
             "index=\(index)",
@@ -849,16 +928,16 @@ extension ReaderMediaPlayerViewModel: @preconcurrency AVSpeechSynthesizerDelegat
         fillAITTSQueueWindow()
         if index >= (ttsUtterances.count - 1) {
             ttsCurrentUtteranceIndex = max(ttsUtterances.count - 1, 0)
-            ttsCurrentCharacterRange = NSRange(location: utterance.speechString.count, length: 0)
+            ttsCurrentCharacterRange = NSRange(location: utterance.speechString.utf16.count, length: 0)
             updateAITTSProgress(forceEndOfUtterance: true)
-            if !synthesizerIsSpeaking {
-                isPlaying = false
-                deactivateReadAloudAudioSession()
-            }
+            isPlaying = false
+            deactivateReadAloudAudioSession()
+            clearPersistedReadAloudPosition()
         } else {
             ttsCurrentUtteranceIndex = index + 1
             ttsCurrentCharacterRange = nil
             updateAITTSProgress()
+            persistReadAloudPosition()
         }
         debugPrint(
             "# READALOUD ai.delegate.didFinish",
