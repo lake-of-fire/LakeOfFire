@@ -2,50 +2,9 @@ import * as CFI from './epubcfi.js'
 import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 import { buildRelocateLocation } from './relocate-location.js'
+import { ViewHistory } from './view-history.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
-
-class History extends EventTarget {
-    #arr = []
-    #index = -1
-    pushState(x) {
-        const last = this.#arr[this.#index]
-        if (last === x || last?.fraction && last.fraction === x.fraction) return
-            this.#arr[++this.#index] = x
-            this.#arr.length = this.#index + 1
-            this.dispatchEvent(new Event('index-change'))
-            }
-    replaceState(x) {
-        const index = this.#index
-        this.#arr[index] = x
-    }
-    back() {
-        const index = this.#index
-        if (index <= 0) return
-            const detail = { state: this.#arr[index - 1] }
-        this.#index = index - 1
-        this.dispatchEvent(new CustomEvent('popstate', { detail }))
-        this.dispatchEvent(new Event('index-change'))
-    }
-    forward() {
-        const index = this.#index
-        if (index >= this.#arr.length - 1) return
-            const detail = { state: this.#arr[index + 1] }
-        this.#index = index + 1
-        this.dispatchEvent(new CustomEvent('popstate', { detail }))
-        this.dispatchEvent(new Event('index-change'))
-    }
-    get canGoBack() {
-        return this.#index > 0
-    }
-    get canGoForward() {
-        return this.#index < this.#arr.length - 1
-    }
-    clear() {
-        this.#arr = []
-        this.#index = -1
-    }
-}
 
 const textWalker = function* (doc, func) {
     const filter = NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
@@ -94,7 +53,7 @@ export class View extends HTMLElement {
     #searchResults = new Map()
     isFixedLayout = false
     lastLocation
-    history = new History()
+    history = new ViewHistory()
     constructor() {
         super()
         this.history.addEventListener('popstate', async ({ detail }) => {
