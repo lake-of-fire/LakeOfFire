@@ -153,74 +153,6 @@ func ebookProcessedSectionBaseURL(sourceURL: URL, sectionHref: String) -> String
     return "ebook://ebook/entry-source/\(token)/\(ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)))"
 }
 
-private func ebookOpeningTagEnd(in html: String, after tagStart: String.Index) -> String.Index? {
-    var quote: Character?
-    var index = tagStart
-    while index < html.endIndex {
-        let character = html[index]
-        if let activeQuote = quote {
-            if character == activeQuote { quote = nil }
-        } else if character == "\"" || character == "'" {
-            quote = character
-        } else if character == ">" {
-            return html.index(after: index)
-        }
-        index = html.index(after: index)
-    }
-    return nil
-}
-
-private func ebookOpeningTagRange(named name: String, in html: String) -> Range<String.Index>? {
-    var searchStart = html.startIndex
-    while searchStart < html.endIndex,
-          let tagNameRange = html.range(
-            of: "<\(name)",
-            options: [.caseInsensitive],
-            range: searchStart..<html.endIndex
-          ) {
-        let boundary = tagNameRange.upperBound
-        if boundary == html.endIndex || html[boundary] == ">" || html[boundary] == "/" || html[boundary].isWhitespace,
-           let end = ebookOpeningTagEnd(in: html, after: boundary) {
-            return tagNameRange.lowerBound..<end
-        }
-        searchStart = boundary
-    }
-    return nil
-}
-
-func ebookHTMLWithInjectedDirectSectionMetadata(
-    _ html: String,
-    baseURL: String,
-    sourceHref: String
-) -> String {
-    let escapedBaseURL = ebookHTMLAttributeEscaped(baseURL)
-    let escapedSourceHref = ebookHTMLAttributeEscaped(sourceHref)
-    let sentenceAttribute = html.range(of: "<m-s", options: [.caseInsensitive]) == nil
-        ? ""
-        : " data-mnb-has-sentences=\"true\""
-    let segmentAttribute = html.range(of: "<m-m", options: [.caseInsensitive]) == nil
-        ? ""
-        : " data-mnb-has-segments=\"true\""
-    let bodyAttributes = " data-mnb-source-href=\"\(escapedSourceHref)\"\(sentenceAttribute)\(segmentAttribute)"
-
-    guard ebookOpeningTagRange(named: "html", in: html) != nil else {
-        return "<!doctype html><html><head><base href=\"\(escapedBaseURL)\"></head>"
-            + "<body\(bodyAttributes)>\(html)</body></html>"
-    }
-
-    var result = html
-    if let headRange = ebookOpeningTagRange(named: "head", in: result) {
-        result.insert(contentsOf: "<base href=\"\(escapedBaseURL)\">", at: headRange.upperBound)
-    } else if let htmlRange = ebookOpeningTagRange(named: "html", in: result) {
-        result.insert(contentsOf: "<head><base href=\"\(escapedBaseURL)\"></head>", at: htmlRange.upperBound)
-    }
-    if let bodyRange = ebookOpeningTagRange(named: "body", in: result) {
-        let insertionIndex = result.index(before: bodyRange.upperBound)
-        result.insert(contentsOf: bodyAttributes, at: insertionIndex)
-    }
-    return result
-}
-
 func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
     guard url.path == "/processed-section" else { return .userInitiated }
     guard let directItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.filter({
@@ -233,207 +165,6 @@ func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
 
 fileprivate func logEbookAsset(_ line: String) {
     Logger.shared.logger.info("\(line)")
-}
-
-fileprivate func ebookHTMLAttributeEscaped(_ string: String) -> String {
-    string
-        .replacingOccurrences(of: "&", with: "&amp;")
-        .replacingOccurrences(of: "\"", with: "&quot;")
-        .replacingOccurrences(of: "<", with: "&lt;")
-        .replacingOccurrences(of: ">", with: "&gt;")
-}
-
-struct EBookProcessedSectionWritingHint {
-    let direction: String
-    let writingMode: String
-}
-
-public struct EbookSectionPresentation: Equatable, Sendable {
-    public let schemaVersion: Int
-    public let revision: String
-    public let bodyAttributes: [String: String]
-    public let bodyStyleProperties: [String: String]
-
-    public init(
-        schemaVersion: Int = 1,
-        revision: String,
-        bodyAttributes: [String: String],
-        bodyStyleProperties: [String: String]
-    ) {
-        self.schemaVersion = schemaVersion
-        self.revision = revision
-        self.bodyAttributes = bodyAttributes
-        self.bodyStyleProperties = bodyStyleProperties
-    }
-}
-
-private let ebookSectionPresentationAttributeNames: Set<String> = [
-    "data-mnb-auto-scroll-on-read",
-    "data-mnb-dark-theme",
-    "data-mnb-ebook-title-location-visibility",
-    "data-mnb-familiar-furigana-enabled",
-    "data-mnb-furigana-enabled",
-    "data-mnb-furigana-original-only",
-    "data-mnb-jlpt-levels-enabled",
-    "data-mnb-known-furigana-enabled",
-    "data-mnb-learning-furigana-enabled",
-    "data-mnb-learning-status-visibility",
-    "data-mnb-light-theme",
-    "data-mnb-mark-read-buttons-hide-with-navigation",
-    "data-mnb-mark-read-buttons-visible",
-    "data-mnb-presentation-revision",
-    "data-mnb-presentation-schema-version",
-    "data-mnb-reading-progress-enabled",
-    "data-mnb-romaji-mode-enabled",
-    "data-mnb-settings-initialized",
-    "data-mnb-show-familiar",
-    "data-mnb-show-known",
-    "data-mnb-subscription-is-active",
-    "data-mnb-tracking-highlights-enabled"
-]
-
-private let ebookSectionPresentationStyleNames: Set<String> = [
-    "--mnb-content-font",
-    "--mnb-content-vertical-font",
-    "--mnb-reader-content-font-size",
-    "--mnb-reader-content-rt-size",
-    "--mnb-reader-max-width-override",
-    "font-size",
-    "font-weight"
-]
-
-private func ebookReplacingMatches(
-    _ pattern: String,
-    in string: String,
-    with replacement: String
-) -> String {
-    guard let expression = try? NSRegularExpression(
-        pattern: pattern,
-        options: [.caseInsensitive, .dotMatchesLineSeparators]
-    ) else { return string }
-    let range = NSRange(string.startIndex..<string.endIndex, in: string)
-    return expression.stringByReplacingMatches(in: string, range: range, withTemplate: replacement)
-}
-
-func ebookHTMLApplyingSectionPresentation(
-    _ html: String,
-    presentation: EbookSectionPresentation?
-) -> String {
-    guard let presentation,
-          presentation.schemaVersion == 1,
-          !presentation.revision.isEmpty,
-          let bodyRange = ebookOpeningTagRange(named: "body", in: html) else { return html }
-
-    var bodyTag = String(html[bodyRange])
-    var attributes = presentation.bodyAttributes.filter {
-        ebookSectionPresentationAttributeNames.contains($0.key.lowercased())
-    }
-    attributes["data-mnb-presentation-schema-version"] = String(presentation.schemaVersion)
-    attributes["data-mnb-presentation-revision"] = presentation.revision
-    for name in ebookSectionPresentationAttributeNames {
-        let escapedName = NSRegularExpression.escapedPattern(for: name)
-        bodyTag = ebookReplacingMatches(
-            #"\s+\#(escapedName)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?"#,
-            in: bodyTag,
-            with: ""
-        )
-    }
-
-    let styleProperties = presentation.bodyStyleProperties
-        .filter {
-            ebookSectionPresentationStyleNames.contains($0.key.lowercased())
-                && $0.value.rangeOfCharacter(from: CharacterSet(charactersIn: ";{}\r\n")) == nil
-        }
-        .sorted { $0.key < $1.key }
-    if !styleProperties.isEmpty {
-        let authoritativeStyle = styleProperties
-            .map { "\($0.key):\($0.value)!important" }
-            .joined(separator: ";") + ";"
-        let quotedStylePattern = #"(\sstyle\s*=\s*)(["'])(.*?)\2"#
-        if let expression = try? NSRegularExpression(
-            pattern: quotedStylePattern,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]
-        ), let match = expression.firstMatch(
-            in: bodyTag,
-            range: NSRange(bodyTag.startIndex..<bodyTag.endIndex, in: bodyTag)
-        ), let valueRange = Range(match.range(at: 3), in: bodyTag),
-           let quoteRange = Range(match.range(at: 2), in: bodyTag) {
-            var existingStyle = String(bodyTag[valueRange])
-            for name in ebookSectionPresentationStyleNames {
-                let escapedName = NSRegularExpression.escapedPattern(for: name)
-                existingStyle = ebookReplacingMatches(
-                    #"(^|;)\s*\#(escapedName)\s*:[^;]*(?=;|$)"#,
-                    in: existingStyle,
-                    with: "$1"
-                )
-            }
-            var encodedAuthoritativeStyle = ebookHTMLAttributeEscaped(authoritativeStyle)
-            if bodyTag[quoteRange] == "'" {
-                encodedAuthoritativeStyle = encodedAuthoritativeStyle.replacingOccurrences(of: "'", with: "&#39;")
-            }
-            bodyTag.replaceSubrange(valueRange, with: "\(existingStyle);\(encodedAuthoritativeStyle)")
-        } else {
-            bodyTag = ebookReplacingMatches(
-                #"\s+style\s*=\s*[^\s>]+"#,
-                in: bodyTag,
-                with: ""
-            )
-            bodyTag.insert(
-                contentsOf: " style=\"\(ebookHTMLAttributeEscaped(authoritativeStyle))\"",
-                at: bodyTag.index(before: bodyTag.endIndex)
-            )
-        }
-    }
-
-    let encodedAttributes = attributes
-        .sorted { $0.key < $1.key }
-        .map { "\($0.key)=\"\(ebookHTMLAttributeEscaped($0.value))\"" }
-        .joined(separator: " ")
-    if !encodedAttributes.isEmpty {
-        bodyTag.insert(
-            contentsOf: " \(encodedAttributes)",
-            at: bodyTag.index(before: bodyTag.endIndex)
-        )
-    }
-
-    var result = html
-    result.replaceSubrange(bodyRange, with: bodyTag)
-    return result
-}
-
-func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcessedSectionWritingHint? {
-    let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-    let directionItems = queryItems.filter { $0.name == "mnbWritingDirection" }
-    let writingModeItems = queryItems.filter { $0.name == "mnbWritingMode" }
-    guard directionItems.count == 1,
-          writingModeItems.count == 1 else { return nil }
-    let direction = directionItems[0].value?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-    guard direction == "vertical" else { return nil }
-    guard let requestedWritingMode = writingModeItems[0].value?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased(),
-          requestedWritingMode == "vertical-lr" || requestedWritingMode == "vertical-rl" else {
-        return nil
-    }
-    return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: requestedWritingMode)
-}
-
-func ebookHTMLWithInjectedPresentationHints(_ html: String, writingHint: EBookProcessedSectionWritingHint?) -> String {
-    guard let writingHint else { return html }
-    guard let bodyTagRange = ebookOpeningTagRange(named: "body", in: html) else { return html }
-
-    let attributes = [
-        "data-mnb-writing-direction=\"\(ebookHTMLAttributeEscaped(writingHint.direction))\"",
-        "data-mnb-writing-mode=\"\(ebookHTMLAttributeEscaped(writingHint.writingMode))\"",
-        "data-mnb-foliate-writing-direction=\"\(ebookHTMLAttributeEscaped(writingHint.direction))\"",
-        "data-mnb-foliate-writing-mode=\"\(ebookHTMLAttributeEscaped(writingHint.writingMode))\""
-    ].joined(separator: " ")
-
-    var result = html
-    result.insert(contentsOf: " \(attributes)", at: result.index(before: bodyTagRange.upperBound))
-    return result
 }
 
 func ebookHTTPResponse(
@@ -911,36 +642,21 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     guard ebookProcessedSectionPayloadHasDurableSegmentIdentities(processedPayload) else {
                         throw CustomSchemeHandlerError.fileNotFound
                     }
-                    let processedText = String(
-                        decoding: externalizingReaderSegmentSidecar(
-                            documentHTML: Array(processedPayload.documentHTML),
-                            canonicalSidecar: processedPayload.segmentSidecar,
-                            scheme: .ebook
-                        ).documentHTML,
-                        as: UTF8.self
+                    let publishedSidecar = publishingCanonicalReaderSegmentSidecar(
+                        processedPayload,
+                        scheme: .ebook
                     )
-                    let responseTextWithMetadata = ebookHTMLWithInjectedDirectSectionMetadata(
-                        processedText,
+                    let responseData = ebookHTMLDataWithInjectedDirectSectionResponseMetadata(
+                        publishedSidecar.documentHTML,
                         baseURL: ebookProcessedSectionBaseURL(
                             sourceURL: request.sourceURL,
                             sectionHref: request.subpath
                         ),
-                        sourceHref: request.subpath
+                        sourceHref: request.subpath,
+                        writingHint: ebookProcessedSectionWritingHint(from: url),
+                        presentation: await ebookSectionPresentationProvider?(),
+                        additionalHeadMarkup: publishedSidecar.headDescriptor
                     )
-                    let responseTextWithHints = ebookHTMLWithInjectedPresentationHints(
-                        responseTextWithMetadata,
-                        writingHint: ebookProcessedSectionWritingHint(from: url)
-                    )
-                    let responseText = ebookHTMLApplyingSectionPresentation(
-                        responseTextWithHints,
-                        presentation: await ebookSectionPresentationProvider?()
-                    )
-                    guard let responseData = ebookProcessTextResponseData(
-                        processedText: responseText,
-                        isCacheWarmer: false
-                    ) else {
-                        throw CustomSchemeHandlerError.fileNotFound
-                    }
                     let response = ebookHTTPResponse(
                         url: url,
                         mimeType: "text/html",

@@ -74,6 +74,71 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
     }
 
+    func testExternalizingTypedSidecarUsesStructuralHeadBoundaryAndPreservesDocumentBytes() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let documentHTML = """
+        <!doctype html><HTML><HEAD><script>const marker = "</head>";</script></HEAD>\
+        <BODY data-note='2>1'>本文</BODY></HTML>
+        """
+
+        let result = externalizingReaderSegmentSidecar(
+            documentHTML: Array(documentHTML.utf8),
+            canonicalSidecar: Data(#"{"v":9,"t":{},"s":[]}"#.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let endpointURL = try XCTUnwrap(result.endpointURL)
+        let signature = try XCTUnwrap(result.signature)
+        let descriptor = endpointURL.utf8
+        let expectedDescriptor = """
+        <meta name="mnb-segment-sidecar" content="\(endpointURL)" \
+        data-mnb-segment-sidecar-signature="\(signature)">
+        """
+        let output = String(decoding: result.documentHTML, as: UTF8.self)
+
+        XCTAssertTrue(output.contains("<HEAD><script>"))
+        XCTAssertTrue(output.contains("</script><meta name=\"mnb-segment-sidecar\""))
+        XCTAssertTrue(output.contains(String(decoding: descriptor, as: UTF8.self)))
+        XCTAssertTrue(output.contains("</HEAD><BODY data-note='2>1'>本文</BODY></HTML>"))
+        XCTAssertEqual(
+            output.replacingOccurrences(
+                of: expectedDescriptor,
+                with: ""
+            ),
+            documentHTML
+        )
+    }
+
+    func testExternalizingTypedSidecarReplacesExistingDescriptor() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let documentHTML = "<html><head><title>Test</title></head><body>本文</body></html>"
+        let first = externalizingReaderSegmentSidecar(
+            documentHTML: Array(documentHTML.utf8),
+            canonicalSidecar: Data(#"{"v":9,"t":{},"s":[]}"#.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let second = externalizingReaderSegmentSidecar(
+            documentHTML: Array(first.documentHTML),
+            canonicalSidecar: Data(#"{"v":9,"t":{"sid":["replacement"]},"s":[]}"#.utf8),
+            scheme: .ebook,
+            store: store
+        )
+        let output = String(decoding: second.documentHTML, as: UTF8.self)
+
+        XCTAssertEqual(output.components(separatedBy: "meta name=\"mnb-segment-sidecar\"").count - 1, 1)
+        XCTAssertFalse(output.contains(try XCTUnwrap(first.endpointURL)))
+        XCTAssertTrue(output.contains(try XCTUnwrap(second.endpointURL)))
+        XCTAssertTrue(output.contains("<title>Test</title>"))
+        XCTAssertTrue(output.contains("<body>本文</body>"))
+    }
+
     func testDescriptorBackedCacheValidationRejectsMissingOrInvalidSidecar() throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
@@ -413,7 +478,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(ebookPathBackedEntryRequest(from: entryURL, mainDocumentURL: nil))
     }
 
-    func testDirectSectionMetadataInjectionPreservesDocumentBytesAndInstallsPathBackedBase() {
+    func testDirectSectionMetadataInjectionPreservesDocumentBytesAndInstallsPathBackedBase() throws {
         let html = """
         <!doctype html><HTML data-note='1>0'><HEAD><base href="old/"></HEAD><BODY class="book">
         <m-s><m-m>本文</m-m></m-s></BODY></HTML>
@@ -427,11 +492,12 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(result.contains(
             "<HEAD><base href=\"ebook://ebook/entry-source/token/OPS/\"><base href=\"old/\">"
         ))
-        XCTAssertTrue(result.contains(
-            "<BODY class=\"book\" data-mnb-source-href=\"OPS/chapter.xhtml\" "
-                + "data-mnb-has-sentences=\"true\" data-mnb-has-segments=\"true\">"
-        ))
-        XCTAssertTrue(result.contains("<m-s><m-m>本文</m-m></m-s>"))
+        let body = try XCTUnwrap(SwiftSoup.parse(result).body())
+        XCTAssertEqual(try body.attr("class"), "book")
+        XCTAssertEqual(try body.attr("data-mnb-source-href"), "OPS/chapter.xhtml")
+        XCTAssertEqual(try body.attr("data-mnb-has-sentences"), "true")
+        XCTAssertEqual(try body.attr("data-mnb-has-segments"), "true")
+        XCTAssertEqual(try body.select("m-s > m-m").text(), "本文")
 
         XCTAssertEqual(
             ebookHTMLWithInjectedDirectSectionMetadata(
@@ -444,7 +510,163 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
     }
 
-    func testDirectSectionPresentationHintInjectionPreservesProcessedDocument() {
+    func testResponseMetadataByteInjectionDecoratesUppercaseDocumentWithoutReserializingContent() {
+        let html = "<!doctype html><HTML><HEAD><title>T</title></HEAD><BODY class=\"book\"><p>本文</p></BODY></HTML>"
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml?x=1&y=2",
+            writingHint: EBookProcessedSectionWritingHint(
+                direction: "vertical",
+                writingMode: "vertical-rl"
+            ),
+            bodyAttributes: ["data-mnb-native-cache-outcome": "final-direct-hit"]
+        ), as: UTF8.self)
+
+        XCTAssertTrue(result.contains(
+            "<HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml?x=1&amp;y=2\">"
+        ))
+        XCTAssertTrue(result.contains("<BODY class=\"book\""))
+        XCTAssertTrue(result.contains("data-mnb-native-cache-outcome=\"final-direct-hit\""))
+        XCTAssertTrue(result.contains("data-mnb-writing-direction=\"vertical\""))
+        XCTAssertTrue(result.contains("data-mnb-writing-mode=\"vertical-rl\""))
+        XCTAssertTrue(result.contains("<p>本文</p>"))
+    }
+
+    func testResponseMetadataByteInjectionWrapsHTMLFragment() {
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data("<section>本文</section>".utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-test": "ok"]
+        ), as: UTF8.self)
+
+        XCTAssertEqual(
+            result,
+            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/chapter.xhtml\">"
+                + "</head><body data-test=\"ok\"><section>本文</section></body></html>"
+        )
+    }
+
+    func testResponseMetadataScannerHandlesGreaterThanInsideQuotedAttributesAndInjectsPresentation() {
+        let html = """
+        <HTML data-note='1>0'><HEAD data-note="2>1"></HEAD>\
+        <BODY data-note='3>2' style='color:red'>本文</BODY></HTML>
+        """
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-response": "ready"],
+            presentation: EbookSectionPresentation(
+                revision: "presentation-1",
+                bodyAttributes: ["data-mnb-dark-theme": "current"],
+                bodyStyleProperties: [
+                    "font-family": "'not allowlisted'",
+                    "font-size": "18px",
+                ]
+            )
+        ), as: UTF8.self)
+
+        XCTAssertTrue(result.contains("<HEAD data-note=\"2>1\"><base href="))
+        XCTAssertTrue(result.contains(
+            "<BODY data-note='3>2' style='color:red;font-size:18px!important;' "
+                + "data-mnb-dark-theme=\"current\" data-mnb-presentation-revision=\"presentation-1\" "
+                + "data-mnb-presentation-schema-version=\"1\" data-response=\"ready\">"
+        ))
+    }
+
+    func testResponseMetadataScannerIgnoresCommentAndRawTextTagLookalikes() {
+        let html = """
+        <!-- <html><head><body>comment lookalikes</body></head></html> -->
+        <HTML><HEAD><script>const fake = "<body data-fake='true'>";</script></HEAD>\
+        <BODY data-publisher="kept">本文</BODY></HTML>
+        """
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-response": "ready"]
+        ), as: UTF8.self)
+
+        XCTAssertTrue(result.hasPrefix("<!-- <html><head><body>"))
+        XCTAssertTrue(result.contains(
+            "<HTML><HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml\">"
+                + "<script>const fake = \"<body data-fake='true'>\";</script></HEAD>"
+        ))
+        XCTAssertTrue(result.contains(
+            "<BODY data-publisher=\"kept\" data-response=\"ready\">本文</BODY>"
+        ))
+        XCTAssertEqual(result.components(separatedBy: "data-response=").count - 1, 1)
+    }
+
+    func testResponseMetadataPreservesNonUTF8DocumentBytesOutsideInsertions() {
+        var html = Data("<html><head></head><body>".utf8)
+        html.append(contentsOf: [0x80, 0xFF])
+        html.append(contentsOf: "</body></html>".utf8)
+        let result = ebookHTMLDataWithInjectedResponseMetadata(
+            html,
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: ["data-response": "ready"]
+        )
+        var expected = Data(
+            """
+            <html><head><base href="ebook://ebook/entry-source/token/chapter.xhtml"></head>\
+            <body data-response="ready">
+            """.utf8
+        )
+        expected.append(contentsOf: [0x80, 0xFF])
+        expected.append(contentsOf: "</body></html>".utf8)
+
+        XCTAssertEqual(result, expected)
+    }
+
+    func testResponseMetadataReplacesManagedPresentationAttributesAndPublishesSidecarInHead() {
+        let html = """
+        <html><head></head><body data-mnb-dark-theme="stale" \
+        data-mnb-settings-initialized="false" data-publisher="kept" \
+        style="color:red;font-size:9px">Text</body></html>
+        """
+        let sidecarDescriptor = Data(
+            #"<meta name="mnb-segment-sidecar" content="ebook://ebook/processed-section-sidecar/token">"#.utf8
+        )
+        let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
+            Data(html.utf8),
+            baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
+            writingHint: nil,
+            bodyAttributes: [:],
+            presentation: EbookSectionPresentation(
+                revision: "presentation-2",
+                bodyAttributes: [
+                    "data-mnb-dark-theme": "current",
+                    "data-mnb-settings-initialized": "true",
+                    "data-publisher": "not-allowlisted",
+                ],
+                bodyStyleProperties: [
+                    "font-size": "18px",
+                    "background": "red",
+                    "font-weight": "600;display:none",
+                ]
+            ),
+            additionalHeadMarkup: sidecarDescriptor
+        ), as: UTF8.self)
+
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-dark-theme=").count - 1, 1)
+        XCTAssertEqual(result.components(separatedBy: "data-mnb-settings-initialized=").count - 1, 1)
+        XCTAssertTrue(result.contains("<head><base href="))
+        XCTAssertTrue(result.contains(String(decoding: sidecarDescriptor, as: UTF8.self)))
+        XCTAssertTrue(result.contains("data-mnb-dark-theme=\"current\""))
+        XCTAssertTrue(result.contains("data-mnb-settings-initialized=\"true\""))
+        XCTAssertTrue(result.contains("data-mnb-presentation-schema-version=\"1\""))
+        XCTAssertTrue(result.contains("data-mnb-presentation-revision=\"presentation-2\""))
+        XCTAssertTrue(result.contains("data-publisher=\"kept\""))
+        XCTAssertFalse(result.contains("not-allowlisted"))
+        XCTAssertTrue(result.contains("style=\"color:red;font-size:18px!important;\""))
+        XCTAssertFalse(result.contains("background:red"))
+        XCTAssertFalse(result.contains("display:none"))
+    }
+
+    func testDirectSectionPresentationHintInjectionPreservesProcessedDocument() throws {
         let html = "<html><head></head><body data-note=\"2 > 1\" class=\"book\"><m-m>本文</m-m></body></html>"
         let result = ebookHTMLWithInjectedPresentationHints(
             html,
@@ -453,16 +675,15 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 writingMode: "vertical-lr"
             )
         )
+        let body = try XCTUnwrap(SwiftSoup.parse(result).body())
 
-        XCTAssertEqual(
-            result,
-            "<html><head></head><body data-note=\"2 > 1\" class=\"book\" "
-                + "data-mnb-writing-direction=\"vertical\" "
-                + "data-mnb-writing-mode=\"vertical-lr\" "
-                + "data-mnb-foliate-writing-direction=\"vertical\" "
-                + "data-mnb-foliate-writing-mode=\"vertical-lr\">"
-                + "<m-m>本文</m-m></body></html>"
-        )
+        XCTAssertEqual(try body.attr("data-note"), "2 > 1")
+        XCTAssertEqual(try body.attr("class"), "book")
+        XCTAssertEqual(try body.attr("data-mnb-writing-direction"), "vertical")
+        XCTAssertEqual(try body.attr("data-mnb-writing-mode"), "vertical-lr")
+        XCTAssertEqual(try body.attr("data-mnb-foliate-writing-direction"), "vertical")
+        XCTAssertEqual(try body.attr("data-mnb-foliate-writing-mode"), "vertical-lr")
+        XCTAssertEqual(try body.select("m-m").text(), "本文")
     }
 
     func testDirectSectionWritingHintRequiresOneCompleteNormalizedPair() throws {

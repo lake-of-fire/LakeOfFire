@@ -475,18 +475,12 @@ func externalizingReaderSegmentSidecar(
         + "data-mnb-segment-sidecar-signature=\"\(stored.signature)\">"
     let descriptor = Data(descriptorHTML.utf8)
     let documentWithoutSidecar = Data(documentHTML)
-    let closingHead = Data("</head>".utf8)
-    let openingBody = Data("<body".utf8)
-    let insertionIndex = documentWithoutSidecar.range(of: closingHead)?.lowerBound
-        ?? documentWithoutSidecar.range(of: openingBody)?.lowerBound
-        ?? documentWithoutSidecar.startIndex
-    var output = Data()
-    output.reserveCapacity(documentWithoutSidecar.count + descriptor.count)
-    output.append(documentWithoutSidecar[..<insertionIndex])
-    output.append(descriptor)
-    output.append(documentWithoutSidecar[insertionIndex...])
     return ReaderExternalizedSegmentSidecarHTML(
-        documentHTML: output,
+        documentHTML: ebookHTMLDataReplacingHeadMetaElement(
+            named: "mnb-segment-sidecar",
+            with: descriptor,
+            in: documentWithoutSidecar
+        ),
         canonicalSidecarByteCount: canonicalSidecar.count,
         signature: stored.signature,
         endpointURL: endpointURL
