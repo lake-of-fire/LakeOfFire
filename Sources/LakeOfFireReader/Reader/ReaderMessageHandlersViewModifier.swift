@@ -325,11 +325,6 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                       let pageURL = URL(string: href)
                 else { return }
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
-                if readerViewModel.state.hasReaderRenderReady != hasReaderRenderReady {
-                    var state = readerViewModel.state
-                    state.hasReaderRenderReady = hasReaderRenderReady
-                    readerViewModel.state = state
-                }
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
