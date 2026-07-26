@@ -1,6 +1,7 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 import { installBookContentStyles } from './book-content-style.js'
+import { paginatorDirectionFromDocument } from './ebook-paginator-writing-direction.js'
 import {
     lockedPageTurnQueueDecision as manabiLockedPageTurnQueueDecision,
     normalizeSingleMediaPageTarget as manabiNormalizeSingleMediaPageTarget,
@@ -216,38 +217,6 @@ async function getDirection({ bodylessStyle, bodylessDoc }) {
     return { vertical, verticalRTL, rtl };
 }
 
-function getDirectionFromDocument(doc) {
-    const body = doc?.body;
-    const documentElement = doc?.documentElement;
-    if (!body || !documentElement) return null;
-
-    const explicitDirection = body.getAttribute('data-mnb-writing-direction')?.trim?.().toLowerCase?.() ?? null;
-    const styleText = [
-        body.getAttribute('style') ?? '',
-        documentElement.getAttribute('style') ?? '',
-        doc.getElementById?.('mnb-writing-direction-bootstrap')?.textContent ?? '',
-    ].join(';');
-    const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
-    const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
-    let writingMode = writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
-    if (!writingMode && (explicitDirection === 'vertical' || body.classList?.contains?.('reader-vertical-writing'))) {
-        writingMode = 'vertical-rl';
-    }
-    if (!writingMode && explicitDirection === 'horizontal') {
-        writingMode = 'horizontal-tb';
-    }
-    if (!writingMode) return null;
-
-    const direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
-    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
-    const verticalRTL = writingMode === 'vertical-rl';
-    const rtl =
-        body.dir === 'rtl' ||
-        documentElement.dir === 'rtl' ||
-        direction === 'rtl';
-    return { vertical, verticalRTL, rtl, writingMode, direction };
-}
-
 const makeMarginals = (length, part) => Array.from({
     length
 }, () => {
@@ -409,7 +378,7 @@ class View {
                         await afterLoad?.(doc)
                         await doc?.defaultView?.manabi_waitForExternalSegmentSidecar?.()
 
-                        let direction = getDirectionFromDocument(doc);
+                        let direction = paginatorDirectionFromDocument(doc);
                         let directionSource = 'document';
                         if (!direction) {
                             const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
