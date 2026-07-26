@@ -58,7 +58,7 @@ const normalizedUnitFraction = value => Number.isFinite(value)
     ? Math.max(0, Math.min(1, value))
     : (value === Number.POSITIVE_INFINITY ? 1 : 0)
 
-const normalizedSectionIndex = (index, sectionCount) => {
+export const normalizedSectionIndex = (index, sectionCount) => {
     if (sectionCount <= 0) return 0
     if (Number.isInteger(index)) {
         return Math.max(0, Math.min(sectionCount - 1, index))

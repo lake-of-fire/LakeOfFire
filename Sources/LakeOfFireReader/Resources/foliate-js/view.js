@@ -1,6 +1,7 @@
 import * as CFI from './epubcfi.js'
 import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
+import { buildRelocateLocation } from './relocate-location.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
 
@@ -180,23 +181,22 @@ export class View extends HTMLElement {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
     #onRelocate({ reason, range, index, fraction, size, pageTurnDirection }) {
-        const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
-        const tocItem = this.#tocProgress?.getProgress(index, range)
-        const pageItem = this.#pageProgress?.getProgress(index, range)
-        const cfi = this.getCFI(index, range)
-        this.lastLocation = {
-            ...progress,
-            index,
-            sectionIndex: index,
-            tocItem,
-            pageItem,
-            cfi,
-            range,
+        this.lastLocation = buildRelocateLocation({
             reason,
+            range,
+            index,
+            fraction,
+            size,
             pageTurnDirection,
-        }
+        }, {
+            sectionCount: this.book?.sections?.length ?? 0,
+            sectionProgress: this.#sectionProgress,
+            tocProgress: this.#tocProgress,
+            pageProgress: this.#pageProgress,
+            cfiProvider: this,
+        })
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
-            this.history.replaceState(cfi)
+            this.history.replaceState(this.lastLocation.cfi)
             this.#emit('relocate', this.lastLocation)
             }
     #onLoad({ doc, location, index }) {
