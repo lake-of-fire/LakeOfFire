@@ -1,5 +1,5 @@
 {
-  "originHash" : "0c040454dc6c3511abca9d312603085b4bfd2b8c3f30b289a4b34bb0e3fc981b",
+  "originHash" : "6a2fe8b39a3659820aab5090b524f8f57552dfb6b8eee4d06ccccdbe28e947fc",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -213,8 +213,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/sqlite-data.git",
       "state" : {
-        "revision" : "65502acdb033ec8025a0bcc443abf2f4ca0598f9",
-        "version" : "1.6.0"
+        "revision" : "93e0540441a6bfdba51df27ca6d01eb6508c82a5",
+        "version" : "1.7.0"
       }
     },
     {
@@ -375,8 +375,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-structured-queries",
       "state" : {
-        "revision" : "8da8818fccd9959bd683934ddc62cf45bb65b3c8",
-        "version" : "0.31.1"
+        "revision" : "dafddd843f10630aa6b5be47c1b6a59cc4ab6586",
+        "version" : "0.34.0"
       }
     },
     {
@@ -431,15 +431,6 @@
       "state" : {
         "branch" : "main",
         "revision" : "2beebc6960375b3af3655447586e768a5271a5c2"
-      }
-    },
-    {
-      "identity" : "visionlivetext_swiftuicompatible",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/VisionLiveText_SwiftUICompatible.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "4507047c5300582603c8e19040634bd86a534ab2"
       }
     },
     {
