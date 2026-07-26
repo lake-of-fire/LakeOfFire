@@ -6,8 +6,13 @@ import LakeOfFireContent
 import LakeOfFireCore
 import SwiftSoup
 
-private let ebookTextProcessorReplaceTextDetailedLoggingEnabled =
+private let ebookTextProcessorReplaceTextDetailedLoggingEnabled: Bool = {
+#if DEBUG
     ProcessInfo.processInfo.environment["MANABI_REPLACETEXT_DETAILED_LOGS"] == "1"
+#else
+    false
+#endif
+}()
 
 @inline(__always)
 private func bodyStartsWithReaderSentinel(_ body: Element) -> Bool {
