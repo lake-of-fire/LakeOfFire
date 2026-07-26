@@ -37,6 +37,13 @@ test('publication identity preserves the content-script frame identifier', () =>
     })
 })
 
+test('publication identity requires an owning document URL', () => {
+    const doc = makeDocument('')
+
+    assert.equal(nativeLookupPublicationIdentityForDocument(doc), null)
+    assert.equal(doc.body.dataset.swiftuiwebviewFrameUuid, undefined)
+})
+
 test('scheduled refresh rejects superseded generations and detached explicit documents', () => {
     const current = makeDocument('ebook://ebook/load/book/current.xhtml')
     const detached = makeDocument('ebook://ebook/load/book/detached.xhtml')

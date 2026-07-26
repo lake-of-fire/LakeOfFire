@@ -3200,7 +3200,8 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
     const view = doc?.defaultView ?? null;
     const builder = view?.manabi_nativeLookupHitTargetForSegment ?? null;
     const publicationIdentity = nativeLookupPublicationIdentityForDocument(doc);
-    const nativeLookupFrameKey = publicationIdentity?.frameKey ?? null;
+    if (!publicationIdentity) return;
+    const nativeLookupFrameKey = publicationIdentity.frameKey;
     const viewportWidth = visibleSegmentsResult?.viewportWidth
         ?? window.visualViewport?.width
         ?? window.innerWidth
@@ -3233,7 +3234,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             targets: [],
             reason,
             nativeLookupFrameKey,
-            nativeLookupDocumentURL: publicationIdentity?.documentURL ?? null,
+            nativeLookupDocumentURL: publicationIdentity.documentURL,
             isExplicitReset: false,
             visualViewportScale,
             viewportWidth,
@@ -3273,7 +3274,7 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         targets,
         reason,
         nativeLookupFrameKey,
-        nativeLookupDocumentURL: publicationIdentity?.documentURL ?? null,
+        nativeLookupDocumentURL: publicationIdentity.documentURL,
         isExplicitReset: false,
         visualViewportScale,
         viewportWidth,

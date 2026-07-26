@@ -18,6 +18,7 @@ const generateFrameIdentifier = doc => {
 export const nativeLookupPublicationIdentityForDocument = doc => {
     if (!doc || typeof doc !== 'object') return null
     const documentURL = doc.location?.href || doc.URL || null
+    if (!documentURL) return null
     let frameIdentifier = existingFrameIdentifier(doc) || generatedFrameIdentifiers.get(doc) || null
     if (!frameIdentifier) {
         frameIdentifier = generateFrameIdentifier(doc)
