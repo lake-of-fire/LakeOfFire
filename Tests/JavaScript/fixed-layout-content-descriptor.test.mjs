@@ -367,6 +367,54 @@ test('reports the displayed portrait-spread side as the current section index', 
     )
 })
 
+test('navigates an RTL portrait spread in reading order', async () => {
+    const sections = [
+        {
+            load: async () => 'rtl-right-page.xhtml',
+        },
+        {
+            load: async () => 'rtl-left-page.xhtml',
+        },
+    ]
+    const layout = new FixedLayout()
+    layout.boundsForTesting = { width: 600, height: 800 }
+    layout.open({
+        dir: 'rtl',
+        rendition: {
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+
+    const initialNavigation = layout.goTo({ index: 0 })
+    const [rightIframe, leftIframe] = await Promise.all([
+        nextPendingIframe('rtl-right-page.xhtml'),
+        nextPendingIframe('rtl-left-page.xhtml'),
+    ])
+    rightIframe.finishLoading(fixedLayoutDocument('RTL right'))
+    leftIframe.finishLoading(fixedLayoutDocument('RTL left'))
+    await initialNavigation
+
+    assert.equal(layout.index, 0)
+    await layout.next()
+    assert.equal(layout.index, 1)
+    await layout.prev()
+    assert.equal(layout.index, 0)
+    assert.deepEqual(
+        layout.events
+            .filter(event => event.type === 'relocate')
+            .map(event => ({
+                index: event.detail.index,
+                reason: event.detail.reason ?? null,
+            })),
+        [
+            { index: 0, reason: null },
+            { index: 1, reason: 'page' },
+            { index: 0, reason: 'page' },
+        ],
+    )
+})
+
 test('advances past a blank trailing spread slot', async () => {
     const sections = [
         {
