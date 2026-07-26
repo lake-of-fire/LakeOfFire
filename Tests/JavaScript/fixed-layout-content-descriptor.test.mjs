@@ -276,6 +276,37 @@ test('ignores queued resize callbacks while frames are cleared', async () => {
     assert.doesNotThrow(() => resizeObserver.trigger())
 })
 
+test('rejects navigation requested after fixed-layout teardown', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections: [{
+            load: async () => 'after-fixed-layout-destroy.xhtml',
+        }],
+    })
+    layout.destroy()
+
+    const navigation = layout.goTo({ index: 0 })
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve))
+    }
+    const obsoleteIframeIndex = pendingIframes.findIndex(
+        iframe => iframe.source === 'after-fixed-layout-destroy.xhtml',
+    )
+    const obsoleteIframe = obsoleteIframeIndex >= 0
+        ? pendingIframes.splice(obsoleteIframeIndex, 1)[0]
+        : null
+    obsoleteIframe?.finishLoading(fixedLayoutDocument('after fixed-layout destroy'))
+    await navigation
+
+    assert.equal(obsoleteIframe, null)
+    assert.deepEqual(layout.getContents(), [])
+})
+
 test('reports the displayed portrait-spread side as the current section index', async () => {
     const sections = [
         {

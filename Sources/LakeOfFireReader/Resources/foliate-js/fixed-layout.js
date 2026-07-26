@@ -88,6 +88,7 @@ export class FixedLayout extends HTMLElement {
     #contentGeneration = 0
     #targetResolutionGeneration = 0
     #pendingFrameLoadCancellations = new Set()
+    #isDestroyed = false
     constructor() {
         super()
 
@@ -263,6 +264,7 @@ export class FixedLayout extends HTMLElement {
         }
     }
     open(book) {
+        if (this.#isDestroyed) return
         this.#targetResolutionGeneration += 1
         this.#contentGeneration += 1
         this.#cancelPendingFrameLoads()
@@ -333,6 +335,7 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async goToSpread(index, side, reason) {
+        if (this.#isDestroyed) return
         this.#targetResolutionGeneration += 1
         if (index < 0 || index > this.#spreads.length - 1) return
         if (index === this.#index) {
@@ -391,6 +394,7 @@ export class FixedLayout extends HTMLElement {
         // TODO
     }
     async goTo(target) {
+        if (this.#isDestroyed) return
         const { book } = this
         const targetResolutionGeneration = ++this.#targetResolutionGeneration
         let resolved
@@ -415,12 +419,14 @@ export class FixedLayout extends HTMLElement {
         await this.goToSpread(index, side)
     }
     async next() {
+        if (this.#isDestroyed) return
         this.#targetResolutionGeneration += 1
         const s = this.rtl ? this.#goLeft() : this.#goRight()
         if (s) this.#reportLocation('page')
         else return this.goToSpread(this.#index + 1, this.rtl ? 'right' : 'left', 'page')
     }
     async prev() {
+        if (this.#isDestroyed) return
         this.#targetResolutionGeneration += 1
         const s = this.rtl ? this.#goRight() : this.#goLeft()
         if (s) this.#reportLocation('page')
@@ -432,6 +438,8 @@ export class FixedLayout extends HTMLElement {
             .filter(Boolean)
     }
     destroy() {
+        if (this.#isDestroyed) return
+        this.#isDestroyed = true
         this.#targetResolutionGeneration += 1
         this.#contentGeneration += 1
         this.#cancelPendingFrameLoads()
