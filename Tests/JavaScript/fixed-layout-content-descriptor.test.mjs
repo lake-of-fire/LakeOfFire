@@ -357,6 +357,38 @@ test('retreats past a blank leading spread slot', async () => {
     )
 })
 
+test('does not navigate into the empty spread seed before a centered cover', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            viewport: { width: 600, height: 800 },
+        },
+        sections: [{
+            pageSpread: 'center',
+            load: async () => 'centered-cover.xhtml',
+        }],
+    })
+
+    const initialNavigation = layout.goTo({ index: 0 })
+    const coverIframe = await nextPendingIframe('centered-cover.xhtml')
+    coverIframe.finishLoading(fixedLayoutDocument('centered cover'))
+    await initialNavigation
+    await layout.prev()
+
+    assert.equal(layout.index, 0)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc?.title),
+        ['centered cover'],
+    )
+    assert.deepEqual(
+        layout.events
+            .filter(event => event.type === 'relocate')
+            .map(event => event.detail.index),
+        [0],
+    )
+})
+
 test('rejects a delayed target resolved after a replacement book opens', async () => {
     let resolveTarget
     const target = new Promise(resolve => {
@@ -519,6 +551,120 @@ test('propagates failures owned by the current target and section generation', a
     await assert.rejects(
         sectionLayout.goTo({ index: 0 }),
         /current section failed/,
+    )
+})
+
+test('preserves the displayed index and retries after a section-load failure', async () => {
+    let replacementLoadAttempts = 0
+    const sections = [
+        {
+            load: async () => 'before-failed-navigation.xhtml',
+        },
+        {
+            load: async () => {
+                replacementLoadAttempts += 1
+                if (replacementLoadAttempts === 1) {
+                    throw new Error('replacement section failed')
+                }
+                return 'retried-replacement.xhtml'
+            },
+        },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+
+    const initialNavigation = layout.goTo({ index: 0 })
+    const initialIframe = await nextPendingIframe('before-failed-navigation.xhtml')
+    initialIframe.finishLoading(fixedLayoutDocument('before failed navigation'))
+    await initialNavigation
+
+    await assert.rejects(
+        layout.goTo({ index: 1 }),
+        /replacement section failed/,
+    )
+    assert.equal(layout.index, 0)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['before failed navigation'],
+    )
+
+    const retryNavigation = layout.goTo({ index: 1 })
+    const retryIframe = await nextPendingIframe('retried-replacement.xhtml')
+    retryIframe.finishLoading(fixedLayoutDocument('retried replacement'))
+    await retryNavigation
+
+    assert.equal(replacementLoadAttempts, 2)
+    assert.equal(layout.index, 1)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['retried replacement'],
+    )
+})
+
+test('cancels pending replacement when navigation returns to the displayed spread', async () => {
+    let releaseReplacement
+    let markReplacementLoadStarted
+    const replacementSource = new Promise(resolve => {
+        releaseReplacement = resolve
+    })
+    const replacementLoadStarted = new Promise(resolve => {
+        markReplacementLoadStarted = resolve
+    })
+    const sections = [
+        {
+            load: async () => 'displayed-before-return.xhtml',
+        },
+        {
+            load: () => {
+                markReplacementLoadStarted()
+                return replacementSource
+            },
+        },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+
+    const initialNavigation = layout.goTo({ index: 0 })
+    const initialIframe = await nextPendingIframe('displayed-before-return.xhtml')
+    initialIframe.finishLoading(fixedLayoutDocument('displayed before return'))
+    await initialNavigation
+
+    const pendingReplacement = layout.goTo({ index: 1 })
+    await replacementLoadStarted
+    await layout.goTo({ index: 0 })
+    releaseReplacement('obsolete-after-return.xhtml')
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve))
+    }
+    const obsoleteIframeIndex = pendingIframes.findIndex(
+        iframe => iframe.source === 'obsolete-after-return.xhtml',
+    )
+    const obsoleteIframe = obsoleteIframeIndex >= 0
+        ? pendingIframes.splice(obsoleteIframeIndex, 1)[0]
+        : null
+    obsoleteIframe?.finishLoading(fixedLayoutDocument('obsolete after return'))
+    await pendingReplacement
+
+    assert.equal(obsoleteIframe, null)
+    assert.equal(layout.index, 0)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['displayed before return'],
     )
 })
 

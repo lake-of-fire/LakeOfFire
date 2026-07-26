@@ -305,7 +305,7 @@ export class FixedLayout extends HTMLElement {
                 else last .right = section
             }
             return arr
-        }, [{}])
+        }, [{}]).filter(({ left, right, center }) => left || right || center)
     }
     get index() {
         const spread = this.#spreads[this.#index]
@@ -330,13 +330,17 @@ export class FixedLayout extends HTMLElement {
         this.#targetResolutionGeneration += 1
         if (index < 0 || index > this.#spreads.length - 1) return
         if (index === this.#index) {
+            const generation = ++this.#contentGeneration
+            this.#cancelPendingFrameLoads()
+            for (const frame of [this.#center, this.#left, this.#right]) {
+                if (frame) frame.generation = generation
+            }
             const previousSectionIndex = this.index
             this.#side = side
             this.#render(side)
             if (this.index !== previousSectionIndex) this.#reportLocation(reason)
             return
         }
-        this.#index = index
         const generation = ++this.#contentGeneration
         this.#cancelPendingFrameLoads()
         const spread = this.#spreads[index]
@@ -372,6 +376,7 @@ export class FixedLayout extends HTMLElement {
             didShowSpread = await this.#showSpread({ left, right, side }, generation)
         }
         if (didShowSpread && generation === this.#contentGeneration) {
+            this.#index = index
             this.#reportLocation(reason)
         }
     }
