@@ -61,6 +61,7 @@ export class FixedLayout extends HTMLElement {
     #center
     #side
     #contentGeneration = 0
+    #pendingFrameLoadCancellations = new Set()
     constructor() {
         super()
 
@@ -94,20 +95,40 @@ export class FixedLayout extends HTMLElement {
         this.#root.append(element)
         if (!src) return { blank: true, element, iframe, index, generation }
         return new Promise(resolve => {
-            const onload = () => {
+            let settled = false
+            let cancel
+            const settle = frame => {
+                if (settled) return
+                settled = true
                 iframe.removeEventListener('load', onload)
+                this.#pendingFrameLoadCancellations.delete(cancel)
+                resolve(frame)
+            }
+            const onload = () => {
+                if (generation !== this.#contentGeneration) {
+                    cancel()
+                    return
+                }
                 const doc = iframe.contentDocument
                 this.dispatchEvent(new CustomEvent('load', { detail: { doc, index } }))
                 const { width, height } = getViewport(doc, this.defaultViewport)
-                resolve({
+                settle({
                     element, iframe, index, generation,
                     width: parseFloat(width),
                     height: parseFloat(height),
                 })
             }
+            cancel = () => {
+                element.remove()
+                settle({ cancelled: true, element, iframe, index, generation })
+            }
+            this.#pendingFrameLoadCancellations.add(cancel)
             iframe.addEventListener('load', onload)
             iframe.src = src
         })
+    }
+    #cancelPendingFrameLoads() {
+        for (const cancel of [...this.#pendingFrameLoadCancellations]) cancel()
     }
     #render(side = this.#side) {
         if (!side) return
@@ -157,22 +178,37 @@ export class FixedLayout extends HTMLElement {
             transform(right)
         }
     }
-    async #showSpread({ left, right, center, side }) {
-        const generation = ++this.#contentGeneration
+    async #showSpread({ left, right, center, side }, generation) {
+        if (generation !== this.#contentGeneration) return false
         this.#root.replaceChildren()
         this.#left = null
         this.#right = null
         this.#center = null
         if (center) {
-            this.#center = await this.#createFrame(center, generation)
+            const loadedCenter = await this.#createFrame(center, generation)
+            if (generation !== this.#contentGeneration) {
+                loadedCenter.element.remove()
+                return false
+            }
+            this.#center = loadedCenter
             this.#side = 'center'
             this.#render()
         } else {
-            this.#left = await this.#createFrame(left, generation)
-            this.#right = await this.#createFrame(right, generation)
+            const [loadedLeft, loadedRight] = await Promise.all([
+                this.#createFrame(left, generation),
+                this.#createFrame(right, generation),
+            ])
+            if (generation !== this.#contentGeneration) {
+                loadedLeft.element.remove()
+                loadedRight.element.remove()
+                return false
+            }
+            this.#left = loadedLeft
+            this.#right = loadedRight
             this.#side = side
             this.#render()
         }
+        return true
     }
     #goLeft() {
         if (this.#center) return
@@ -195,6 +231,13 @@ export class FixedLayout extends HTMLElement {
         }
     }
     open(book) {
+        this.#contentGeneration += 1
+        this.#cancelPendingFrameLoads()
+        this.#index = -1
+        this.#root.replaceChildren()
+        this.#left = null
+        this.#right = null
+        this.#center = null
         this.book = book
         const { rendition } = book
         this.spread = rendition?.spread
@@ -239,7 +282,7 @@ export class FixedLayout extends HTMLElement {
     }
     get index() {
         const spread = this.#spreads[this.#index]
-        const section = spread?.center ?? (this.side === 'left'
+        const section = spread?.center ?? (this.#side === 'left'
             ? spread.left ?? spread.right : spread.right ?? spread.left)
         return this.book.sections.indexOf(section)
     }
@@ -259,25 +302,35 @@ export class FixedLayout extends HTMLElement {
     async goToSpread(index, side, reason) {
         if (index < 0 || index > this.#spreads.length - 1) return
         if (index === this.#index) {
+            this.#side = side
             this.#render(side)
             return
         }
         this.#index = index
+        const generation = ++this.#contentGeneration
+        this.#cancelPendingFrameLoads()
         const spread = this.#spreads[index]
+        let didShowSpread = false
         if (spread.center) {
             const index = this.book.sections.indexOf(spread.center)
             const src = await spread.center?.load?.()
-            await this.#showSpread({ center: { index, src } })
+            if (generation !== this.#contentGeneration) return
+            didShowSpread = await this.#showSpread({ center: { index, src } }, generation)
         } else {
             const indexL = this.book.sections.indexOf(spread.left)
             const indexR = this.book.sections.indexOf(spread.right)
-            const srcL = await spread.left?.load?.()
-            const srcR = await spread.right?.load?.()
+            const [srcL, srcR] = await Promise.all([
+                spread.left?.load?.(),
+                spread.right?.load?.(),
+            ])
+            if (generation !== this.#contentGeneration) return
             const left = { index: indexL, src: srcL }
             const right = { index: indexR, src: srcR }
-            await this.#showSpread({ left, right, side })
+            didShowSpread = await this.#showSpread({ left, right, side }, generation)
         }
-        this.#reportLocation(reason)
+        if (didShowSpread && generation === this.#contentGeneration) {
+            this.#reportLocation(reason)
+        }
     }
     async select(target) {
         await this.goTo(target)
@@ -307,6 +360,12 @@ export class FixedLayout extends HTMLElement {
             .filter(Boolean)
     }
     destroy() {
+        this.#contentGeneration += 1
+        this.#cancelPendingFrameLoads()
+        this.#root.replaceChildren()
+        this.#left = null
+        this.#right = null
+        this.#center = null
         this.#resizeObserver.unobserve(this)
 //        this.#mutationObserver.unobserve(this.#root)
     }
