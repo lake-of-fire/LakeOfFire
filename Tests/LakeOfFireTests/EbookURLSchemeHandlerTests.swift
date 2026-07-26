@@ -82,9 +82,9 @@ private func ebookTestPayload(
 
 private let nestedResourceDocumentHTML = """
 <!doctype html><html><head>
-<link rel="stylesheet" href="../Styles/book.css">
+<link id="book-style" rel="stylesheet" href="../Styles/book.css#theme">
 </head><body><m-s><m-m id="a">本文</m-m></m-s>
-<img id="cover" src="../Images/cover.svg">
+<img id="cover" src="../Images/cover.svg#shape">
 </body></html>
 """
 
@@ -92,7 +92,7 @@ private let nestedResourceStylesheet = "body { background-color: rgb(1, 2, 3); }
 
 private let nestedResourceImage = """
 <svg xmlns="http://www.w3.org/2000/svg" width="4" height="3">
-<rect width="4" height="3" fill="red"/>
+<rect id="shape" width="4" height="3" fill="red"/>
 </svg>
 """
 
@@ -1129,10 +1129,12 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         "s":[["!a",0,null,null,null,null,null,null,null,0,0]]}
         """
 
+        let processorInvocationCounter = EBookProcessorInvocationCounter()
         let handler = EbookURLSchemeHandler()
         handler.readerFileManager = ReaderFileManager()
         handler.ebookTextProcessor = { _, _, text, _, _, _, _, _, _ in
-            ebookTestPayload(text, sidecar: sidecar)
+            _ = await processorInvocationCounter.increment()
+            return ebookTestPayload(text, sidecar: sidecar)
         }
         let configuration = WKWebViewConfiguration()
         configuration.setURLSchemeHandler(handler, forURLScheme: "ebook")
@@ -1154,7 +1156,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             return {
                 baseURL: document.baseURI,
                 backgroundColor: getComputedStyle(document.body).backgroundColor,
+                stylesheetURL: document.getElementById("book-style").href,
                 imageComplete: image.complete,
+                imageURL: image.src,
                 imageWidth: image.naturalWidth,
                 missingStatus,
                 bodyText: document.body.textContent.trim(),
@@ -1169,10 +1173,14 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(baseURL.contains("/entry-source/"))
         XCTAssertTrue(baseURL.contains("/g1-"))
         XCTAssertEqual(values["backgroundColor"] as? String, "rgb(1, 2, 3)")
+        XCTAssertTrue((values["stylesheetURL"] as? String)?.hasSuffix("/OPS/Styles/book.css#theme") == true)
         XCTAssertEqual(values["imageComplete"] as? Bool, true)
+        XCTAssertTrue((values["imageURL"] as? String)?.hasSuffix("/OPS/Images/cover.svg#shape") == true)
         XCTAssertEqual((values["imageWidth"] as? NSNumber)?.intValue, 4)
         XCTAssertEqual((values["missingStatus"] as? NSNumber)?.intValue, 404)
         XCTAssertEqual(values["bodyText"] as? String, "本文")
+        let processorInvocationCount = await processorInvocationCounter.value()
+        XCTAssertEqual(processorInvocationCount, 1)
     }
 
     func testMissingViewerAssetReturns404InsteadOfViewerHTMLFallback() throws {
