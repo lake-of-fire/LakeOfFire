@@ -238,7 +238,7 @@ export class FixedLayout extends HTMLElement {
     }
     #goLeft() {
         if (this.#center) return
-        if (this.#left?.blank) return true
+        if (this.#left?.blank) return
         if (this.#portrait && this.#left?.element?.style?.display === 'none') {
             this.#right.element.style.display = 'none'
             this.#left.element.style.display = 'block'
@@ -248,7 +248,7 @@ export class FixedLayout extends HTMLElement {
     }
     #goRight() {
         if (this.#center) return
-        if (this.#right?.blank) return true
+        if (this.#right?.blank) return
         if (this.#portrait && this.#right?.element?.style?.display === 'none') {
             this.#left.element.style.display = 'none'
             this.#right.element.style.display = 'block'
@@ -330,8 +330,10 @@ export class FixedLayout extends HTMLElement {
         this.#targetResolutionGeneration += 1
         if (index < 0 || index > this.#spreads.length - 1) return
         if (index === this.#index) {
+            const previousSectionIndex = this.index
             this.#side = side
             this.#render(side)
+            if (this.index !== previousSectionIndex) this.#reportLocation(reason)
             return
         }
         this.#index = index

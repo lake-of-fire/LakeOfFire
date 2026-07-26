@@ -267,8 +267,94 @@ test('reports the displayed portrait-spread side as the current section index', 
     await navigation
 
     assert.equal(layout.index, 0)
+    assert.deepEqual(
+        layout.events
+            .filter(event => event.type === 'relocate')
+            .map(event => event.detail.index),
+        [0],
+    )
+
     await layout.goTo({ index: 1 })
     assert.equal(layout.index, 1)
+    assert.deepEqual(
+        layout.events
+            .filter(event => event.type === 'relocate')
+            .map(event => event.detail.index),
+        [0, 1],
+    )
+})
+
+test('advances past a blank trailing spread slot', async () => {
+    const sections = [
+        {
+            load: async () => 'left-before-center.xhtml',
+        },
+        {
+            pageSpread: 'center',
+            load: async () => 'center-after-blank.xhtml',
+        },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+
+    const initialNavigation = layout.goTo({ index: 0 })
+    const leftIframe = await nextPendingIframe('left-before-center.xhtml')
+    leftIframe.finishLoading(fixedLayoutDocument('left before center'))
+    await initialNavigation
+
+    const nextNavigation = layout.next()
+    const centerIframe = await nextPendingIframe('center-after-blank.xhtml')
+    centerIframe.finishLoading(fixedLayoutDocument('center after blank'))
+    await nextNavigation
+
+    assert.equal(layout.index, 1)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['center after blank'],
+    )
+})
+
+test('retreats past a blank leading spread slot', async () => {
+    const sections = [
+        {
+            pageSpread: 'center',
+            load: async () => 'center-before-blank.xhtml',
+        },
+        {
+            pageSpread: 'right',
+            load: async () => 'right-after-center.xhtml',
+        },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+
+    const initialNavigation = layout.goTo({ index: 1 })
+    const rightIframe = await nextPendingIframe('right-after-center.xhtml')
+    rightIframe.finishLoading(fixedLayoutDocument('right after center'))
+    await initialNavigation
+
+    const previousNavigation = layout.prev()
+    const centerIframe = await nextPendingIframe('center-before-blank.xhtml')
+    centerIframe.finishLoading(fixedLayoutDocument('center before blank'))
+    await previousNavigation
+
+    assert.equal(layout.index, 0)
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['center before blank'],
+    )
 })
 
 test('rejects a delayed target resolved after a replacement book opens', async () => {
