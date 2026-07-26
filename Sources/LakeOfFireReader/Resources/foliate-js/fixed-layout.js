@@ -158,6 +158,7 @@ export class FixedLayout extends HTMLElement {
     }
     #render(side = this.#side) {
         if (!side) return
+        if (!this.#center && !this.#left && !this.#right) return
         const left = this.#left ?? {}
         const right = this.#center ?? this.#right
         const target = side === 'left' ? left : right

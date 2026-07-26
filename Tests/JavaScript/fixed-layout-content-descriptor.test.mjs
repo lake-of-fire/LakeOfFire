@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 const pendingIframes = []
+const resizeObservers = []
 
 class FakeShadowRoot {
     adoptedStyleSheets = []
@@ -44,8 +45,17 @@ globalThis.CustomEvent = class {
     }
 }
 globalThis.ResizeObserver = class {
+    constructor(callback) {
+        this.callback = callback
+        resizeObservers.push(this)
+    }
+
     observe() {}
     unobserve() {}
+
+    trigger() {
+        this.callback()
+    }
 }
 globalThis.customElements = { define() {} }
 globalThis.document = {
@@ -236,6 +246,34 @@ test('settles a detached frame load when replacement navigation takes ownership'
         })),
         [{ index: 1, title: 'replacement' }],
     )
+})
+
+test('ignores queued resize callbacks while frames are cleared', async () => {
+    const layout = new FixedLayout()
+    const resizeObserver = resizeObservers.at(-1)
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections: [{ load: async () => 'before-frame-clear.xhtml' }],
+    })
+
+    const initialNavigation = layout.goTo({ index: 0 })
+    const initialIframe = await nextPendingIframe('before-frame-clear.xhtml')
+    initialIframe.finishLoading(fixedLayoutDocument('before frame clear'))
+    await initialNavigation
+
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [],
+    })
+    assert.doesNotThrow(() => resizeObserver.trigger())
+
+    layout.destroy()
+    assert.doesNotThrow(() => resizeObserver.trigger())
 })
 
 test('reports the displayed portrait-spread side as the current section index', async () => {
