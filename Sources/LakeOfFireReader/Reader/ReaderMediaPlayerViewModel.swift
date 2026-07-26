@@ -68,6 +68,12 @@ public enum ReaderPlaybackSource: String, Sendable {
     case aiTextToSpeech
 }
 
+public enum ReaderReadAloudPreparationState: Equatable, Sendable {
+    case idle
+    case preparing
+    case failed(String)
+}
+
 public struct ReaderTTSUtterance: Equatable, Sendable {
     public let sentenceIdentifier: String
     public let text: String
@@ -125,6 +131,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public private(set) var hasPreparedAITTS = false
     @Published public private(set) var ttsQueueGeneration: Int = 0
     @Published public private(set) var ttsPreparedEbookSectionIndex: Int?
+    @Published public private(set) var readAloudPreparationState: ReaderReadAloudPreparationState = .idle
 
     // Test hook so unit tests can avoid real AVSpeechSynthesizer playback latency.
     var shouldEnqueueSpeechSynthesizerUtterances = true
@@ -143,6 +150,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
     private var shouldResumeAITTSAfterAudioInterruption = false
+    private var readAloudPreparationID: UUID?
     private static let readAloudPositionsKey = "readerReadAloudPlaybackPositions"
 
     public override convenience init() {
@@ -185,6 +193,60 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     public var hasRecordedAudio: Bool {
         !audioURLs.isEmpty
+    }
+
+    public var isPreparingReadAloud: Bool {
+        readAloudPreparationState == .preparing
+    }
+
+    public var readAloudErrorMessage: String? {
+        guard case .failed(let message) = readAloudPreparationState else { return nil }
+        return message
+    }
+
+    @MainActor
+    public func beginReadAloudPreparation() -> UUID? {
+        guard !isPreparingReadAloud else { return nil }
+        let preparationID = UUID()
+        readAloudPreparationID = preparationID
+        readAloudPreparationState = .preparing
+        return preparationID
+    }
+
+    public func isCurrentReadAloudPreparation(_ preparationID: UUID) -> Bool {
+        readAloudPreparationID == preparationID && isPreparingReadAloud
+    }
+
+    @MainActor
+    public func completeReadAloudPreparation(_ preparationID: UUID) {
+        guard isCurrentReadAloudPreparation(preparationID) else { return }
+        readAloudPreparationID = nil
+        readAloudPreparationState = .idle
+    }
+
+    @MainActor
+    public func failReadAloudPreparation(_ preparationID: UUID, message: String) {
+        guard isCurrentReadAloudPreparation(preparationID) else { return }
+        readAloudPreparationID = nil
+        readAloudPreparationState = .failed(message)
+    }
+
+    @MainActor
+    public func cancelReadAloudPreparation() {
+        readAloudPreparationID = nil
+        readAloudPreparationState = .idle
+    }
+
+    @MainActor
+    public func cancelReadAloudPreparation(_ preparationID: UUID) {
+        guard isCurrentReadAloudPreparation(preparationID) else { return }
+        cancelReadAloudPreparation()
+    }
+
+    @MainActor
+    public func dismissReadAloudError() {
+        guard readAloudErrorMessage != nil else { return }
+        readAloudPreparationState = .idle
     }
 
     @MainActor
@@ -401,6 +463,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func transitionToRecordedAudioPresentation(reason: String) {
+        cancelReadAloudPreparation()
         if autoplayRequestToken != nil {
             cancelAutoplayRequest(reason: "recordedTransition.\(reason)")
         }
@@ -419,6 +482,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func closePlaybackPresentation() {
+        cancelReadAloudPreparation()
         cancelAutoplayRequest(reason: "closePlaybackPresentation")
         if playbackSource == .aiTextToSpeech {
             persistReadAloudPosition()
@@ -961,6 +1025,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         cancelLookupAITTSSuspension()
         playbackSource = .recordedAudio
         autoplayRequestToken = nil
+        cancelReadAloudPreparation()
         stopAITTSPlayback(clearQueue: true)
     }
 }

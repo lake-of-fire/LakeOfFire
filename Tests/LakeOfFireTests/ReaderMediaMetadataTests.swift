@@ -50,6 +50,61 @@ private final class FakeReadAloudAudioSessionLease: ReaderReadAloudAudioSessionL
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+    @MainActor
+    func testReadAloudPreparationRejectsOverlapAndCompletesOnlyCurrentRequest() throws {
+        let viewModel = ReaderMediaPlayerViewModel()
+        let preparationID = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+
+        XCTAssertTrue(viewModel.isPreparingReadAloud)
+        XCTAssertNil(viewModel.beginReadAloudPreparation())
+
+        viewModel.completeReadAloudPreparation(UUID())
+        XCTAssertTrue(viewModel.isPreparingReadAloud)
+
+        viewModel.completeReadAloudPreparation(preparationID)
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertEqual(viewModel.readAloudPreparationState, .idle)
+    }
+
+    @MainActor
+    func testReadAloudPreparationFailureIsRequestScopedAndRetryable() throws {
+        let viewModel = ReaderMediaPlayerViewModel()
+        let preparationID = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+
+        viewModel.failReadAloudPreparation(UUID(), message: "stale")
+        XCTAssertTrue(viewModel.isPreparingReadAloud)
+
+        viewModel.failReadAloudPreparation(preparationID, message: "No readable text")
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertEqual(viewModel.readAloudErrorMessage, "No readable text")
+
+        XCTAssertNotNil(viewModel.beginReadAloudPreparation())
+        XCTAssertTrue(viewModel.isPreparingReadAloud)
+        XCTAssertNil(viewModel.readAloudErrorMessage)
+    }
+
+    @MainActor
+    func testCancellingReadAloudPreparationInvalidatesItsRequest() throws {
+        let viewModel = ReaderMediaPlayerViewModel()
+        let preparationID = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+
+        viewModel.cancelReadAloudPreparation()
+        viewModel.completeReadAloudPreparation(preparationID)
+
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+        XCTAssertEqual(viewModel.readAloudPreparationState, .idle)
+
+        let replacementID = try XCTUnwrap(viewModel.beginReadAloudPreparation())
+        viewModel.cancelReadAloudPreparation(preparationID)
+
+        XCTAssertTrue(viewModel.isCurrentReadAloudPreparation(replacementID))
+
+        viewModel.transitionToRecordedAudioPresentation(reason: "unit-test")
+
+        XCTAssertFalse(viewModel.isCurrentReadAloudPreparation(replacementID))
+        XCTAssertFalse(viewModel.isPreparingReadAloud)
+    }
+
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(name)
