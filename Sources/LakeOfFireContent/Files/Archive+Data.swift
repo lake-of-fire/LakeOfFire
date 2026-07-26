@@ -38,9 +38,11 @@ public struct ReaderPackageEntryResponseMetadata: Sendable {
     }
 }
 
-public enum ReaderPackageEntrySourceError: Error {
+public enum ReaderPackageEntrySourceError: Error, Equatable, Sendable {
     case invalidSubpath
     case entryNotFound
+    case ambiguousEntry
+    case cancelled
     case unsupportedSource
 }
 
@@ -50,13 +52,23 @@ public struct ReaderPackageEntrySource: Sendable {
         case archive(fileURL: URL)
     }
 
+    private struct ArchiveCatalog: Sendable {
+        let entries: [ReaderPackageEntryMetadata]
+        let paths: Set<String>
+        let validationError: ReaderPackageEntrySourceError?
+    }
+
     private let kind: Kind
+    private let archiveCatalog: ArchiveCatalog?
 
     public init(localURL: URL) throws {
         var isDirectory = ObjCBool(false)
         if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
            isDirectory.boolValue {
-            kind = .directory(rootURL: localURL.standardizedFileURL)
+            kind = .directory(
+                rootURL: localURL.standardizedFileURL.resolvingSymlinksInPath()
+            )
+            archiveCatalog = nil
             return
         }
 
@@ -64,35 +76,61 @@ public struct ReaderPackageEntrySource: Sendable {
             throw ReaderPackageEntrySourceError.unsupportedSource
         }
 
-        kind = .archive(fileURL: localURL.standardizedFileURL)
+        let fileURL = localURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard let archive = try? Archive(url: fileURL, accessMode: .read) else {
+            throw ReaderPackageEntrySourceError.unsupportedSource
+        }
+        kind = .archive(fileURL: fileURL)
+        archiveCatalog = Self.makeArchiveCatalog(from: archive)
     }
 
     public func enumerateEntries() throws -> [ReaderPackageEntryMetadata] {
         switch kind {
         case .directory(let rootURL):
             return try enumerateDirectoryEntries(rootURL: rootURL)
-        case .archive(let fileURL):
-            return try enumerateArchiveEntries(fileURL: fileURL)
+        case .archive:
+            return try enumerateArchiveEntries()
         }
     }
 
-    public func readEntry(subpath rawSubpath: String) throws -> Data {
+    public func readEntry(
+        subpath rawSubpath: String,
+        progress: Progress? = nil
+    ) throws -> Data {
         let subpath = try Self.sanitizeSubpath(rawSubpath)
         switch kind {
         case .directory(let rootURL):
             let fileURL = try Self.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
-            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true else {
                 throw ReaderPackageEntrySourceError.entryNotFound
             }
-            return try Data(contentsOf: fileURL)
+            return try Self.readDirectoryEntry(
+                at: fileURL,
+                size: values?.fileSize,
+                progress: progress
+            )
         case .archive(let fileURL):
-            guard let archive = Archive(url: fileURL, accessMode: .read),
+            guard let archiveCatalog else {
+                throw ReaderPackageEntrySourceError.unsupportedSource
+            }
+            if let validationError = archiveCatalog.validationError {
+                throw validationError
+            }
+            guard archiveCatalog.paths.contains(subpath) else {
+                throw ReaderPackageEntrySourceError.entryNotFound
+            }
+            guard let archive = try? Archive(url: fileURL, accessMode: .read),
                   let entry = archive[subpath],
                   entry.type == .file else {
                 throw ReaderPackageEntrySourceError.entryNotFound
             }
             var data = Data()
-            try archive.extract(entry) { data.append($0) }
+            do {
+                try archive.extract(entry, progress: progress) { data.append($0) }
+            } catch Archive.ArchiveError.cancelledOperation {
+                throw ReaderPackageEntrySourceError.cancelled
+            }
             return data
         }
     }
@@ -144,14 +182,16 @@ public struct ReaderPackageEntrySource: Sendable {
     }
 
     public static func sanitizeSubpath(_ rawSubpath: String) throws -> String {
-        let trimmed = rawSubpath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.hasPrefix("/"),
-              !trimmed.contains("\\") else {
+        guard !rawSubpath.isEmpty,
+              !rawSubpath.hasPrefix("/"),
+              !rawSubpath.contains("\\"),
+              !rawSubpath.contains("\0") else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
 
-        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let components = rawSubpath
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
         guard !components.isEmpty,
               !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
             throw ReaderPackageEntrySourceError.invalidSubpath
@@ -166,9 +206,14 @@ public struct ReaderPackageEntrySource: Sendable {
 
     public static func resolveDirectoryURL(rootURL: URL, subpath rawSubpath: String) throws -> URL {
         let subpath = try sanitizeSubpath(rawSubpath)
-        let standardizedRootURL = rootURL.standardizedFileURL
-        let resolvedURL = standardizedRootURL.appendingPathComponent(subpath).standardizedFileURL
-        let rootPath = standardizedRootURL.path.hasSuffix("/") ? standardizedRootURL.path : standardizedRootURL.path + "/"
+        let standardizedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedURL = standardizedRootURL
+            .appendingPathComponent(subpath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let rootPath = standardizedRootURL.path.hasSuffix("/")
+            ? standardizedRootURL.path
+            : standardizedRootURL.path + "/"
         guard resolvedURL.path.hasPrefix(rootPath) else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
@@ -189,6 +234,7 @@ public struct ReaderPackageEntrySource: Sendable {
             guard values.isRegularFile == true else { continue }
             let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
             let subpath = try Self.sanitizeSubpath(relativePath)
+            _ = try Self.resolveDirectoryURL(rootURL: standardizedRootURL, subpath: subpath)
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
         }
         return entries.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
@@ -208,16 +254,80 @@ public struct ReaderPackageEntrySource: Sendable {
         return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
-    private func enumerateArchiveEntries(fileURL: URL) throws -> [ReaderPackageEntryMetadata] {
-        guard let archive = Archive(url: fileURL, accessMode: .read) else {
+    private func enumerateArchiveEntries() throws -> [ReaderPackageEntryMetadata] {
+        guard case .archive = kind,
+              let archiveCatalog else {
             throw ReaderPackageEntrySourceError.unsupportedSource
         }
-
-        return archive.compactMap { entry in
-            guard entry.type == .file else { return nil }
-            return ReaderPackageEntryMetadata(path: entry.path, size: Int(entry.uncompressedSize))
+        if let validationError = archiveCatalog.validationError {
+            throw validationError
         }
-        .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        return archiveCatalog.entries
+    }
+
+    private static func makeArchiveCatalog(from archive: Archive) -> ArchiveCatalog {
+        var metadataByPath = [String: ReaderPackageEntryMetadata]()
+        var duplicatePaths = Set<String>()
+        var hasInvalidEntry = false
+        for entry in archive where entry.type == .file {
+            guard entry.uncompressedSize <= UInt64(Int.max),
+                  let path = try? sanitizeSubpath(entry.path),
+                  path == entry.path else {
+                hasInvalidEntry = true
+                continue
+            }
+            guard metadataByPath[path] == nil else {
+                duplicatePaths.insert(path)
+                continue
+            }
+            metadataByPath[path] = ReaderPackageEntryMetadata(
+                path: path,
+                size: Int(entry.uncompressedSize)
+            )
+        }
+        let validationError: ReaderPackageEntrySourceError?
+        if hasInvalidEntry {
+            validationError = .invalidSubpath
+        } else if !duplicatePaths.isEmpty {
+            validationError = .ambiguousEntry
+        } else {
+            validationError = nil
+        }
+        return ArchiveCatalog(
+            entries: metadataByPath.values.sorted {
+                $0.path.localizedStandardCompare($1.path) == .orderedAscending
+            },
+            paths: Set(metadataByPath.keys),
+            validationError: validationError
+        )
+    }
+
+    private static func readDirectoryEntry(
+        at fileURL: URL,
+        size: Int?,
+        progress: Progress?
+    ) throws -> Data {
+        if progress?.isCancelled == true {
+            throw ReaderPackageEntrySourceError.cancelled
+        }
+        progress?.totalUnitCount = Int64(size ?? 0)
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var data = Data()
+        if let size {
+            data.reserveCapacity(size)
+        }
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            if progress?.isCancelled == true {
+                throw ReaderPackageEntrySourceError.cancelled
+            }
+            data.append(chunk)
+            progress?.completedUnitCount += Int64(chunk.count)
+        }
+        if progress?.isCancelled == true {
+            throw ReaderPackageEntrySourceError.cancelled
+        }
+        return data
     }
 
     private static func isUTF8TextType(utType: UTType?, mimeType: String) -> Bool {
@@ -247,8 +357,6 @@ public struct ReaderPackageEntrySource: Sendable {
 
 public actor ReaderPackageEntrySourceCache {
     public static let shared = ReaderPackageEntrySourceCache()
-    private static let expandedArchiveCacheRootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        .appendingPathComponent("lakeoffire-expanded-archives", isDirectory: true)
 
     public struct CachedSource: Sendable {
         public let source: ReaderPackageEntrySource
@@ -299,7 +407,7 @@ public actor ReaderPackageEntrySourceCache {
             return CachedSource(source: cached.source, entries: cached.entries)
         }
 
-        let source = try Self.preparedSource(for: localURL)
+        let source = try ReaderPackageEntrySource(localURL: localURL)
         let entries = try source.enumerateEntries()
         cachedSources[cacheKey] = CacheRecord(
             source: source,
@@ -348,108 +456,6 @@ public actor ReaderPackageEntrySourceCache {
 #else
         return nil
 #endif
-    }
-
-    private static func preparedSource(for localURL: URL) throws -> ReaderPackageEntrySource {
-        var isDirectory = ObjCBool(false)
-        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
-           isDirectory.boolValue {
-            return try ReaderPackageEntrySource(localURL: localURL)
-        }
-
-        return try ReaderPackageEntrySource(localURL: localURL)
-    }
-
-    private static func expandedArchiveDirectory(for localURL: URL, freshnessToken: String) throws -> URL {
-        let cacheDirectoryURL = expandedArchiveCacheRootURL
-            .appendingPathComponent(cacheDirectoryName(for: localURL, freshnessToken: freshnessToken), isDirectory: true)
-
-        if FileManager.default.fileExists(atPath: cacheDirectoryURL.path) {
-            return cacheDirectoryURL
-        }
-
-        try FileManager.default.createDirectory(at: expandedArchiveCacheRootURL, withIntermediateDirectories: true)
-
-        let workingDirectoryURL = expandedArchiveCacheRootURL
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
-
-        do {
-            try extractArchive(at: localURL, to: workingDirectoryURL)
-            try FileManager.default.moveItem(at: workingDirectoryURL, to: cacheDirectoryURL)
-            return cacheDirectoryURL
-        } catch {
-            try? FileManager.default.removeItem(at: workingDirectoryURL)
-            throw error
-        }
-    }
-
-    private static func cacheDirectoryName(for localURL: URL, freshnessToken: String) -> String {
-        let raw = "\(localURL.standardizedFileURL.path)|\(freshnessToken)"
-        let hash = String(raw.hashValue.magnitude, radix: 16)
-        let basename = localURL.deletingPathExtension().lastPathComponent
-        let sanitizedBasename = basename
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
-        return "\(sanitizedBasename)-\(hash)"
-    }
-
-    private static func extractArchive(at archiveURL: URL, to rootURL: URL) throws {
-        guard let archive = Archive(url: archiveURL, accessMode: .read) else {
-            throw ReaderPackageEntrySourceError.unsupportedSource
-        }
-
-        for entry in archive {
-            switch entry.type {
-            case .directory:
-                let destinationURL = try directoryDestinationURL(rootURL: rootURL, entryPath: entry.path)
-                try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-            case .file:
-                let destinationURL = try fileDestinationURL(rootURL: rootURL, entryPath: entry.path)
-                try FileManager.default.createDirectory(
-                    at: destinationURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try archive.extract(entry, to: destinationURL)
-            default:
-                continue
-            }
-        }
-    }
-
-    private static func directoryDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
-            return rootURL
-        }
-        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
-    }
-
-    private static func fileDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
-            throw ReaderPackageEntrySourceError.invalidSubpath
-        }
-        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
-    }
-
-    private static func archiveEntrySubpath(_ rawEntryPath: String) throws -> String? {
-        let trimmed = rawEntryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.contains("\\") else {
-            throw ReaderPackageEntrySourceError.invalidSubpath
-        }
-
-        let components = trimmed
-            .split(separator: "/", omittingEmptySubsequences: false)
-            .map(String.init)
-            .filter { !$0.isEmpty && $0 != "." }
-
-        guard !components.isEmpty else {
-            return nil
-        }
-        guard !components.contains("..") else {
-            throw ReaderPackageEntrySourceError.invalidSubpath
-        }
-        return components.joined(separator: "/")
     }
 
     private static func freshnessToken(for localURL: URL) throws -> String {
