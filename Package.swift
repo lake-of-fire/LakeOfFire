@@ -64,7 +64,7 @@ let package = Package(
         .package(path: "../BigSyncKit"),
         .package(path: "../SwiftUIDownloads"),
         .package(path: "../JapaneseLanguageTools"),
-        .package(url: "https://github.com/pointfreeco/swift-structured-queries", exact: "0.33.2"),
+        .package(url: "https://github.com/pointfreeco/swift-structured-queries", exact: "0.34.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax", exact: "603.0.1"),
         .package(path: "../SwiftUtilities"),
         .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
