@@ -668,6 +668,106 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertEqual(viewModel.ttsCurrentSentenceIdentifier, "s1")
     }
 
+    @MainActor
+    func testReadAloudResumesAfterResumableAudioInterruption() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let firstLease = FakeReadAloudAudioSessionLease()
+        let secondLease = FakeReadAloudAudioSessionLease()
+        var leases = [firstLease, secondLease]
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { leases.removeFirst() }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+
+        viewModel.handleReadAloudAudioInterruptionBegan()
+        viewModel.handleReadAloudAudioInterruptionBegan()
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(firstLease.releaseCount, 1)
+
+        viewModel.handleReadAloudAudioInterruptionEnded(shouldResume: true)
+
+        XCTAssertTrue(viewModel.isPlaying)
+        XCTAssertEqual(secondLease.releaseCount, 0)
+    }
+
+    @MainActor
+    func testReadAloudDoesNotResumeAfterNonresumableAudioInterruption() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let lease = FakeReadAloudAudioSessionLease()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { lease }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+
+        viewModel.handleReadAloudAudioInterruptionBegan()
+        viewModel.handleReadAloudAudioInterruptionEnded(shouldResume: false)
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(lease.releaseCount, 1)
+    }
+
+    @MainActor
+    func testReadAloudRouteLossPausesWithoutLaterInterruptionResume() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let lease = FakeReadAloudAudioSessionLease()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { lease }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+
+        viewModel.handleReadAloudAudioRouteBecameUnavailable()
+        viewModel.handleReadAloudAudioInterruptionEnded(shouldResume: true)
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(lease.releaseCount, 1)
+    }
+
+    @MainActor
+    func testReadAloudInterruptionReleasesLeaseWhenSynthesizerAlreadyPaused() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let lease = FakeReadAloudAudioSessionLease()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { lease }
+        )
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                autoplay: false
+            )
+        )
+        viewModel.playAITTS()
+        synthesizer.isSpeaking = false
+        synthesizer.isPaused = true
+
+        viewModel.handleReadAloudAudioInterruptionBegan()
+
+        XCTAssertFalse(viewModel.isPlaying)
+        XCTAssertEqual(lease.releaseCount, 1)
+    }
+
     @RealmBackgroundActor
     func testAddHistoryRecordReplacesRecordedAudioAndSubtitles() async throws {
         let configuration = makeRealmConfiguration()

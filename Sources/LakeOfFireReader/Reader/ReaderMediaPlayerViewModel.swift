@@ -142,6 +142,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var ttsVoiceLanguage = "ja-JP"
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
+    private var shouldResumeAITTSAfterAudioInterruption = false
     private static let readAloudPositionsKey = "readerReadAloudPlaybackPositions"
 
     public override convenience init() {
@@ -158,6 +159,24 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         self.readAloudAudioSessionLeaseFactory = readAloudAudioSessionLeaseFactory
         super.init()
         readAloudController.delegate = self
+#if os(iOS)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+#endif
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     public var hasAnyPlayableMedia: Bool {
@@ -411,12 +430,38 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     public func pauseReadAloudForBackgroundIfNeeded() {
+        shouldResumeAITTSAfterAudioInterruption = false
         cancelAutoplayRequest(reason: "background")
         guard playbackSource == .aiTextToSpeech else { return }
-        if isPlaying || readAloudController.isSpeaking {
-            pauseAITTS()
+        pauseReadAloudForSystemEvent()
+    }
+
+    @MainActor
+    func handleReadAloudAudioInterruptionBegan() {
+        guard playbackSource == .aiTextToSpeech else {
+            shouldResumeAITTSAfterAudioInterruption = false
+            return
         }
-        isPlaying = false
+        let wasPlaying = isPlaying || readAloudController.isSpeaking
+        shouldResumeAITTSAfterAudioInterruption =
+            shouldResumeAITTSAfterAudioInterruption || wasPlaying
+        pauseReadAloudForSystemEvent()
+    }
+
+    @MainActor
+    func handleReadAloudAudioInterruptionEnded(shouldResume: Bool) {
+        let shouldResumePlayback = shouldResume && shouldResumeAITTSAfterAudioInterruption
+        shouldResumeAITTSAfterAudioInterruption = false
+        if shouldResumePlayback {
+            playAITTS()
+        }
+    }
+
+    @MainActor
+    func handleReadAloudAudioRouteBecameUnavailable() {
+        shouldResumeAITTSAfterAudioInterruption = false
+        guard playbackSource == .aiTextToSpeech else { return }
+        pauseReadAloudForSystemEvent()
     }
 
     @MainActor
@@ -709,6 +754,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func stopAITTSPlayback(clearQueue: Bool) {
+        shouldResumeAITTSAfterAudioInterruption = false
         stopAITTSSynthesizerForQueueSwap()
         deactivateReadAloudAudioSession()
         isPlaying = false
@@ -854,6 +900,58 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             debugPrint("# READALOUD audioSession.deactivate.failed", error.localizedDescription)
         }
     }
+
+    @MainActor
+    private func pauseReadAloudForSystemEvent() {
+        if readAloudController.isSpeaking {
+            pauseAITTS()
+        }
+        if readAloudController.isSpeaking {
+            stopAITTSPlayback(clearQueue: false)
+            return
+        }
+        persistReadAloudPosition()
+        deactivateReadAloudAudioSession()
+        isPlaying = false
+    }
+
+#if os(iOS)
+    @objc nonisolated private func handleAudioSessionInterruption(_ notification: Notification) {
+        let typeRawValue = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
+        let optionsRawValue =
+            (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? NSNumber)?.uintValue ?? 0
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let typeRawValue,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeRawValue) else {
+                return
+            }
+            switch type {
+            case .began:
+                self.handleReadAloudAudioInterruptionBegan()
+            case .ended:
+                let shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue)
+                    .contains(.shouldResume)
+                self.handleReadAloudAudioInterruptionEnded(shouldResume: shouldResume)
+            @unknown default:
+                self.shouldResumeAITTSAfterAudioInterruption = false
+            }
+        }
+    }
+
+    @objc nonisolated private func handleAudioSessionRouteChange(_ notification: Notification) {
+        let reasonRawValue =
+            (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let reasonRawValue,
+                  AVAudioSession.RouteChangeReason(rawValue: reasonRawValue) == .oldDeviceUnavailable else {
+                return
+            }
+            self.handleReadAloudAudioRouteBecameUnavailable()
+        }
+    }
+#endif
 
     @MainActor
     private func resetPlaybackStateForIncomingContent() {
