@@ -85,6 +85,7 @@ private let nestedResourceDocumentHTML = """
 <link id="book-style" rel="stylesheet" href="../Styles/book.css#theme">
 </head><body><m-s><m-m id="a">本文</m-m></m-s>
 <img id="cover" src="../Images/cover.svg#shape">
+<audio id="sample-audio" preload="metadata" src="../Media/tone.wav"></audio>
 </body></html>
 """
 
@@ -95,6 +96,33 @@ private let nestedResourceImage = """
 <rect id="shape" width="4" height="3" fill="red"/>
 </svg>
 """
+
+private func nestedResourceAudio() -> Data {
+    let sampleRate: UInt32 = 8_000
+    let sampleCount = 800
+    let dataByteCount = UInt32(sampleCount)
+    var data = Data()
+
+    func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
+        var littleEndianValue = value.littleEndian
+        withUnsafeBytes(of: &littleEndianValue) { data.append(contentsOf: $0) }
+    }
+
+    data.append(contentsOf: "RIFF".utf8)
+    appendLittleEndian(UInt32(36) + dataByteCount)
+    data.append(contentsOf: "WAVEfmt ".utf8)
+    appendLittleEndian(UInt32(16))
+    appendLittleEndian(UInt16(1))
+    appendLittleEndian(UInt16(1))
+    appendLittleEndian(sampleRate)
+    appendLittleEndian(sampleRate)
+    appendLittleEndian(UInt16(1))
+    appendLittleEndian(UInt16(8))
+    data.append(contentsOf: "data".utf8)
+    appendLittleEndian(dataByteCount)
+    data.append(contentsOf: repeatElement(UInt8(128), count: sampleCount))
+    return data
+}
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalizingTypedSidecarAvoidsEmbeddedJSONRoundTrip() throws {
@@ -1055,9 +1083,11 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let textDirectoryURL = directoryURL.appendingPathComponent("OPS/Text", isDirectory: true)
         let stylesDirectoryURL = directoryURL.appendingPathComponent("OPS/Styles", isDirectory: true)
         let imagesDirectoryURL = directoryURL.appendingPathComponent("OPS/Images", isDirectory: true)
+        let mediaDirectoryURL = directoryURL.appendingPathComponent("OPS/Media", isDirectory: true)
         try FileManager.default.createDirectory(at: textDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: stylesDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: imagesDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mediaDirectoryURL, withIntermediateDirectories: true)
 
         try Data(nestedResourceDocumentHTML.utf8).write(
             to: textDirectoryURL.appendingPathComponent("chapter.xhtml")
@@ -1067,6 +1097,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
         try Data(nestedResourceImage.utf8).write(
             to: imagesDirectoryURL.appendingPathComponent("cover.svg")
+        )
+        try nestedResourceAudio().write(
+            to: mediaDirectoryURL.appendingPathComponent("tone.wav")
         )
 
         try await assertProcessedSectionLoadsNestedResources(
@@ -1083,6 +1116,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             ("OPS/Text/chapter.xhtml", Data(nestedResourceDocumentHTML.utf8)),
             ("OPS/Styles/book.css", Data(nestedResourceStylesheet.utf8)),
             ("OPS/Images/cover.svg", Data(nestedResourceImage.utf8)),
+            ("OPS/Media/tone.wav", nestedResourceAudio()),
         ]
         let archive = try Archive(url: archiveURL, accessMode: .create)
         for entry in entries {
@@ -1137,8 +1171,12 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             return ebookTestPayload(text, sidecar: sidecar)
         }
         let configuration = WKWebViewConfiguration()
+        configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.setURLSchemeHandler(handler, forURLScheme: "ebook")
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 320, height: 480),
+            configuration: configuration
+        )
         let completionExpectation = expectation(description: "processed section loaded")
         let navigationDelegate = EbookNavigationDelegate(
             completionExpectation: completionExpectation
@@ -1152,6 +1190,46 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let result = try await webView.callAsyncJavaScript(
             """
             const image = document.getElementById("cover");
+            const audio = document.getElementById("sample-audio");
+            const mediaBootstrap = document.querySelector('script[src*="ebook-package-media.js"]');
+            const mediaBootstrapStatus = mediaBootstrap
+                ? await fetch(mediaBootstrap.src).then(response => response.status)
+                : null;
+            let mediaBootstrapError = null;
+            try {
+                await globalThis.manabiEbookPackageMediaHydration;
+            } catch (error) {
+                mediaBootstrapError = String(error);
+            }
+            const fetchedAudioResponse = await fetch("../Media/tone.wav");
+            const fetchedAudioBlob = await fetchedAudioResponse.blob();
+            let decodedAudioDuration = null;
+            let decodedAudioError = null;
+            try {
+                const audioContext = new AudioContext();
+                const decodedAudio = await audioContext.decodeAudioData(await fetchedAudioBlob.arrayBuffer());
+                decodedAudioDuration = decodedAudio.duration;
+                await audioContext.close();
+            } catch (error) {
+                decodedAudioError = String(error);
+            }
+            const fontURL = mediaBootstrap.src.replace(
+                /foliate-js\\/ebook-package-media\\.js$/,
+                "PDFJSWeb/standard_fonts/LiberationSans-Regular.ttf"
+            );
+            let fontLoadError = null;
+            let fontLoadStatus = null;
+            try {
+                const fontFace = new FontFace(
+                    "ManabiFixtureFont",
+                    `url("${fontURL}") format("truetype")`
+                );
+                await fontFace.load();
+                document.fonts.add(fontFace);
+                fontLoadStatus = fontFace.status;
+            } catch (error) {
+                fontLoadError = String(error);
+            }
             const missingStatus = await fetch("../Styles/missing.css").then(response => response.status);
             return {
                 baseURL: document.baseURI,
@@ -1160,6 +1238,18 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 imageComplete: image.complete,
                 imageURL: image.src,
                 imageWidth: image.naturalWidth,
+                audioURL: audio.src,
+                decodedAudioDuration,
+                decodedAudioError,
+                fetchedAudioByteCount: fetchedAudioBlob.size,
+                fetchedAudioType: fetchedAudioBlob.type,
+                fontLoadError,
+                fontLoadStatus,
+                fontURL,
+                mediaBootstrapError,
+                mediaBootstrapState: document.documentElement.dataset.mnbPackageMediaState ?? null,
+                mediaBootstrapStatus,
+                mediaBootstrapURL: mediaBootstrap?.src ?? null,
                 missingStatus,
                 bodyText: document.body.textContent.trim(),
             };
@@ -1177,6 +1267,21 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(values["imageComplete"] as? Bool, true)
         XCTAssertTrue((values["imageURL"] as? String)?.hasSuffix("/OPS/Images/cover.svg#shape") == true)
         XCTAssertEqual((values["imageWidth"] as? NSNumber)?.intValue, 4)
+        XCTAssertTrue((values["audioURL"] as? String)?.hasPrefix("blob:") == true)
+        XCTAssertTrue(values["decodedAudioError"] is NSNull, "\(values)")
+        XCTAssertEqual((values["decodedAudioDuration"] as? NSNumber)?.doubleValue ?? 0, 0.1, accuracy: 0.01)
+        XCTAssertEqual((values["fetchedAudioByteCount"] as? NSNumber)?.intValue, 844)
+        XCTAssertTrue((values["fetchedAudioType"] as? String)?.hasPrefix("audio/") == true)
+        XCTAssertTrue(values["fontLoadError"] is NSNull, "\(values)")
+        XCTAssertEqual(values["fontLoadStatus"] as? String, "loaded")
+        XCTAssertTrue((values["fontURL"] as? String)?.contains("/load/viewer-assets/") == true)
+        XCTAssertTrue((values["fontURL"] as? String)?.hasSuffix(
+            "/PDFJSWeb/standard_fonts/LiberationSans-Regular.ttf"
+        ) == true)
+        XCTAssertTrue(values["mediaBootstrapError"] is NSNull)
+        XCTAssertEqual(values["mediaBootstrapState"] as? String, "ready")
+        XCTAssertEqual((values["mediaBootstrapStatus"] as? NSNumber)?.intValue, 200)
+        XCTAssertTrue((values["mediaBootstrapURL"] as? String)?.contains("/load/viewer-assets/") == true)
         XCTAssertEqual((values["missingStatus"] as? NSNumber)?.intValue, 404)
         XCTAssertEqual(values["bodyText"] as? String, "本文")
         let processorInvocationCount = await processorInvocationCounter.value()

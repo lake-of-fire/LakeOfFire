@@ -153,34 +153,54 @@ public struct ReaderPackageEntrySource: Sendable {
     private static func knownResponseMetadata(
         forExtension fileExtension: String
     ) -> ReaderPackageEntryResponseMetadata? {
-        let mimeType: String
+        let metadata: (mimeType: String, textEncodingName: String?)
         switch fileExtension {
         case "xhtml":
-            mimeType = "application/xhtml+xml"
+            metadata = ("application/xhtml+xml", "utf-8")
         case "html", "htm":
-            mimeType = "text/html"
+            metadata = ("text/html", "utf-8")
         case "opf":
-            mimeType = "application/oebps-package+xml"
+            metadata = ("application/oebps-package+xml", "utf-8")
         case "ncx":
-            mimeType = "application/x-dtbncx+xml"
+            metadata = ("application/x-dtbncx+xml", "utf-8")
         case "xml":
-            mimeType = "application/xml"
+            metadata = ("application/xml", "utf-8")
         case "svg":
-            mimeType = "image/svg+xml"
+            metadata = ("image/svg+xml", "utf-8")
         case "css":
-            mimeType = "text/css"
+            metadata = ("text/css", "utf-8")
         case "js", "mjs":
-            mimeType = "text/javascript"
+            metadata = ("text/javascript", "utf-8")
         case "json":
-            mimeType = "application/json"
+            metadata = ("application/json", "utf-8")
         case "txt":
-            mimeType = "text/plain"
+            metadata = ("text/plain", "utf-8")
+        case "ttf":
+            metadata = ("font/ttf", nil)
+        case "otf":
+            metadata = ("font/otf", nil)
+        case "woff":
+            metadata = ("font/woff", nil)
+        case "woff2":
+            metadata = ("font/woff2", nil)
+        case "wav":
+            metadata = ("audio/wav", nil)
+        case "mp3":
+            metadata = ("audio/mpeg", nil)
+        case "m4a":
+            metadata = ("audio/mp4", nil)
+        case "aac":
+            metadata = ("audio/aac", nil)
+        case "mp4":
+            metadata = ("video/mp4", nil)
+        case "webm":
+            metadata = ("video/webm", nil)
         default:
             return nil
         }
         return ReaderPackageEntryResponseMetadata(
-            mimeType: mimeType,
-            textEncodingName: "utf-8"
+            mimeType: metadata.mimeType,
+            textEncodingName: metadata.textEncodingName
         )
     }
 

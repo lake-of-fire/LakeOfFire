@@ -5,7 +5,7 @@ import ZIPFoundation
 final class ReaderPackageEntrySourceTests: XCTestCase {
     func testKnownEbookMIMETypesAreDeterministicAndCaseInsensitive() throws {
         try withPackageSource { source in
-            let expectations = [
+            let expectations: [String: (mimeType: String, textEncodingName: String?)] = [
                 "chapter.XHTML": ("application/xhtml+xml", "utf-8"),
                 "chapter.HTML": ("text/html", "utf-8"),
                 "package.OPF": ("application/oebps-package+xml", "utf-8"),
@@ -13,12 +13,22 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
                 "image.SVG": ("image/svg+xml", "utf-8"),
                 "styles.CSS": ("text/css", "utf-8"),
                 "module.MJS": ("text/javascript", "utf-8"),
+                "font.TTF": ("font/ttf", nil),
+                "font.OTF": ("font/otf", nil),
+                "font.WOFF": ("font/woff", nil),
+                "font.WOFF2": ("font/woff2", nil),
+                "audio.WAV": ("audio/wav", nil),
+                "audio.MP3": ("audio/mpeg", nil),
+                "audio.M4A": ("audio/mp4", nil),
+                "audio.AAC": ("audio/aac", nil),
+                "video.MP4": ("video/mp4", nil),
+                "video.WEBM": ("video/webm", nil),
             ]
 
             for (subpath, expected) in expectations {
                 let metadata = try source.mimeType(subpath: subpath)
-                XCTAssertEqual(metadata.mimeType, expected.0, subpath)
-                XCTAssertEqual(metadata.textEncodingName, expected.1, subpath)
+                XCTAssertEqual(metadata.mimeType, expected.mimeType, subpath)
+                XCTAssertEqual(metadata.textEncodingName, expected.textEncodingName, subpath)
             }
         }
     }

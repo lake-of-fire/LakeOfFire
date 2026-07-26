@@ -181,6 +181,14 @@ func ebookProcessedSectionBaseURL(
     ].joined()
 }
 
+func ebookProcessedSectionMediaBootstrapMarkup(assetRevision: String) -> Data {
+    Data(
+        """
+        <script type="module" src="ebook://ebook/load/viewer-assets/\(assetRevision)/foliate-js/ebook-package-media.js"></script>
+        """.utf8
+    )
+}
+
 func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
     guard url.path == "/processed-section" else { return .userInitiated }
     guard let directItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.filter({
@@ -846,6 +854,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         processedPayload,
                         scheme: .ebook
                     )
+                    var additionalHeadMarkup = publishedSidecar.headDescriptor ?? Data()
+                    additionalHeadMarkup.append(
+                        ebookProcessedSectionMediaBootstrapMarkup(
+                            assetRevision: currentEbookViewerAssetRevision()
+                        )
+                    )
                     let responseData = ebookHTMLDataWithInjectedDirectSectionResponseMetadata(
                         publishedSidecar.documentHTML,
                         baseURL: ebookProcessedSectionBaseURL(
@@ -856,7 +870,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         sourceHref: request.subpath,
                         writingHint: ebookProcessedSectionWritingHint(from: url),
                         presentation: await ebookSectionPresentationProvider?(),
-                        additionalHeadMarkup: publishedSidecar.headDescriptor
+                        additionalHeadMarkup: additionalHeadMarkup
                     )
                     let response = ebookHTTPResponse(
                         url: url,
