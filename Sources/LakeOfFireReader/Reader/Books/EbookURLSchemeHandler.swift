@@ -112,6 +112,7 @@ func ebookDirectSectionRequest(from url: URL) -> EbookDirectSectionRequest? {
 
 struct EbookPathBackedEntryRequest: Equatable, Sendable {
     let sourceURL: URL
+    let generationID: String?
     let subpath: String
 }
 
@@ -121,12 +122,23 @@ func ebookPathBackedEntryRequest(from url: URL, mainDocumentURL: URL?) -> EbookP
     let path = String(url.path.dropFirst(prefix.count))
     guard let separator = path.firstIndex(of: "/") else { return nil }
     let token = String(path[..<separator])
-    let rawSubpath = String(path[path.index(after: separator)...])
+    let generationAndSubpath = String(path[path.index(after: separator)...])
+    guard let generationSeparator = generationAndSubpath.firstIndex(of: "/") else {
+        return nil
+    }
+    let generationID = String(generationAndSubpath[..<generationSeparator])
+    let rawSubpath = String(generationAndSubpath[generationAndSubpath.index(after: generationSeparator)...])
+    let generationDigest = generationID.dropFirst(3)
     guard let sourceURLString = ebookString(fromBase64URLToken: token),
           let sourceURL = URL(string: sourceURLString),
           sourceURL.scheme == "ebook",
           sourceURL.host == "ebook",
           sourceURL.pathComponents.starts(with: ["/", "load"]),
+          generationID.hasPrefix("g1-"),
+          generationDigest.utf8.count == 64,
+          generationDigest.allSatisfy({
+              $0.isASCII && ($0.isNumber || ("a"..."f").contains($0))
+          }),
           let subpath = normalizedEbookEntrySubpath(rawSubpath.removingPercentEncoding ?? rawSubpath) else {
         return nil
     }
@@ -135,7 +147,11 @@ func ebookPathBackedEntryRequest(from url: URL, mainDocumentURL: URL?) -> EbookP
           owner.sourceURL == sourceURL else {
         return nil
     }
-    return EbookPathBackedEntryRequest(sourceURL: sourceURL, subpath: subpath)
+    return EbookPathBackedEntryRequest(
+        sourceURL: sourceURL,
+        generationID: generationID,
+        subpath: subpath
+    )
 }
 
 private func ebookDirectorySubpath(for sectionHref: String) -> String {
@@ -149,9 +165,20 @@ private func ebookPathEscaped(_ path: String) -> String {
         .joined(separator: "/")
 }
 
-func ebookProcessedSectionBaseURL(sourceURL: URL, sectionHref: String) -> String {
+func ebookProcessedSectionBaseURL(
+    sourceURL: URL,
+    sectionHref: String,
+    generationID: String
+) -> String {
     let token = ebookBase64URLToken(for: sourceURL.absoluteString)
-    return "ebook://ebook/entry-source/\(token)/\(ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)))"
+    return [
+        "ebook://ebook/entry-source/",
+        token,
+        "/",
+        generationID,
+        "/",
+        ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)),
+    ].joined()
 }
 
 func ebookURLSchemeTaskPriority(for url: URL) -> TaskPriority {
@@ -203,6 +230,23 @@ func missingEbookViewerAssetResponse(for url: URL) -> HTTPURLResponse? {
 let ebookViewerAssetCacheHeaderFields = [
     "Cache-Control": "public, max-age=31536000, immutable",
 ]
+
+func ebookPackageEntryResponse(
+    url: URL,
+    metadata: ReaderPackageEntryResponseMetadata,
+    byteCount: Int,
+    isGenerationBacked: Bool
+) -> HTTPURLResponse {
+    ebookHTTPResponse(
+        url: url,
+        mimeType: metadata.mimeType,
+        byteCount: byteCount,
+        textEncodingName: metadata.textEncodingName,
+        additionalHeaderFields: isGenerationBacked
+            ? ebookViewerAssetCacheHeaderFields
+            : ["Cache-Control": "no-store"]
+    )
+}
 
 private let ebookViewerAssetRevisionPlaceholder = "__MNB_VIEWER_ASSET_REVISION__"
 private let ebookViewerAssetResourceSchemaVersion = 1
@@ -806,7 +850,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         publishedSidecar.documentHTML,
                         baseURL: ebookProcessedSectionBaseURL(
                             sourceURL: request.sourceURL,
-                            sectionHref: request.subpath
+                            sectionHref: request.subpath,
+                            generationID: cachedSource.generationID
                         ),
                         sourceHref: request.subpath,
                         writingHint: ebookProcessedSectionWritingHint(from: url),
@@ -1032,7 +1077,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                           let normalizedSubpath = normalizedEbookEntrySubpath(subpath) else {
                         return nil
                     }
-                    return EbookPathBackedEntryRequest(sourceURL: mainDocumentURL, subpath: normalizedSubpath)
+                    return EbookPathBackedEntryRequest(
+                        sourceURL: mainDocumentURL,
+                        generationID: nil,
+                        subpath: normalizedSubpath
+                    )
                 }()
                 guard let entryRequest = pathBackedRequest ?? queryBackedRequest else {
                     await { @MainActor in
@@ -1049,13 +1098,18 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         forPackageURL: entryRequest.sourceURL,
                         readerFileManager: readerFileManager
                     )
+                    guard entryRequest.generationID.map({
+                        cachedSource.generationID == $0
+                    }) != false else {
+                        throw ReaderPackageEntrySourceError.entryNotFound
+                    }
                     let data = try cachedSource.source.readEntry(subpath: entryRequest.subpath)
                     let metadata = try cachedSource.source.mimeType(subpath: entryRequest.subpath)
-                    let response = HTTPURLResponse(
+                    let response = ebookPackageEntryResponse(
                         url: url,
-                        mimeType: metadata.mimeType,
-                        expectedContentLength: data.count,
-                        textEncodingName: metadata.textEncodingName
+                        metadata: metadata,
+                        byteCount: data.count,
+                        isGenerationBacked: entryRequest.generationID != nil
                     )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import UniformTypeIdentifiers
 import ZIPFoundation
 import LakeOfFireCore
@@ -458,10 +459,16 @@ public actor ReaderPackageEntrySourceCache {
     public struct CachedSource: Sendable {
         public let source: ReaderPackageEntrySource
         public let entries: [ReaderPackageEntryMetadata]
+        public let generationID: String
 
-        public init(source: ReaderPackageEntrySource, entries: [ReaderPackageEntryMetadata]) {
+        public init(
+            source: ReaderPackageEntrySource,
+            entries: [ReaderPackageEntryMetadata],
+            generationID: String
+        ) {
             self.source = source
             self.entries = entries
+            self.generationID = generationID
         }
     }
 
@@ -470,6 +477,7 @@ public actor ReaderPackageEntrySourceCache {
         let entries: [ReaderPackageEntryMetadata]
         let localURL: URL
         let freshnessToken: String
+        let generationID: String
     }
 
     private var cachedSources: [String: CacheRecord] = [:]
@@ -501,18 +509,28 @@ public actor ReaderPackageEntrySourceCache {
         if let cached = cachedSources[cacheKey],
            cached.localURL == localURL,
            cached.freshnessToken == freshnessToken {
-            return CachedSource(source: cached.source, entries: cached.entries)
+            return CachedSource(
+                source: cached.source,
+                entries: cached.entries,
+                generationID: cached.generationID
+            )
         }
 
         let source = try ReaderPackageEntrySource(localURL: localURL)
         let entries = try source.enumerateEntries()
+        let generationID = Self.generationID(for: freshnessToken)
         cachedSources[cacheKey] = CacheRecord(
             source: source,
             entries: entries,
             localURL: localURL,
-            freshnessToken: freshnessToken
+            freshnessToken: freshnessToken,
+            generationID: generationID
         )
-        return CachedSource(source: source, entries: entries)
+        return CachedSource(
+            source: source,
+            entries: entries,
+            generationID: generationID
+        )
     }
 
     private func freshCachedSource(forKey cacheKey: String) -> CachedSource? {
@@ -521,7 +539,16 @@ public actor ReaderPackageEntrySourceCache {
               cached.freshnessToken == freshnessToken else {
             return nil
         }
-        return CachedSource(source: cached.source, entries: cached.entries)
+        return CachedSource(
+            source: cached.source,
+            entries: cached.entries,
+            generationID: cached.generationID
+        )
+    }
+
+    private static func generationID(for freshnessToken: String) -> String {
+        let digest = SHA256.hash(data: Data(freshnessToken.utf8))
+        return "g1-" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func resolvedLocalURL(
@@ -566,7 +593,12 @@ public actor ReaderPackageEntrySourceCache {
         let fileSize = values.fileSize ?? 0
         let isDirectory = values.isDirectory ?? false
         guard isDirectory else {
-            return "\(standardizedURL.path)|\(modificationDate)|\(fileSize)|false"
+            return [
+                standardizedURL.path,
+                String(modificationDate.bitPattern),
+                String(fileSize),
+                "false",
+            ].joined(separator: "|")
         }
 
         let resourceKeys: Set<URLResourceKey> = [
@@ -580,18 +612,33 @@ public actor ReaderPackageEntrySourceCache {
             options: [.skipsHiddenFiles]
         )
 
-        var newestModificationDate = modificationDate
-        var aggregateFileSize = fileSize
-        var descendantCount = 0
+        var descendantMetadata = [String]()
 
         while let childURL = enumerator?.nextObject() as? URL {
             let childValues = try childURL.resourceValues(forKeys: resourceKeys)
-            descendantCount += 1
-            aggregateFileSize += childValues.fileSize ?? 0
             let childModificationDate = childValues.contentModificationDate?.timeIntervalSince1970 ?? 0
-            newestModificationDate = max(newestModificationDate, childModificationDate)
+            descendantMetadata.append([
+                childURL.standardizedFileURL.path,
+                String(childModificationDate.bitPattern),
+                String(childValues.fileSize ?? 0),
+                childValues.isDirectory == true ? "directory" : "file",
+            ].joined(separator: "\u{0}"))
         }
 
-        return "\(standardizedURL.path)|\(newestModificationDate)|\(aggregateFileSize)|true|\(descendantCount)"
+        var metadataHasher = SHA256()
+        for metadata in descendantMetadata.sorted() {
+            metadataHasher.update(data: Data(metadata.utf8))
+            metadataHasher.update(data: Data([0]))
+        }
+        let metadataDigest = metadataHasher.finalize().map {
+            String(format: "%02x", $0)
+        }.joined()
+        return [
+            standardizedURL.path,
+            String(modificationDate.bitPattern),
+            String(fileSize),
+            "true",
+            metadataDigest,
+        ].joined(separator: "|")
     }
 }

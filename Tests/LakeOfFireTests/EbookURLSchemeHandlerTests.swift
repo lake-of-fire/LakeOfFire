@@ -1,5 +1,6 @@
 import XCTest
 import SwiftSoup
+@testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
 private actor EBookProcessorInvocationCounter {
@@ -450,7 +451,10 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     func testPathBackedEntryRequiresOwningProcessedDocumentSource() throws {
         let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
         let token = ebookBase64URLToken(for: sourceURL.absoluteString)
-        let entryURL = try XCTUnwrap(URL(string: "ebook://ebook/entry-source/\(token)/OPS/images/cover.jpg"))
+        let generationID = "g1-" + String(repeating: "a", count: 64)
+        let entryURL = try XCTUnwrap(URL(
+            string: "ebook://ebook/entry-source/\(token)/\(generationID)/OPS/images/cover.jpg"
+        ))
         var ownerComponents = URLComponents()
         ownerComponents.scheme = "ebook"
         ownerComponents.host = "ebook"
@@ -465,7 +469,15 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             mainDocumentURL: try XCTUnwrap(ownerComponents.url)
         ))
         XCTAssertEqual(request.sourceURL, sourceURL)
+        XCTAssertEqual(request.generationID, generationID)
         XCTAssertEqual(request.subpath, "OPS/images/cover.jpg")
+
+        XCTAssertNil(ebookPathBackedEntryRequest(
+            from: try XCTUnwrap(URL(
+                string: "ebook://ebook/entry-source/\(token)/OPS/images/cover.jpg"
+            )),
+            mainDocumentURL: try XCTUnwrap(ownerComponents.url)
+        ))
 
         ownerComponents.queryItems = [
             URLQueryItem(name: "sourceURL", value: "ebook://ebook/load/local/Books/other.epub"),
@@ -476,6 +488,72 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             mainDocumentURL: try XCTUnwrap(ownerComponents.url)
         ))
         XCTAssertNil(ebookPathBackedEntryRequest(from: entryURL, mainDocumentURL: nil))
+    }
+
+    func testProcessedSectionBaseURLCarriesPackageGeneration() throws {
+        let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let generationID = "g1-" + String(repeating: "a", count: 64)
+
+        let baseURL = ebookProcessedSectionBaseURL(
+            sourceURL: sourceURL,
+            sectionHref: "OPS/Text/chapter.xhtml",
+            generationID: generationID
+        )
+
+        XCTAssertTrue(baseURL.contains("/\(generationID)/OPS/Text/"))
+        XCTAssertFalse(baseURL.contains("chapter.xhtml"))
+    }
+
+    func testPackageEntrySourceGenerationChangesOnlyWhenPackageChanges() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-package-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let chapterURL = directoryURL.appendingPathComponent("chapter.xhtml")
+        let newerAssetURL = directoryURL.appendingPathComponent("newer.css")
+        try Data("first".utf8).write(to: chapterURL)
+        try Data("newer".utf8).write(to: newerAssetURL)
+        let baselineDate = Date()
+        try FileManager.default.setAttributes(
+            [.modificationDate: baselineDate],
+            ofItemAtPath: chapterURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: baselineDate.addingTimeInterval(20)],
+            ofItemAtPath: newerAssetURL.path
+        )
+
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/load/local/Books/test.epub"
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: directoryURL.path),
+        ]
+        let packageURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache()
+        let readerFileManager = ReaderFileManager()
+
+        let first = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        let unchanged = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(first.generationID, unchanged.generationID)
+
+        try Data("other".utf8).write(to: chapterURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: baselineDate.addingTimeInterval(10)],
+            ofItemAtPath: chapterURL.path
+        )
+        let changed = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertNotEqual(first.generationID, changed.generationID)
     }
 
     func testDirectSectionMetadataInjectionPreservesDocumentBytesAndInstallsPathBackedBase() throws {
@@ -887,6 +965,37 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(response.value(forHTTPHeaderField: "Cache-Control"), "public, max-age=31536000, immutable")
         XCTAssertNil(response.value(forHTTPHeaderField: "Pragma"))
         XCTAssertNil(response.value(forHTTPHeaderField: "Expires"))
+    }
+
+    func testPackageEntryResponseCachesOnlyGenerationBackedResources() throws {
+        let url = try XCTUnwrap(URL(
+            string: "ebook://ebook/entry-source/token/g1-\(String(repeating: "a", count: 64))/image.jpg"
+        ))
+
+        let generationBacked = ebookPackageEntryResponse(
+            url: url,
+            metadata: ReaderPackageEntryResponseMetadata(
+                mimeType: "image/jpeg",
+                textEncodingName: nil
+            ),
+            byteCount: 10,
+            isGenerationBacked: true
+        )
+        let queryBacked = ebookPackageEntryResponse(
+            url: url,
+            metadata: ReaderPackageEntryResponseMetadata(
+                mimeType: "image/jpeg",
+                textEncodingName: nil
+            ),
+            byteCount: 10,
+            isGenerationBacked: false
+        )
+
+        XCTAssertEqual(
+            generationBacked.value(forHTTPHeaderField: "Cache-Control"),
+            "public, max-age=31536000, immutable"
+        )
+        XCTAssertEqual(queryBacked.value(forHTTPHeaderField: "Cache-Control"), "no-store")
     }
 
     func testMissingViewerAssetReturns404InsteadOfViewerHTMLFallback() throws {
