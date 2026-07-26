@@ -1,5 +1,6 @@
 import XCTest
 import SwiftSoup
+import ZIPFoundation
 @preconcurrency import WebKit
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
@@ -78,6 +79,22 @@ private func ebookTestPayload(
         segmentSidecar: Data(sidecar.utf8)
     )
 }
+
+private let nestedResourceDocumentHTML = """
+<!doctype html><html><head>
+<link rel="stylesheet" href="../Styles/book.css">
+</head><body><m-s><m-m id="a">本文</m-m></m-s>
+<img id="cover" src="../Images/cover.svg">
+</body></html>
+"""
+
+private let nestedResourceStylesheet = "body { background-color: rgb(1, 2, 3); }"
+
+private let nestedResourceImage = """
+<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3">
+<rect width="4" height="3" fill="red"/>
+</svg>
+"""
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalizingTypedSidecarAvoidsEmbeddedJSONRoundTrip() throws {
@@ -1031,7 +1048,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
     }
 
     @MainActor
-    func testProcessedSectionLoadsGenerationBackedNestedResourcesInWebKit() async throws {
+    func testProcessedSectionLoadsDirectoryBackedNestedResourcesInWebKit() async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-webkit-package-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -1042,33 +1059,61 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         try FileManager.default.createDirectory(at: stylesDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: imagesDirectoryURL, withIntermediateDirectories: true)
 
-        let documentHTML = """
-        <!doctype html><html><head>
-        <link rel="stylesheet" href="../Styles/book.css">
-        </head><body><m-s><m-m id="a">本文</m-m></m-s>
-        <img id="cover" src="../Images/cover.svg">
-        </body></html>
-        """
-        try Data(documentHTML.utf8).write(
+        try Data(nestedResourceDocumentHTML.utf8).write(
             to: textDirectoryURL.appendingPathComponent("chapter.xhtml")
         )
-        try Data("body { background-color: rgb(1, 2, 3); }".utf8).write(
+        try Data(nestedResourceStylesheet.utf8).write(
             to: stylesDirectoryURL.appendingPathComponent("book.css")
         )
-        try Data("""
-        <svg xmlns="http://www.w3.org/2000/svg" width="4" height="3">
-        <rect width="4" height="3" fill="red"/>
-        </svg>
-        """.utf8).write(to: imagesDirectoryURL.appendingPathComponent("cover.svg"))
+        try Data(nestedResourceImage.utf8).write(
+            to: imagesDirectoryURL.appendingPathComponent("cover.svg")
+        )
 
+        try await assertProcessedSectionLoadsNestedResources(
+            from: diagnosticPackageURL(localURL: directoryURL)
+        )
+    }
+
+    @MainActor
+    func testProcessedSectionLoadsArchiveBackedNestedResourcesInWebKit() async throws {
+        let archiveURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-webkit-package-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: archiveURL) }
+        let entries = [
+            ("OPS/Text/chapter.xhtml", Data(nestedResourceDocumentHTML.utf8)),
+            ("OPS/Styles/book.css", Data(nestedResourceStylesheet.utf8)),
+            ("OPS/Images/cover.svg", Data(nestedResourceImage.utf8)),
+        ]
+        let archive = try Archive(url: archiveURL, accessMode: .create)
+        for entry in entries {
+            try archive.addEntry(
+                with: entry.0,
+                type: .file,
+                uncompressedSize: Int64(entry.1.count),
+                compressionMethod: .deflate
+            ) { position, size in
+                entry.1.subdata(in: Int(position)..<(Int(position) + size))
+            }
+        }
+
+        try await assertProcessedSectionLoadsNestedResources(
+            from: diagnosticPackageURL(localURL: archiveURL)
+        )
+    }
+
+    private func diagnosticPackageURL(localURL: URL) throws -> URL {
         var sourceComponents = URLComponents()
         sourceComponents.scheme = "ebook"
         sourceComponents.host = "ebook"
         sourceComponents.path = "/load/local/Books/test.epub"
         sourceComponents.queryItems = [
-            URLQueryItem(name: "diagnosticLocalFilePath", value: directoryURL.path),
+            URLQueryItem(name: "diagnosticLocalFilePath", value: localURL.path),
         ]
-        let sourceURL = try XCTUnwrap(sourceComponents.url)
+        return try XCTUnwrap(sourceComponents.url)
+    }
+
+    @MainActor
+    private func assertProcessedSectionLoadsNestedResources(from sourceURL: URL) async throws {
         var sectionComponents = URLComponents()
         sectionComponents.scheme = "ebook"
         sectionComponents.host = "ebook"
