@@ -430,6 +430,27 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertFalse(viewModel.isPlaying)
     }
 
+    @MainActor
+    func testEbookSectionChangeInvalidatesPreparedReadAloudWithoutAffectingSameSection() {
+        let viewModel = ReaderMediaPlayerViewModel()
+        XCTAssertTrue(
+            viewModel.presentAITTS(
+                utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+                preferredLanguage: "en-US",
+                ebookSectionIndex: 4,
+                autoplay: false
+            )
+        )
+
+        viewModel.invalidateReadAloudForEbookSectionChange(4)
+        XCTAssertTrue(viewModel.hasPreparedAITTS)
+        XCTAssertTrue(viewModel.isMediaPlayerPresented)
+
+        viewModel.invalidateReadAloudForEbookSectionChange(5)
+        XCTAssertFalse(viewModel.hasPreparedAITTS)
+        XCTAssertFalse(viewModel.isMediaPlayerPresented)
+    }
+
     @RealmBackgroundActor
     func testAddHistoryRecordReplacesRecordedAudioAndSubtitles() async throws {
         let configuration = makeRealmConfiguration()

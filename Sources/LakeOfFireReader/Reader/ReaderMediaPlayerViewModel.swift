@@ -116,6 +116,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public private(set) var ttsUtteranceCount: Int = 0
     @Published public private(set) var hasPreparedAITTS = false
     @Published public private(set) var ttsQueueGeneration: Int = 0
+    @Published public private(set) var ttsPreparedEbookSectionIndex: Int?
 
     // Test hook so unit tests can avoid real AVSpeechSynthesizer playback latency.
     var shouldEnqueueSpeechSynthesizerUtterances = true
@@ -385,6 +386,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     public func presentAITTS(
         utterances: [ReaderTTSUtterance],
         preferredLanguage: String = "ja-JP",
+        ebookSectionIndex: Int? = nil,
         autoplay: Bool
     ) -> Bool {
         debugPrint(
@@ -399,6 +401,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
         playbackSource = .aiTextToSpeech
         isMediaPlayerPresented = true
+        ttsPreparedEbookSectionIndex = ebookSectionIndex
         if autoplay {
             requestAutoplay()
         }
@@ -460,6 +463,17 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @MainActor
     public func clearAITTSPlaybackQueue() {
         stopAITTSPlayback(clearQueue: true)
+    }
+
+    @MainActor
+    public func invalidateReadAloudForEbookSectionChange(_ sectionIndex: Int) {
+        guard playbackSource == .aiTextToSpeech,
+              let preparedSectionIndex = ttsPreparedEbookSectionIndex,
+              preparedSectionIndex != sectionIndex else {
+            return
+        }
+        stopAITTSPlayback(clearQueue: true)
+        isMediaPlayerPresented = false
     }
 
     @MainActor
@@ -658,6 +672,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             ttsProgressValue = 0
             ttsProgressUpperBound = 1
             hasPreparedAITTS = false
+            ttsPreparedEbookSectionIndex = nil
         } else {
             ttsCurrentCharacterRange = nil
             updateAITTSProgress()
