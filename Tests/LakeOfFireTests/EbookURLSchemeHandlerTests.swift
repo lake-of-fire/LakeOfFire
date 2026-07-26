@@ -1271,6 +1271,17 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 "ebook-paginator-writing-direction.js"
             );
             const writingDirectionModule = await import(writingDirectionModuleURL);
+            const renderReadinessModuleURL = mediaBootstrap.src.replace(
+                /ebook-package-media\\.js$/,
+                "ebook-render-readiness.js"
+            );
+            const renderReadinessModule = await import(renderReadinessModuleURL);
+            document.body.classList.add("reader-is-single-media-element-without-text");
+            const imageRenderReadiness = renderReadinessModule.classifyEbookRenderReadiness(
+                document,
+                { totalSegmentCount: 0, visibleSegments: [] }
+            );
+            document.body.classList.remove("reader-is-single-media-element-without-text");
             const sourceWritingMode = getComputedStyle(document.body).writingMode;
             const horizontalOverride = writingDirectionModule.applyPaginatorWritingDirectionOverride(
                 document,
@@ -1313,6 +1324,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 fontURL,
                 horizontalOverride,
                 horizontalWritingMode,
+                imageRenderReadiness,
                 mediaBootstrapError,
                 mediaBootstrapState: document.documentElement.dataset.mnbPackageMediaState ?? null,
                 mediaBootstrapStatus,
@@ -1320,6 +1332,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 missingStatus,
                 restoredOverride,
                 restoredWritingMode,
+                renderReadinessModuleURL,
                 sourceWritingMode,
                 writingDirectionModuleURL,
                 bodyText: document.body.textContent.trim(),
@@ -1352,10 +1365,21 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(values["sourceWritingMode"] as? String, "vertical-rl")
         XCTAssertEqual(values["horizontalOverride"] as? String, "horizontal")
         XCTAssertEqual(values["horizontalWritingMode"] as? String, "horizontal-tb")
+        XCTAssertEqual(
+            (values["imageRenderReadiness"] as? [String: Any])?["outcome"] as? String,
+            "ready"
+        )
+        XCTAssertEqual(
+            (values["imageRenderReadiness"] as? [String: Any])?["reason"] as? String,
+            "visible-single-media"
+        )
         XCTAssertEqual(values["restoredOverride"] as? String, "original")
         XCTAssertEqual(values["restoredWritingMode"] as? String, "vertical-rl")
         XCTAssertTrue((values["writingDirectionModuleURL"] as? String)?.hasSuffix(
             "/foliate-js/ebook-paginator-writing-direction.js"
+        ) == true)
+        XCTAssertTrue((values["renderReadinessModuleURL"] as? String)?.hasSuffix(
+            "/foliate-js/ebook-render-readiness.js"
         ) == true)
         XCTAssertTrue(values["mediaBootstrapError"] is NSNull)
         XCTAssertEqual(values["mediaBootstrapState"] as? String, "ready")

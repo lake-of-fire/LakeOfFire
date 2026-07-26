@@ -85,6 +85,45 @@ test('loading and failed media remain distinct outcomes', () => {
     )
 })
 
+test('a complete broken image is terminal failure even when CSS gives it geometry', () => {
+    const brokenImage = {
+        tagName: 'IMG',
+        complete: true,
+        naturalWidth: 0,
+        getBoundingClientRect: () => ({ width: 320, height: 480 }),
+        style: { display: 'block', visibility: 'visible', opacity: '1' },
+    }
+
+    assert.equal(
+        classifyEbookRenderReadiness(
+            makeDocument({ media: brokenImage, singleMedia: true }),
+            segmentResult(),
+        ).outcome,
+        'error',
+    )
+})
+
+test('a picture remains pending until its nested image resource settles', () => {
+    const image = {
+        tagName: 'IMG',
+        complete: false,
+    }
+    const picture = {
+        tagName: 'PICTURE',
+        querySelector: selector => selector === 'img' ? image : null,
+        getBoundingClientRect: () => ({ width: 320, height: 480 }),
+        style: { display: 'block', visibility: 'visible', opacity: '1' },
+    }
+
+    assert.equal(
+        classifyEbookRenderReadiness(
+            makeDocument({ media: picture, singleMedia: true }),
+            segmentResult(),
+        ).outcome,
+        'pending',
+    )
+})
+
 test('a complete chapter without visible Yomitan text or media is terminal empty', () => {
     const result = classifyEbookRenderReadiness(makeDocument(), segmentResult())
 
@@ -117,6 +156,28 @@ test('readiness signal closes the event-registration race for already-settled me
     }
 
     assert.equal(await waitForEbookRenderReadinessSignal(makeDocument({ media }), 100), 'already-settled')
+    assert.equal(listeners.size, 0)
+})
+
+test('readiness signal observes the nested image resource inside a picture', async () => {
+    const listeners = new Map()
+    const image = {
+        tagName: 'IMG',
+        complete: false,
+        addEventListener: (name, callback) => listeners.set(name, callback),
+        removeEventListener: name => listeners.delete(name),
+    }
+    const picture = {
+        tagName: 'PICTURE',
+        querySelector: selector => selector === 'img' ? image : null,
+    }
+    const promise = waitForEbookRenderReadinessSignal(
+        makeDocument({ media: picture }),
+        100,
+    )
+    listeners.get('load')?.({ type: 'load' })
+
+    assert.equal(await promise, 'load')
     assert.equal(listeners.size, 0)
 })
 

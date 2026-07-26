@@ -14,12 +14,26 @@ const visibleJapaneseTextState = visibleSegmentsResult => {
     };
 };
 
+const mediaReadinessTarget = media => {
+    const tagName = media?.tagName?.toLowerCase?.() ?? '';
+    if (tagName === 'picture') return media.querySelector?.('img') ?? null;
+    return media;
+};
+
 const mediaReadinessState = media => {
     if (!media) return 'absent';
-    if (media.error) return 'failed';
-    const tagName = media.tagName?.toLowerCase?.() ?? '';
-    if (tagName === 'img' && media.complete === false) return 'pending';
-    if (tagName === 'video' && Number(media.readyState ?? 0) === 0) return 'pending';
+    const readinessTarget = mediaReadinessTarget(media);
+    if (!readinessTarget || readinessTarget.error) return 'failed';
+    const tagName = readinessTarget.tagName?.toLowerCase?.() ?? '';
+    if (tagName === 'img') {
+        if (readinessTarget.complete === false) return 'pending';
+        if (
+            readinessTarget.complete === true
+            && typeof readinessTarget.naturalWidth === 'number'
+            && readinessTarget.naturalWidth <= 0
+        ) return 'failed';
+    }
+    if (tagName === 'video' && Number(readinessTarget.readyState ?? 0) === 0) return 'pending';
     return 'settled';
 };
 
@@ -91,13 +105,16 @@ export const classifyEbookRenderReadiness = (doc, visibleSegmentsResult = null) 
 export const waitForEbookRenderReadinessSignal = (doc, timeoutMs = 1500) => {
     const body = doc?.body ?? null;
     const media = body?.querySelector?.(singleMediaSelector) ?? null;
-    const target = media?.addEventListener ? media : (doc?.addEventListener ? doc : null);
+    const readinessTarget = mediaReadinessTarget(media);
+    const target = readinessTarget?.addEventListener
+        ? readinessTarget
+        : (doc?.addEventListener ? doc : null);
     if (!target) return Promise.resolve('unavailable');
 
     return new Promise(resolve => {
         let settled = false;
         let timeoutHandle = null;
-        const eventNames = target === media
+        const eventNames = target === readinessTarget
             ? ['load', 'error', 'loadeddata', 'canplay']
             : ['DOMContentLoaded'];
         const finish = reason => {
