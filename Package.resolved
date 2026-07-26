@@ -1,5 +1,5 @@
 {
-  "originHash" : "f69bd446e0704390203024777ca60d176b1d2e9c8b5456ea70bcea0e0b5218ab",
+  "originHash" : "2793236aecc36dd78b95dbd2a5a544cd1b9abf90361cc3f0efde481212c2899a",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -222,8 +222,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/sqlite-data.git",
       "state" : {
-        "revision" : "65502acdb033ec8025a0bcc443abf2f4ca0598f9",
-        "version" : "1.6.0"
+        "revision" : "93e0540441a6bfdba51df27ca6d01eb6508c82a5",
+        "version" : "1.7.0"
       }
     },
     {
@@ -276,8 +276,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-concurrency-extras",
       "state" : {
-        "revision" : "5a3825302b1a0d744183200915a47b508c828e6f",
-        "version" : "1.3.2"
+        "revision" : "5fa253428866f2360c3754e88537f700ed2656b5",
+        "version" : "1.4.1"
       }
     },
     {
@@ -375,8 +375,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-structured-queries",
       "state" : {
-        "revision" : "8da8818fccd9959bd683934ddc62cf45bb65b3c8",
-        "version" : "0.31.1"
+        "revision" : "dafddd843f10630aa6b5be47c1b6a59cc4ab6586",
+        "version" : "0.34.0"
       }
     },
     {
