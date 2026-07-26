@@ -78,6 +78,25 @@ test('normalizes forward progress fractions before deriving location and time', 
     })
 })
 
+test('clamps malformed forward section indexes to the spine', () => {
+    const progress = new SectionProgress([section(100), section(100)], 10, 10)
+
+    assert.deepEqual(progress.getProgress(-10, 0.5), {
+        fraction: 0.25,
+        section: { current: 0, total: 2 },
+        location: { current: 5, next: 5, total: 20 },
+        time: { section: 5, total: 15 },
+    })
+    assert.deepEqual(progress.getProgress(10, 0.5), {
+        fraction: 0.75,
+        section: { current: 1, total: 2 },
+        location: { current: 15, next: 15, total: 20 },
+        time: { section: 5, total: 5 },
+    })
+    assert.equal(progress.getProgress(Number.NaN, 0.5).section.current, 0)
+    assert.equal(progress.getProgress(0.5, 0.5).section.current, 0)
+})
+
 test('round trips monotonic progress across positive sections', () => {
     const progress = new SectionProgress([
         section(75),

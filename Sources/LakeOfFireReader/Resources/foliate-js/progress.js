@@ -58,6 +58,14 @@ const normalizedUnitFraction = value => Number.isFinite(value)
     ? Math.max(0, Math.min(1, value))
     : (value === Number.POSITIVE_INFINITY ? 1 : 0)
 
+const normalizedSectionIndex = (index, sectionCount) => {
+    if (sectionCount <= 0) return 0
+    if (Number.isInteger(index)) {
+        return Math.max(0, Math.min(sectionCount - 1, index))
+    }
+    return index === Number.POSITIVE_INFINITY ? sectionCount - 1 : 0
+}
+
 export class SectionProgress {
     constructor(sections, sizePerLoc, sizePerTimeUnit) {
         this.sizes = sections.map(section => {
@@ -81,8 +89,9 @@ export class SectionProgress {
     // get progress given index of and fractions within a section
     getProgress(index, fractionInSection, pageFraction = 0) {
         const { sizes, sizePerLoc, sizePerTimeUnit, sizeTotal } = this
-        const sizeInSection = sizes[index] ?? 0
-        const sizeBefore = this.sectionStarts[index] ?? 0
+        const sectionIndex = normalizedSectionIndex(index, sizes.length)
+        const sizeInSection = sizes[sectionIndex] ?? 0
+        const sizeBefore = this.sectionStarts[sectionIndex] ?? 0
         const normalizedFractionInSection = normalizedUnitFraction(fractionInSection)
         const normalizedPageFraction = normalizedUnitFraction(pageFraction)
         const size = sizeBefore + normalizedFractionInSection * sizeInSection
@@ -95,7 +104,7 @@ export class SectionProgress {
         return {
             fraction: sizeTotal > 0 ? nextSize / sizeTotal : 0,
             section: {
-                current: index,
+                current: sectionIndex,
                 total: sizes.length,
             },
             location: {
