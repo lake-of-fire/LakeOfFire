@@ -174,28 +174,96 @@ export const resolveEbookRelativePath = (reference, relativeTo) => {
     }
 }
 
+const stylesheetMediaApplies = value => {
+    const media = String(value ?? '').trim()
+    return !media || /(^|[\s,(])(all|screen)([\s,)]|$)/i.test(media)
+}
+
+const stylesheetImportPattern =
+    /@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s]+))\s*\)|"([^"]*)"|'([^']*)')\s*([^;]*);/gi
+
+const sourceWithCommentsMasked = source => String(source ?? '').replace(
+    /\/\*[\s\S]*?\*\//g,
+    comment => comment.replace(/[^\r\n]/g, ' '),
+)
+
+const importedStylesheets = async ({
+    href,
+    source,
+    loadText,
+    activeHrefs = new Set(),
+    depth = 0,
+}) => {
+    const maximumImportDepth = 16
+    if (depth >= maximumImportDepth || typeof source !== 'string') return [source]
+
+    const stylesheets = []
+    const maskedSource = sourceWithCommentsMasked(source)
+    let cursor = 0
+    stylesheetImportPattern.lastIndex = 0
+    for (const match of maskedSource.matchAll(stylesheetImportPattern)) {
+        const precedingSource = source.slice(cursor, match.index)
+        if (precedingSource.trim()) stylesheets.push(precedingSource)
+        cursor = match.index + match[0].length
+
+        const reference = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5]
+        const media = match[6]
+        if (!stylesheetMediaApplies(media) || typeof loadText !== 'function') continue
+        const importedHref = resolveEbookRelativePath(reference, href)
+        if (!importedHref || activeHrefs.has(importedHref)) continue
+
+        try {
+            const importedSource = await loadText(importedHref)
+            if (typeof importedSource !== 'string') continue
+            const nextActiveHrefs = new Set(activeHrefs)
+            nextActiveHrefs.add(importedHref)
+            stylesheets.push(...await importedStylesheets({
+                href: importedHref,
+                source: importedSource,
+                loadText,
+                activeHrefs: nextActiveHrefs,
+                depth: depth + 1,
+            }))
+        } catch (_error) {
+            // A missing optional import does not discard the owning stylesheet.
+        }
+    }
+    const remainingSource = source.slice(cursor)
+    if (remainingSource.trim()) stylesheets.push(remainingSource)
+    return stylesheets
+}
+
 const orderedStylesheets = async (href, html, loadText) => {
     const stylesheets = []
     const styleOrLink = /<style\b([^>]*)>([\s\S]*?)<\/style\s*>|<link\b([^>]*)>/gi
-    const mediaApplies = attributes => {
-        const media = (attributes.get('media') ?? '').trim()
-        return !media || /(^|[\s,(])(all|screen)([\s,)]|$)/i.test(media)
-    }
     for (const match of String(html ?? '').matchAll(styleOrLink)) {
         if (match[2] != null) {
             const attributes = parseAttributes(match[1])
-            if (mediaApplies(attributes)) stylesheets.push(match[2])
+            if (stylesheetMediaApplies(attributes.get('media'))) {
+                stylesheets.push(...await importedStylesheets({
+                    href,
+                    source: match[2],
+                    loadText,
+                }))
+            }
             continue
         }
         const attributes = parseAttributes(match[3])
         const relationships = (attributes.get('rel') ?? '').toLowerCase().split(/\s+/)
         if (!relationships.includes('stylesheet') || relationships.includes('alternate')) continue
-        if (!mediaApplies(attributes)) continue
+        if (!stylesheetMediaApplies(attributes.get('media'))) continue
         const stylesheetHref = resolveEbookRelativePath(attributes.get('href'), href)
         if (!stylesheetHref || typeof loadText !== 'function') continue
         try {
             const stylesheet = await loadText(stylesheetHref)
-            if (typeof stylesheet === 'string') stylesheets.push(stylesheet)
+            if (typeof stylesheet === 'string') {
+                stylesheets.push(...await importedStylesheets({
+                    href: stylesheetHref,
+                    source: stylesheet,
+                    loadText,
+                    activeHrefs: new Set([stylesheetHref]),
+                }))
+            }
         } catch (_error) {
             // A missing optional stylesheet leaves source direction unresolved.
         }

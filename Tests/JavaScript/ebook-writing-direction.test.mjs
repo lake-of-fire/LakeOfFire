@@ -44,6 +44,40 @@ test('resolves linked and inline styles in document order with CSS precedence', 
     assert.deepEqual(direction, { direction: 'vertical', writingMode: 'vertical-rl' })
 })
 
+test('resolves nested stylesheet imports in cascade order without following cycles or print imports', async () => {
+    const requested = []
+    const sources = new Map([
+        ['OPS/Styles/book.css', `
+            @import "base/direction.css" screen;
+            @import url("print.css") print;
+            body.chapter { writing-mode: horizontal-tb; }
+        `],
+        ['OPS/Styles/base/direction.css', `
+            @import "../book.css";
+            body.chapter { writing-mode: vertical-lr !important; }
+        `],
+    ])
+    const direction = await rawSectionWritingDirection({
+        href: 'OPS/Text/chapter.xhtml',
+        html: `
+            <html><head>
+            <link rel="stylesheet" href="../Styles/book.css">
+            </head><body class="chapter"></body></html>
+        `,
+        loadText: async href => {
+            requested.push(href)
+            if (!sources.has(href)) throw new Error(`Unexpected stylesheet ${href}`)
+            return sources.get(href)
+        },
+    })
+
+    assert.deepEqual(requested, [
+        'OPS/Styles/book.css',
+        'OPS/Styles/base/direction.css',
+    ])
+    assert.deepEqual(direction, { direction: 'vertical', writingMode: 'vertical-lr' })
+})
+
 test('ignores print and alternate styles while resolving screen media blocks', async () => {
     const direction = await rawSectionWritingDirection({
         href: 'OPS/chapter.xhtml',
