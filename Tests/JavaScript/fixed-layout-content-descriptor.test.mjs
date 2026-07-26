@@ -290,18 +290,32 @@ test('rejects navigation requested after fixed-layout teardown', async () => {
     })
     layout.destroy()
 
-    const navigation = layout.goTo({ index: 0 })
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [{
+            load: async () => 'after-fixed-layout-reopen.xhtml',
+        }],
+    })
+    await Promise.all([
+        layout.goTo({ index: 0 }),
+        layout.goToSpread(0, 'center'),
+        layout.next(),
+        layout.prev(),
+    ])
     for (let attempt = 0; attempt < 5; attempt += 1) {
         await new Promise(resolve => setImmediate(resolve))
     }
     const obsoleteIframeIndex = pendingIframes.findIndex(
-        iframe => iframe.source === 'after-fixed-layout-destroy.xhtml',
+        iframe => [
+            'after-fixed-layout-destroy.xhtml',
+            'after-fixed-layout-reopen.xhtml',
+        ].includes(iframe.source),
     )
     const obsoleteIframe = obsoleteIframeIndex >= 0
         ? pendingIframes.splice(obsoleteIframeIndex, 1)[0]
         : null
     obsoleteIframe?.finishLoading(fixedLayoutDocument('after fixed-layout destroy'))
-    await navigation
 
     assert.equal(obsoleteIframe, null)
     assert.deepEqual(layout.getContents(), [])
