@@ -232,6 +232,11 @@ export class FixedLayout extends HTMLElement {
             this.#left = loadedLeft
             this.#right = loadedRight
             this.#side = side
+            if (side === 'left' && loadedLeft.blank && !loadedRight.blank) {
+                this.#side = 'right'
+            } else if (side === 'right' && loadedRight.blank && !loadedLeft.blank) {
+                this.#side = 'left'
+            }
             this.#render()
         }
         return true

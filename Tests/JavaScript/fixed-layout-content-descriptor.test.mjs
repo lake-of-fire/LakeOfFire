@@ -389,6 +389,33 @@ test('does not navigate into the empty spread seed before a centered cover', asy
     )
 })
 
+test('initial navigation displays the real page of a one-sided spread', async () => {
+    const layout = new FixedLayout()
+    layout.boundsForTesting = { width: 600, height: 800 }
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            viewport: { width: 600, height: 800 },
+        },
+        sections: [{
+            pageSpread: 'right',
+            load: async () => 'right-only-cover.xhtml',
+        }],
+    })
+
+    const initialNavigation = layout.next()
+    const coverIframe = await nextPendingIframe('right-only-cover.xhtml')
+    coverIframe.finishLoading(fixedLayoutDocument('right-only cover'))
+    await initialNavigation
+
+    const contents = layout.getContents()
+    const blankContent = contents.find(content => content.index === -1)
+    const coverContent = contents.find(content => content.index === 0)
+    assert.equal(layout.index, 0)
+    assert.equal(blankContent.element.style.display, 'none')
+    assert.equal(coverContent.element.style.display, 'block')
+})
+
 test('rejects a delayed target resolved after a replacement book opens', async () => {
     let resolveTarget
     const target = new Promise(resolve => {
