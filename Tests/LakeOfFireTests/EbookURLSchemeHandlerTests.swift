@@ -1,7 +1,39 @@
 import XCTest
 import SwiftSoup
+@preconcurrency import WebKit
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
+
+private final class EbookNavigationDelegate: NSObject, WKNavigationDelegate {
+    let completionExpectation: XCTestExpectation
+    private(set) var error: Error?
+
+    init(completionExpectation: XCTestExpectation) {
+        self.completionExpectation = completionExpectation
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        completionExpectation.fulfill()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFail navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        self.error = error
+        completionExpectation.fulfill()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        self.error = error
+        completionExpectation.fulfill()
+    }
+}
 
 private actor EBookProcessorInvocationCounter {
     private var count = 0
@@ -996,6 +1028,106 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             "public, max-age=31536000, immutable"
         )
         XCTAssertEqual(queryBacked.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+    }
+
+    @MainActor
+    func testProcessedSectionLoadsGenerationBackedNestedResourcesInWebKit() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("manabi-webkit-package-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let textDirectoryURL = directoryURL.appendingPathComponent("OPS/Text", isDirectory: true)
+        let stylesDirectoryURL = directoryURL.appendingPathComponent("OPS/Styles", isDirectory: true)
+        let imagesDirectoryURL = directoryURL.appendingPathComponent("OPS/Images", isDirectory: true)
+        try FileManager.default.createDirectory(at: textDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stylesDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: imagesDirectoryURL, withIntermediateDirectories: true)
+
+        let documentHTML = """
+        <!doctype html><html><head>
+        <link rel="stylesheet" href="../Styles/book.css">
+        </head><body><m-s><m-m id="a">本文</m-m></m-s>
+        <img id="cover" src="../Images/cover.svg">
+        </body></html>
+        """
+        try Data(documentHTML.utf8).write(
+            to: textDirectoryURL.appendingPathComponent("chapter.xhtml")
+        )
+        try Data("body { background-color: rgb(1, 2, 3); }".utf8).write(
+            to: stylesDirectoryURL.appendingPathComponent("book.css")
+        )
+        try Data("""
+        <svg xmlns="http://www.w3.org/2000/svg" width="4" height="3">
+        <rect width="4" height="3" fill="red"/>
+        </svg>
+        """.utf8).write(to: imagesDirectoryURL.appendingPathComponent("cover.svg"))
+
+        var sourceComponents = URLComponents()
+        sourceComponents.scheme = "ebook"
+        sourceComponents.host = "ebook"
+        sourceComponents.path = "/load/local/Books/test.epub"
+        sourceComponents.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: directoryURL.path),
+        ]
+        let sourceURL = try XCTUnwrap(sourceComponents.url)
+        var sectionComponents = URLComponents()
+        sectionComponents.scheme = "ebook"
+        sectionComponents.host = "ebook"
+        sectionComponents.path = "/processed-section"
+        sectionComponents.queryItems = [
+            URLQueryItem(name: "sourceURL", value: sourceURL.absoluteString),
+            URLQueryItem(name: "subpath", value: "OPS/Text/chapter.xhtml"),
+            URLQueryItem(name: "direct", value: "1"),
+        ]
+        let sectionURL = try XCTUnwrap(sectionComponents.url)
+        let sidecar = """
+        {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},\
+        "s":[["!a",0,null,null,null,null,null,null,null,0,0]]}
+        """
+
+        let handler = EbookURLSchemeHandler()
+        handler.readerFileManager = ReaderFileManager()
+        handler.ebookTextProcessor = { _, _, text, _, _, _, _, _, _ in
+            ebookTestPayload(text, sidecar: sidecar)
+        }
+        let configuration = WKWebViewConfiguration()
+        configuration.setURLSchemeHandler(handler, forURLScheme: "ebook")
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let completionExpectation = expectation(description: "processed section loaded")
+        let navigationDelegate = EbookNavigationDelegate(
+            completionExpectation: completionExpectation
+        )
+        webView.navigationDelegate = navigationDelegate
+
+        webView.load(URLRequest(url: sectionURL))
+        await fulfillment(of: [completionExpectation], timeout: 10)
+        XCTAssertNil(navigationDelegate.error)
+
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const image = document.getElementById("cover");
+            const missingStatus = await fetch("../Styles/missing.css").then(response => response.status);
+            return {
+                baseURL: document.baseURI,
+                backgroundColor: getComputedStyle(document.body).backgroundColor,
+                imageComplete: image.complete,
+                imageWidth: image.naturalWidth,
+                missingStatus,
+                bodyText: document.body.textContent.trim(),
+            };
+            """,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        )
+        let values = try XCTUnwrap(result as? [String: Any])
+        let baseURL = try XCTUnwrap(values["baseURL"] as? String)
+        XCTAssertTrue(baseURL.contains("/entry-source/"))
+        XCTAssertTrue(baseURL.contains("/g1-"))
+        XCTAssertEqual(values["backgroundColor"] as? String, "rgb(1, 2, 3)")
+        XCTAssertEqual(values["imageComplete"] as? Bool, true)
+        XCTAssertEqual((values["imageWidth"] as? NSNumber)?.intValue, 4)
+        XCTAssertEqual((values["missingStatus"] as? NSNumber)?.intValue, 404)
+        XCTAssertEqual(values["bodyText"] as? String, "本文")
     }
 
     func testMissingViewerAssetReturns404InsteadOfViewerHTMLFallback() throws {
