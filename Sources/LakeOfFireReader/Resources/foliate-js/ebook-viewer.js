@@ -6,6 +6,7 @@ createTOCView
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
+import { excludedEbookBlankPointerTarget } from './ebook-blank-pointer-target.js'
 import {
     classifyEbookRenderReadiness,
     EbookRenderReadinessCoordinator,
@@ -7561,8 +7562,7 @@ class Reader {
                 return (dx * dx + dy * dy) > (blankPointerMoveThreshold * blankPointerMoveThreshold);
             };
             const postContentDocumentBlankPointerTap = (event, source, touchstartAtMs = Date.now()) => {
-                const target = event.target;
-                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-t, .m-m, .mnb-sentence, ruby, rt');
+                const excludedTarget = excludedEbookBlankPointerTarget(event.target);
                 const now = Date.now();
                 if (shouldSuppressSyntheticMouseBlankTap(event, now)) {
                     return;
@@ -7600,8 +7600,7 @@ class Reader {
                 }
             };
             const handleBlankPointerTouchStart = (event) => {
-                const target = event.target;
-                const excludedTarget = target?.closest?.('a, button, input, textarea, select, [role="button"], [contenteditable="true"], m-t, .m-m, .mnb-sentence, ruby, rt');
+                const excludedTarget = excludedEbookBlankPointerTarget(event.target);
                 if (excludedTarget) {
                     clearPendingBlankPointerTap();
                     return;
