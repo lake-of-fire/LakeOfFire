@@ -184,6 +184,54 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
         }
     }
 
+    func testArchiveEnumerationRejectsEncryptedEntriesOmittedByZIPFoundation() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let archiveURL = temporaryRoot.appendingPathComponent("encrypted.epub")
+            try makeArchive(
+                at: archiveURL,
+                entries: [("OPS/chapter.xhtml", Data("encrypted".utf8))]
+            )
+            try setZIPUInt16Bit(
+                atRecordSignature: [0x50, 0x4B, 0x01, 0x02],
+                fieldOffset: 8,
+                bit: 0,
+                in: archiveURL
+            )
+            let source = try ReaderPackageEntrySource(localURL: archiveURL)
+
+            XCTAssertThrowsError(try source.enumerateEntries()) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .unsupportedSource)
+            }
+        }
+    }
+
+    func testArchiveReadMapsUnsupportedCompressionToTypedSourceError() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let archiveURL = temporaryRoot.appendingPathComponent("unsupported-compression.epub")
+            try makeArchive(
+                at: archiveURL,
+                entries: [("OPS/chapter.xhtml", Data("unsupported".utf8))]
+            )
+            try replaceZIPUInt16(
+                atRecordSignature: [0x50, 0x4B, 0x03, 0x04],
+                fieldOffset: 8,
+                with: 99,
+                in: archiveURL
+            )
+            try replaceZIPUInt16(
+                atRecordSignature: [0x50, 0x4B, 0x01, 0x02],
+                fieldOffset: 10,
+                with: 99,
+                in: archiveURL
+            )
+            let source = try ReaderPackageEntrySource(localURL: archiveURL)
+
+            XCTAssertThrowsError(try source.readEntry(subpath: "OPS/chapter.xhtml")) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .unsupportedSource)
+            }
+        }
+    }
+
     private func withPackageSource(
         _ operation: (ReaderPackageEntrySource) throws -> Void
     ) throws {
@@ -222,5 +270,36 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
                 entry.data.subdata(in: Int(position)..<(Int(position) + size))
             }
         }
+    }
+
+    private func setZIPUInt16Bit(
+        atRecordSignature signature: [UInt8],
+        fieldOffset: Int,
+        bit: UInt16,
+        in archiveURL: URL
+    ) throws {
+        var archiveData = try Data(contentsOf: archiveURL)
+        let recordRange = try XCTUnwrap(archiveData.range(of: Data(signature)))
+        let valueOffset = recordRange.lowerBound + fieldOffset
+        let value = UInt16(archiveData[valueOffset])
+            | (UInt16(archiveData[valueOffset + 1]) << 8)
+            | (1 << bit)
+        archiveData[valueOffset] = UInt8(truncatingIfNeeded: value)
+        archiveData[valueOffset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        try archiveData.write(to: archiveURL, options: .atomic)
+    }
+
+    private func replaceZIPUInt16(
+        atRecordSignature signature: [UInt8],
+        fieldOffset: Int,
+        with value: UInt16,
+        in archiveURL: URL
+    ) throws {
+        var archiveData = try Data(contentsOf: archiveURL)
+        let recordRange = try XCTUnwrap(archiveData.range(of: Data(signature)))
+        let valueOffset = recordRange.lowerBound + fieldOffset
+        archiveData[valueOffset] = UInt8(truncatingIfNeeded: value)
+        archiveData[valueOffset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        try archiveData.write(to: archiveURL, options: .atomic)
     }
 }

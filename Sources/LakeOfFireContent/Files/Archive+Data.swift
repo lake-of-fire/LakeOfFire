@@ -81,7 +81,7 @@ public struct ReaderPackageEntrySource: Sendable {
             throw ReaderPackageEntrySourceError.unsupportedSource
         }
         kind = .archive(fileURL: fileURL)
-        archiveCatalog = Self.makeArchiveCatalog(from: archive)
+        archiveCatalog = Self.makeArchiveCatalog(from: archive, fileURL: fileURL)
     }
 
     public func enumerateEntries() throws -> [ReaderPackageEntryMetadata] {
@@ -130,6 +130,8 @@ public struct ReaderPackageEntrySource: Sendable {
                 try archive.extract(entry, progress: progress) { data.append($0) }
             } catch Archive.ArchiveError.cancelledOperation {
                 throw ReaderPackageEntrySourceError.cancelled
+            } catch Archive.ArchiveError.invalidCompressionMethod {
+                throw ReaderPackageEntrySourceError.unsupportedSource
             }
             return data
         }
@@ -265,11 +267,17 @@ public struct ReaderPackageEntrySource: Sendable {
         return archiveCatalog.entries
     }
 
-    private static func makeArchiveCatalog(from archive: Archive) -> ArchiveCatalog {
+    private static func makeArchiveCatalog(
+        from archive: Archive,
+        fileURL: URL
+    ) -> ArchiveCatalog {
         var metadataByPath = [String: ReaderPackageEntryMetadata]()
         var duplicatePaths = Set<String>()
         var hasInvalidEntry = false
-        for entry in archive where entry.type == .file {
+        var parsedEntryCount: UInt64 = 0
+        for entry in archive {
+            parsedEntryCount += 1
+            guard entry.type == .file else { continue }
             guard entry.uncompressedSize <= UInt64(Int.max),
                   let path = try? sanitizeSubpath(entry.path),
                   path == entry.path else {
@@ -286,7 +294,9 @@ public struct ReaderPackageEntrySource: Sendable {
             )
         }
         let validationError: ReaderPackageEntrySourceError?
-        if hasInvalidEntry {
+        if declaredArchiveEntryCount(at: fileURL) != parsedEntryCount {
+            validationError = .unsupportedSource
+        } else if hasInvalidEntry {
             validationError = .invalidSubpath
         } else if !duplicatePaths.isEmpty {
             validationError = .ambiguousEntry
@@ -300,6 +310,93 @@ public struct ReaderPackageEntrySource: Sendable {
             paths: Set(metadataByPath.keys),
             validationError: validationError
         )
+    }
+
+    private static func declaredArchiveEntryCount(at fileURL: URL) -> UInt64? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
+        defer { try? handle.close() }
+        guard let fileSize = try? handle.seekToEnd(),
+              fileSize >= 22 else {
+            return nil
+        }
+        let tailByteCount = Int(min(fileSize, UInt64(65_557)))
+        guard (try? handle.seek(toOffset: fileSize - UInt64(tailByteCount))) != nil,
+              let tail = try? handle.read(upToCount: tailByteCount),
+              tail.count == tailByteCount,
+              let endRecordOffset = zipEndOfCentralDirectoryOffset(in: tail) else {
+            return nil
+        }
+        let diskNumber = littleEndianUInt16(in: tail, at: endRecordOffset + 4)
+        let centralDirectoryDisk = littleEndianUInt16(in: tail, at: endRecordOffset + 6)
+        let entriesOnDisk = littleEndianUInt16(in: tail, at: endRecordOffset + 8)
+        let totalEntries = littleEndianUInt16(in: tail, at: endRecordOffset + 10)
+        guard diskNumber == 0,
+              centralDirectoryDisk == 0,
+              entriesOnDisk == totalEntries else {
+            return nil
+        }
+        if totalEntries != UInt16.max {
+            return UInt64(totalEntries)
+        }
+
+        let absoluteEndRecordOffset = fileSize - UInt64(tailByteCount) + UInt64(endRecordOffset)
+        guard absoluteEndRecordOffset >= 20,
+              (try? handle.seek(toOffset: absoluteEndRecordOffset - 20)) != nil,
+              let locator = try? handle.read(upToCount: 20),
+              locator.count == 20,
+              littleEndianUInt32(in: locator, at: 0) == 0x07064B50,
+              littleEndianUInt32(in: locator, at: 4) == 0,
+              littleEndianUInt32(in: locator, at: 16) == 1 else {
+            return nil
+        }
+        let zip64EndRecordOffset = littleEndianUInt64(in: locator, at: 8)
+        guard (try? handle.seek(toOffset: zip64EndRecordOffset)) != nil,
+              let zip64EndRecord = try? handle.read(upToCount: 56),
+              zip64EndRecord.count == 56,
+              littleEndianUInt32(in: zip64EndRecord, at: 0) == 0x06064B50,
+              littleEndianUInt32(in: zip64EndRecord, at: 16) == 0,
+              littleEndianUInt32(in: zip64EndRecord, at: 20) == 0 else {
+            return nil
+        }
+        let entriesOnDisk64 = littleEndianUInt64(in: zip64EndRecord, at: 24)
+        let totalEntries64 = littleEndianUInt64(in: zip64EndRecord, at: 32)
+        guard entriesOnDisk64 == totalEntries64 else { return nil }
+        return totalEntries64
+    }
+
+    private static func zipEndOfCentralDirectoryOffset(in data: Data) -> Int? {
+        guard data.count >= 22 else { return nil }
+        var offset = data.count - 22
+        while offset >= 0 {
+            if littleEndianUInt32(in: data, at: offset) == 0x06054B50 {
+                let commentLength = Int(littleEndianUInt16(in: data, at: offset + 20))
+                if offset + 22 + commentLength == data.count {
+                    return offset
+                }
+            }
+            offset -= 1
+        }
+        return nil
+    }
+
+    private static func littleEndianUInt16(in data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private static func littleEndianUInt32(in data: Data, at offset: Int) -> UInt32 {
+        var value: UInt32 = 0
+        for byteOffset in 0..<4 {
+            value |= UInt32(data[offset + byteOffset]) << UInt32(byteOffset * 8)
+        }
+        return value
+    }
+
+    private static func littleEndianUInt64(in data: Data, at offset: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for byteOffset in 0..<8 {
+            value |= UInt64(data[offset + byteOffset]) << UInt64(byteOffset * 8)
+        }
+        return value
     }
 
     private static func readDirectoryEntry(
