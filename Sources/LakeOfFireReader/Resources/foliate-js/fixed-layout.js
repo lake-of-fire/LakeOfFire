@@ -1,28 +1,53 @@
-const parseViewport = str => str
-    ?.split(/[,;\s]/) // NOTE: technically, only the comma is valid
-    ?.filter(x => x)
-    ?.map(x => x.split('=').map(x => x.trim()))
+const normalizedViewport = viewport => {
+    const width = Number.parseFloat(viewport?.width)
+    const height = Number.parseFloat(viewport?.height)
+    if (
+        !Number.isFinite(width)
+        || !Number.isFinite(height)
+        || width <= 0
+        || height <= 0
+    ) return null
+    return { width, height }
+}
+
+const parseViewport = source => {
+    if (typeof source !== 'string') return null
+    const entries = source
+        .split(/[,;\s]/) // NOTE: technically, only the comma is valid
+        .filter(Boolean)
+        .map(value => value.split('=', 2).map(component => component.trim()))
+        .filter(([key, value]) => key && value)
+    if (entries.length === 0) return null
+    return normalizedViewport(Object.fromEntries(entries))
+}
 
 const getViewport = (doc, viewport) => {
     // use `viewBox` for SVG
     if (doc.documentElement.nodeName === 'svg') {
         const [, , width, height] = doc.documentElement
-            .getAttribute('viewBox')?.split(/\s/) ?? []
-        return { width, height }
+            .getAttribute('viewBox')?.trim?.().split(/[\s,]+/) ?? []
+        const svgViewport = normalizedViewport({ width, height })
+        if (svgViewport) return svgViewport
     }
 
     // get `viewport` `meta` element
     const meta = parseViewport(doc.querySelector('meta[name="viewport"]')
         ?.getAttribute('content'))
-    if (meta) return Object.fromEntries(meta)
+    if (meta) return meta
 
     // fallback to book's viewport
-    if (typeof viewport === 'string') return parseViewport(viewport)
-    if (viewport) return viewport
+    const bookViewport = typeof viewport === 'string'
+        ? parseViewport(viewport)
+        : normalizedViewport(viewport)
+    if (bookViewport) return bookViewport
 
     // if no viewport (possibly with image directly in spine), get image size
     const img = doc.querySelector('img')
-    if (img) return { width: img.naturalWidth, height: img.naturalHeight }
+    const imageViewport = normalizedViewport({
+        width: img?.naturalWidth,
+        height: img?.naturalHeight,
+    })
+    if (imageViewport) return imageViewport
 
     // just show *something*, i guess...
     console.warn(new Error('Missing viewport properties'))
@@ -61,6 +86,7 @@ export class FixedLayout extends HTMLElement {
     #center
     #side
     #contentGeneration = 0
+    #targetResolutionGeneration = 0
     #pendingFrameLoadCancellations = new Set()
     constructor() {
         super()
@@ -231,6 +257,7 @@ export class FixedLayout extends HTMLElement {
         }
     }
     open(book) {
+        this.#targetResolutionGeneration += 1
         this.#contentGeneration += 1
         this.#cancelPendingFrameLoads()
         this.#index = -1
@@ -300,6 +327,7 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async goToSpread(index, side, reason) {
+        this.#targetResolutionGeneration += 1
         if (index < 0 || index > this.#spreads.length - 1) return
         if (index === this.#index) {
             this.#side = side
@@ -338,18 +366,27 @@ export class FixedLayout extends HTMLElement {
     }
     async goTo(target) {
         const { book } = this
+        const targetResolutionGeneration = ++this.#targetResolutionGeneration
         const resolved = await target
+        if (
+            book !== this.book
+            || targetResolutionGeneration !== this.#targetResolutionGeneration
+        ) return
         const section = book.sections[resolved.index]
         if (!section) return
-        const { index, side } = this.getSpreadOf(section)
+        const spread = this.getSpreadOf(section)
+        if (!spread) return
+        const { index, side } = spread
         await this.goToSpread(index, side)
     }
     async next() {
+        this.#targetResolutionGeneration += 1
         const s = this.rtl ? this.#goLeft() : this.#goRight()
         if (s) this.#reportLocation('page')
         else return this.goToSpread(this.#index + 1, this.rtl ? 'right' : 'left', 'page')
     }
     async prev() {
+        this.#targetResolutionGeneration += 1
         const s = this.rtl ? this.#goRight() : this.#goLeft()
         if (s) this.#reportLocation('page')
         else return this.goToSpread(this.#index - 1, this.rtl ? 'left' : 'right', 'page')
@@ -360,6 +397,7 @@ export class FixedLayout extends HTMLElement {
             .filter(Boolean)
     }
     destroy() {
+        this.#targetResolutionGeneration += 1
         this.#contentGeneration += 1
         this.#cancelPendingFrameLoads()
         this.#root.replaceChildren()

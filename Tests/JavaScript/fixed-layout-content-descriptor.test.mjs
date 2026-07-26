@@ -147,12 +147,19 @@ test('rejects records without an owned iframe', () => {
 
 test('rejects an older section load that resumes after replacement navigation', async () => {
     let releaseOriginalSection
+    let markOriginalSectionLoadStarted
     const originalSectionSource = new Promise(resolve => {
         releaseOriginalSection = resolve
     })
+    const originalSectionLoadStarted = new Promise(resolve => {
+        markOriginalSectionLoadStarted = resolve
+    })
     const sections = [
         {
-            load: () => originalSectionSource,
+            load: () => {
+                markOriginalSectionLoadStarted()
+                return originalSectionSource
+            },
         },
         {
             load: async () => 'replacement.xhtml',
@@ -169,6 +176,7 @@ test('rejects an older section load that resumes after replacement navigation', 
     })
 
     const originalNavigation = layout.goTo({ index: 0 })
+    await originalSectionLoadStarted
     const replacementNavigation = layout.goTo({ index: 1 })
     const replacementIframe = await nextPendingIframe('replacement.xhtml')
     replacementIframe.finishLoading(fixedLayoutDocument('replacement'))
@@ -261,4 +269,137 @@ test('reports the displayed portrait-spread side as the current section index', 
     assert.equal(layout.index, 0)
     await layout.goTo({ index: 1 })
     assert.equal(layout.index, 1)
+})
+
+test('rejects a delayed target resolved after a replacement book opens', async () => {
+    let resolveTarget
+    const target = new Promise(resolve => {
+        resolveTarget = resolve
+    })
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [{ load: async () => 'original-book.xhtml' }],
+    })
+    const navigation = layout.goTo(target)
+
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [{ load: async () => 'replacement-book.xhtml' }],
+    })
+    resolveTarget({ index: 0 })
+
+    await assert.doesNotReject(navigation)
+    assert.deepEqual(layout.getContents(), [])
+})
+
+test('rejects an older delayed target after newer same-book navigation', async () => {
+    let resolveOriginalTarget
+    const originalTarget = new Promise(resolve => {
+        resolveOriginalTarget = resolve
+    })
+    const sections = [
+        { load: async () => 'delayed-target.xhtml' },
+        { load: async () => 'current-target.xhtml' },
+    ]
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections,
+    })
+    const originalNavigation = layout.goTo(originalTarget)
+
+    const currentNavigation = layout.goTo({ index: 1 })
+    const currentIframe = await nextPendingIframe('current-target.xhtml')
+    currentIframe.finishLoading(fixedLayoutDocument('current target'))
+    await currentNavigation
+
+    resolveOriginalTarget({ index: 0 })
+    await originalNavigation
+    assert.equal(
+        pendingIframes.some(iframe => iframe.source === 'delayed-target.xhtml'),
+        false,
+    )
+    assert.deepEqual(
+        layout.getContents().map(content => content.doc.title),
+        ['current target'],
+    )
+})
+
+test('normalizes a string rendition viewport before fixed-layout scaling', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: 'width=600,height=800',
+        },
+        sections: [{ load: async () => 'string-viewport.xhtml' }],
+    })
+
+    const navigation = layout.goTo({ index: 0 })
+    const iframe = await nextPendingIframe('string-viewport.xhtml')
+    iframe.finishLoading(fixedLayoutDocument('string viewport'))
+    await navigation
+
+    const [content] = layout.getContents()
+    assert.equal(content.iframe.style.width, '600px')
+    assert.equal(content.iframe.style.height, '800px')
+    assert.equal(content.iframe.style.transform.includes('NaN'), false)
+})
+
+test('parses SVG viewBox dimensions with repeated whitespace', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none' },
+        sections: [{ load: async () => 'svg-viewbox.xhtml' }],
+    })
+
+    const navigation = layout.goTo({ index: 0 })
+    const iframe = await nextPendingIframe('svg-viewbox.xhtml')
+    iframe.finishLoading({
+        documentElement: {
+            nodeName: 'svg',
+            getAttribute: name => name === 'viewBox' ? '0   0 600   800' : null,
+        },
+        querySelector: () => null,
+    })
+    await navigation
+
+    const [content] = layout.getContents()
+    assert.equal(content.iframe.style.width, '600px')
+    assert.equal(content.iframe.style.height, '800px')
+})
+
+test('falls through empty viewport metadata to the book viewport', async () => {
+    const layout = new FixedLayout()
+    layout.open({
+        dir: 'ltr',
+        rendition: {
+            spread: 'none',
+            viewport: { width: 600, height: 800 },
+        },
+        sections: [{ load: async () => 'empty-meta-viewport.xhtml' }],
+    })
+
+    const navigation = layout.goTo({ index: 0 })
+    const iframe = await nextPendingIframe('empty-meta-viewport.xhtml')
+    iframe.finishLoading({
+        documentElement: { nodeName: 'html' },
+        querySelector: selector => selector === 'meta[name="viewport"]'
+            ? { getAttribute: () => '' }
+            : null,
+    })
+    await navigation
+
+    const [content] = layout.getContents()
+    assert.equal(content.iframe.style.width, '600px')
+    assert.equal(content.iframe.style.height, '800px')
 })
