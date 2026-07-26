@@ -92,17 +92,26 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         let validCloneSidecar = sidecarData(
             runtimeIDTokens: ["!runtime-a", "!runtime-b"],
             segmentHashIndexes: [0, 0],
-            sentenceIdentifierIndexes: [0, 0]
+            sentenceIdentifierIndexes: [0, 0],
+            paragraphIdentifierIndexes: [0, 0]
         )
         let duplicateRuntimeSidecar = sidecarData(
             runtimeIDTokens: ["!runtime-a", "!runtime-a"],
             segmentHashIndexes: [0, 0],
-            sentenceIdentifierIndexes: [0, 0]
+            sentenceIdentifierIndexes: [0, 0],
+            paragraphIdentifierIndexes: [0, 0]
         )
         let hashOnlySidecar = sidecarData(
             runtimeIDTokens: ["!runtime"],
             segmentHashIndexes: [0],
-            sentenceIdentifierIndexes: [nil]
+            sentenceIdentifierIndexes: [nil],
+            paragraphIdentifierIndexes: [0]
+        )
+        let sentenceOnlySidecar = sidecarData(
+            runtimeIDTokens: ["!runtime"],
+            segmentHashIndexes: [0],
+            sentenceIdentifierIndexes: [0],
+            paragraphIdentifierIndexes: [nil]
         )
 
         XCTAssertTrue(ebookProcessedHTMLHasDurableSegmentIdentities(
@@ -113,6 +122,9 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         ))
         XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
             inlineHTML(sidecarData: hashOnlySidecar)
+        ))
+        XCTAssertFalse(ebookProcessedHTMLHasDurableSegmentIdentities(
+            inlineHTML(sidecarData: sentenceOnlySidecar)
         ))
     }
 
@@ -125,29 +137,39 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         sidecarData(
             runtimeIDTokens: [runtimeIDToken],
             segmentHashIndexes: [0],
-            sentenceIdentifierIndexes: [0]
+            sentenceIdentifierIndexes: [0],
+            paragraphIdentifierIndexes: [0]
         )
     }
 
     private func sidecarData(
         runtimeIDTokens: [String],
         segmentHashIndexes: [Int?],
-        sentenceIdentifierIndexes: [Int?]
+        sentenceIdentifierIndexes: [Int?],
+        paragraphIdentifierIndexes: [Int?]
     ) -> Data {
-        let segments = zip(runtimeIDTokens, zip(segmentHashIndexes, sentenceIdentifierIndexes)).map {
-            runtimeIDToken, indexes -> [Any] in
+        let segments = zip(
+            runtimeIDTokens,
+            zip(segmentHashIndexes, zip(sentenceIdentifierIndexes, paragraphIdentifierIndexes))
+        ).map { runtimeIDToken, indexes -> [Any] in
             let segmentHashIndex: Any = indexes.0.map { $0 as Any } ?? NSNull()
-            let sentenceIdentifierIndex: Any = indexes.1.map { $0 as Any } ?? NSNull()
+            let sentenceIdentifierIndex: Any = indexes.1.0.map { $0 as Any } ?? NSNull()
+            let paragraphIdentifierIndex: Any = indexes.1.1.map { $0 as Any } ?? NSNull()
             return [
                 runtimeIDToken,
                 segmentHashIndex,
                 NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(), NSNull(),
                 sentenceIdentifierIndex,
+                paragraphIdentifierIndex,
             ]
         }
         return try! JSONSerialization.data(withJSONObject: [
             "v": 9,
-            "t": ["h": ["segment-hash"], "sid": ["sentence-id"]],
+            "t": [
+                "h": ["segment-hash"],
+                "sid": ["sentence-id"],
+                "pid": ["paragraph-id"],
+            ],
             "s": segments,
         ], options: [.sortedKeys])
     }
