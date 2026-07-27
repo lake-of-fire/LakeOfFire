@@ -14,6 +14,7 @@ public class ReaderLocationBarViewModel: ObservableObject {
     public init() { }
 
     public func requestDismissLocationBar() {
+        locationBarShouldGainFocusOnAppearance = false
         dismissLocationBarRequestID &+= 1
         isLocationBarEditing = false
     }
