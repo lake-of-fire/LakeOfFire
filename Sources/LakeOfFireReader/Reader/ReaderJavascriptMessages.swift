@@ -265,6 +265,7 @@ public struct NativeLookupHitTargetsMessage {
                 coordinateOriginInWindow: coordinateOriginInWindow,
                 lookupPayload: target.lookupPayload,
                 frameInfo: frameInfo,
+                documentURL: nativeLookupDocumentURL.flatMap(URL.init(string:)),
                 nativeLookupFrameKey: nativeLookupFrameKey
             )
         }

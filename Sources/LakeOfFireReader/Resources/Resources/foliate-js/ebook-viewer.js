@@ -5785,6 +5785,9 @@ class Reader {
         const previousVisible = body.classList.contains('loading');
         const nextVisible = !!visible;
         if (nextVisible) {
+            if (!previousVisible) {
+                this.hasReachedLoadingDidDisplayBoundary = false;
+            }
             this.loadingPaintPending = true;
         } else if (this.loadingPaintPending) {
             // Successful navigation waits for didDisplay; a terminal restore has
@@ -5868,6 +5871,7 @@ class Reader {
     #pageTurnInFlight = false;
     #queuedPageTurnRun = null;
     initialDisplaySettled = false;
+    hasReachedLoadingDidDisplayBoundary = false;
     initialDisplaySettledPromise = null;
     initialDisplaySettledResolve = null;
     displaySettledSequence = 0;
@@ -7870,6 +7874,8 @@ class Reader {
             this.#deferNativeLookupHitTargetRefresh(reason, explicitDoc);
             return;
         }
+        // This refresh supersedes any request retained before the display gate opened.
+        this.pendingNativeLookupHitTargetRefresh = null;
         if (this.nativeLookupHitTargetRefreshHandle) {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
@@ -7908,10 +7914,30 @@ class Reader {
             const currentDocs = isDocumentLike(explicitDoc)
                 ? [explicitDoc]
                 : attachedDocuments;
+            const primaryContent = this.view?.renderer?.getContents?.()?.[0] ?? null;
+            const primaryDoc = primaryContent?.doc ?? primaryContent?.document ?? null;
+            let primaryVisibleResult = null;
             try {
                 for (const doc of currentDocs) {
                     const visibleRange = this.#visibleRangeForDocument(doc);
-                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+                    const result = this.#visiblePageSegmentResult(
+                        doc,
+                        visibleRange,
+                        `scheduled:${reason}`,
+                        { postIfCached: true }
+                    );
+                    if (doc === primaryDoc) {
+                        primaryVisibleResult = result;
+                    }
+                }
+                if (
+                    document.body?.classList?.contains?.('loading') === true
+                    && (primaryVisibleResult?.visibleSegments?.length ?? 0) > 0
+                ) {
+                    await this.clearLoadingForRelocatedVisibleContent(
+                        `native-lookup-refresh:${reason}`,
+                        primaryVisibleResult
+                    );
                 }
             } finally {
                 // reader.open() resolves before WebKit's first didDisplay/columnization pass.
@@ -7936,7 +7962,10 @@ class Reader {
             return false;
         }
         return globalThis.__manabiRestoreInProgress === true
-            || document.body?.classList?.contains?.('loading') === true
+            || (
+                document.body?.classList?.contains?.('loading') === true
+                && this.hasReachedLoadingDidDisplayBoundary !== true
+            )
             || this.hasCompletedLastPositionLoadAttempt !== true;
     }
     #deferNativeLookupHitTargetRefresh(reason = 'unspecified', explicitDoc = null) {
@@ -8283,6 +8312,7 @@ class Reader {
 
         this.hasCompletedLastPositionLoadAttempt = false
         this.hasLoadedLastPosition = false
+        this.hasReachedLoadingDidDisplayBoundary = false
         this.#resetInitialDisplaySettledPromise();
         this.lastCFIPersistenceObservation = null;
         this.unstableCFIs.clear();
@@ -10186,7 +10216,7 @@ class Reader {
     resolveDisplaySettledWaiters(reason = 'unspecified') {
         this.#resolveDisplaySettledWaiters(reason);
     }
-    clearLoadingForRelocatedVisibleContent(reason = 'unspecified', visibleSegmentsResult = null) {
+    async clearLoadingForRelocatedVisibleContent(reason = 'unspecified', visibleSegmentsResult = null) {
         if (!document.body?.classList?.contains?.('loading')) {
             return { cleared: false, reason: 'not-loading' };
         }
@@ -10220,8 +10250,18 @@ class Reader {
                 hasVisibleSingleMedia: visibleContentState.hasVisibleSingleMedia === true,
             };
         }
+        const collectionGeneration = this.visiblePageCollectionGeneration;
+        await this.#waitForAnimationFrames(1);
+        const currentContent = this.view?.renderer?.getContents?.()?.[0] ?? null;
+        const currentDoc = currentContent?.doc ?? currentContent?.document ?? null;
+        if (currentDoc !== doc || collectionGeneration !== this.visiblePageCollectionGeneration) {
+            return { cleared: false, reason: 'stale-visible-content' };
+        }
+        if (!document.body?.classList?.contains?.('loading')) {
+            return { cleared: false, reason: 'already-cleared' };
+        }
         const clearReason = `relocate.visible-content:${reason}`;
-        this.setLoadingIndicator(false, clearReason);
+        this.setLoadingIndicator(false, clearReason, { paintCommitted: true });
         markReaderRenderReady(clearReason);
         globalThis.__manabiPostReaderDocStateEvent?.(clearReason);
         this.#resolveInitialDisplaySettled(clearReason);
@@ -10410,6 +10450,7 @@ class Reader {
             postFrameSettleResult,
             visibleContentState: didDisplayVisibleContentState,
         });
+        this.hasReachedLoadingDidDisplayBoundary = true;
         try {
             const doc = this.view?.renderer?.getContents?.()?.[0]?.doc ?? null;
             if (isDocumentLike(doc) && !(Number.isFinite(didDisplayNativeLookupTargetCount) && didDisplayNativeLookupTargetCount > 0)) {
@@ -10944,6 +10985,11 @@ class Reader {
                     includeClientRects: false,
                     markerReason: 'visible-content-initial',
                 });
+                // Foliate can deliver this relocate after didDisplay. In that order,
+                // invalidation above cancels didDisplay's pending enrichment pass.
+                // Re-arm the same deferred edge so loading/restore completion still
+                // produces lookup targets and status paint after the first reveal.
+                this.#scheduleNativeLookupHitTargetRefreshSettle('relocate.initial-render-ready');
             } else if (shouldDeferVisibleTargetCollection) {
                 postNativeLookupPageTurnDisplayReady(`relocate:${reason ?? 'unknown'}`);
                 postedPageTurnDisplayReady = true;
@@ -11032,7 +11078,7 @@ class Reader {
             this.refreshLookupNavigationVisibleTargetsForRelocate('lookup-navigation.relocate');
             this.resolveDisplaySettledWaiters('relocate.lookup-navigation');
         }
-        this.clearLoadingForRelocatedVisibleContent?.(reason ?? 'relocate', relocatedVisibleSegmentsResult);
+        await this.clearLoadingForRelocatedVisibleContent?.(reason ?? 'relocate', relocatedVisibleSegmentsResult);
         const primaryLabelDiagnostics = this.navHUD?.lastPrimaryLabelDiagnostics ?? null;
         const effectiveFractionDiagnostics = getAuthoritativeReaderFractionDiagnostics({
             navHUD: this.navHUD,
