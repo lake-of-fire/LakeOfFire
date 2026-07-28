@@ -1058,6 +1058,24 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         }
     }
 
+    func testEbookViewerBundledResourceResolverUsesPackagedAssets() throws {
+        let viewerURL = try XCTUnwrap(
+            ebookViewerBundledResourceURL(relativePath: "foliate-js/ebook-viewer.html")
+        )
+        let moduleURL = try XCTUnwrap(
+            ebookViewerBundledResourceURL(relativePath: "foliate-js/ebook-viewer.js")
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: viewerURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moduleURL.path))
+        XCTAssertNil(
+            ebookViewerBundledResourceURL(relativePath: "foliate-js/../Package.swift")
+        )
+        XCTAssertNil(
+            ebookViewerBundledResourceURL(relativePath: "/foliate-js/ebook-viewer.html")
+        )
+    }
+
     func testEbookViewerAssetRevisionChangesWithApplicationBuild() {
         let firstRevision = ebookViewerAssetRevision(
             applicationIdentifier: "com.example.reader",

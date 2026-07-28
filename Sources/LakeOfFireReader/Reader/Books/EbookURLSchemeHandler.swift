@@ -350,6 +350,34 @@ func ebookViewerAssetRelativePath(
     return assetComponents.joined(separator: "/")
 }
 
+func ebookViewerBundledResourceURL(relativePath: String) -> URL? {
+    let normalizedPath = relativePath.replacingOccurrences(of: "\\", with: "/")
+    let pathComponents = normalizedPath.split(
+        separator: "/",
+        omittingEmptySubsequences: false
+    )
+    guard !normalizedPath.hasPrefix("/"),
+          pathComponents.first == "foliate-js",
+          pathComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+        return nil
+    }
+    let relativeURL = URL(fileURLWithPath: normalizedPath)
+    let assetName = relativeURL.deletingPathExtension().lastPathComponent
+    let assetExtension = relativeURL.lakePathExtension
+    let assetDirectory = relativeURL.deletingLastPathComponent().relativePath
+    return [
+        assetDirectory,
+        "Resources/\(assetDirectory)",
+        "Resources/Resources/\(assetDirectory)",
+    ].lazy.compactMap { subdirectory in
+        Bundle.module.url(
+            forResource: assetName,
+            withExtension: assetExtension,
+            subdirectory: subdirectory
+        )
+    }.first
+}
+
 private func currentEbookViewerAssetRevision() -> String {
     let bundle = Bundle.main
     return ebookViewerAssetRevision(
@@ -1265,35 +1293,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         ) else {
             return nil
         }
-        let relativeURL = URL(fileURLWithPath: relativePath)
-        let assetName = relativeURL.deletingPathExtension().lastPathComponent
-        let assetExtension = relativeURL.lakePathExtension
-        let assetDirectory = relativeURL.deletingLastPathComponent().relativePath
-        let resolvedURL = [
-            assetDirectory,
-            "Resources/\(assetDirectory)",
-            "Resources/Resources/\(assetDirectory)",
-        ].lazy.compactMap { subdirectory in
-            Bundle.module.url(
-                forResource: assetName,
-                withExtension: assetExtension,
-                subdirectory: subdirectory
-            )
-        }.first
+        let resolvedURL = ebookViewerBundledResourceURL(relativePath: relativePath)
         if resolvedURL == nil, ebookPageTurnInteractionDiagnosticsEnabled {
-            logEbookAsset("# EBOOKASSET resolveMiss url=\(url.absoluteString) assetName=\(assetName) ext=\(assetExtension) dir=\(assetDirectory)")
+            logEbookAsset(
+                "# EBOOKASSET resolveMiss url=\(url.absoluteString) relativePath=\(relativePath)"
+            )
         }
         return resolvedURL
     }
 
     nonisolated private static func viewerHTMLPath() -> String? {
-        [
-            "foliate-js",
-            "Resources/foliate-js",
-            "Resources/Resources/foliate-js",
-        ].lazy.compactMap { directory in
-            Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: directory)
-        }.first
+        ebookViewerBundledResourceURL(relativePath: "foliate-js/ebook-viewer.html")?.path
     }
 
     @EbookURLSchemeActor
