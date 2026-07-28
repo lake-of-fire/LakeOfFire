@@ -920,25 +920,24 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "page=\(url.absoluteString)",
                         "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
                     )
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
-                        var loadArguments: [String: any Sendable] = [
-                            "url": loaderURL.absoluteString,
-                            "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
-                        ]
-                        let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
-                        loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                        try await scriptCaller.evaluateJavaScript(
+                    let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+                    var loadArguments: [String: any Sendable] = [
+                        "url": loaderURL.absoluteString,
+                        "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
+                    ]
+                    let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
+                    loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                    do {
+                        _ = try await scriptCaller.evaluateJavaScript(
                             """
                             window.loadEBook({ url, layoutMode, initialRestore });
                             """,
                             arguments: loadArguments,
                             in: message.frameInfo
+                        )
+                    } catch {
+                        Logger.shared.logger.error(
+                            "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
                         )
                     }
                 }
