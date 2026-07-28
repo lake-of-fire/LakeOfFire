@@ -1166,7 +1166,19 @@ public struct Reader: View {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                print("# BOOK native.chromeInsets.attempt attempt=\(attempt) pageURL=\(pageURL.absoluteString) top=\(effectiveTopInset) toolbarBottomOffset=\(effectiveToolbarBottomOffset) bottom=\(effectiveBottomInset) safeAreaTop=\(sampledTopInset) safeAreaBottom=\(sampledBottomInset) hasAsyncCaller=\(scriptCaller.hasAsyncCaller) renderReady=\(readerViewModel.state.hasReaderRenderReady) resyncID=\(readerViewModel.ebookChromeInsetsResyncID)")
+                let chromeInsetsState = [
+                    "attempt=\(attempt)",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "top=\(effectiveTopInset)",
+                    "toolbarBottomOffset=\(effectiveToolbarBottomOffset)",
+                    "bottom=\(effectiveBottomInset)",
+                    "safeAreaTop=\(sampledTopInset)",
+                    "safeAreaBottom=\(sampledBottomInset)",
+                    "hasAsyncCaller=\(scriptCaller.hasAsyncCaller)",
+                    "renderReady=\(readerViewModel.state.hasReaderRenderReady)",
+                    "resyncID=\(readerViewModel.ebookChromeInsetsResyncID)",
+                ].joined(separator: " ")
+                print("# BOOK native.chromeInsets.attempt \(chromeInsetsState)")
                 await syncEbookViewerChromeInsets(
                     pageURL: pageURL,
                     obscuredTopInset: effectiveTopInset,
