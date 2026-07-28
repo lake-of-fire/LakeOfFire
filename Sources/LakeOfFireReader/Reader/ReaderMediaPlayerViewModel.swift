@@ -137,6 +137,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     var shouldEnqueueSpeechSynthesizerUtterances = true
 
     private let readAloudController: ReaderReadAloudController
+    private let readAloudVoiceResolver: (String) -> AVSpeechSynthesisVoice?
     private var currentContentKey: String?
     private var currentContentURL: URL?
     private var ttsUtterances = [ReaderTTSUtterance]()
@@ -147,6 +148,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private let readAloudAudioSessionLeaseFactory: () throws -> any ReaderReadAloudAudioSessionLease
     private var readAloudAudioSessionLease: (any ReaderReadAloudAudioSessionLease)?
     private var ttsVoiceLanguage = "ja-JP"
+    private var cachedReadAloudVoiceLanguage: String?
+    private var cachedReadAloudVoice: AVSpeechSynthesisVoice?
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
     private var shouldResumeAITTSAfterAudioInterruption = false
@@ -161,12 +164,22 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         readAloudController: ReaderReadAloudController,
         readAloudAudioSessionLeaseFactory: @escaping () throws -> any ReaderReadAloudAudioSessionLease = {
             try ManabiSpokenAudioSession.acquire(.readAloud)
+        },
+        readAloudVoiceResolver: @escaping (String) -> AVSpeechSynthesisVoice? = {
+            AVSpeechSynthesisVoice(language: $0)
         }
     ) {
         self.readAloudController = readAloudController
         self.readAloudAudioSessionLeaseFactory = readAloudAudioSessionLeaseFactory
+        self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
         readAloudController.delegate = self
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAvailableVoicesDidChange),
+            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+            object: nil
+        )
 #if os(iOS)
         NotificationCenter.default.addObserver(
             self,
@@ -795,11 +808,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
 
         nextAITTSUtteranceIndexToEnqueue = startIndex
-        var hasMissingVoice = false
-        let preferredVoice = AVSpeechSynthesisVoice(language: ttsVoiceLanguage)
-        if preferredVoice == nil {
-            hasMissingVoice = true
-        }
+        let preferredVoice = configuredReadAloudVoice()
+        let hasMissingVoice = preferredVoice == nil
         fillAITTSQueueWindow(preferredVoice: preferredVoice)
 
         isPlaying = true
@@ -928,7 +938,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func fillAITTSQueueWindow(preferredVoice: AVSpeechSynthesisVoice? = nil) {
-        let voice = preferredVoice ?? AVSpeechSynthesisVoice(language: ttsVoiceLanguage)
+        let voice = preferredVoice ?? configuredReadAloudVoice()
         while ttsUtteranceObjectIdentifierToIndex.count < aittsQueueWindowSize,
               nextAITTSUtteranceIndexToEnqueue < ttsUtterances.count {
             let index = nextAITTSUtteranceIndexToEnqueue
@@ -939,6 +949,22 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(speechUtterance)] = index
             readAloudController.speak(speechUtterance)
         }
+    }
+
+    private func configuredReadAloudVoice() -> AVSpeechSynthesisVoice? {
+        if cachedReadAloudVoiceLanguage == ttsVoiceLanguage {
+            return cachedReadAloudVoice
+        }
+        let voice = readAloudVoiceResolver(ttsVoiceLanguage)
+        cachedReadAloudVoiceLanguage = ttsVoiceLanguage
+        cachedReadAloudVoice = voice
+        return voice
+    }
+
+    @objc
+    private func handleAvailableVoicesDidChange() {
+        cachedReadAloudVoiceLanguage = nil
+        cachedReadAloudVoice = nil
     }
 
     @MainActor

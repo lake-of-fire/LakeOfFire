@@ -439,6 +439,43 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
+    func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        var resolutionCount = 0
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { FakeReadAloudAudioSessionLease() },
+            readAloudVoiceResolver: { _ in
+                resolutionCount += 1
+                return nil
+            }
+        )
+        let utterances = (1...10).map {
+            ReaderTTSUtterance(sentenceIdentifier: "s\($0)", text: "Sentence \($0).")
+        }
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: utterances,
+            preferredLanguage: "en-US",
+            autoplay: true
+        ))
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 1)
+
+        viewModel.seekAITTS(toSentenceIdentifier: "s4", shouldPlay: false)
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 1)
+
+        NotificationCenter.default.post(
+            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+            object: nil
+        )
+        viewModel.seekAITTS(toSentenceIdentifier: "s7", shouldPlay: false)
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 2)
+    }
+
+    @MainActor
     func testAITTSQueueReplenishesOneUtteranceWhenOneFinishes() throws {
         let synthesizer = FakeReaderSpeechSynthesizer()
         let viewModel = ReaderMediaPlayerViewModel(
