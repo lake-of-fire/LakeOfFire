@@ -40,6 +40,7 @@ private final class WikipediaReadabilityMessageHandler: NSObject, WKScriptMessag
     let readabilityParsedExpectation: XCTestExpectation
     private(set) var readabilityParsedBody: [String: Any]? = nil
     private(set) var readabilityUnavailableBodies: [[String: Any]] = []
+    private(set) var readabilityNeedsUpdateBodies: [[String: Any]] = []
 
     init(readabilityParsedExpectation: XCTestExpectation) {
         self.readabilityParsedExpectation = readabilityParsedExpectation
@@ -59,6 +60,8 @@ private final class WikipediaReadabilityMessageHandler: NSObject, WKScriptMessag
             readabilityParsedExpectation.fulfill()
         case "readabilityModeUnavailable":
             readabilityUnavailableBodies.append(body)
+        case "readabilityNeedsUpdate":
+            readabilityNeedsUpdateBodies.append(body)
         case "readabilityFramePing":
             break
         default:
@@ -154,7 +157,12 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         let messageHandler = WikipediaReadabilityMessageHandler(
             readabilityParsedExpectation: readabilityParsedExpectation
         )
-        for name in ["readabilityFramePing", "readabilityModeUnavailable", "readabilityParsed"] {
+        for name in [
+            "readabilityFramePing",
+            "readabilityModeUnavailable",
+            "readabilityNeedsUpdate",
+            "readabilityParsed",
+        ] {
             userContentController.add(messageHandler, name: name)
         }
 
@@ -175,14 +183,23 @@ final class WikipediaReadabilityRegressionTests: XCTestCase {
         )
         webView.navigationDelegate = navigationDelegate
         webView.loadHTMLString(sanitizedHTML, baseURL: Self.sourcePageURL)
-        await fulfillment(of: [didFinishExpectation, readabilityParsedExpectation], timeout: 10)
+        await fulfillment(of: [didFinishExpectation], timeout: 10)
+        _ = try await webView.evaluateJavaScript(
+            "window.manabi_readability && window.manabi_readability()"
+        )
+        await fulfillment(of: [readabilityParsedExpectation], timeout: 10)
         withExtendedLifetime(navigationDelegate) {}
         withExtendedLifetime(messageHandler) {}
+        withExtendedLifetime(webView) {}
         try await Task.sleep(nanoseconds: 200_000_000)
 
         XCTAssertTrue(
             messageHandler.readabilityUnavailableBodies.isEmpty,
             "Readability unexpectedly reported the Wikimedia fixture as unavailable"
+        )
+        XCTAssertFalse(
+            messageHandler.readabilityNeedsUpdateBodies.isEmpty,
+            "Readability initialization never requested its native scheduling bridge"
         )
         return try XCTUnwrap(messageHandler.readabilityParsedBody)
     }

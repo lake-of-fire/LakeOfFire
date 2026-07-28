@@ -816,44 +816,37 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                    url.absoluteString.hasPrefix("\(scheme)://"),
                    url.isEBookURL,
                    let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    _ = try? await scriptCaller.evaluateJavaScript(
-                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
-                        in: message.frameInfo
-                    )
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
-                        var loadArguments: [String: any Sendable] = [
-                            "url": loaderURL.absoluteString,
-                            "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
-                        ]
-                        let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double ?? 16
-                        loadArguments["readerPresentationState"] = [
-                            "colorScheme": colorScheme == .dark ? "dark" : "light",
-                            "lightModeTheme": UserDefaults.standard.string(forKey: "lightModeTheme") ?? "white",
-                            "darkModeTheme": UserDefaults.standard.string(forKey: "darkModeTheme") ?? "black",
-                            "readerFontSize": readerFontSize,
-                            "readerContentRTSize": readerFontSize * 0.46,
-                            "readerBoldText": UserDefaults.standard.object(forKey: "readerBoldText") as? Bool ?? false,
-                            "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize),
-                            "writingDirection": "original",
-                        ]
-                        let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
-                        loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                        loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
-                        loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
-                        do {
-                            _ = try await scriptCaller.evaluateJavaScript(
-                                """
-                                window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState });
-                                """,
-                                arguments: loadArguments,
-                                in: message.frameInfo
-                            )
-                        } catch {
-                            let loaderURLString = loaderURL.absoluteString
-                            Logger.shared.logger.error("Ebook viewer load failed for \(loaderURLString): \(String(describing: error))")
-                        }
+                    let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
+                    var loadArguments: [String: any Sendable] = [
+                        "url": loaderURL.absoluteString,
+                        "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
+                    ]
+                    let readerFontSize = UserDefaults.standard.object(forKey: "readerFontSize") as? Double ?? 16
+                    loadArguments["readerPresentationState"] = [
+                        "colorScheme": colorScheme == .dark ? "dark" : "light",
+                        "lightModeTheme": UserDefaults.standard.string(forKey: "lightModeTheme") ?? "white",
+                        "darkModeTheme": UserDefaults.standard.string(forKey: "darkModeTheme") ?? "black",
+                        "readerFontSize": readerFontSize,
+                        "readerContentRTSize": readerFontSize * 0.46,
+                        "readerBoldText": UserDefaults.standard.object(forKey: "readerBoldText") as? Bool ?? false,
+                        "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize),
+                        "writingDirection": "original",
+                    ]
+                    let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
+                    loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                    loadArguments["initialRestoreRequestID"] = initialRestoreRequest?.requestID ?? "nil"
+                    loadArguments["initialRestoreRequestedLocator"] = initialRestoreRequest?.requestedLocator ?? "none"
+                    do {
+                        _ = try await scriptCaller.evaluateJavaScript(
+                            """
+                            window.loadEBook({ url, layoutMode, initialRestore, readerPresentationState });
+                            """,
+                            arguments: loadArguments,
+                            in: message.frameInfo
+                        )
+                    } catch {
+                        let loaderURLString = loaderURL.absoluteString
+                        Logger.shared.logger.error("Ebook viewer load failed for \(loaderURLString): \(String(describing: error))")
                     }
                 }
             }),

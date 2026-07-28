@@ -106,12 +106,14 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
         readAloudController.delegate = self
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAvailableVoicesDidChange),
-            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
-            object: nil
-        )
+        if #available(iOS 17.0, macOS 14.0, watchOS 10.0, *) {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleAvailableVoicesDidChange),
+                name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+                object: nil
+            )
+        }
 #if os(iOS)
         NotificationCenter.default.addObserver(
             self,
@@ -824,10 +826,12 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         return voice
     }
 
-    @objc
+    @objc nonisolated
     private func handleAvailableVoicesDidChange() {
-        cachedReadAloudVoiceConfiguration = nil
-        cachedReadAloudVoice = nil
+        Task { @MainActor [weak self] in
+            self?.cachedReadAloudVoiceConfiguration = nil
+            self?.cachedReadAloudVoice = nil
+        }
     }
 
     private func configuredReadAloudRate() -> Float {

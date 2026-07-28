@@ -92,7 +92,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
-    func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() {
+    func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() async {
         let synthesizer = FakeReaderSpeechSynthesizer()
         let controller = ReaderReadAloudController(synthesizer: synthesizer)
         var resolutionCount = 0
@@ -122,6 +122,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
             name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
             object: nil
         )
+        await Task.yield()
         viewModel.seekAITTS(toSentenceIdentifier: "s7", shouldPlay: false)
         viewModel.playAITTS()
         XCTAssertEqual(resolutionCount, 2)

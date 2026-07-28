@@ -534,6 +534,7 @@ final class FeedStateIndicatorTests: XCTestCase {
             let deletedRecord = HistoryRecord()
             deletedRecord.url = targetURL
             deletedRecord.updateCompoundKey()
+            deletedRecord.compoundKey += "-deleted"
             deletedRecord.isDeleted = true
             realm.add(deletedRecord)
 
