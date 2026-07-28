@@ -31,6 +31,7 @@ import {
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
+import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import {
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
@@ -697,6 +698,17 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
 };
 
 const isCacheWarmerDocument = (doc) => doc?.body?.dataset?.isCacheWarmer === 'true';
+
+const foregroundCriticalSectionCoordinator = new ForegroundCriticalSectionCoordinator({
+    postMessage: message => {
+        try {
+            window.webkit?.messageHandlers?.ebookForegroundCriticalSection?.postMessage(message);
+        } catch (_error) {}
+    },
+});
+
+const beginForegroundCriticalSection = () => foregroundCriticalSectionCoordinator.begin();
+const finishForegroundCriticalSection = token => foregroundCriticalSectionCoordinator.finish(token);
 
 const captureEPUBOverlapState = () => ({
     inflightReplaceTextCount: globalThis.__manabiInflightReplaceTextCount ?? 0,
@@ -5696,6 +5708,9 @@ class Reader {
                 const visibleRange = this.#visibleRangeForDocument(doc);
                 this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
             }
+            globalThis.__manabiFinishInitialForegroundCriticalSection?.(
+                `nativeLookupRefresh.completed:${reason}`
+            );
         });
     }
     refreshNativeLookupHitTargets(reason = 'manual') {
@@ -8326,10 +8341,12 @@ window.loadEBook = ({
         && globalThis.manabiLoadEBookReady === true
         && globalThis.reader?.view?.renderer
     ) {
+        globalThis.__manabiFinishInitialForegroundCriticalSection?.('loadEBook.duplicate-ready');
         globalThis.manabiLoadEBookLastState = 'duplicate-ready';
         globalThis.manabiPendingLoadEBookArgs = null;
         return;
     }
+    globalThis.__manabiFinishInitialForegroundCriticalSection?.('loadEBook.replace');
     const loadToken = (globalThis.manabiLoadEBookToken ?? 0) + 1;
     globalThis.manabiLoadEBookToken = loadToken;
     globalThis.manabiLoadEBookURL = requestedURL;
@@ -8344,6 +8361,17 @@ window.loadEBook = ({
         layoutMode: layoutMode || null,
     };
     globalThis.manabiPendingInitialRestoreRequest = initialRestoreRequest;
+    const initialForegroundCriticalSectionToken = beginForegroundCriticalSection();
+    const finishInitialForegroundCriticalSection = (_reason) => {
+        if (globalThis.manabiLoadEBookToken !== loadToken) {
+            return;
+        }
+        finishForegroundCriticalSection(initialForegroundCriticalSectionToken);
+        if (globalThis.__manabiFinishInitialForegroundCriticalSection === finishInitialForegroundCriticalSection) {
+            globalThis.__manabiFinishInitialForegroundCriticalSection = null;
+        }
+    };
+    globalThis.__manabiFinishInitialForegroundCriticalSection = finishInitialForegroundCriticalSection;
     try {
         globalThis.__manabiFinishEPUBLoadWatchdogs?.('new-load');
     } catch (_error) {}
@@ -8447,6 +8475,7 @@ window.loadEBook = ({
             if (globalThis.manabiLoadEBookToken !== loadToken) {
                 return;
             }
+            finishInitialForegroundCriticalSection('loadEBook.error');
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = false;
             globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
@@ -8466,6 +8495,7 @@ window.loadEBook = ({
         globalThis.manabiLoadEBookPromise = openPromise;
         return openPromise;
     } else {
+        finishInitialForegroundCriticalSection('loadEBook.no-url');
         finishLoadWatchdogs();
         globalThis.manabiLoadEBookReady = false;
         globalThis.manabiLoadEBookLastState = 'no-url';
