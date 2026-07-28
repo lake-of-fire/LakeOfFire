@@ -91,6 +91,42 @@ final class ReaderMediaMetadataTests: XCTestCase {
         XCTAssertTrue(viewModel.isPlaying)
     }
 
+    @MainActor
+    func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let controller = ReaderReadAloudController(synthesizer: synthesizer)
+        var resolutionCount = 0
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: controller,
+            readAloudVoiceResolver: { _, _ in
+                resolutionCount += 1
+                return nil
+            }
+        )
+        let utterances = (1...10).map {
+            ReaderTTSUtterance(sentenceIdentifier: "s\($0)", text: "Sentence \($0).")
+        }
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: utterances,
+            preferredLanguage: "en-US",
+            autoplay: true
+        ))
+        XCTAssertEqual(resolutionCount, 1)
+
+        viewModel.seekAITTS(toSentenceIdentifier: "s4", shouldPlay: false)
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 1)
+
+        NotificationCenter.default.post(
+            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+            object: nil
+        )
+        viewModel.seekAITTS(toSentenceIdentifier: "s7", shouldPlay: false)
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 2)
+    }
+
     private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
         let realmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(name)

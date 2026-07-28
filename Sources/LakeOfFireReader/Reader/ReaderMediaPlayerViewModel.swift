@@ -21,6 +21,29 @@ private func mediaDebugPrint(_ values: Any..., separator: String = " ", terminat
 #endif
 }
 
+private struct ReaderReadAloudVoiceConfiguration: Equatable {
+    let selectedIdentifier: String
+    let language: String
+}
+
+private func resolveReaderReadAloudVoice(
+    selectedIdentifier: String,
+    language: String
+) -> AVSpeechSynthesisVoice? {
+    let languageCode = language.split(separator: "-").first?.lowercased() ?? ""
+    if !selectedIdentifier.isEmpty,
+       let selectedVoice = AVSpeechSynthesisVoice(identifier: selectedIdentifier),
+       selectedVoice.language.split(separator: "-").first?.lowercased() == languageCode {
+        return selectedVoice
+    }
+    if let exactVoice = AVSpeechSynthesisVoice(language: language) {
+        return exactVoice
+    }
+    return AVSpeechSynthesisVoice.speechVoices().first { voice in
+        voice.language.split(separator: "-").first?.lowercased() == languageCode
+    }
+}
+
 @MainActor
 public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var isMediaPlayerPresented = false
@@ -50,6 +73,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     var shouldEnqueueSpeechSynthesizerUtterances = true
 
     private let readAloudController: ReaderReadAloudController
+    private let readAloudVoiceResolver: (String, String) -> AVSpeechSynthesisVoice?
     private var currentContentKey: String?
     private var currentContentURL: URL?
     private var ttsUtterances = [ReaderTTSUtterance]()
@@ -59,6 +83,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private var ttsCurrentCharacterRange: NSRange?
     private var readAloudAudioSessionLease: ManabiSpokenAudioSessionLease?
     private var ttsVoiceLanguage = "ja-JP"
+    private var cachedReadAloudVoiceConfiguration: ReaderReadAloudVoiceConfiguration?
+    private var cachedReadAloudVoice: AVSpeechSynthesisVoice?
     private var ignoresCancellationCallbacksForQueueSwap = false
     private var readAloudPreparationID: UUID?
     private var nextAITTSUtteranceIndexToEnqueue = 0
@@ -71,10 +97,21 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         self.init(readAloudController: ReaderReadAloudController())
     }
 
-    init(readAloudController: ReaderReadAloudController) {
+    init(
+        readAloudController: ReaderReadAloudController,
+        readAloudVoiceResolver: @escaping (String, String) -> AVSpeechSynthesisVoice? =
+            resolveReaderReadAloudVoice
+    ) {
         self.readAloudController = readAloudController
+        self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
         readAloudController.delegate = self
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAvailableVoicesDidChange),
+            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+            object: nil
+        )
 #if os(iOS)
         NotificationCenter.default.addObserver(
             self,
@@ -645,8 +682,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         }
 
         nextAITTSUtteranceIndexToEnqueue = startIndex
-        let hasMissingVoice = configuredReadAloudVoice() == nil
-        fillAITTSQueueWindow()
+        let voice = configuredReadAloudVoice()
+        let hasMissingVoice = voice == nil
+        fillAITTSQueueWindow(voice: voice)
 
         isPlaying = true
         registerPlaybackStart(contentKey: currentContentKey)
@@ -754,14 +792,15 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     }
 
     @MainActor
-    private func fillAITTSQueueWindow() {
+    private func fillAITTSQueueWindow(voice: AVSpeechSynthesisVoice? = nil) {
+        let voice = voice ?? configuredReadAloudVoice()
         while ttsUtteranceObjectIdentifierToIndex.count < aittsQueueWindowSize,
               nextAITTSUtteranceIndexToEnqueue < ttsUtterances.count {
             let index = nextAITTSUtteranceIndexToEnqueue
             nextAITTSUtteranceIndexToEnqueue += 1
             let item = ttsUtterances[index]
             let speechUtterance = AVSpeechUtterance(string: item.text)
-            speechUtterance.voice = configuredReadAloudVoice()
+            speechUtterance.voice = voice
             speechUtterance.rate = configuredReadAloudRate()
             ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(speechUtterance)] = index
             readAloudController.speak(speechUtterance)
@@ -772,18 +811,23 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         let selectedIdentifier = UserDefaults.standard.string(
             forKey: ReaderReadAloudSettings.voiceIdentifierKey
         )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let languageCode = ttsVoiceLanguage.split(separator: "-").first?.lowercased() ?? ""
-        if !selectedIdentifier.isEmpty,
-           let selectedVoice = AVSpeechSynthesisVoice(identifier: selectedIdentifier),
-           selectedVoice.language.split(separator: "-").first?.lowercased() == languageCode {
-            return selectedVoice
+        let configuration = ReaderReadAloudVoiceConfiguration(
+            selectedIdentifier: selectedIdentifier,
+            language: ttsVoiceLanguage
+        )
+        if cachedReadAloudVoiceConfiguration == configuration {
+            return cachedReadAloudVoice
         }
-        if let exactVoice = AVSpeechSynthesisVoice(language: ttsVoiceLanguage) {
-            return exactVoice
-        }
-        return AVSpeechSynthesisVoice.speechVoices().first { voice in
-            voice.language.split(separator: "-").first?.lowercased() == languageCode
-        }
+        let voice = readAloudVoiceResolver(selectedIdentifier, ttsVoiceLanguage)
+        cachedReadAloudVoiceConfiguration = configuration
+        cachedReadAloudVoice = voice
+        return voice
+    }
+
+    @objc
+    private func handleAvailableVoicesDidChange() {
+        cachedReadAloudVoiceConfiguration = nil
+        cachedReadAloudVoice = nil
     }
 
     private func configuredReadAloudRate() -> Float {
