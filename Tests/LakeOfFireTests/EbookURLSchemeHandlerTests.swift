@@ -1299,6 +1299,44 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 document,
                 { totalSegmentCount: 0, visibleSegments: [] }
             );
+            const classifySingleMedia = media => {
+                document.body.prepend(media);
+                const readiness = renderReadinessModule.classifyEbookRenderReadiness(
+                    document,
+                    { totalSegmentCount: 0, visibleSegments: [] }
+                );
+                media.remove();
+                return readiness;
+            };
+            const pendingVideo = document.createElement("video");
+            pendingVideo.style.width = "320px";
+            pendingVideo.style.height = "180px";
+            const pendingVideoRenderReadiness = classifySingleMedia(pendingVideo);
+            const failedVideo = document.createElement("video");
+            failedVideo.style.width = "320px";
+            failedVideo.style.height = "180px";
+            const failedVideoSignal = await new Promise(resolve => {
+                const timeout = setTimeout(() => resolve("timeout"), 2000);
+                failedVideo.addEventListener("error", () => {
+                    clearTimeout(timeout);
+                    resolve("error");
+                }, { once: true });
+                failedVideo.src = "data:video/mp4;base64,AAAA";
+                failedVideo.load();
+            });
+            const failedVideoRenderReadiness = classifySingleMedia(failedVideo);
+            const brokenSVG = document.createElement("img");
+            brokenSVG.style.width = "320px";
+            brokenSVG.style.height = "180px";
+            const brokenSVGSignal = await new Promise(resolve => {
+                const timeout = setTimeout(() => resolve("timeout"), 2000);
+                brokenSVG.addEventListener("error", () => {
+                    clearTimeout(timeout);
+                    resolve("error");
+                }, { once: true });
+                brokenSVG.src = "data:image/svg+xml;base64,AAAA";
+            });
+            const brokenSVGRenderReadiness = classifySingleMedia(brokenSVG);
             document.body.classList.remove("reader-is-single-media-element-without-text");
             const sourceWritingMode = getComputedStyle(document.body).writingMode;
             const horizontalOverride = writingDirectionModule.applyPaginatorWritingDirectionOverride(
@@ -1328,6 +1366,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             return {
                 baseURL: document.baseURI,
                 backgroundColor: getComputedStyle(document.body).backgroundColor,
+                brokenSVGRenderReadiness,
+                brokenSVGSignal,
                 stylesheetURL: document.getElementById("book-style").href,
                 imageComplete: image.complete,
                 imageURL: image.src,
@@ -1348,6 +1388,9 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 mediaBootstrapStatus,
                 mediaBootstrapURL: mediaBootstrap?.src ?? null,
                 missingStatus,
+                failedVideoRenderReadiness,
+                failedVideoSignal,
+                pendingVideoRenderReadiness,
                 restoredOverride,
                 restoredWritingMode,
                 renderReadinessModuleURL,
@@ -1391,6 +1434,23 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             (values["imageRenderReadiness"] as? [String: Any])?["reason"] as? String,
             "visible-single-media"
         )
+        let pendingVideoRenderReadiness = try XCTUnwrap(
+            values["pendingVideoRenderReadiness"] as? [String: Any]
+        )
+        XCTAssertEqual(pendingVideoRenderReadiness["outcome"] as? String, "pending")
+        XCTAssertEqual(pendingVideoRenderReadiness["reason"] as? String, "single-media-pending")
+        XCTAssertEqual(values["failedVideoSignal"] as? String, "error")
+        let failedVideoRenderReadiness = try XCTUnwrap(
+            values["failedVideoRenderReadiness"] as? [String: Any]
+        )
+        XCTAssertEqual(failedVideoRenderReadiness["outcome"] as? String, "error")
+        XCTAssertEqual(failedVideoRenderReadiness["reason"] as? String, "single-media-failed")
+        XCTAssertEqual(values["brokenSVGSignal"] as? String, "error")
+        let brokenSVGRenderReadiness = try XCTUnwrap(
+            values["brokenSVGRenderReadiness"] as? [String: Any]
+        )
+        XCTAssertEqual(brokenSVGRenderReadiness["outcome"] as? String, "error")
+        XCTAssertEqual(brokenSVGRenderReadiness["reason"] as? String, "single-media-failed")
         XCTAssertEqual(values["restoredOverride"] as? String, "original")
         XCTAssertEqual(values["restoredWritingMode"] as? String, "vertical-rl")
         XCTAssertTrue((values["writingDirectionModuleURL"] as? String)?.hasSuffix(
