@@ -154,6 +154,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var hideNavigationDueToScroll: Binding<Bool>
     var showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?
     var navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+    var colorScheme: ColorScheme
 
     private struct NavigationVisibilityEvent {
         let timestamp: Date
@@ -926,20 +927,57 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        let initialRestore = try? await ReaderContentReadingProgressLoader.ebookInitialRestoreLoader?(url)
-                        var loadArguments: [String: any Sendable] = [
-                            "url": loaderURL.absoluteString,
-                            "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
-                        ]
-                        let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(restore: initialRestore)
-                        loadArguments["initialRestore"] = initialRestoreRequest?.javaScriptArgument ?? NSNull()
-                        try await scriptCaller.evaluateJavaScript(
-                            """
-                            window.loadEBook({ url, layoutMode, initialRestore });
-                            """,
-                            arguments: loadArguments,
-                            in: message.frameInfo
-                        )
+                        do {
+                            let initialRestore = try? await ReaderContentReadingProgressLoader
+                                .ebookInitialRestoreLoader?(url)
+                            let defaults = UserDefaults.standard
+                            let readerFontSize = defaults.object(forKey: "readerFontSize") as? Double ?? 16
+                            let rawWritingDirection = defaults.string(
+                                forKey: "bookWritingDirectionSetting"
+                            ) ?? "original"
+                            let writingDirection = ["original", "horizontal", "vertical"]
+                                .contains(rawWritingDirection)
+                                ? rawWritingDirection
+                                : "original"
+                            let readerPresentationState: [String: any Sendable] = [
+                                "colorScheme": colorScheme == .dark ? "dark" : "light",
+                                "lightModeTheme": defaults.string(forKey: "lightModeTheme") ?? "white",
+                                "darkModeTheme": defaults.string(forKey: "darkModeTheme") ?? "black",
+                                "readerFontSize": readerFontSize,
+                                "readerContentRTSize": readerFontSize * 0.46,
+                                "readerBoldText": defaults.object(forKey: "readerBoldText") as? Bool ?? false,
+                                "maxWidthOverride": readerAdaptiveMaxWidthOverrideCSSValue(
+                                    readerFontSize: readerFontSize
+                                ),
+                                "writingDirection": writingDirection,
+                            ]
+                            var loadArguments: [String: any Sendable] = [
+                                "url": loaderURL.absoluteString,
+                                "layoutMode": defaults.string(forKey: "ebookViewerLayout") ?? "paginated",
+                                "readerPresentationState": readerPresentationState,
+                            ]
+                            let initialRestoreRequest = ReaderEBookInitialRestoreBridgeRequest(
+                                restore: initialRestore
+                            )
+                            loadArguments["initialRestore"] =
+                                initialRestoreRequest?.javaScriptArgument ?? NSNull()
+                            try await scriptCaller.evaluateJavaScript(
+                                """
+                                window.loadEBook({
+                                    url,
+                                    layoutMode,
+                                    initialRestore,
+                                    readerPresentationState
+                                });
+                                """,
+                                arguments: loadArguments,
+                                in: message.frameInfo
+                            )
+                        } catch {
+                            Logger.shared.logger.error(
+                                "Ebook viewer load failed for \(loaderURL.absoluteString): \(String(describing: error))"
+                            )
+                        }
                     }
                 }
             }),
@@ -986,7 +1024,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         navigator: WebViewNavigator,
         hideNavigationDueToScroll: Binding<Bool>,
         showOriginalWillBeginHandler: ReaderShowOriginalWillBeginHandler?,
-        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?
+        navigationVisibilityWillChangeHandler: ReaderNavigationVisibilityWillChangeHandler?,
+        colorScheme: ColorScheme
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -997,6 +1036,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.showOriginalWillBeginHandler = showOriginalWillBeginHandler
         self.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+        self.colorScheme = colorScheme
     }
 
     // MARK: Readability
@@ -1125,6 +1165,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerShowOriginalWillBeginHandler) internal var showOriginalWillBeginHandler
     @Environment(\.readerNavigationVisibilityWillChangeHandler) internal var navigationVisibilityWillChangeHandler
+    @Environment(\.colorScheme) internal var colorScheme
 
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
@@ -1132,7 +1173,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.webViewMessageHandlers, readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
-            .task { @MainActor in
+            .task(id: colorScheme) { @MainActor in
                 if readerMessageHandlers == nil {
                     readerMessageHandlers = ReaderMessageHandlers(
                         forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
@@ -1143,7 +1184,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
                         showOriginalWillBeginHandler: showOriginalWillBeginHandler,
-                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler
+                        navigationVisibilityWillChangeHandler: navigationVisibilityWillChangeHandler,
+                        colorScheme: colorScheme
                     )
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -1155,6 +1197,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                     readerMessageHandlers.showOriginalWillBeginHandler = showOriginalWillBeginHandler
                     readerMessageHandlers.navigationVisibilityWillChangeHandler = navigationVisibilityWillChangeHandler
+                    readerMessageHandlers.colorScheme = colorScheme
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {

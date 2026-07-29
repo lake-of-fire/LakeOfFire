@@ -6,6 +6,10 @@ createTOCView
 import { NavigationHUD } from './ebook-viewer-nav.js'
 import { copyCustomReaderFontStyleToDocument } from './ebook-font-forwarding.js'
 import { applyLayoutSettingsToEbookDocument } from './ebook-layout-settings.js'
+import {
+    applyReaderPresentationStateToDocument,
+    installReaderPresentationState,
+} from './ebook-reader-presentation.js'
 import { excludedEbookBlankPointerTarget } from './ebook-blank-pointer-target.js'
 import {
     classifyEbookRenderReadiness,
@@ -7503,6 +7507,11 @@ class Reader {
     }) {
         applyStoredChromeInsets('reader.documentLoad');
         applyLayoutSettingsToEbookDocument(document, doc);
+        applyReaderPresentationStateToDocument(
+            doc,
+            globalThis.__manabiReaderPresentationState,
+            'document-load',
+        );
         applyNavigationHiddenStateToEbookDocument(doc, 'document-load');
         const singleMediaInitialLayout = !isCacheWarmerDocument(doc)
             ? classifySingleMediaDocumentForInitialLayout(doc, 'document-load')
@@ -8318,7 +8327,14 @@ window.loadEBook = ({
     url,
     layoutMode,
     initialRestore,
+    readerPresentationState,
 }) => {
+    installReaderPresentationState(
+        globalThis,
+        document,
+        readerPresentationState,
+        'loadEBook',
+    );
     const requestedURL = typeof url === 'string' ? url : '';
     const initialRestoreRequest = normalizeInitialRestoreRequest(initialRestore);
     if (

@@ -424,6 +424,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let parent = RootRelativePath(path: parentPath == "." ? "" : parentPath)
             let discoveredReferences = try await refreshFilesMetadata(drive: drive, relativePath: parent) ?? []
             try await publishDiscoveredFiles(discoveredReferences)
+            try await refreshAllFilesMetadata()
             return
         }
     }
@@ -515,9 +516,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            Task { @MainActor [weak self] in
-                try await self?.refreshAllFilesMetadata()
-            }
+            try await refreshAllFilesMetadata()
             return content.url
         } catch {
             debugPrint("Error importing file:", error)

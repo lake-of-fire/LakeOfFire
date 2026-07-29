@@ -53,6 +53,40 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         XCTAssertEqual(recreatedStore.entry(for: stored.token)?.data, originalData)
     }
 
+    func testMemoryBoundsStillApplyWhenDurablePersistenceFails() throws {
+        let directoryURL = temporaryDirectoryURL()
+        try Data("not a directory".utf8).write(to: directoryURL)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let firstData = validSidecarData(runtimeIDToken: "!first")
+        let secondData = validSidecarData(runtimeIDToken: "!second")
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: max(firstData.count, secondData.count),
+            countLimit: 10
+        )
+        let first = store.insert(firstData)
+        let second = store.insert(secondData)
+
+        XCTAssertNil(store.entry(for: first.token))
+        XCTAssertEqual(store.entry(for: second.token)?.data, secondData)
+    }
+
+    func testOversizedNondurableEntryIsNotRetained() throws {
+        let directoryURL = temporaryDirectoryURL()
+        try Data("not a directory".utf8).write(to: directoryURL)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let data = validSidecarData(runtimeIDToken: "!oversized")
+        let store = ReaderExternalSegmentSidecarStore(
+            directoryURL: directoryURL,
+            totalByteLimit: data.count - 1,
+            countLimit: 10
+        )
+
+        let stored = store.insert(data)
+
+        XCTAssertNil(store.entry(for: stored.token))
+    }
+
     func testMissingExternalSidecarForcesProcessingRegeneration() async throws {
         let counter = SidecarProcessorInvocationCounter()
         let cachedPayload = EbookProcessedSectionPayload(

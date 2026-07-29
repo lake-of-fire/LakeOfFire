@@ -9,6 +9,29 @@ import AVFoundation
 import LakeOfFireContent
 import JapaneseLanguageTools
 
+private struct ReaderReadAloudVoiceConfiguration: Equatable {
+    let selectedIdentifier: String
+    let language: String
+}
+
+private func resolveReaderReadAloudVoice(
+    selectedIdentifier: String,
+    language: String
+) -> AVSpeechSynthesisVoice? {
+    let languageCode = language.split(separator: "-").first?.lowercased() ?? ""
+    if !selectedIdentifier.isEmpty,
+       let selectedVoice = AVSpeechSynthesisVoice(identifier: selectedIdentifier),
+       selectedVoice.language.split(separator: "-").first?.lowercased() == languageCode {
+        return selectedVoice
+    }
+    if let exactVoice = AVSpeechSynthesisVoice(language: language) {
+        return exactVoice
+    }
+    return AVSpeechSynthesisVoice.speechVoices().first { voice in
+        voice.language.split(separator: "-").first?.lowercased() == languageCode
+    }
+}
+
 @MainActor
 protocol ReaderSpeechSynthesizing: AnyObject {
     var delegate: (any AVSpeechSynthesizerDelegate)? { get set }
@@ -151,6 +174,13 @@ public enum ReaderTTSProgressEvaluator {
     }
 }
 
+public enum ReaderReadAloudSettings {
+    public static let rateKey = "readAloudSpeechRate"
+    public static let voiceIdentifierKey = "readAloudVoiceIdentifier"
+    public static let defaultRate = Double(AVSpeechUtteranceDefaultSpeechRate)
+    public static let supportedRateRange = 0.35...0.65
+}
+
 @MainActor
 public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var isMediaPlayerPresented = false
@@ -178,7 +208,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     var shouldEnqueueSpeechSynthesizerUtterances = true
 
     private let readAloudController: ReaderReadAloudController
-    private let readAloudVoiceResolver: (String) -> AVSpeechSynthesisVoice?
+    private let readAloudVoiceResolver: (String, String) -> AVSpeechSynthesisVoice?
     private var currentContentKey: String?
     private var currentContentURL: URL?
     private var ttsUtterances = [ReaderTTSUtterance]()
@@ -189,7 +219,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     private let readAloudAudioSessionLeaseFactory: () throws -> any ReaderReadAloudAudioSessionLease
     private var readAloudAudioSessionLease: (any ReaderReadAloudAudioSessionLease)?
     private var ttsVoiceLanguage = "ja-JP"
-    private var cachedReadAloudVoiceLanguage: String?
+    private var cachedReadAloudVoiceConfiguration: ReaderReadAloudVoiceConfiguration?
     private var cachedReadAloudVoice: AVSpeechSynthesisVoice?
     private var nextAITTSUtteranceIndexToEnqueue = 0
     private let aittsQueueWindowSize = 8
@@ -206,21 +236,22 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         readAloudAudioSessionLeaseFactory: @escaping () throws -> any ReaderReadAloudAudioSessionLease = {
             try ManabiSpokenAudioSession.acquire(.readAloud)
         },
-        readAloudVoiceResolver: @escaping (String) -> AVSpeechSynthesisVoice? = {
-            AVSpeechSynthesisVoice(language: $0)
-        }
+        readAloudVoiceResolver: @escaping (String, String) -> AVSpeechSynthesisVoice? =
+            resolveReaderReadAloudVoice
     ) {
         self.readAloudController = readAloudController
         self.readAloudAudioSessionLeaseFactory = readAloudAudioSessionLeaseFactory
         self.readAloudVoiceResolver = readAloudVoiceResolver
         super.init()
         readAloudController.delegate = self
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAvailableVoicesDidChange),
-            name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
-            object: nil
-        )
+        if #available(iOS 17.0, *) {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleAvailableVoicesDidChange),
+                name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+                object: nil
+            )
+        }
 #if os(iOS)
         NotificationCenter.default.addObserver(
             self,
@@ -987,24 +1018,43 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             let item = ttsUtterances[index]
             let speechUtterance = AVSpeechUtterance(string: item.text)
             speechUtterance.voice = voice
+            speechUtterance.rate = configuredReadAloudRate()
             ttsUtteranceObjectIdentifierToIndex[ObjectIdentifier(speechUtterance)] = index
             readAloudController.speak(speechUtterance)
         }
     }
 
     private func configuredReadAloudVoice() -> AVSpeechSynthesisVoice? {
-        if cachedReadAloudVoiceLanguage == ttsVoiceLanguage {
+        let selectedIdentifier = UserDefaults.standard.string(
+            forKey: ReaderReadAloudSettings.voiceIdentifierKey
+        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let configuration = ReaderReadAloudVoiceConfiguration(
+            selectedIdentifier: selectedIdentifier,
+            language: ttsVoiceLanguage
+        )
+        if cachedReadAloudVoiceConfiguration == configuration {
             return cachedReadAloudVoice
         }
-        let voice = readAloudVoiceResolver(ttsVoiceLanguage)
-        cachedReadAloudVoiceLanguage = ttsVoiceLanguage
+        let voice = readAloudVoiceResolver(selectedIdentifier, ttsVoiceLanguage)
+        cachedReadAloudVoiceConfiguration = configuration
         cachedReadAloudVoice = voice
         return voice
     }
 
+    private func configuredReadAloudRate() -> Float {
+        let defaults = UserDefaults.standard
+        let storedRate = defaults.object(forKey: ReaderReadAloudSettings.rateKey) == nil
+            ? ReaderReadAloudSettings.defaultRate
+            : defaults.double(forKey: ReaderReadAloudSettings.rateKey)
+        return Float(min(
+            max(storedRate, ReaderReadAloudSettings.supportedRateRange.lowerBound),
+            ReaderReadAloudSettings.supportedRateRange.upperBound
+        ))
+    }
+
     @objc
     private func handleAvailableVoicesDidChange() {
-        cachedReadAloudVoiceLanguage = nil
+        cachedReadAloudVoiceConfiguration = nil
         cachedReadAloudVoice = nil
     }
 

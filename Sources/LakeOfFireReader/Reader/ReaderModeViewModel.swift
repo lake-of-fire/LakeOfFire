@@ -38,7 +38,7 @@ private struct ReaderFontReadinessProbeResult: Decodable {
 }
 
 extension URL {
-    func canonicalReaderContentURLForHotfix() -> URL {
+    public func canonicalReaderContentURLForHotfix() -> URL {
         ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
     }
 

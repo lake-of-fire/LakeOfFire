@@ -82,7 +82,6 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     private let countLimit: Int
     private let directoryURL: URL
     private var entries = [String: ReaderExternalSegmentSidecarEntry]()
-    private var durableTokens = Set<String>()
     private var tokensInAccessOrder = [String]()
     private var totalBytes = 0
 
@@ -105,10 +104,10 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         let token = Self.contentToken(for: data)
         let signature = "sha256:\(data.count):\(token)"
         let entry = ReaderExternalSegmentSidecarEntry(data: data, signature: signature)
-        let isDurable = persistIfNeeded(data, token: token)
+        _ = persistIfNeeded(data, token: token)
 
         lock.lock()
-        insertIntoMemory(entry, token: token, isDurable: isDurable)
+        insertIntoMemory(entry, token: token)
         lock.unlock()
         return (token, signature)
     }
@@ -133,7 +132,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
             signature: "sha256:\(data.count):\(token)"
         )
         lock.lock()
-        insertIntoMemory(entry, token: token, isDurable: true)
+        insertIntoMemory(entry, token: token)
         lock.unlock()
         return entry
     }
@@ -154,20 +153,14 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
 
     private func insertIntoMemory(
         _ entry: ReaderExternalSegmentSidecarEntry,
-        token: String,
-        isDurable: Bool
+        token: String
     ) {
         if let previous = entries.updateValue(entry, forKey: token) {
             totalBytes -= previous.data.count
         }
-        if isDurable {
-            durableTokens.insert(token)
-        } else {
-            durableTokens.remove(token)
-        }
         touch(token)
         totalBytes += entry.data.count
-        evictDurableEntriesIfNeeded()
+        evictEntriesIfNeeded()
     }
 
     private func touch(_ token: String) {
@@ -175,11 +168,10 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         tokensInAccessOrder.append(token)
     }
 
-    private func evictDurableEntriesIfNeeded() {
-        while entries.count > countLimit || (totalBytes > totalByteLimit && entries.count > 1) {
-            guard let index = tokensInAccessOrder.firstIndex(where: durableTokens.contains) else { break }
-            let token = tokensInAccessOrder.remove(at: index)
-            durableTokens.remove(token)
+    private func evictEntriesIfNeeded() {
+        while entries.count > countLimit || totalBytes > totalByteLimit {
+            guard let token = tokensInAccessOrder.first else { break }
+            tokensInAccessOrder.removeFirst()
             if let removed = entries.removeValue(forKey: token) {
                 totalBytes -= removed.data.count
             }

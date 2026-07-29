@@ -488,13 +488,74 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
+    func testAITTSPlaybackAppliesPersistedSpeechRate() throws {
+        let defaults = UserDefaults.standard
+        let key = "readAloudSpeechRate"
+        let previousValue = defaults.object(forKey: key)
+        defer {
+            if let previousValue {
+                defaults.set(previousValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        defaults.set(0.62, forKey: key)
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer)
+        )
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "One.")],
+            autoplay: false
+        ))
+        viewModel.playAITTS()
+
+        XCTAssertEqual(try XCTUnwrap(synthesizer.spokenUtterances.first).rate, 0.62, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testAITTSPlaybackResolvesPersistedVoiceIdentifierWithRequestedLanguage() {
+        let defaults = UserDefaults.standard
+        let key = ReaderReadAloudSettings.voiceIdentifierKey
+        let previousValue = defaults.object(forKey: key)
+        defer {
+            if let previousValue {
+                defaults.set(previousValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        defaults.set("voice.fixture.japanese", forKey: key)
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        var receivedConfiguration: (identifier: String, language: String)?
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudVoiceResolver: { identifier, language in
+                receivedConfiguration = (identifier, language)
+                return nil
+            }
+        )
+
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: [ReaderTTSUtterance(sentenceIdentifier: "s1", text: "一文。")],
+            preferredLanguage: "ja-JP",
+            autoplay: false
+        ))
+        viewModel.playAITTS()
+
+        XCTAssertEqual(receivedConfiguration?.identifier, "voice.fixture.japanese")
+        XCTAssertEqual(receivedConfiguration?.language, "ja-JP")
+    }
+
+    @MainActor
     func testReadAloudVoiceResolutionIsReusedAcrossLookupStyleQueueResumes() {
         let synthesizer = FakeReaderSpeechSynthesizer()
         var resolutionCount = 0
         let viewModel = ReaderMediaPlayerViewModel(
             readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
             readAloudAudioSessionLeaseFactory: { FakeReadAloudAudioSessionLease() },
-            readAloudVoiceResolver: { _ in
+            readAloudVoiceResolver: { _, _ in
                 resolutionCount += 1
                 return nil
             }
