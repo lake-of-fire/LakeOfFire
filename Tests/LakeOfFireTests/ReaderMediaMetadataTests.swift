@@ -50,6 +50,55 @@ private final class FakeReadAloudAudioSessionLease: ReaderReadAloudAudioSessionL
 }
 
 final class ReaderMediaMetadataTests: XCTestCase {
+    func testReadAloudAvailabilityUsesEbookPageURLBeforeContentMetadataLoads() {
+        XCTAssertTrue(
+            ReaderReadAloudAvailability.isAvailable(
+                contentURL: nil,
+                pageURL: URL(string: "ebook://ebook/load/local/book.epub?subpath=chapter-1.xhtml")!,
+                isReaderModeContent: false
+            )
+        )
+    }
+
+    func testAudioAvailabilityKeepsRecordedAudioAndReadAloudIndependent() {
+        let ebookURL = URL(string: "ebook://ebook/load/local/book.epub")!
+        let ebook = ReaderAudioAvailabilitySnapshot(
+            contentURL: ebookURL,
+            pageURL: ebookURL,
+            isReaderModeContent: false,
+            recordedAudioURLs: []
+        )
+        XCTAssertFalse(ebook.hasRecordedAudio)
+        XCTAssertTrue(ebook.canReadAloud)
+        XCTAssertTrue(ebook.hasAnyPlayableAudio)
+
+        let articleURL = URL(string: "https://example.com/article")!
+        let recordedArticle = ReaderAudioAvailabilitySnapshot(
+            contentURL: articleURL,
+            pageURL: articleURL,
+            isReaderModeContent: false,
+            recordedAudioURLs: [URL(string: "https://example.com/audio.m4a")!]
+        )
+        XCTAssertTrue(recordedArticle.hasRecordedAudio)
+        XCTAssertFalse(recordedArticle.canReadAloud)
+        XCTAssertTrue(recordedArticle.hasAnyPlayableAudio)
+
+        XCTAssertFalse(
+            ReaderReadAloudAvailability.isAvailable(
+                contentURL: URL(string: "about:blank")!,
+                pageURL: URL(string: "about:blank")!,
+                isReaderModeContent: true
+            )
+        )
+        XCTAssertTrue(
+            ReaderReadAloudAvailability.isAvailable(
+                contentURL: articleURL,
+                pageURL: articleURL,
+                isReaderModeContent: true
+            )
+        )
+    }
+
     @MainActor
     func testReadAloudPreparationRejectsOverlapAndCompletesOnlyCurrentRequest() throws {
         let viewModel = ReaderMediaPlayerViewModel()
