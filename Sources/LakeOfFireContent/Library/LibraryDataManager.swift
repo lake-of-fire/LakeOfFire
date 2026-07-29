@@ -271,6 +271,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.add(newConfiguration, update: .modified)
+            newConfiguration.refreshChangeMetadata(explicitlyModified: true)
         }
         return newConfiguration
     }
@@ -449,6 +450,7 @@ public class LibraryDataManager: NSObject {
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.add(category, update: .modified)
+            category.refreshChangeMetadata(explicitlyModified: true)
         }
         if addToLibrary {
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
@@ -473,6 +475,7 @@ public class LibraryDataManager: NSObject {
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.add(feed, update: .modified)
+            feed.refreshChangeMetadata(explicitlyModified: true)
         }
         return feed.id
     }
@@ -541,6 +544,7 @@ public class LibraryDataManager: NSObject {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(feed, update: .modified)
+                feed.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         return feed
@@ -573,6 +577,7 @@ public class LibraryDataManager: NSObject {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(script, update: .modified)
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
 //            await realm.asyncRefresh()
@@ -1014,17 +1019,23 @@ public class LibraryDataManager: NSObject {
         guard let realm = script.realm else { return }
         let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
 //        script.allowedDomains.removeAll()
+        var didChange = false
         let allowedDomainIDs = Array(script.allowedDomainIDs)
-        for (idx, existingDomainID) in allowedDomainIDs.enumerated() {
+        for existingDomainID in allowedDomainIDs {
             guard let existingDomain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: existingDomainID), !existingDomain.isDeleted else {
-                script.allowedDomainIDs.remove(at: idx)
+                if let currentIndex = script.allowedDomainIDs.index(of: existingDomainID) {
+                    script.allowedDomainIDs.remove(at: currentIndex)
+                }
+                didChange = true
                 continue
             }
             if !domains.contains(existingDomain.domain) {
                 existingDomain.isDeleted = true
-                script.allowedDomainIDs.remove(at: idx)
-            } else if existingDomain.isDeleted {
-                existingDomain.isDeleted = false
+                if let currentIndex = script.allowedDomainIDs.index(of: existingDomainID) {
+                    script.allowedDomainIDs.remove(at: currentIndex)
+                }
+                existingDomain.refreshChangeMetadata(explicitlyModified: true)
+                didChange = true
             }
         }
         let existingDomains = script.getAllowedDomains()?.map { $0.domain } ?? []
@@ -1034,7 +1045,12 @@ public class LibraryDataManager: NSObject {
                 newDomain.domain = domain
                 realm.add(newDomain, update: .modified)
                 script.allowedDomainIDs.append(newDomain.id)
+                newDomain.refreshChangeMetadata(explicitlyModified: true)
+                didChange = true
             }
+        }
+        if didChange {
+            script.refreshChangeMetadata(explicitlyModified: true)
         }
         // TODO: Clean up orphan domain objects that appear due to some bug...
     }

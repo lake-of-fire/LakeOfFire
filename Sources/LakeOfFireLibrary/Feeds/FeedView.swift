@@ -10,6 +10,7 @@ import RealmSwiftGaps
 import AsyncView
 import Combine
 import LakeKit
+import BigSyncKit
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
@@ -463,7 +464,6 @@ public struct FeedView: View {
         guard feed.entryContentKind != .contentListing else { return }
         let canonicalFeedURLKey = feed.canonicalFollowingFeedURLKey
         try await Realm.asyncWrite(configuration: ReaderContentLoader.feedEntryRealmConfiguration) { realm in
-            let now = Date()
             let feeds = realm.objects(Feed.self)
                 .where { !$0.isDeleted }
                 .filter { $0.canonicalFollowingFeedURLKey == canonicalFeedURLKey }
@@ -474,8 +474,7 @@ public struct FeedView: View {
                 if let ordinal {
                     feed.followingOrdinal = ordinal
                 }
-                feed.explicitlyModifiedAt = now
-                feed.modifiedAt = now
+                feed.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }

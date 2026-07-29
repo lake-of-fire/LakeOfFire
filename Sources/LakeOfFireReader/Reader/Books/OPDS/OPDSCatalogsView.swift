@@ -8,6 +8,7 @@ import LakeOfFireOPDS
 import RealmSwift
 import RealmSwiftGaps
 import Combine
+import BigSyncKit
 
 @MainActor
 class OPDSCatalogsViewModel: ObservableObject {
@@ -66,6 +67,7 @@ class OPDSCatalogsViewModel: ObservableObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)
+                newCatalog.refreshChangeMetadata(explicitlyModified: true)
             }
         } catch {
             Task { @MainActor [weak self] in
@@ -82,6 +84,7 @@ class OPDSCatalogsViewModel: ObservableObject {
             try? await realm.asyncWrite {
                 for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
                     catalog.isDeleted = true
+                    catalog.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
@@ -209,6 +212,7 @@ struct AddCatalogView: View {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)
+                newCatalog.refreshChangeMetadata(explicitlyModified: true)
             }
             await MainActor.run { dismiss() }
         } catch {

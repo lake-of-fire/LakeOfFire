@@ -9,6 +9,7 @@ import Combine
 import RealmSwift
 import RealmSwiftGaps
 import SwiftUIWebView
+import BigSyncKit
 
 let libraryScriptFormSectionsQueue = DispatchQueue(label: "LibraryScriptFormSections")
 
@@ -61,6 +62,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.title = scriptTitle
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -74,6 +76,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.script = scriptText
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -86,6 +89,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.isArchived = !scriptEnabled
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -98,6 +102,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.injectAtStart = scriptInjectAtStart
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -110,6 +115,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.mainFrameOnly = scriptMainFrameOnly
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -122,6 +128,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.sandboxed = scriptSandboxed
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -139,6 +146,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                         } else {
                             script.previewURL = URL(string: scriptPreviewURL)
                         }
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -174,6 +182,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             guard let self = self, let script else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                 script.allowedDomainIDs.remove(atOffsets: offsets)
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -185,6 +194,8 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let allowedDomain = UserScriptAllowedDomain()
                 realm.add(allowedDomain, update: .modified)
                 script.allowedDomainIDs.append(allowedDomain.id)
+                allowedDomain.refreshChangeMetadata(explicitlyModified: true)
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -194,6 +205,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             guard let self = self, let script = script else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                 script.previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -293,6 +305,7 @@ struct LibraryScriptFormSections: View {
                                     try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                                         if let idx = script.allowedDomainIDs.index(of: domainID) {
                                             script.allowedDomainIDs.remove(at: idx)
+                                            script.refreshChangeMetadata(explicitlyModified: true)
                                         }
                                     }
                                 }

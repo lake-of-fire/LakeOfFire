@@ -217,6 +217,7 @@ public extension Bookmark {
 //            await realm.asyncRefresh()
             try realm.writeIfNeeded {
                 realm.add(bookmark, update: .modified)
+                bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
             return bookmark
         }
@@ -236,8 +237,10 @@ public extension Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
-            realm.objects(self).setValue(true, forKey: "isDeleted")
-            realm.objects(self).setValue(Date(), forKey: "modifiedAt")
+            for bookmark in realm.objects(self) {
+                bookmark.isDeleted = true
+                bookmark.refreshChangeMetadata(explicitlyModified: true)
+            }
         }
     }
 }

@@ -15,6 +15,7 @@ import DebouncedOnChange
 import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
+import BigSyncKit
 
 struct UserScriptAllowedDomainCell: View {
     let domainID: UUID
@@ -37,6 +38,7 @@ struct UserScriptAllowedDomainCell: View {
                     guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
                     try await realm.asyncWrite {
                         domain.domain = domainText
+                        domain.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
