@@ -74,6 +74,47 @@ public enum ReaderReadAloudPreparationState: Equatable, Sendable {
     case failed(String)
 }
 
+public enum ReaderReadAloudAvailability {
+    public static func isAvailable(
+        contentURL: URL?,
+        pageURL: URL,
+        isReaderModeContent: Bool
+    ) -> Bool {
+        if pageURL.isEBookURL {
+            return true
+        }
+        let resolvedURL = contentURL ?? pageURL
+        return !resolvedURL.isNativeReaderView && isReaderModeContent
+    }
+}
+
+public struct ReaderAudioAvailabilitySnapshot: Equatable, Sendable {
+    public let hasRecordedAudio: Bool
+    public let canReadAloud: Bool
+
+    public var hasAnyPlayableAudio: Bool {
+        hasRecordedAudio || canReadAloud
+    }
+
+    public init(
+        contentURL: URL?,
+        pageURL: URL,
+        isReaderModeContent: Bool,
+        recordedAudioURLs: [URL],
+        hasLoadedRecordedMedia: Bool = false,
+        currentRecordedMediaURL: URL? = nil
+    ) {
+        hasRecordedAudio = hasLoadedRecordedMedia
+            || currentRecordedMediaURL != nil
+            || !recordedAudioURLs.isEmpty
+        canReadAloud = ReaderReadAloudAvailability.isAvailable(
+            contentURL: contentURL,
+            pageURL: pageURL,
+            isReaderModeContent: isReaderModeContent
+        )
+    }
+}
+
 public struct ReaderTTSUtterance: Equatable, Sendable {
     public let sentenceIdentifier: String
     public let text: String
