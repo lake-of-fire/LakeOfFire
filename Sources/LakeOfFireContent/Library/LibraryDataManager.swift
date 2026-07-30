@@ -979,7 +979,7 @@ public class LibraryDataManager: NSObject {
                                 ordinal: ordinal,
                                 downloadURL: download?.url
                             )
-                            directory.refreshChangeMetadata(
+                            existingDirectory.refreshChangeMetadata(
                                 explicitlyModified: true,
                                 timestampPolicy: .preserve
                             )
