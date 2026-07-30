@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import RealmSwift
 import RealmSwiftGaps
 import BigSyncKit
@@ -35,7 +36,6 @@ private extension URL {
 public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadataRecordable {
     public static let currentGeneratorVersion = 1
     public static let zstdCompressionLevel: Int32 = 6
-    private static let keySeparator = "\u{1F}"
 
     @Persisted(primaryKey: true) public var compoundKey = ""
     @Persisted public var contentURL = URL(string: "about:blank")!
@@ -86,11 +86,14 @@ public final class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadat
         stableMediaIdentity: String,
         languageCode: String
     ) -> String {
-        [
+        let identity = [
             canonicalContentURL(from: contentURL).absoluteString,
             stableMediaIdentity,
             languageCode.lowercased()
-        ].joined(separator: keySeparator)
+        ].joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     public func updateCompoundKey() {

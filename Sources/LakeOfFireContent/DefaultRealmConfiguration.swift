@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 71
+    public static let schemaVersion: UInt64 = 72
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -116,6 +116,12 @@ public enum DefaultRealmConfiguration {
                 guard oldSchemaVersion >= 70 else { return }
                 newObject?["ordinal"] = oldObject?["opmlOrder"]
             }
+        }
+        if oldSchemaVersion < 72 {
+            // MediaTranscript had never shipped with user-created data. Its
+            // previous compound key was not a valid CloudKit record name, so
+            // discard those cache rows and recreate them with hashed keys.
+            migration.deleteData(forType: MediaTranscript.className())
         }
     }
 

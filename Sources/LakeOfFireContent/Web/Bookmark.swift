@@ -217,6 +217,7 @@ public extension Bookmark {
 //            await realm.asyncRefresh()
             try realm.writeIfNeeded {
                 realm.add(bookmark, update: .modified)
+                bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
             return bookmark
         }
