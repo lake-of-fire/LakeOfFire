@@ -397,6 +397,18 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     }
 }
 
+extension Feed: SyncSkippablePropertiesModel {
+    public func skipSyncingProperties() -> Set<String>? {
+        [
+            "lastViewedAt",
+            "lastSeenFeedEntriesAt",
+            "lastRefreshedEntriesAt",
+            "lastFetchedETag",
+            "lastFetchedModifiedAt",
+        ]
+    }
+}
+
 public extension Feed {
     var entryContentKind: ReaderContentKind {
         get { ReaderContentKind(rawValue: entryContentKindRawValue) ?? .readerContent }
@@ -1282,7 +1294,8 @@ fileprivate func isSuccessfulFeedRefreshStatus(_ statusCode: Int) -> Bool {
 fileprivate func getRssData(
     rssUrl: URL,
     lastFetchedETag: String?,
-    lastFetchedModifiedAt: Date?
+    lastFetchedModifiedAt: Date?,
+    allowNotModified: Bool = true
 ) async throws -> FeedFetchResult {
     let shouldLogNiponica = isNiponicaFeedURL(rssUrl)
     if shouldLogNiponica {
@@ -1313,12 +1326,14 @@ fileprivate func getRssData(
     }
     switch headHTTPResponse.statusCode {
     case 304:
-        if shouldLogNiponica {
-            logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=head status=304")
+        if allowNotModified {
+            if shouldLogNiponica {
+                logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=head status=304")
+            }
+            return .notModified(metadata: headMetadata)
         }
-        return .notModified(metadata: headMetadata)
     case let statusCode where isSuccessfulFeedRefreshStatus(statusCode):
-        if isFeedUnchanged(
+        if allowNotModified, isFeedUnchanged(
             remoteMetadata: headMetadata,
             lastFetchedETag: lastFetchedETag,
             lastFetchedModifiedAt: lastFetchedModifiedAt
@@ -1359,17 +1374,20 @@ fileprivate func getRssData(
     }
     switch getHTTPResponse.statusCode {
     case 304:
-        if shouldLogNiponica {
-            logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=get status=304")
+        if allowNotModified {
+            if shouldLogNiponica {
+                logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=get status=304")
+            }
+            return .notModified(metadata: getMetadata)
         }
-        return .notModified(metadata: getMetadata)
+        throw FeedError.downloadFailed
     case 200..<300:
         return .fetched(data, metadata: getMetadata)
     case 300..<400:
         if shouldLogNiponica {
-            logNiponica("stage=feedFetch.http.notModified rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=redirectStatus")
+            logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=unhandledRedirect")
         }
-        return .notModified(metadata: getMetadata)
+        throw FeedError.downloadFailed
     default:
         if shouldLogNiponica {
             logNiponica("stage=feedFetch.http.error rssURL=\(rssUrl.absoluteString) phase=get status=\(getHTTPResponse.statusCode) reason=badStatus")
@@ -1730,7 +1748,7 @@ public extension Feed {
                 "stage=feed.fetch.begin feedID=\(id.uuidString) title=\(title) rssURL=\(rssUrl.absoluteString) lastViewedAt=\(lastViewedAt?.description ?? "nil") lastRefreshedEntriesAt=\(lastRefreshedEntriesAt?.description ?? "nil") lastFetchedModifiedAt=\(lastFetchedModifiedAt?.description ?? "nil") lastFetchedETag=\(lastFetchedETag ?? "nil")"
             )
         }
-        let fetchResult: FeedFetchResult
+        var fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
                 rssUrl: rssUrl,
@@ -1744,6 +1762,19 @@ public extension Feed {
                 )
             }
             throw error
+        }
+        if case .notModified = fetchResult,
+           getEntries()?.isEmpty != false {
+            // A validator can outlive a purged/failed local feed cache. Retry
+            // once without conditions and require a response body rather than
+            // accepting a second 304 that would leave the feed permanently
+            // empty.
+            fetchResult = try await getRssData(
+                rssUrl: rssUrl,
+                lastFetchedETag: nil,
+                lastFetchedModifiedAt: nil,
+                allowNotModified: false
+            )
         }
         switch fetchResult {
         case .notModified(let metadata):

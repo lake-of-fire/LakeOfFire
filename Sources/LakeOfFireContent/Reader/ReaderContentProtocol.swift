@@ -693,6 +693,7 @@ public extension ReaderContentProtocol {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(record, update: .modified)
+                record.refreshChangeMetadata(explicitlyModified: true)
             }
             
             try await record.refreshDemotedStatus()

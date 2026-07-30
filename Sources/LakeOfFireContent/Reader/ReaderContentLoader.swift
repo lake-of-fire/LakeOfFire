@@ -326,6 +326,7 @@ public struct ReaderContentLoader {
 //                    await historyRealm.asyncRefresh()
                     try await historyRealm.asyncWrite {
                         historyRealm.add(historyRecord, update: .modified)
+                        historyRecord.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
                 match = historyRecord
@@ -422,6 +423,7 @@ public struct ReaderContentLoader {
 //            await historyRealm.asyncRefresh()
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
+                historyRecord.refreshChangeMetadata(explicitlyModified: true)
             }
 
             

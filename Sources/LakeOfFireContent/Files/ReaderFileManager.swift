@@ -825,6 +825,7 @@ public class ReaderFileManager: ObservableObject {
                                         pathExtension: readerFileURL.lakePathExtension
                                     )
                                     realm.add(contentFile, update: .modified)
+                                    contentFile.refreshChangeMetadata(explicitlyModified: true)
                                     updatedFiles.append(contentFile)
                                 }
                                 allFileRefs.append(ThreadSafeReference(to: contentFile))

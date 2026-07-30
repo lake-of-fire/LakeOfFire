@@ -42,7 +42,11 @@ public extension LibraryDataManager {
 
         await realm.asyncRefresh()
         try await realm.asyncWrite {
-            category.isArchived = false
+            if category.isArchived || category.isDeleted {
+                category.isArchived = false
+                category.isDeleted = false
+                category.refreshChangeMetadata(explicitlyModified: true)
+            }
             if !libraryConfiguration.categoryIDs.contains(category.id) {
                 libraryConfiguration.categoryIDs.append(category.id)
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)

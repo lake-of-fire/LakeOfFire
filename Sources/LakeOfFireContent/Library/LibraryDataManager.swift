@@ -185,6 +185,9 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     for index in sortedIndexes {
                         primaryConfiguration.categoryIDs.remove(at: index)
                     }
+                    primaryConfiguration.refreshChangeMetadata(
+                        explicitlyModified: true
+                    )
                 }
             }
 
@@ -271,6 +274,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.add(newConfiguration, update: .modified)
+            newConfiguration.refreshChangeMetadata(explicitlyModified: true)
         }
         return newConfiguration
     }
@@ -449,6 +453,7 @@ public class LibraryDataManager: NSObject {
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.add(category, update: .modified)
+            category.refreshChangeMetadata(explicitlyModified: true)
         }
         if addToLibrary {
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
@@ -473,6 +478,7 @@ public class LibraryDataManager: NSObject {
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.add(feed, update: .modified)
+            feed.refreshChangeMetadata(explicitlyModified: true)
         }
         return feed.id
     }
@@ -541,6 +547,7 @@ public class LibraryDataManager: NSObject {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(feed, update: .modified)
+                feed.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         return feed
@@ -553,13 +560,13 @@ public class LibraryDataManager: NSObject {
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
-        value.refreshChangeMetadata(explicitlyModified: true)
         value.isDeleted = false
         value.isArchived = false
         value.categoryID = category.id
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
-            realm.create(Feed.self, value: value, update: .modified)
+            let duplicatedFeed = realm.create(Feed.self, value: value, update: .modified)
+            duplicatedFeed.refreshChangeMetadata(explicitlyModified: true)
         }
         return value.id
     }
@@ -573,6 +580,7 @@ public class LibraryDataManager: NSObject {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(script, update: .modified)
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
 //            await realm.asyncRefresh()
@@ -640,6 +648,7 @@ public class LibraryDataManager: NSObject {
 //                    await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         script.isDeleted = true
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
                 try Task.checkCancellation()
@@ -649,7 +658,7 @@ public class LibraryDataManager: NSObject {
         // Add new scripts
         try Task.checkCancellation()
         for script in allImportedScripts {
-            if !configuration.userScriptIDs.contains(where: { $0 != script.id }) {
+            if !configuration.userScriptIDs.contains(script.id) {
                 var lastNeighborIdx = configuration.userScriptIDs.count - 1
                 if let downloadURL = download?.url, let userScripts = configuration.getUserScripts() {
                     lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
@@ -884,6 +893,7 @@ public class LibraryDataManager: NSObject {
                     try await realm.asyncWrite {
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
                         realm.add(feed, update: .modified)
+                        feed.refreshChangeMetadata(explicitlyModified: true)
                     }
                     importedFeeds.append(feed)
                 }
@@ -913,6 +923,7 @@ public class LibraryDataManager: NSObject {
                     try await realm.asyncWrite {
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                         realm.add(script, update: .modified)
+                        script.refreshChangeMetadata(explicitlyModified: true)
                         try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
                     importedScripts.append(script)
@@ -944,6 +955,7 @@ public class LibraryDataManager: NSObject {
 //                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             realm.add(category, update: .modified)
+                            category.refreshChangeMetadata(explicitlyModified: true)
                         }
                         importedCategories.append(category)
                     }
@@ -980,6 +992,7 @@ public class LibraryDataManager: NSObject {
                         )
                         try await realm.asyncWrite {
                             realm.add(directory, update: .modified)
+                            directory.refreshChangeMetadata(explicitlyModified: true)
                         }
                         importedDirectories.append(directory)
                     }
@@ -1014,17 +1027,32 @@ public class LibraryDataManager: NSObject {
         guard let realm = script.realm else { return }
         let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
 //        script.allowedDomains.removeAll()
+        func removeAllowedDomainID(_ domainID: UUID) {
+            while let index = script.allowedDomainIDs.firstIndex(of: domainID) {
+                script.allowedDomainIDs.remove(at: index)
+            }
+        }
         let allowedDomainIDs = Array(script.allowedDomainIDs)
-        for (idx, existingDomainID) in allowedDomainIDs.enumerated() {
-            guard let existingDomain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: existingDomainID), !existingDomain.isDeleted else {
-                script.allowedDomainIDs.remove(at: idx)
+        var didChangeScript = false
+        for existingDomainID in allowedDomainIDs {
+            guard let existingDomain = realm.object(
+                ofType: UserScriptAllowedDomain.self,
+                forPrimaryKey: existingDomainID
+            ) else {
+                removeAllowedDomainID(existingDomainID)
+                didChangeScript = true
                 continue
             }
             if !domains.contains(existingDomain.domain) {
-                existingDomain.isDeleted = true
-                script.allowedDomainIDs.remove(at: idx)
+                if !existingDomain.isDeleted {
+                    existingDomain.isDeleted = true
+                    existingDomain.refreshChangeMetadata(explicitlyModified: true)
+                }
+                removeAllowedDomainID(existingDomainID)
+                didChangeScript = true
             } else if existingDomain.isDeleted {
                 existingDomain.isDeleted = false
+                existingDomain.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         let existingDomains = script.getAllowedDomains()?.map { $0.domain } ?? []
@@ -1033,8 +1061,13 @@ public class LibraryDataManager: NSObject {
                 let newDomain = UserScriptAllowedDomain()
                 newDomain.domain = domain
                 realm.add(newDomain, update: .modified)
+                newDomain.refreshChangeMetadata(explicitlyModified: true)
                 script.allowedDomainIDs.append(newDomain.id)
+                didChangeScript = true
             }
+        }
+        if didChangeScript {
+            script.refreshChangeMetadata(explicitlyModified: true)
         }
         // TODO: Clean up orphan domain objects that appear due to some bug...
     }
