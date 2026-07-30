@@ -988,25 +988,25 @@ public class LibraryDataManager: NSObject {
                     importedDirectories.append(existingDirectory)
                 } else if let uuid {
                     directory = FeedDirectory()
-                    if let directory {
-                        directory.id = uuid
+                    if let createdDirectory = directory {
+                        createdDirectory.id = uuid
                         try await realm.asyncWrite {
-                            realm.add(directory, update: .modified)
+                            realm.add(createdDirectory, update: .modified)
                             try Self.applyAttributes(
                                 opml: opml,
                                 opmlEntry: opmlEntry,
-                                directory: directory,
+                                directory: createdDirectory,
                                 categoryID: categoryID,
                                 parentDirectoryID: directoryID,
                                 ordinal: ordinal,
                                 downloadURL: download?.url
                             )
-                            directory.refreshChangeMetadata(
+                            createdDirectory.refreshChangeMetadata(
                                 explicitlyModified: true,
                                 timestampPolicy: .preserve
                             )
                         }
-                        importedDirectories.append(directory)
+                        importedDirectories.append(createdDirectory)
                     }
                 }
             }
