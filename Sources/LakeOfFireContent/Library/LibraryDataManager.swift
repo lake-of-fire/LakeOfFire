@@ -557,13 +557,17 @@ public class LibraryDataManager: NSObject {
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
-        value.refreshChangeMetadata(explicitlyModified: true)
         value.isDeleted = false
         value.isArchived = false
         value.categoryID = category.id
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
-            realm.create(Feed.self, value: value, update: .modified)
+            let persistedFeed = realm.create(
+                Feed.self,
+                value: value,
+                update: .modified
+            )
+            persistedFeed.refreshChangeMetadata(explicitlyModified: true)
         }
         return value.id
     }
@@ -888,10 +892,15 @@ public class LibraryDataManager: NSObject {
 //                    await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         realm.add(feed, update: .modified)
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
-                        feed.refreshChangeMetadata(
-                            explicitlyModified: true,
-                            timestampPolicy: .preserve
+                        try Self.applyAttributes(
+                            opml: opml,
+                            opmlEntry: opmlEntry,
+                            feed: feed,
+                            categoryID: categoryID,
+                            directoryID: directoryID,
+                            ordinal: ordinal,
+                            timestampPolicy: .preserve,
+                            forceRecordMutation: true
                         )
                     }
                     importedFeeds.append(feed)
@@ -921,12 +930,14 @@ public class LibraryDataManager: NSObject {
 //                    await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         realm.add(script, update: .modified)
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
-                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
-                        script.refreshChangeMetadata(
-                            explicitlyModified: true,
-                            timestampPolicy: .preserve
+                        try Self.applyAttributes(
+                            opml: opml,
+                            opmlEntry: opmlEntry,
+                            script: script,
+                            timestampPolicy: .preserve,
+                            forceRecordMutation: true
                         )
+                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
                     importedScripts.append(script)
                 }
@@ -956,10 +967,13 @@ public class LibraryDataManager: NSObject {
 //                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             realm.add(category, update: .modified)
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category, downloadURL: download?.url)
-                            category.refreshChangeMetadata(
-                                explicitlyModified: true,
-                                timestampPolicy: .preserve
+                            try Self.applyAttributes(
+                                opml: opml,
+                                opmlEntry: opmlEntry,
+                                category: category,
+                                downloadURL: download?.url,
+                                timestampPolicy: .preserve,
+                                forceRecordMutation: true
                             )
                         }
                         importedCategories.append(category)
@@ -979,10 +993,6 @@ public class LibraryDataManager: NSObject {
                                 ordinal: ordinal,
                                 downloadURL: download?.url
                             )
-                            existingDirectory.refreshChangeMetadata(
-                                explicitlyModified: true,
-                                timestampPolicy: .preserve
-                            )
                         }
                     }
                     importedDirectories.append(existingDirectory)
@@ -999,11 +1009,9 @@ public class LibraryDataManager: NSObject {
                                 categoryID: categoryID,
                                 parentDirectoryID: directoryID,
                                 ordinal: ordinal,
-                                downloadURL: download?.url
-                            )
-                            createdDirectory.refreshChangeMetadata(
-                                explicitlyModified: true,
-                                timestampPolicy: .preserve
+                                downloadURL: download?.url,
+                                timestampPolicy: .preserve,
+                                forceRecordMutation: true
                             )
                         }
                         importedDirectories.append(createdDirectory)
@@ -1120,7 +1128,13 @@ public class LibraryDataManager: NSObject {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
+    static func applyAttributes(
+        opml: OPML,
+        opmlEntry: OPMLEntry,
+        script: UserScript,
+        timestampPolicy: ChangeMetadataTimestampPolicy = .refresh,
+        forceRecordMutation: Bool = false
+    ) throws {
         // Must be kept in sync with respective hasChanges
         var didChange = false
         
@@ -1173,8 +1187,11 @@ public class LibraryDataManager: NSObject {
             didChange = true
         }
         
-        if didChange {
-            script.refreshChangeMetadata(explicitlyModified: true)
+        if didChange || forceRecordMutation {
+            script.refreshChangeMetadata(
+                explicitlyModified: true,
+                timestampPolicy: timestampPolicy
+            )
         }
     }
     
@@ -1210,7 +1227,14 @@ public class LibraryDataManager: NSObject {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, category: FeedCategory, downloadURL: URL? = nil) throws {
+    static func applyAttributes(
+        opml: OPML,
+        opmlEntry: OPMLEntry,
+        category: FeedCategory,
+        downloadURL: URL? = nil,
+        timestampPolicy: ChangeMetadataTimestampPolicy = .refresh,
+        forceRecordMutation: Bool = false
+    ) throws {
         // Must be kept in sync with the respective hasChanges
         var didChange = false
         
@@ -1249,8 +1273,11 @@ public class LibraryDataManager: NSObject {
             didChange = true
         }
         
-        if didChange {
-            category.refreshChangeMetadata(explicitlyModified: true)
+        if didChange || forceRecordMutation {
+            category.refreshChangeMetadata(
+                explicitlyModified: true,
+                timestampPolicy: timestampPolicy
+            )
         }
     }
 
@@ -1307,7 +1334,9 @@ public class LibraryDataManager: NSObject {
         categoryID: UUID?,
         parentDirectoryID: UUID?,
         ordinal: Int? = nil,
-        downloadURL: URL?
+        downloadURL: URL?,
+        timestampPolicy: ChangeMetadataTimestampPolicy = .refresh,
+        forceRecordMutation: Bool = false
     ) throws {
         var didChange = false
 
@@ -1364,8 +1393,11 @@ public class LibraryDataManager: NSObject {
             didChange = true
         }
 
-        if didChange {
-            directory.refreshChangeMetadata(explicitlyModified: true)
+        if didChange || forceRecordMutation {
+            directory.refreshChangeMetadata(
+                explicitlyModified: true,
+                timestampPolicy: timestampPolicy
+            )
         }
     }
     
@@ -1438,7 +1470,16 @@ public class LibraryDataManager: NSObject {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, categoryID: UUID?, directoryID: UUID?, ordinal: Int? = nil) throws {
+    static func applyAttributes(
+        opml: OPML,
+        opmlEntry: OPMLEntry,
+        feed: Feed,
+        categoryID: UUID?,
+        directoryID: UUID?,
+        ordinal: Int? = nil,
+        timestampPolicy: ChangeMetadataTimestampPolicy = .refresh,
+        forceRecordMutation: Bool = false
+    ) throws {
         // Must be kept in sync with the respective hasChanges
         guard let feedURL = opmlEntry.feedURL else { return }
         
@@ -1529,8 +1570,11 @@ public class LibraryDataManager: NSObject {
             didChange = true
         }
         
-        if didChange {
-            feed.refreshChangeMetadata(explicitlyModified: true)
+        if didChange || forceRecordMutation {
+            feed.refreshChangeMetadata(
+                explicitlyModified: true,
+                timestampPolicy: timestampPolicy
+            )
         }
     }
     

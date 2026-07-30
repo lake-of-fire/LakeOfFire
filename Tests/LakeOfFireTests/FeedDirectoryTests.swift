@@ -1,4 +1,5 @@
 import XCTest
+import BigSyncKit
 import RealmSwift
 import RealmSwiftGaps
 import SwiftUIDownloads
@@ -68,6 +69,74 @@ final class FeedDirectoryTests: XCTestCase {
 
         try await verifyNestedOPMLImportAssignsMetadataAndSiblingOrdinals()
         try await verifyManagedOPMLImportMovesExistingRootFeedIntoNewDirectory()
+    }
+
+    func testDuplicateFeedJournalsThePersistedManagedFeed() async throws {
+        Self.realmConfigurationSemaphore.wait()
+        defer { Self.realmConfigurationSemaphore.signal() }
+
+        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalFeedConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedConfiguration
+        }
+
+        var config = DefaultRealmConfiguration.configuration
+        config.inMemoryIdentifier = "duplicate-feed-\(UUID().uuidString)"
+        config.objectTypes = (config.objectTypes ?? []) + [
+            BigSyncPendingMutation.self,
+        ]
+        LibraryDataManager.realmConfiguration = config
+        ReaderContentLoader.feedEntryRealmConfiguration = config
+
+        let references = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+            let category = FeedCategory()
+            category.title = "Original category"
+            let feed = Feed()
+            feed.categoryID = category.id
+            feed.title = "Original feed"
+            feed.markdownDescription = ""
+            feed.rssUrl = URL(string: "https://example.com/feed.xml")!
+            feed.iconUrl = URL(string: "https://example.com/favicon.ico")!
+            try await realm.asyncWrite {
+                realm.add(category)
+                realm.add(feed)
+            }
+            return (
+                ThreadSafeReference(to: feed),
+                ThreadSafeReference(to: category)
+            )
+        }()
+
+        let duplicatedID = try await LibraryDataManager().duplicateFeed(
+            references.0,
+            inCategory: references.1,
+            overwriteExisting: false
+        )
+        let resolvedID = try XCTUnwrap(duplicatedID)
+
+        let journalSnapshot = try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
+            let duplicated = realm.object(
+                ofType: Feed.self,
+                forPrimaryKey: resolvedID
+            )
+            let mutation = realm.objects(BigSyncPendingMutation.self)
+                .where {
+                    $0.entityType == Feed.className() &&
+                    $0.objectIdentifier == resolvedID.uuidString
+                }
+                .first
+            return (duplicated?.title, mutation?.recordName)
+        }()
+
+        XCTAssertEqual(journalSnapshot.0, "Original feed")
+        XCTAssertEqual(
+            journalSnapshot.1,
+            Feed.className() + "." + resolvedID.uuidString
+        )
     }
 
     private func verifyNestedOPMLImportAssignsMetadataAndSiblingOrdinals() async throws {
