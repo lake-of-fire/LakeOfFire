@@ -68,6 +68,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
             } else if !script.isArchived {
                 script.isArchived = true
             }
+            script.refreshChangeMetadata(explicitlyModified: true)
         }
     }
     

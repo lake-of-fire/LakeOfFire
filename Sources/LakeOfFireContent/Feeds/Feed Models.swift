@@ -545,6 +545,10 @@ public extension Feed {
             }
             feed.explicitlyModifiedAt = now
             feed.modifiedAt = now
+            feed.refreshChangeMetadata(
+                explicitlyModified: true,
+                timestampPolicy: .preserve
+            )
         }
     }
 

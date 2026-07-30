@@ -887,8 +887,12 @@ public class LibraryDataManager: NSObject {
                     try Task.checkCancellation()
 //                    await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
                         realm.add(feed, update: .modified)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID, directoryID: directoryID, ordinal: ordinal)
+                        feed.refreshChangeMetadata(
+                            explicitlyModified: true,
+                            timestampPolicy: .preserve
+                        )
                     }
                     importedFeeds.append(feed)
                 }
@@ -916,9 +920,13 @@ public class LibraryDataManager: NSObject {
                     try Task.checkCancellation()
 //                    await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                         realm.add(script, update: .modified)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                         try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
+                        script.refreshChangeMetadata(
+                            explicitlyModified: true,
+                            timestampPolicy: .preserve
+                        )
                     }
                     importedScripts.append(script)
                 }
@@ -945,10 +953,14 @@ public class LibraryDataManager: NSObject {
                         if let downloadURL = download?.url {
                             category.opmlURL = downloadURL
                         }
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category, downloadURL: download?.url)
 //                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             realm.add(category, update: .modified)
+                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category, downloadURL: download?.url)
+                            category.refreshChangeMetadata(
+                                explicitlyModified: true,
+                                timestampPolicy: .preserve
+                            )
                         }
                         importedCategories.append(category)
                     }
@@ -967,6 +979,10 @@ public class LibraryDataManager: NSObject {
                                 ordinal: ordinal,
                                 downloadURL: download?.url
                             )
+                            directory.refreshChangeMetadata(
+                                explicitlyModified: true,
+                                timestampPolicy: .preserve
+                            )
                         }
                     }
                     importedDirectories.append(existingDirectory)
@@ -974,17 +990,21 @@ public class LibraryDataManager: NSObject {
                     directory = FeedDirectory()
                     if let directory {
                         directory.id = uuid
-                        try Self.applyAttributes(
-                            opml: opml,
-                            opmlEntry: opmlEntry,
-                            directory: directory,
-                            categoryID: categoryID,
-                            parentDirectoryID: directoryID,
-                            ordinal: ordinal,
-                            downloadURL: download?.url
-                        )
                         try await realm.asyncWrite {
                             realm.add(directory, update: .modified)
+                            try Self.applyAttributes(
+                                opml: opml,
+                                opmlEntry: opmlEntry,
+                                directory: directory,
+                                categoryID: categoryID,
+                                parentDirectoryID: directoryID,
+                                ordinal: ordinal,
+                                downloadURL: download?.url
+                            )
+                            directory.refreshChangeMetadata(
+                                explicitlyModified: true,
+                                timestampPolicy: .preserve
+                            )
                         }
                         importedDirectories.append(directory)
                     }
