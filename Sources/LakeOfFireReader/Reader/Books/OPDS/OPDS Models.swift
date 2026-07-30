@@ -25,4 +25,31 @@ public class OPDSCatalog: Object, UnownedSyncableObject, ObjectKeyIdentifiable {
     public var needsSyncToAppServer: Bool {
         return false
     }
+
+    @discardableResult
+    public static func add(
+        title: String,
+        url: String,
+        to realm: Realm,
+        at timestamp: Date = Date()
+    ) -> OPDSCatalog {
+        let catalog = OPDSCatalog()
+        catalog.title = title
+        catalog.url = url
+        realm.add(catalog, update: .modified)
+        catalog.refreshChangeMetadata(
+            explicitlyModified: true,
+            at: timestamp
+        )
+        return catalog
+    }
+
+    public func softDelete(at timestamp: Date = Date()) {
+        guard !isDeleted else { return }
+        isDeleted = true
+        refreshChangeMetadata(
+            explicitlyModified: true,
+            at: timestamp
+        )
+    }
 }

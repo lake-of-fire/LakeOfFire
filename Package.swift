@@ -219,6 +219,7 @@ let package = Package(
             dependencies: [
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
+                .product(name: "BigSyncKit", package: "BigSyncKit"),
                 "LakeOfFireContent",
                 "LakeOfFireCore",
                 "LakeOfFireReader",
