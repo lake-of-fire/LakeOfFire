@@ -5282,7 +5282,6 @@ class Reader {
     #mainDocumentSwipeState = null;
     #pageTurnInFlight = false;
     #queuedPageTurnRun = null;
-    #activeLookupNavigationToken = null;
     initialDisplaySettled = false;
     hasReachedLoadingDidDisplayBoundary = false;
     initialDisplaySettledPromise = null;
@@ -8808,71 +8807,11 @@ class Reader {
             failureReason: moved ? null : 'pageTurnNotHandled',
         };
     }
-    #isLookupNavigationTokenActive(token) {
-        return typeof token === 'string'
-            && token.length > 0
-            && this.#activeLookupNavigationToken === token;
-    }
-    isLookupNavigationTokenActive(token) {
-        return this.#isLookupNavigationTokenActive(token);
-    }
-    #clearLookupNavigationTokenIfActive(token) {
-        if (token && this.#activeLookupNavigationToken === token) {
-            this.#activeLookupNavigationToken = null;
-        }
-    }
-    #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.destination') {
-        const renderer = this.view?.renderer;
-        const currentContentIndex = getPrimaryRendererContentIndex(renderer);
-        const contents = activeRendererContentsForLookup(renderer);
-        const exactContents = Number.isFinite(currentContentIndex)
-            ? contents.filter((content) => content?.index === currentContentIndex)
-            : [];
-        for (const content of exactContents.length > 0 ? exactContents : contents) {
-            const doc = content?.doc || content?.document || null;
-            if (!isDocumentLike(doc) || isCacheWarmerDocument(doc.defaultView?.document)) {
-                continue;
-            }
-            const visibleRange = this.#visibleRangeForDocument(doc);
-            this.#visiblePageSegmentResult(doc, visibleRange, reason, {
-                postIfCached: true,
-                includeClientRects: true,
-                postLookupTargets: true,
-                prepareLookupIndex: true,
-                hydrateStatuses: false,
-            });
-        }
-    }
-    async #openLookupNavigationDestination(request) {
-        const views = this.#lookupContentWindows(request.destinationContentIndex);
-        for (const view of views) {
-            if (request.navigationToken && !this.#isLookupNavigationTokenActive(request.navigationToken)) {
-                return { opened: false, failureReason: 'superseded' };
-            }
-            const open = view?.manabi_openVisibleLookupTargetAfterPageTurn;
-            if (typeof open !== 'function') {
-                continue;
-            }
-            const result = await open(request);
-            if (result?.opened === true) {
-                return result;
-            }
-        }
-        return { opened: false, failureReason: 'noDestinationTarget' };
-    }
     async performLookupNavigationPageTurn(request = {}) {
         const kind = request.kind === 'sentence' || request.kind === 'section'
             ? request.kind
             : 'word';
         const direction = request.direction === 'previous' ? 'previous' : 'next';
-        const navigationToken = typeof request.navigationToken === 'string' && request.navigationToken.length > 0
-            ? request.navigationToken
-            : null;
-        if (navigationToken) {
-            this.#activeLookupNavigationToken = navigationToken;
-        }
-        const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
-        const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
         let turnResult;
         try {
             turnResult = await this.#turnLookupNavigationPage(direction);
@@ -8885,7 +8824,6 @@ class Reader {
         }
         const moved = turnResult?.moved === true;
         if (!moved) {
-            this.#clearLookupNavigationTokenIfActive(navigationToken);
             return {
                 opened: false,
                 pageTurnAttempted: true,
@@ -8894,87 +8832,21 @@ class Reader {
                 failureReason: turnResult?.failureReason || 'pageTurnDidNotMove',
                 kind,
                 direction,
-                navigationToken,
                 turnResult,
             };
-        }
-        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
-            return {
-                opened: false,
-                pageTurnAttempted: true,
-                pageTurnRequested: true,
-                moved: true,
-                failureReason: 'superseded',
-                kind,
-                direction,
-                navigationToken,
-                turnResult,
-            };
-        }
-        const positionAfterTurn = await this.#physicalPagePositionSnapshot();
-        await this.#waitForAnimationFrames(1);
-        const settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
-        const crossedSection = (
-            Number.isFinite(positionBeforeTurn?.index)
-            && Number.isFinite(settledPositionAfterTurn?.index)
-            && positionBeforeTurn.index !== settledPositionAfterTurn.index
-        ) || (
-            Number.isFinite(positionBeforeTurn?.sectionIndex)
-            && Number.isFinite(settledPositionAfterTurn?.sectionIndex)
-            && positionBeforeTurn.sectionIndex !== settledPositionAfterTurn.sectionIndex
-        );
-        if (crossedSection && this.displaySettledSequence === displaySettledSequenceBeforeTurn) {
-            try {
-                await this.waitForNextDisplaySettled('lookup-navigation.destination', { timeoutMs: 3000 });
-            } catch (_error) {
-                // A missed renderer boundary must not turn one tap into a page-search loop.
-            }
-        }
-        const destinationPositionAfterSettlement = crossedSection
-            ? await this.#physicalPagePositionSnapshot()
-            : settledPositionAfterTurn;
-        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
-            return {
-                opened: false,
-                pageTurnAttempted: true,
-                pageTurnRequested: true,
-                moved: true,
-                failureReason: 'superseded',
-                kind,
-                direction,
-                navigationToken,
-                turnResult,
-            };
-        }
-        this.#refreshLookupNavigationVisibleTargets('lookup-navigation.destination');
-        let destinationResult;
-        try {
-            destinationResult = await this.#openLookupNavigationDestination({
-                ...request,
-                kind,
-                direction,
-                navigationToken,
-                destinationContentIndex: destinationPositionAfterSettlement?.index
-                    ?? settledPositionAfterTurn?.index
-                    ?? positionAfterTurn?.index
-                    ?? null,
-            });
-        } finally {
-            this.#clearLookupNavigationTokenIfActive(navigationToken);
         }
         return {
-            opened: destinationResult?.opened === true,
+            // A boundary gesture is one physical page turn only. Reopening a
+            // lookup after a section load races the renderer and can leave the
+            // outgoing popover presentation in an indeterminate state.
+            opened: false,
             pageTurnAttempted: true,
             pageTurnRequested: true,
             moved: true,
-            failureReason: destinationResult?.opened === true
-                ? null
-                : (destinationResult?.failureReason || null),
+            failureReason: null,
             kind,
             direction,
-            navigationToken,
             turnResult,
-            destinationResult,
         };
     }
     #installVisibleRendererGoToGuard() {
@@ -11485,10 +11357,6 @@ window.manabi_performLookupNavigationPageTurn = async (request = {}) => {
         moved: false,
         failureReason: 'missingReader',
     };
-}
-
-window.manabi_isLookupNavigationTokenActive = (token) => {
-    return globalThis.reader?.isLookupNavigationTokenActive?.(token) === true;
 }
 
 window.manabiGetReaderGoToSheetSnapshot = async () => {
