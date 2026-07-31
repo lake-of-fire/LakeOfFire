@@ -41,6 +41,57 @@ final class SyncMutationBoundaryTests: XCTestCase {
         )
     }
 
+    func testRepeatedFollowingFeedGroupUpdateDoesNotRewriteOrRejournalFeeds() throws {
+        let configuration = makeConfiguration()
+        let realm = try Realm(configuration: configuration)
+        let first = makeFeed(url: "https://example.com/feed.xml")
+        let duplicate = makeFeed(
+            url: "https://EXAMPLE.com:443/feed.xml#fragment"
+        )
+        try realm.write {
+            realm.add(first)
+            realm.add(duplicate)
+            Feed.setFollowingStatusForFeedGroup(
+                containing: first,
+                isFollowed: true,
+                in: realm,
+                now: Date(timeIntervalSinceReferenceDate: 54_000)
+            )
+        }
+        let firstGeneration = try XCTUnwrap(
+            pendingMutation(for: first, in: realm)?.generation
+        )
+        let duplicateGeneration = try XCTUnwrap(
+            pendingMutation(for: duplicate, in: realm)?.generation
+        )
+
+        try realm.write {
+            Feed.setFollowingStatusForFeedGroup(
+                containing: first,
+                isFollowed: true,
+                in: realm,
+                now: Date(timeIntervalSinceReferenceDate: 55_000)
+            )
+        }
+
+        XCTAssertEqual(
+            first.modifiedAt,
+            Date(timeIntervalSinceReferenceDate: 54_000)
+        )
+        XCTAssertEqual(
+            duplicate.modifiedAt,
+            Date(timeIntervalSinceReferenceDate: 54_000)
+        )
+        XCTAssertEqual(
+            pendingMutation(for: first, in: realm)?.generation,
+            firstGeneration
+        )
+        XCTAssertEqual(
+            pendingMutation(for: duplicate, in: realm)?.generation,
+            duplicateGeneration
+        )
+    }
+
     func testChangingCategoryBadgePreferenceJournalsOnlyChangedVisibleFeeds() throws {
         let configuration = makeConfiguration()
         let realm = try Realm(configuration: configuration)

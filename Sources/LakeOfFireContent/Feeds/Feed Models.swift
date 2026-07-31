@@ -551,6 +551,12 @@ public extension Feed {
         let feedIDs = Set(plan.feedIDs)
 
         for feed in feeds where feedIDs.contains(feed.id) {
+            let followingOrdinal =
+                plan.followingOrdinal ?? feed.followingOrdinal
+            guard feed.isFollowed != plan.isFollowed
+                    || feed.followingOrdinal != followingOrdinal else {
+                continue
+            }
             feed.isFollowed = plan.isFollowed
             if let ordinal = plan.followingOrdinal {
                 feed.followingOrdinal = ordinal
