@@ -8,18 +8,13 @@ import Foundation
 private class BundleFinder {}
 extension Foundation.Bundle {
 /// Since LakeOfFireContent is a static library, the bundle containing the resources is copied into the final product.
-    static let module: Bundle = {
+    nonisolated static let module: Bundle = {
         let bundleName = "LakeOfFire_LakeOfFireContent"
-        let hostBundle = Bundle(for: BundleFinder.self)
+        let bundleFinderResourceURL = Bundle(for: BundleFinder.self).resourceURL
         var candidates = [
-            hostBundle.privateFrameworksURL,
-            hostBundle.bundleURL.appendingPathComponent("Frameworks"),
-            hostBundle.bundleURL,
-            hostBundle.resourceURL,
-            Bundle.main.privateFrameworksURL,
-            Bundle.main.bundleURL.appendingPathComponent("Frameworks"),
-            Bundle.main.bundleURL,
             Bundle.main.resourceURL,
+            bundleFinderResourceURL,
+            Bundle.main.bundleURL,
         ]
         // This is a fix to make Previews work with bundled resources.
         // Logic here is taken from SPM's generated `resource_bundle_accessors.swift` file,
@@ -41,11 +36,9 @@ extension Foundation.Bundle {
         // This is a fix to make unit tests work with bundled resources.
         // Making this change allows unit tests to search one directory up for a bundle.
         // More context can be found in this PR: https://github.com/tuist/tuist/pull/6895
-        if ProcessInfo.processInfo.processName == "xctest"
-            || ProcessInfo.processInfo.processName == "swift-testing"
-        {
-            candidates.append(hostBundle.bundleURL.appendingPathComponent(".."))
-        }
+        #if canImport(XCTest)
+        candidates.append(bundleFinderResourceURL?.appendingPathComponent(".."))
+        #endif
 
         for candidate in candidates {
             let bundlePath = candidate?.appendingPathComponent(bundleName + ".bundle")
