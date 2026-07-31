@@ -1,5 +1,6 @@
 import BigSyncKit
 import RealmSwift
+import RealmSwiftGaps
 import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
