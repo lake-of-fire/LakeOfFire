@@ -8747,8 +8747,11 @@ class Reader {
             positionBeforeTurn,
             positionAfterTurn
         );
-        if (changed === true || typeof result === 'boolean') {
-            return changed ?? result;
+        if (changed === true) {
+            return true;
+        }
+        if (result === false) {
+            return false;
         }
         // Some paginator transitions resolve before the next renderer position
         // snapshot. Give that same physical turn one frame to publish its state;
@@ -8812,6 +8815,11 @@ class Reader {
     }
     isLookupNavigationTokenActive(token) {
         return this.#isLookupNavigationTokenActive(token);
+    }
+    #clearLookupNavigationTokenIfActive(token) {
+        if (token && this.#activeLookupNavigationToken === token) {
+            this.#activeLookupNavigationToken = null;
+        }
     }
     #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.destination') {
         const renderer = this.view?.renderer;
@@ -8877,6 +8885,7 @@ class Reader {
         }
         const moved = turnResult?.moved === true;
         if (!moved) {
+            this.#clearLookupNavigationTokenIfActive(navigationToken);
             return {
                 opened: false,
                 pageTurnAttempted: true,
@@ -8921,6 +8930,9 @@ class Reader {
                 // A missed renderer boundary must not turn one tap into a page-search loop.
             }
         }
+        const destinationPositionAfterSettlement = crossedSection
+            ? await this.#physicalPagePositionSnapshot()
+            : settledPositionAfterTurn;
         if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
             return {
                 opened: false,
@@ -8935,13 +8947,21 @@ class Reader {
             };
         }
         this.#refreshLookupNavigationVisibleTargets('lookup-navigation.destination');
-        const destinationResult = await this.#openLookupNavigationDestination({
-            ...request,
-            kind,
-            direction,
-            navigationToken,
-            destinationContentIndex: settledPositionAfterTurn?.index ?? positionAfterTurn?.index ?? null,
-        });
+        let destinationResult;
+        try {
+            destinationResult = await this.#openLookupNavigationDestination({
+                ...request,
+                kind,
+                direction,
+                navigationToken,
+                destinationContentIndex: destinationPositionAfterSettlement?.index
+                    ?? settledPositionAfterTurn?.index
+                    ?? positionAfterTurn?.index
+                    ?? null,
+            });
+        } finally {
+            this.#clearLookupNavigationTokenIfActive(navigationToken);
+        }
         return {
             opened: destinationResult?.opened === true,
             pageTurnAttempted: true,
