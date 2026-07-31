@@ -234,12 +234,23 @@ public extension Bookmark {
 //    }
     
     @RealmBackgroundActor
-    static func removeAll(realmConfiguration: Realm.Configuration) async throws {
+    static func removeAll(
+        realmConfiguration: Realm.Configuration,
+        at date: Date = Date()
+    ) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
-//        await realm.asyncRefresh()
+        let activeRecords = Array(
+            realm.objects(self).filter("isDeleted == false")
+        )
+        guard !activeRecords.isEmpty else { return }
         try await realm.asyncWrite {
-            realm.objects(self).setValue(true, forKey: "isDeleted")
-            realm.objects(self).setValue(Date(), forKey: "modifiedAt")
+            for record in activeRecords where !record.isDeleted {
+                record.isDeleted = true
+                record.refreshChangeMetadata(
+                    explicitlyModified: true,
+                    at: date
+                )
+            }
         }
     }
 }

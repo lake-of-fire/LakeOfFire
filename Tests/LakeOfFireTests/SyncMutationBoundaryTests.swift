@@ -152,15 +152,91 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertEqual(pendingMutation(for: catalog, in: realm)?.changedAt, deletedAt)
     }
 
-    private func makeConfiguration() -> Realm.Configuration {
+    @RealmBackgroundActor
+    func testEbookMetadataJournalsPublicationOnlyUpdateOnce() async throws {
+        let configuration = makeConfiguration(objectTypes: [ContentFile.self])
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let file = ContentFile()
+        file.url = URL(string: "ebook://ebook/load/test.epub")!
+        file.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(file)
+        }
+        let publicationDate = Date(timeIntervalSinceReferenceDate: 56_000)
+        let mutationDate = Date(timeIntervalSinceReferenceDate: 57_000)
+
+        try await EbookFileManager.applyMetadataUpdates(
+            images: [],
+            titles: [],
+            authors: [],
+            publicationDates: [(file, publicationDate)],
+            physicalMedia: [],
+            in: realm,
+            at: mutationDate
+        )
+
+        XCTAssertEqual(file.publicationDate, publicationDate)
+        let firstGeneration = try XCTUnwrap(
+            pendingMutation(for: file, in: realm)?.generation
+        )
+        XCTAssertEqual(pendingMutation(for: file, in: realm)?.changedAt, mutationDate)
+
+        try await EbookFileManager.applyMetadataUpdates(
+            images: [],
+            titles: [],
+            authors: [],
+            publicationDates: [(file, publicationDate)],
+            physicalMedia: [],
+            in: realm,
+            at: mutationDate.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(
+            pendingMutation(for: file, in: realm)?.generation,
+            firstGeneration
+        )
+    }
+
+    @RealmBackgroundActor
+    func testBulkBookmarkRemovalCreatesDurableTombstones() async throws {
+        let configuration = makeConfiguration(objectTypes: [Bookmark.self])
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let first = Bookmark()
+        first.url = URL(string: "https://example.com/first")!
+        first.updateCompoundKey()
+        let second = Bookmark()
+        second.url = URL(string: "https://example.com/second")!
+        second.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(first)
+            realm.add(second)
+        }
+        let deletionDate = Date(timeIntervalSinceReferenceDate: 58_000)
+
+        try await Bookmark.removeAll(
+            realmConfiguration: configuration,
+            at: deletionDate
+        )
+
+        XCTAssertTrue(first.isDeleted)
+        XCTAssertTrue(second.isDeleted)
+        XCTAssertEqual(pendingMutation(for: first, in: realm)?.changedAt, deletionDate)
+        XCTAssertEqual(pendingMutation(for: second, in: realm)?.changedAt, deletionDate)
+    }
+
+    private func makeConfiguration(
+        objectTypes: [Object.Type] = [Feed.self, OPDSCatalog.self]
+    ) -> Realm.Configuration {
         var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString
         )
-        configuration.objectTypes = [
-            Feed.self,
-            OPDSCatalog.self,
-            BigSyncPendingMutation.self,
-        ]
+        configuration.objectTypes = objectTypes + [BigSyncPendingMutation.self]
         BigSyncMutationTracking.install(
             configurations: [configuration],
             excludedClassNames: []
