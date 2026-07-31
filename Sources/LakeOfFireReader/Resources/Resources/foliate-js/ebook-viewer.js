@@ -5282,6 +5282,7 @@ class Reader {
     #mainDocumentSwipeState = null;
     #pageTurnInFlight = false;
     #queuedPageTurnRun = null;
+    #activeLookupNavigationToken = null;
     initialDisplaySettled = false;
     hasReachedLoadingDidDisplayBoundary = false;
     initialDisplaySettledPromise = null;
@@ -8688,6 +8689,9 @@ class Reader {
             : null;
         return {
             index: getPrimaryRendererContentIndex(renderer),
+            sectionIndex: Number.isFinite(this.view?.lastLocation?.sectionIndex)
+                ? this.view.lastLocation.sectionIndex
+                : null,
             page: Number.isFinite(metrics?.page) ? metrics.page : null,
             start: Number.isFinite(metrics?.start) ? metrics.start : null,
         };
@@ -8698,6 +8702,7 @@ class Reader {
         }
         const comparablePairs = [
             [before.index, after.index],
+            [before.sectionIndex, after.sectionIndex],
             [before.page, after.page],
         ].filter(([first, second]) => (
             Number.isFinite(first) && Number.isFinite(second)
@@ -8720,10 +8725,7 @@ class Reader {
             : (k === 'ArrowRight' || k === 'l' ? 'goRight' : null);
         if (!method) return false;
 
-        const needsPositionFallback = typeof renderer.pageMetrics !== 'function';
-        const positionBeforeTurn = needsPositionFallback
-            ? await this.#physicalPagePositionSnapshot()
-            : null;
+        const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
         const result = await this.#runPageTurn({
             stage: 'pageTurn.keydown',
             markInputSource: `pageTurn.keydown.${k}`,
@@ -8740,17 +8742,20 @@ class Reader {
         if (result?.ignored === true) {
             return false;
         }
-        if (typeof result === 'boolean') {
-            return result;
-        }
-        if (!needsPositionFallback) {
-            return true;
-        }
         const positionAfterTurn = await this.#physicalPagePositionSnapshot();
-        return this.#physicalPagePositionChanged(
+        const changed = this.#physicalPagePositionChanged(
             positionBeforeTurn,
             positionAfterTurn
-        ) ?? true;
+        );
+        if (changed === true || typeof result === 'boolean') {
+            return changed ?? result;
+        }
+        // Some paginator transitions resolve before the next renderer position
+        // snapshot. Give that same physical turn one frame to publish its state;
+        // never turn the retry into another page-navigation request.
+        await this.#waitForAnimationFrames(1);
+        const settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
+        return this.#physicalPagePositionChanged(positionBeforeTurn, settledPositionAfterTurn) === true;
     }
     async handlePhysicalArrowKey(direction, navigationDetails = {}) {
         const key = direction === 'left'
@@ -8761,9 +8766,13 @@ class Reader {
         if (!key) return false;
         return await this.#handleKeydown({ key }, navigationDetails) === true;
     }
-    #lookupContentWindows() {
+    #lookupContentWindows(preferredContentIndex = null) {
         const renderer = this.view?.renderer;
-        return activeRendererContentsForLookup(renderer)
+        const contents = activeRendererContentsForLookup(renderer);
+        const exactContents = Number.isFinite(preferredContentIndex)
+            ? contents.filter((content) => content?.index === preferredContentIndex)
+            : [];
+        return (exactContents.length > 0 ? exactContents : contents)
             .map((content) =>
                 content?.doc?.defaultView
                 || content?.document?.defaultView
@@ -8796,11 +8805,66 @@ class Reader {
             failureReason: moved ? null : 'pageTurnNotHandled',
         };
     }
+    #isLookupNavigationTokenActive(token) {
+        return typeof token === 'string'
+            && token.length > 0
+            && this.#activeLookupNavigationToken === token;
+    }
+    isLookupNavigationTokenActive(token) {
+        return this.#isLookupNavigationTokenActive(token);
+    }
+    #refreshLookupNavigationVisibleTargets(reason = 'lookup-navigation.destination') {
+        const renderer = this.view?.renderer;
+        const currentContentIndex = getPrimaryRendererContentIndex(renderer);
+        const contents = activeRendererContentsForLookup(renderer);
+        const exactContents = Number.isFinite(currentContentIndex)
+            ? contents.filter((content) => content?.index === currentContentIndex)
+            : [];
+        for (const content of exactContents.length > 0 ? exactContents : contents) {
+            const doc = content?.doc || content?.document || null;
+            if (!isDocumentLike(doc) || isCacheWarmerDocument(doc.defaultView?.document)) {
+                continue;
+            }
+            const visibleRange = this.#visibleRangeForDocument(doc);
+            this.#visiblePageSegmentResult(doc, visibleRange, reason, {
+                postIfCached: true,
+                includeClientRects: true,
+                postLookupTargets: true,
+                prepareLookupIndex: true,
+                hydrateStatuses: false,
+            });
+        }
+    }
+    async #openLookupNavigationDestination(request) {
+        const views = this.#lookupContentWindows(request.destinationContentIndex);
+        for (const view of views) {
+            if (request.navigationToken && !this.#isLookupNavigationTokenActive(request.navigationToken)) {
+                return { opened: false, failureReason: 'superseded' };
+            }
+            const open = view?.manabi_openVisibleLookupTargetAfterPageTurn;
+            if (typeof open !== 'function') {
+                continue;
+            }
+            const result = await open(request);
+            if (result?.opened === true) {
+                return result;
+            }
+        }
+        return { opened: false, failureReason: 'noDestinationTarget' };
+    }
     async performLookupNavigationPageTurn(request = {}) {
         const kind = request.kind === 'sentence' || request.kind === 'section'
             ? request.kind
             : 'word';
         const direction = request.direction === 'previous' ? 'previous' : 'next';
+        const navigationToken = typeof request.navigationToken === 'string' && request.navigationToken.length > 0
+            ? request.navigationToken
+            : null;
+        if (navigationToken) {
+            this.#activeLookupNavigationToken = navigationToken;
+        }
+        const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
+        const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
         let turnResult;
         try {
             turnResult = await this.#turnLookupNavigationPage(direction);
@@ -8812,17 +8876,85 @@ class Reader {
             };
         }
         const moved = turnResult?.moved === true;
-        return {
-            opened: false,
-            pageTurnAttempted: true,
-            pageTurnRequested: moved,
-            moved,
-            failureReason: moved
-                ? null
-                : (turnResult?.failureReason || 'pageTurnDidNotMove'),
+        if (!moved) {
+            return {
+                opened: false,
+                pageTurnAttempted: true,
+                pageTurnRequested: false,
+                moved: false,
+                failureReason: turnResult?.failureReason || 'pageTurnDidNotMove',
+                kind,
+                direction,
+                navigationToken,
+                turnResult,
+            };
+        }
+        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
+            return {
+                opened: false,
+                pageTurnAttempted: true,
+                pageTurnRequested: true,
+                moved: true,
+                failureReason: 'superseded',
+                kind,
+                direction,
+                navigationToken,
+                turnResult,
+            };
+        }
+        const positionAfterTurn = await this.#physicalPagePositionSnapshot();
+        await this.#waitForAnimationFrames(1);
+        const settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
+        const crossedSection = (
+            Number.isFinite(positionBeforeTurn?.index)
+            && Number.isFinite(settledPositionAfterTurn?.index)
+            && positionBeforeTurn.index !== settledPositionAfterTurn.index
+        ) || (
+            Number.isFinite(positionBeforeTurn?.sectionIndex)
+            && Number.isFinite(settledPositionAfterTurn?.sectionIndex)
+            && positionBeforeTurn.sectionIndex !== settledPositionAfterTurn.sectionIndex
+        );
+        if (crossedSection && this.displaySettledSequence === displaySettledSequenceBeforeTurn) {
+            try {
+                await this.waitForNextDisplaySettled('lookup-navigation.destination', { timeoutMs: 3000 });
+            } catch (_error) {
+                // A missed renderer boundary must not turn one tap into a page-search loop.
+            }
+        }
+        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
+            return {
+                opened: false,
+                pageTurnAttempted: true,
+                pageTurnRequested: true,
+                moved: true,
+                failureReason: 'superseded',
+                kind,
+                direction,
+                navigationToken,
+                turnResult,
+            };
+        }
+        this.#refreshLookupNavigationVisibleTargets('lookup-navigation.destination');
+        const destinationResult = await this.#openLookupNavigationDestination({
+            ...request,
             kind,
             direction,
+            navigationToken,
+            destinationContentIndex: settledPositionAfterTurn?.index ?? positionAfterTurn?.index ?? null,
+        });
+        return {
+            opened: destinationResult?.opened === true,
+            pageTurnAttempted: true,
+            pageTurnRequested: true,
+            moved: true,
+            failureReason: destinationResult?.opened === true
+                ? null
+                : (destinationResult?.failureReason || null),
+            kind,
+            direction,
+            navigationToken,
             turnResult,
+            destinationResult,
         };
     }
     #installVisibleRendererGoToGuard() {
@@ -11333,6 +11465,10 @@ window.manabi_performLookupNavigationPageTurn = async (request = {}) => {
         moved: false,
         failureReason: 'missingReader',
     };
+}
+
+window.manabi_isLookupNavigationTokenActive = (token) => {
+    return globalThis.reader?.isLookupNavigationTokenActive?.(token) === true;
 }
 
 window.manabiGetReaderGoToSheetSnapshot = async () => {
