@@ -98,6 +98,16 @@ public enum ReaderContentListDeleteDialog: Identifiable {
     }
 }
 
+private extension Optional where Wrapped == ReaderContentListDeleteDialog {
+    subscript(presentedWhen isActive: Bool) -> Self {
+        get { isActive ? self : nil }
+        set {
+            guard isActive else { return }
+            self = newValue
+        }
+    }
+}
+
 @MainActor
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var deleteDialog: ReaderContentListDeleteDialog?
@@ -136,17 +146,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .alert(item: Binding<ReaderContentListDeleteDialog?>(
-                get: {
-                    guard isActive else { return nil }
-                    return readerContentListModalsModel.deleteDialog
-                },
-                set: { newValue in
-                    if isActive {
-                        readerContentListModalsModel.deleteDialog = newValue
-                    }
-                }
-            )) { dialog in
+            .alert(item: $readerContentListModalsModel.deleteDialog[presentedWhen: isActive]) { dialog in
                 switch dialog {
                 case .confirm(let items, let title, let message, let actionTitle):
                     return Alert(
@@ -319,13 +319,8 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 else {
                     return
                 }
-                let isAlreadyLoaded = selectedContent.url.matchesReaderURL(readerContent.pageURL)
-                if selectedContent.url.isSnippetURL {
-                }
-                if isAlreadyLoaded {
-                }
-
                 let loadGeneration = UUID()
+                let currentPageURL = readerContent.pageURL
                 selectionLoadGeneration = loadGeneration
 
                 Task { @MainActor in
@@ -333,8 +328,6 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         return
                     }
                     if let onSelection {
-                        if selectedContent.url.isSnippetURL {
-                        }
                         onSelection(selectedContent)
                         if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
                             entrySelection = nil
@@ -345,15 +338,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     guard shouldSyncToReader else {
                         return
                     }
-                    if selectedContent.url.isSnippetURL {
-                    }
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
-                    guard !isAlreadyLoaded else {
-                        if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
-                            entrySelection = nil
-                        }
-                        return
-                    }
                     guard entrySelection == itemSelection else {
                         return
                     }
@@ -361,13 +346,15 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         return
                     }
                     do {
-                        try await navigator.load(
-                            content: selectedContent,
-                            readerModeViewModel: readerModeViewModel
+                        try await navigator.openReaderContentSelection(
+                            selectedContent,
+                            currentPageURL: currentPageURL,
+                            readerModeViewModel: readerModeViewModel,
+                            source: "ReaderContentList.selection"
                         )
                     } catch {
                         errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
-                        debugPrint("Failed to load reader content for selection", error)
+                        debugPrint("Failed to open reader content for selection", error)
                     }
                     if selectionLoadGeneration == loadGeneration, entrySelection == itemSelection {
                         entrySelection = nil
@@ -698,8 +685,6 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try Task.checkCancellation()
 
             let ids = Array(filtered.prefix(10_000)).map(\.compoundKey)
-            await MainActor.run {
-            }
             try await { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.currentLoadID == loadID else {
@@ -822,7 +807,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .tag(content.compoundKey)
                     .contentShape(Rectangle())
                     .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
-                    .accessibilityLabel(content.title)
+                    .accessibilityLabel(
+                        ReaderContentLoader.normalizedDisplayTitle(
+                            content.title,
+                            needsClipboardIndicator: content.needsClipboardIndicator
+                        )
+                    )
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction {
                         selectContent()
@@ -1155,6 +1145,42 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             contents: viewModel.filteredContents,
             ids: viewModel.filteredContentIDs
         )
+#if os(macOS)
+        Section {
+            ForEach(items) { item in
+                let content = item.content
+                ReaderContentInnerListItem(
+                    content: content,
+                    entrySelection: $entrySelection,
+                    includeSource: includeSource,
+                    appearance: ReaderContentListAppearance(
+                        alwaysShowThumbnails: alwaysShowThumbnails,
+                        showSeparators: false,
+                        useCardBackground: useCardBackground,
+                        clearRowBackground: clearRowBackground,
+                        useDefaultRowInsets: useDefaultRowInsets,
+                        showsNewBadges: showsNewBadges,
+                        wrapsContentInGroupBox: separatedRowsUseGroupBox
+                    ),
+                    isFirst: true,
+                    isLast: true,
+                    onRequestDelete: onRequestDeleteSingle,
+                    customMenuOptions: customMenuOptions,
+                    onContentAppear: onContentAppear
+                )
+                .readerContentListRowStyle(
+                    useDefaultRowInsets: useDefaultRowInsets || (!useCardBackground && !clearRowBackground),
+                    zeroHorizontalRowInsets: clearRowBackground
+                )
+                .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
+            }
+        } header: {
+            if !showEmptyState || rendersHeaderViewInSectionHeader {
+                contentSectionHeader
+            }
+        }
+        .headerProminence(.increased)
+#else
         ForEach(items) { item in
             let content = item.content
             sectionWithSpacing(
@@ -1192,6 +1218,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             )
             .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
         }
+#endif
     }
 
     private func refreshDeleteEligibilityCache() {
@@ -1509,6 +1536,22 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     private func groupedRows(section: ReaderContentGroupingSection<C>) -> some View {
         let items = readerContentIdentifiedItems(contents: section.items, ids: section.itemIDs)
         if separateRowsIntoSections {
+#if os(macOS)
+            Section {
+                ForEach(items) { item in
+                    groupedRowContent(
+                        section: section,
+                        index: item.offset,
+                        content: item.content
+                    )
+                    .id(readerContentListSeparatedRowScrollAnchorID(item.id))
+                }
+            } header: {
+                Text(section.title)
+                    .foregroundStyle(.secondary)
+            }
+            .headerProminence(.increased)
+#else
             ForEach(items) { item in
                 let content = item.content
                 sectionWithSpacing(
@@ -1524,6 +1567,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
                 )
                 .id(readerContentListSeparatedRowScrollAnchorID(item.id))
             }
+#endif
         } else {
             let lastIndex = section.items.indices.last ?? section.items.startIndex
             ForEach(items) { item in
@@ -2144,12 +2188,16 @@ public extension ReaderContentProtocol {
     }
 }
 
+private extension Dictionary where Value == Bool {
+    subscript(key key: Key, defaultValue defaultValue: Bool) -> Bool {
+        get { self[key] ?? defaultValue }
+        set { self[key] = newValue }
+    }
+}
+
 private extension ReaderContentList {
     func binding(for id: String) -> Binding<Bool> {
-        Binding(
-            get: { sectionExpanded[id] ?? true },
-            set: { newValue in sectionExpanded[id] = newValue }
-        )
+        $sectionExpanded[key: id, defaultValue: true]
     }
 
     func refreshGrouping() {

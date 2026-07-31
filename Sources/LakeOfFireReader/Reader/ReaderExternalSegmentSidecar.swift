@@ -1,6 +1,10 @@
 import CryptoKit
 import Foundation
 
+public enum ReaderCompactSegmentSidecarSchema {
+    public static let currentVersion = 10
+}
+
 public struct EbookProcessedSectionPayload: Sendable {
     public let documentHTML: Data
     public let segmentSidecar: Data
@@ -22,7 +26,7 @@ func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
     guard !payload.segmentSidecar.isEmpty else { return documentSegmentCount == 0 }
     guard let object = try? JSONSerialization.jsonObject(with: payload.segmentSidecar),
           let root = object as? [String: Any],
-          (root["v"] as? NSNumber)?.intValue == 9,
+          (root["v"] as? NSNumber)?.intValue == ReaderCompactSegmentSidecarSchema.currentVersion,
           let tables = root["t"] as? [String: Any],
           let hashes = tables["h"] as? [String],
           let sentenceIDs = tables["sid"] as? [String],

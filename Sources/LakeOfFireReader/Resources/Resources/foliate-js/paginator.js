@@ -4881,7 +4881,6 @@ export class Paginator extends HTMLElement {
         if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
             detail.pageTurnDirection = this.#pendingPageTurnDirection;
         }
-
         if (this.scrolled) {
             const metrics = knownMetrics || await this.pageMetrics()
             relocationMetrics = metrics
@@ -5859,7 +5858,9 @@ export class Paginator extends HTMLElement {
         })
     }
     async #turnPage(dir, distance, options = {}) {
-        const navigationSource = globalThis.__manabiNavigationIntent?.source ?? null
+        const navigationIntent = globalThis.__manabiNavigationIntent ?? null
+        const navigationSource =
+            options.navigationSource ?? navigationIntent?.source ?? null
         const turnStartedAt = manabiPerfNow()
         if (!options.bypassPostTurnDuplicateSuppression && this.#shouldSuppressPostPageTurnDuplicate(dir, distance, navigationSource, turnStartedAt)) {
             const lastPageTurn = this.#lastSettledPageTurn
@@ -5920,7 +5921,13 @@ export class Paginator extends HTMLElement {
             const previousQueuedPageTurn = this.#queuedPageTurn
             previousQueuedPageTurn?.resolve?.({ superseded: true })
             const queuedPromise = new Promise((resolve, reject) => {
-                this.#queuedPageTurn = { dir, distance, resolve, reject }
+                this.#queuedPageTurn = {
+                    dir,
+                    distance,
+                    navigationSource,
+                    resolve,
+                    reject,
+                }
             })
             if (!this.#isCacheWarmer) {
                 MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.pageTurn.queued', {
@@ -5963,6 +5970,7 @@ export class Paginator extends HTMLElement {
             Number.isFinite(requestedPage)
             && Number.isFinite(beforeMetrics?.pages)
             && !expectedCrossSection
+        let didMove = false
         try {
             const prev = dir === -1
             const shouldGo = !!(await (prev
@@ -5983,11 +5991,35 @@ export class Paginator extends HTMLElement {
             const finalMetrics = canReuseCachedFinalMetrics
                 ? cachedFinalMetrics
                 : await this.pageMetrics().catch(() => null)
-            const didMove =
-                shouldGo
-                || this.#index !== beforeIndex
-                || finalMetrics?.page !== beforeMetrics?.page
-                || Math.abs((finalMetrics?.start ?? NaN) - (beforeMetrics?.start ?? NaN)) >= 1
+            const indexChanged =
+                Number.isFinite(beforeIndex)
+                && Number.isFinite(this.#index)
+                && this.#index !== beforeIndex
+            const pageChanged =
+                Number.isFinite(beforeMetrics?.page)
+                && Number.isFinite(finalMetrics?.page)
+                && finalMetrics.page !== beforeMetrics.page
+            const startChanged =
+                Number.isFinite(beforeMetrics?.start)
+                && Number.isFinite(finalMetrics?.start)
+                && Math.abs(finalMetrics.start - beforeMetrics.start) >= 1
+            const hasComparablePosition =
+                (
+                    Number.isFinite(beforeIndex)
+                    && Number.isFinite(this.#index)
+                )
+                || (
+                    Number.isFinite(beforeMetrics?.page)
+                    && Number.isFinite(finalMetrics?.page)
+                )
+                || (
+                    Number.isFinite(beforeMetrics?.start)
+                    && Number.isFinite(finalMetrics?.start)
+                )
+            didMove = indexChanged
+                || pageChanged
+                || startChanged
+                || (!hasComparablePosition && shouldGo)
             if (didMove) {
                 this.#lastSettledPageTurn = {
                     direction: dir > 0 ? 'forward' : 'backward',
@@ -6053,6 +6085,9 @@ export class Paginator extends HTMLElement {
             if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } finally {
             const queuedPageTurn = this.#queuedPageTurn
+            const lockElapsedMs = this.#lockedAt == null
+                ? null
+                : manabiRound(manabiPerfNow() - this.#lockedAt, 1)
             this.#queuedPageTurn = null
             this.#pendingPageTurnDirection = null
             this.#pendingPageTurnStep = null
@@ -6071,12 +6106,16 @@ export class Paginator extends HTMLElement {
             }
             if (queuedPageTurn) {
                 queueMicrotask(() => {
-                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance, { bypassPostTurnDuplicateSuppression: true })
+                    this.#turnPage(queuedPageTurn.dir, queuedPageTurn.distance, {
+                        bypassPostTurnDuplicateSuppression: true,
+                        navigationSource: queuedPageTurn.navigationSource,
+                    })
                         .then(value => queuedPageTurn.resolve?.(value))
                         .catch(error => queuedPageTurn.reject?.(error))
                 })
             }
         }
+        return didMove
     }
     async prev(distance) {
         return await this.#turnPage(-1, distance)

@@ -79,9 +79,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     var body: some View {
         Button {
             let selection = content.compoundKey
-            let isSameContent = content.url.matchesReaderURL(readerContent.pageURL)
-            if isSameContent {
-            }
+            let currentPageURL = readerContent.pageURL
             contentSelection.wrappedValue = selection
             if let onContentSelected {
                 onContentSelected(content)
@@ -93,23 +91,17 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 return
             }
             contentSelectionNavigationHint?(content.url, selection)
-            guard !isSameContent else {
-                Task { @MainActor in
-                    if contentSelection.wrappedValue == selection {
-                        contentSelection.wrappedValue = nil
-                    }
-                }
-                return
-            }
             Task { @MainActor in
                 do {
-                    try await navigator.load(
-                        content: content,
-                        readerModeViewModel: readerModeViewModel
+                    try await navigator.openReaderContentSelection(
+                        content,
+                        currentPageURL: currentPageURL,
+                        readerModeViewModel: readerModeViewModel,
+                        source: "ReaderContentHorizontalList.selection"
                     )
                 } catch {
                     errorMessage = ReaderFileOperationMessageMapper.openMessage(for: error) ?? error.localizedDescription
-                    debugPrint("Failed to load reader content from horizontal list", error)
+                    debugPrint("Failed to open reader content from horizontal list", error)
                 }
                 if contentSelection.wrappedValue == selection {
                     contentSelection.wrappedValue = nil

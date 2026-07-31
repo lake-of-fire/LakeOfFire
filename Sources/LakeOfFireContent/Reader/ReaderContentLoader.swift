@@ -152,7 +152,7 @@ public struct ReaderContentLoader {
             if !skipContentFiles {
                 contentFile = try await ContentFile.get(forURL: url)
             }
-            let history = try await HistoryRecord.get(forURL: url)
+            let history = try await HistoryRecord.getOpenedRecord(forURL: url)
             let bookmark = try await Bookmark.get(forURL: url)
 
             var feed: FeedEntry?
@@ -211,6 +211,37 @@ public struct ReaderContentLoader {
     }
 
     @MainActor
+    public static func recordHistoryVisit(
+        for content: any ReaderContentProtocol,
+        source: String = "ReaderContentLoader.recordHistoryVisit"
+    ) async throws {
+        let pageURL = content.url
+        let targetHistoryRealmConfiguration = historyRealmConfiguration
+        if let contentReference = ContentReference(content: content) {
+            let didRecordVisit = try await { @RealmBackgroundActor in
+                guard let resolvedContent =
+                    try await contentReference.resolveOnBackgroundActor() else {
+                    return false
+                }
+                _ = try await resolvedContent.addHistoryRecord(
+                    realmConfiguration: targetHistoryRealmConfiguration,
+                    pageURL: pageURL
+                )
+                return true
+            }()
+            if didRecordVisit {
+                return
+            }
+        }
+
+        _ = try await load(
+            url: pageURL,
+            countsAsHistoryVisit: true,
+            source: source
+        )
+    }
+
+    @MainActor
     public static func getContent(
         forURL pageURL: URL,
         countsAsHistoryVisit: Bool = false,
@@ -221,26 +252,8 @@ public struct ReaderContentLoader {
         if let existingTask = inFlightGetContentTasks[taskKey] {
             return try await existingTask.value
         }
-        if countsAsHistoryVisit {
-            let nonHistoryTaskKey = "\(resolvedURL.absoluteString)|history:false"
-            if let existingTask = inFlightGetContentTasks[nonHistoryTaskKey] {
-                let existingContent = try await existingTask.value
-                if existingContent == nil || existingContent is HistoryRecord {
-                    return existingContent
-                }
-                guard let existingContent else {
-                    return nil
-                }
-            }
-        } else {
-            let historyTaskKey = "\(resolvedURL.absoluteString)|history:true"
-            if let existingTask = inFlightGetContentTasks[historyTaskKey] {
-                return try await existingTask.value
-            }
-        }
 
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
-            let startedAt = Date()
             if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
                let content = try await ReaderContentLoader.load(
                 url: contentURL,
@@ -252,7 +265,7 @@ public struct ReaderContentLoader {
             } else if let content = try await ReaderContentLoader.load(
                 url: pageURL,
                 persist: !pageURL.isNativeReaderView,
-                countsAsHistoryVisit: true,
+                countsAsHistoryVisit: countsAsHistoryVisit,
                 source: "\(source).directLoad"
             ) {
                 try Task.checkCancellation()
@@ -293,7 +306,6 @@ public struct ReaderContentLoader {
         countsAsHistoryVisit: Bool = false,
         source: String = "ReaderContentLoader.load"
     ) async throws -> (any ReaderContentProtocol)? {
-        let startedAt = Date()
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
@@ -316,6 +328,15 @@ public struct ReaderContentLoader {
             })
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
+            } else if let historyMatch = match as? HistoryRecord,
+                      countsAsHistoryVisit,
+                      persist,
+                      let historyRealm = historyMatch.realm {
+                try await historyRealm.asyncWrite {
+                    historyMatch.lastVisitedAt = Date()
+                    historyMatch.isDeleted = false
+                    historyMatch.refreshChangeMetadata(explicitlyModified: true)
+                }
             } else if match == nil, !url.isEBookURL {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
@@ -632,13 +653,28 @@ public struct ReaderContentLoader {
 
     public static let snippetReaderTitleSuppressionBodyClass = "mnb-hide-redundant-snippet-reader-title"
 
+    public static func normalizedDisplayTitle(
+        _ rawTitle: String,
+        needsClipboardIndicator: Bool
+    ) -> String {
+        var displayTitle = rawTitle.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
+        // Preserve one-layer decoding: entity-encoded angle brackets are display text, not markup.
+        displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+        if displayTitle.contains("&") {
+            displayTitle = (try? Entities.unescape(displayTitle)) ?? displayTitle
+        }
+        return displayTitle
+    }
+
     public static func resolvedDisplayTitle(
         _ rawTitle: String,
         needsClipboardIndicator: Bool,
         addClipboardIndicator: Bool = false
     ) -> String {
-        var displayTitle = rawTitle.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
-        displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+        var displayTitle = normalizedDisplayTitle(
+            rawTitle,
+            needsClipboardIndicator: needsClipboardIndicator
+        )
         if displayTitle.isEmpty {
             displayTitle = "Untitled"
         }

@@ -705,9 +705,11 @@ public extension Feed {
         guard let historyRealm else { return [] }
 
         var candidateURLStrings = Set<String>()
-        candidateURLStrings.reserveCapacity(candidateEntryURLs.count * 2)
+        candidateURLStrings.reserveCapacity(candidateEntryURLs.count * 3)
         for url in candidateEntryURLs {
-            candidateURLStrings.insert(url.absoluteString)
+            candidateURLStrings.formUnion(
+                HistoryRecord.historyIdentityURLStrings(for: url)
+            )
             candidateURLStrings.insert(canonicalFollowingEntryURLKey(for: url))
         }
         guard !candidateURLStrings.isEmpty else { return [] }
@@ -716,7 +718,11 @@ public extension Feed {
             historyRealm.objects(HistoryRecord.self)
                 .where { !$0.isDeleted }
                 .filter(NSPredicate(format: "url IN %@", Array(candidateURLStrings)))
-                .map { canonicalFollowingEntryURLKey(for: $0.url) }
+                .map {
+                    canonicalFollowingEntryURLKey(
+                        for: HistoryRecord.canonicalHistoryURL(for: $0.url)
+                    )
+                }
         )
     }
 

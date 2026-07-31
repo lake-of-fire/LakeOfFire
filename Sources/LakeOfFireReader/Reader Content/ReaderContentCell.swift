@@ -8,6 +8,8 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 import ImageIO
+import Combine
+import CoreText
 
 struct ReaderNewBadge: View {
     @Environment(\.controlSize) private var controlSize
@@ -59,7 +61,6 @@ fileprivate actor ReaderContentCellActor {
 fileprivate struct ReaderContentCellDisplayState: Equatable {
     var readingProgress: Float?
     var isFullArticleFinished: Bool?
-    var latestHistoryRecordLastVisitedAt: Date?
     var title = ""
     var author: String?
     var humanReadablePublicationDate: String?
@@ -71,6 +72,17 @@ fileprivate struct ReaderContentCellDisplayState: Equatable {
     var hasLoadedDisplayState = false
 }
 
+enum ReaderContentCellHistoryState: Equatable {
+    case loading
+    case unread
+    case read
+}
+
+private struct ReaderContentCellLoadIdentity: Hashable {
+    let compoundKey: String
+    let includesSource: Bool
+}
+
 private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
     guard let url, !url.isNativeReaderView else { return nil }
     return url
@@ -80,10 +92,12 @@ private func usableReaderContentSourceIconURL(_ url: URL?) -> URL? {
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var forceShowBookmark = false
     @Published private var displayState = ReaderContentCellDisplayState()
+    @Published private(set) var historyState = ReaderContentCellHistoryState.loading
+    private var loadGeneration: UInt64 = 0
 
     var readingProgress: Float? { displayState.readingProgress }
     var isFullArticleFinished: Bool? { displayState.isFullArticleFinished }
-    var latestHistoryRecordLastVisitedAt: Date? { displayState.latestHistoryRecordLastVisitedAt }
+    var hasLoadedHistoryState: Bool { historyState != .loading }
     var title: String { displayState.title }
     var author: String? { displayState.author }
     var humanReadablePublicationDate: String? { displayState.humanReadablePublicationDate }
@@ -96,8 +110,42 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
 
     init() { }
 
+    func observeHistory(for itemURL: URL) async throws {
+        try Task.checkCancellation()
+        if historyState != .loading {
+            historyState = .loading
+        }
+
+        let historyRealm = try await Realm.open(
+            configuration: ReaderContentLoader.historyRealmConfiguration
+        )
+        try Task.checkCancellation()
+        let historyRecords = HistoryRecord.openedRecords(
+            matching: itemURL,
+            in: historyRealm
+        )
+
+        let historyStatePublisher = historyRecords
+            .collectionPublisher(keyPaths: ["isDeleted", "url"])
+            .map { records in
+                records.isEmpty
+                    ? ReaderContentCellHistoryState.unread
+                    : ReaderContentCellHistoryState.read
+            }
+            .removeDuplicates()
+
+        for try await nextState in historyStatePublisher.values {
+            try Task.checkCancellation()
+            guard historyState != nextState else { continue }
+            historyState = nextState
+        }
+        try Task.checkCancellation()
+    }
+
     @MainActor
     func load(item: C, includeSource: Bool) async throws {
+        loadGeneration &+= 1
+        let generation = loadGeneration
         if displayState.hasLoadedDisplayState {
             var nextState = displayState
             nextState.hasLoadedDisplayState = false
@@ -105,29 +153,32 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
+        let itemURL = item.url
         let imageURL = try await item.imageURLToDisplay()
-        try await { @ReaderContentCellActor [weak self] in
-            guard let self else { return }
+        try Task.checkCancellation()
+        guard generation == loadGeneration else { throw CancellationError() }
+        let nextDisplayState = try await { @ReaderContentCellActor in
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
-            guard let item = realm.object(ofType: C.self, forPrimaryKey: pk) else { return }
+            guard let item = realm.object(ofType: C.self, forPrimaryKey: pk) else {
+                return nil as ReaderContentCellDisplayState?
+            }
             try Task.checkCancellation()
 
-            let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
-            let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
-            let trimmedTitle = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedTitle = ReaderContentLoader.resolvedDisplayTitle(
+                item.title,
+                needsClipboardIndicator: item.needsClipboardIndicator
+            )
+            let trimmedTitle = resolvedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
             let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
             let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
-            let itemURL = item.url
             let itemSourceIconURL = item.sourceIconURL
             let feed = (item as? FeedEntry)?.getFeed()
             let sourceIconURL = usableReaderContentSourceIconURL(feed?.iconUrl) ?? usableReaderContentSourceIconURL(itemSourceIconURL)
             let tracksReadingProgress = item.tracksReadingProgress
             let progressResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL) : nil
             let metadataResult = tracksReadingProgress ? try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL) : nil
-            let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
-            let latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
 
             var sourceTitle: String?
             if includeSource {
@@ -140,24 +191,24 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 }
             }
 
-            try await { @MainActor in
-                try Task.checkCancellation()
-                self.displayState = ReaderContentCellDisplayState(
-                    readingProgress: progressResult?.0,
-                    isFullArticleFinished: progressResult?.1,
-                    latestHistoryRecordLastVisitedAt: latestHistoryRecordLastVisitedAt,
-                    title: title,
-                    author: author.isEmpty ? nil : author,
-                    humanReadablePublicationDate: humanReadablePublicationDate,
-                    imageURL: imageURL,
-                    sourceIconURL: sourceIconURL,
-                    sourceTitle: sourceTitle,
-                    totalWordCount: metadataResult?.totalWordCount,
-                    remainingTime: metadataResult?.remainingTime,
-                    hasLoadedDisplayState: true
-                )
-            }()
+            return ReaderContentCellDisplayState(
+                readingProgress: progressResult?.0,
+                isFullArticleFinished: progressResult?.1,
+                title: title,
+                author: author.isEmpty ? nil : author,
+                humanReadablePublicationDate: humanReadablePublicationDate,
+                imageURL: imageURL,
+                sourceIconURL: sourceIconURL,
+                sourceTitle: sourceTitle,
+                totalWordCount: metadataResult?.totalWordCount,
+                remainingTime: metadataResult?.remainingTime,
+                hasLoadedDisplayState: true
+            )
         }()
+        try Task.checkCancellation()
+        guard generation == loadGeneration else { throw CancellationError() }
+        guard let nextDisplayState else { return }
+        displayState = nextDisplayState
     }
 
     @MainActor
@@ -530,9 +581,11 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             return primary
         }
 
-        let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
-        let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
-        let fallback = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedTitle = ReaderContentLoader.normalizedDisplayTitle(
+            item.title,
+            needsClipboardIndicator: item.needsClipboardIndicator
+        )
+        let fallback = normalizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !fallback.isEmpty {
             return fallback
         }
@@ -573,7 +626,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 
     private var showsUnreadIndicator: Bool {
-        viewModel.latestHistoryRecordLastVisitedAt == nil
+        viewModel.historyState == .unread
     }
 
     private var isProgressVisible: Bool {
@@ -864,6 +917,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     private var showsNewBadge: Bool {
         viewModel.hasLoadedDisplayState &&
+        viewModel.hasLoadedHistoryState &&
         appearance.showsNewBadge &&
         (showsUnreadIndicator || (appearance.isEbookStyle && !isProgressVisible))
     }
@@ -1124,9 +1178,18 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             guard viewModel.forceShowBookmark != hovered else { return }
             viewModel.forceShowBookmark = hovered
         }
-        .onAppear {
-            Task { @MainActor in
-                try? await viewModel.load(item: item, includeSource: appearance.includeSource)
+        .task(id: ReaderContentCellLoadIdentity(
+            compoundKey: item.compoundKey,
+            includesSource: appearance.includeSource
+        )) {
+            try? await viewModel.load(item: item, includeSource: appearance.includeSource)
+        }
+        .task(id: "\(item.compoundKey)|\(item.url.absoluteString)") {
+            do {
+                try await viewModel.observeHistory(for: item.url)
+            } catch is CancellationError {
+            } catch {
+                debugPrint("Failed to observe reader-content history", error)
             }
         }
         .task(id: item.compoundKey) {
@@ -1142,11 +1205,20 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 }
 
 private struct ReaderContentThumbnailTile: View {
+    private static let initialImageCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 4 * 1_024 * 1_024
+        return cache
+    }()
+
     enum Content {
         case icon(URL, placeholder: String)
         case initial(String)
         case symbol(String)
     }
+
+    @Environment(\.displayScale) private var displayScale
 
     let content: Content
     let width: CGFloat
@@ -1166,10 +1238,7 @@ private struct ReaderContentThumbnailTile: View {
 
             if case let .icon(iconURL, _) = content {
                 if let placeholderLetter {
-                    Text(placeholderLetter)
-                        .font(.system(size: min(width, height) * 0.42, weight: .semibold, design: .rounded))
-                        .minimumScaleFactor(0.4)
-                        .foregroundStyle(Color.secondary.opacity(0.9))
+                    initialImage(placeholderLetter)
                 }
 
                 ReaderContentSourceIconImage(sourceIconURL: iconURL, iconSize: min(width, height) * 0.52)
@@ -1182,13 +1251,88 @@ private struct ReaderContentThumbnailTile: View {
             }
 
             if case .initial = content, let placeholderLetter {
-                Text(placeholderLetter)
-                    .font(.system(size: min(width, height) * 0.42, weight: .semibold, design: .rounded))
-                    .minimumScaleFactor(0.4)
-                    .foregroundStyle(Color.secondary.opacity(0.9))
+                initialImage(placeholderLetter)
             }
         }
         .frame(width: width, height: height)
+    }
+
+    @ViewBuilder
+    private func initialImage(_ initial: String) -> some View {
+        if let image = Self.renderedInitialImage(
+            initial,
+            dimension: min(width, height),
+            displayScale: displayScale
+        ) {
+            Image(decorative: image, scale: displayScale)
+                .renderingMode(.template)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: min(width, height), height: min(width, height))
+                .foregroundStyle(Color.secondary.opacity(0.9))
+        }
+    }
+
+    private static func renderedInitialImage(
+        _ initial: String,
+        dimension: CGFloat,
+        displayScale: CGFloat
+    ) -> CGImage? {
+        let scale = max(displayScale, 1)
+        let pixelDimension = max(1, Int((dimension * scale).rounded(.up)))
+        let cacheKey = "\(initial)|\(pixelDimension)" as NSString
+        if let cachedImage = initialImageCache.object(forKey: cacheKey) {
+            return cachedImage
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: pixelDimension,
+            height: pixelDimension,
+            bitsPerComponent: 8,
+            bytesPerRow: pixelDimension * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        let fontSize = CGFloat(pixelDimension) * 0.42
+        guard let baseFont = CTFontCreateUIFontForLanguage(.system, fontSize, nil) else {
+            return nil
+        }
+        let font = CTFontCreateCopyWithSymbolicTraits(
+            baseFont,
+            fontSize,
+            nil,
+            .boldTrait,
+            .boldTrait
+        ) ?? baseFont
+        let attributedInitial = NSAttributedString(
+            string: initial,
+            attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String):
+                    CGColor(gray: 1, alpha: 1),
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attributedInitial)
+        let glyphBounds = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+        context.textPosition = CGPoint(
+            x: (CGFloat(pixelDimension) - glyphBounds.width) / 2 - glyphBounds.minX,
+            y: (CGFloat(pixelDimension) - glyphBounds.height) / 2 - glyphBounds.minY
+        )
+        CTLineDraw(line, context)
+
+        guard let image = context.makeImage() else { return nil }
+        initialImageCache.setObject(
+            image,
+            forKey: cacheKey,
+            cost: pixelDimension * pixelDimension * 4
+        )
+        return image
     }
 
     private var placeholderLetter: String? {

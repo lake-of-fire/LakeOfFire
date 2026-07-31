@@ -6,7 +6,13 @@ import RealmSwift
 final class FeedStateIndicatorTests: XCTestCase {
     private func makeConfiguration(identifier: String = UUID().uuidString) -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: identifier)
-        configuration.objectTypes = [Feed.self, FeedEntry.self, Bookmark.self, HistoryRecord.self]
+        configuration.objectTypes = [
+            Feed.self,
+            FeedEntry.self,
+            Bookmark.self,
+            HistoryRecord.self,
+            ContentFile.self,
+        ]
         return configuration
     }
 
@@ -529,10 +535,13 @@ final class FeedStateIndicatorTests: XCTestCase {
     func testHistoryRecordHasOpenedRecordIgnoresDeletedRecords() throws {
         let realm = try Realm(configuration: makeConfiguration())
         let targetURL = try XCTUnwrap(URL(string: "https://example.com/articles/target"))
+        let loaderURL = try XCTUnwrap(
+            ReaderContentLoader.readerLoaderURL(for: targetURL)
+        )
 
         try realm.write {
             let deletedRecord = HistoryRecord()
-            deletedRecord.url = targetURL
+            deletedRecord.url = loaderURL
             deletedRecord.updateCompoundKey()
             deletedRecord.compoundKey += "-deleted"
             deletedRecord.isDeleted = true
@@ -588,5 +597,134 @@ final class FeedStateIndicatorTests: XCTestCase {
         }
 
         XCTAssertEqual(HistoryRecord.latestLastVisitedAt(for: targetURL, in: realm), newerDate)
+    }
+
+    @MainActor
+    func testConcurrentHistoryVisitsConvergeOnOneCanonicalRecord() async throws {
+        let configuration = makeConfiguration()
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+        }
+
+        let targetURL = try XCTUnwrap(
+            URL(string: "https://example.com/articles/concurrent-history")
+        )
+        let realm = try await Realm(configuration: configuration)
+        let entry = FeedEntry()
+        entry.url = targetURL
+        entry.title = "Concurrent history"
+        entry.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(entry)
+        }
+
+        async let firstVisit: Void = ReaderContentLoader.recordHistoryVisit(
+            for: entry,
+            source: "FeedStateIndicatorTests.concurrent.first"
+        )
+        async let secondVisit: Void = ReaderContentLoader.recordHistoryVisit(
+            for: entry,
+            source: "FeedStateIndicatorTests.concurrent.second"
+        )
+        _ = try await (firstVisit, secondVisit)
+        await realm.asyncRefresh()
+
+        let matchingRecords = HistoryRecord.records(matching: targetURL, in: realm)
+        XCTAssertEqual(matchingRecords.count, 1)
+        XCTAssertEqual(matchingRecords.first?.url, targetURL)
+        XCTAssertFalse(try XCTUnwrap(matchingRecords.first).isDeleted)
+    }
+
+    @MainActor
+    func testHistoryVisitFallsBackToURLWhenContentReferenceIsStale() async throws {
+        let configuration = makeConfiguration()
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+        }
+
+        let targetURL = try XCTUnwrap(
+            URL(string: "https://example.com/articles/stale-reference")
+        )
+        let realm = try await Realm(configuration: configuration)
+        let entry = FeedEntry()
+        entry.url = targetURL
+        entry.title = "Stale reference"
+        entry.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(entry)
+        }
+        let staleEntry = entry.freeze()
+        try await realm.asyncWrite {
+            realm.delete(entry)
+        }
+
+        try await ReaderContentLoader.recordHistoryVisit(
+            for: staleEntry,
+            source: "FeedStateIndicatorTests.staleReference"
+        )
+        await realm.asyncRefresh()
+
+        XCTAssertTrue(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
+    }
+
+    @MainActor
+    func testGetContentHonorsCountsAsHistoryVisit() async throws {
+        let configuration = makeConfiguration()
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+        }
+
+        let targetURL = try XCTUnwrap(
+            URL(string: "https://example.com/articles/history-visit-semantics")
+        )
+        let realm = try await Realm(configuration: configuration)
+        let entry = FeedEntry()
+        entry.url = targetURL
+        entry.title = "History visit semantics"
+        entry.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(entry)
+        }
+
+        let nonVisitingContent = try await ReaderContentLoader.getContent(
+            forURL: targetURL,
+            countsAsHistoryVisit: false,
+            source: "FeedStateIndicatorTests.nonVisitingLookup"
+        )
+        await realm.asyncRefresh()
+
+        XCTAssertTrue(nonVisitingContent is FeedEntry)
+        XCTAssertFalse(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
+
+        let visitingContent = try await ReaderContentLoader.getContent(
+            forURL: targetURL,
+            countsAsHistoryVisit: true,
+            source: "FeedStateIndicatorTests.visitingLookup"
+        )
+        await realm.asyncRefresh()
+
+        XCTAssertTrue(visitingContent is HistoryRecord)
+        XCTAssertTrue(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
     }
 }

@@ -939,7 +939,45 @@ public extension EnvironmentValues {
     }
 }
 
+enum ReaderContentSelectionOpenAction: Equatable {
+    case recordHistoryVisit
+    case navigate
+
+    static func resolve(
+        contentURL: URL,
+        currentPageURL: URL
+    ) -> ReaderContentSelectionOpenAction {
+        contentURL.matchesReaderURL(currentPageURL)
+            ? .recordHistoryVisit
+            : .navigate
+    }
+}
+
 public extension WebViewNavigator {
+    @MainActor
+    func openReaderContentSelection(
+        _ content: any ReaderContentProtocol,
+        currentPageURL: URL,
+        readerModeViewModel: ReaderModeViewModel?,
+        source: String = "WebViewNavigator.openReaderContentSelection"
+    ) async throws {
+        switch ReaderContentSelectionOpenAction.resolve(
+            contentURL: content.url,
+            currentPageURL: currentPageURL
+        ) {
+        case .recordHistoryVisit:
+            try await ReaderContentLoader.recordHistoryVisit(
+                for: content,
+                source: "\(source).alreadyLoaded"
+            )
+        case .navigate:
+            try await load(
+                content: content,
+                readerModeViewModel: readerModeViewModel
+            )
+        }
+    }
+
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
     func load(

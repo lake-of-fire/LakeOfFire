@@ -588,7 +588,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     }
                     
                     try await { @RealmBackgroundActor in
-                        if let historyRecord = try await HistoryRecord.get(forURL: url) {
+                        if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
                             try await historyRecord.refreshDemotedStatus()
                         }
                     }()
@@ -721,7 +721,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     }
                     
                     try await { @RealmBackgroundActor in
-                        if let historyRecord = try await HistoryRecord.get(forURL: url) {
+                        if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
                             try await historyRecord.refreshDemotedStatus()
                         }
                     }()

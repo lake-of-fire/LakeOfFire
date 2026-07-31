@@ -19,6 +19,25 @@ extension HistoryRecord: DeletableReaderContent {
     public var deleteActionTitle: String {
         "Remove from History…"
     }
+
+    @MainActor
+    public func delete() async throws {
+        let historyURL = url
+        guard let contentReference = ReaderContentLoader.ContentReference(content: self) else {
+            return
+        }
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: contentReference.realmConfiguration
+            )
+            try await realm.asyncWrite {
+                HistoryRecord.markOpenedRecordsDeleted(
+                    matching: historyURL,
+                    in: realm
+                )
+            }
+        }()
+    }
 }
 
 extension DeletableReaderContent {
@@ -48,17 +67,67 @@ extension DeletableReaderContent {
 }
 
 public extension HistoryRecord {
-    static func hasOpenedRecord(for url: URL, in realm: Realm) -> Bool {
-        realm.objects(HistoryRecord.self)
+    static func canonicalHistoryURL(for url: URL) -> URL {
+        ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+    }
+
+    static func historyIdentityURLStrings(for url: URL) -> [String] {
+        let canonicalURL = canonicalHistoryURL(for: url)
+        var identityURLStrings = [canonicalURL.absoluteString]
+
+        if url.absoluteString != canonicalURL.absoluteString {
+            identityURLStrings.append(url.absoluteString)
+        }
+        if let loaderURL = ReaderContentLoader.readerLoaderURL(for: canonicalURL),
+           !identityURLStrings.contains(loaderURL.absoluteString) {
+            identityURLStrings.append(loaderURL.absoluteString)
+        }
+
+        return identityURLStrings
+    }
+
+    static func records(matching url: URL, in realm: Realm) -> Results<HistoryRecord> {
+        let predicates = historyIdentityURLStrings(for: url).map {
+            NSPredicate(format: "url == %@", $0)
+        }
+        return realm.objects(HistoryRecord.self)
+            .filter(NSCompoundPredicate(orPredicateWithSubpredicates: predicates))
+    }
+
+    static func openedRecords(matching url: URL, in realm: Realm) -> Results<HistoryRecord> {
+        records(matching: url, in: realm)
             .where { !$0.isDeleted }
-            .filter(NSPredicate(format: "url == %@", url.absoluteString))
-            .first != nil
+    }
+
+    @discardableResult
+    static func markOpenedRecordsDeleted(matching url: URL, in realm: Realm) -> Int {
+        let openedRecords = Array(openedRecords(matching: url, in: realm))
+        for record in openedRecords {
+            record.isDeleted = true
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+        return openedRecords.count
+    }
+
+    @RealmBackgroundActor
+    static func getOpenedRecord(forURL url: URL) async throws -> HistoryRecord? {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: ReaderContentLoader.historyRealmConfiguration
+        )
+        return openedRecords(matching: url, in: realm)
+            .sorted(by: [
+                SortDescriptor(keyPath: "lastVisitedAt", ascending: false),
+                SortDescriptor(keyPath: "compoundKey", ascending: true),
+            ])
+            .first
+    }
+
+    static func hasOpenedRecord(for url: URL, in realm: Realm) -> Bool {
+        openedRecords(matching: url, in: realm).first != nil
     }
 
     static func latestLastVisitedAt(for url: URL, in realm: Realm) -> Date? {
-        realm.objects(HistoryRecord.self)
-            .where { !$0.isDeleted }
-            .filter(NSPredicate(format: "url == %@", url.absoluteString))
+        openedRecords(matching: url, in: realm)
             .map(\.lastVisitedAt)
             .max()
     }

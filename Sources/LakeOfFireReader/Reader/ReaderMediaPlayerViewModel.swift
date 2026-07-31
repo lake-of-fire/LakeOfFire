@@ -155,6 +155,18 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         playbackFailure?.message
     }
 
+    public var alertFailure: ReaderPlaybackFailure? {
+        get {
+            readAloudErrorMessage.map(ReaderPlaybackFailure.readAloudPreparation)
+                ?? playbackFailure
+        }
+        set {
+            guard newValue == nil else { return }
+            dismissReadAloudError()
+            dismissPlaybackError()
+        }
+    }
+
     @MainActor
     public func beginReadAloudPreparation() -> UUID? {
         guard !isPreparingReadAloud else { return nil }

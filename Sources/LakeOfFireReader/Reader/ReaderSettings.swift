@@ -29,6 +29,13 @@ private let readerAdaptiveWidthFullWidthFontSize: Double = 34
 private let readerAdaptiveWidthStandardMaxWidthEm: Double = 40
 private let readerAdaptiveWidthExpandedMaxWidthEm: Double = 56
 
+private extension Optional where Wrapped == Double {
+    subscript(default defaultValue: Double) -> Double {
+        get { self ?? defaultValue }
+        set { self = newValue }
+    }
+}
+
 public func readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: Double?) -> String {
     guard let readerFontSize else {
         return "\(Int(readerAdaptiveWidthStandardMaxWidthEm))em"
@@ -75,7 +82,11 @@ struct ReaderSettingsForm: View {
     var body: some View {
         Form {
             Section("Display") {
-                Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
+                Stepper(
+                    "Font Size: \(Int(round(readerFontSize ?? Double(defaultFontSize)))) px",
+                    value: $readerFontSize[default: Double(defaultFontSize)],
+                    in: 5...160
+                )
                 Picker("Light Mode Theme", selection: $lightModeTheme) {
                     ForEach(LightModeTheme.allCases) { theme in
                         Text(theme.rawValue.capitalized).tag(theme)

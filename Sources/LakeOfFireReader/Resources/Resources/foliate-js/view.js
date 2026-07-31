@@ -225,7 +225,14 @@ export class View extends HTMLElement {
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
-    #onRelocate({ reason, range, index, fraction, size, pageTurnDirection }) {
+    #onRelocate({
+        reason,
+        range,
+        index,
+        fraction,
+        size,
+        pageTurnDirection,
+    }) {
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
