@@ -476,7 +476,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result.requestBytes, chapterHTML.utf8.count)
         XCTAssertEqual(result.responseBytes, "<html><body>processed</body></html>".utf8.count)
         XCTAssertTrue(result.pageStatsRequested)
-        XCTAssertFalse(result.pageStatsProduced)
+        XCTAssertEqual(result.pageStatsOutcome, .unsupported)
     }
 
     func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {

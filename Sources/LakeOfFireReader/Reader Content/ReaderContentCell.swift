@@ -1204,13 +1204,88 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
     }
 }
 
-private struct ReaderContentThumbnailTile: View {
-    private static let initialImageCache: NSCache<NSString, CGImage> = {
+/// Rasterizes fallback initials once per visible text and pixel size. Keeping this
+/// outside the SwiftUI tile makes the fallback decorative content rather than a
+/// `Text` view, so it cannot participate in the surrounding cell's text layout.
+enum ReaderContentInitialImageRenderer {
+    static let cacheCountLimit = 128
+    static let cacheTotalCostLimit = 4 * 1_024 * 1_024
+
+    private static let imageCache: NSCache<NSString, CGImage> = {
         let cache = NSCache<NSString, CGImage>()
-        cache.countLimit = 128
-        cache.totalCostLimit = 4 * 1_024 * 1_024
+        cache.countLimit = cacheCountLimit
+        cache.totalCostLimit = cacheTotalCostLimit
         return cache
     }()
+
+    static func render(
+        initial: String,
+        dimension: CGFloat,
+        displayScale: CGFloat
+    ) -> CGImage? {
+        guard !initial.isEmpty else { return nil }
+        let scale = max(displayScale, 1)
+        let pixelDimension = max(1, Int((dimension * scale).rounded(.up)))
+        let cacheKey = "\(initial)|\(pixelDimension)" as NSString
+        if let cachedImage = imageCache.object(forKey: cacheKey) {
+            return cachedImage
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: pixelDimension,
+            height: pixelDimension,
+            bitsPerComponent: 8,
+            bytesPerRow: pixelDimension * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        let fontSize = CGFloat(pixelDimension) * 0.42
+        guard let baseFont = CTFontCreateUIFontForLanguage(.system, fontSize, nil) else {
+            return nil
+        }
+        let font = CTFontCreateCopyWithSymbolicTraits(
+            baseFont,
+            fontSize,
+            nil,
+            .boldTrait,
+            .boldTrait
+        ) ?? baseFont
+        let attributedInitial = NSAttributedString(
+            string: initial,
+            attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String):
+                    CGColor(gray: 1, alpha: 1),
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attributedInitial)
+        let glyphBounds = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+        context.textPosition = CGPoint(
+            x: (CGFloat(pixelDimension) - glyphBounds.width) / 2 - glyphBounds.minX,
+            y: (CGFloat(pixelDimension) - glyphBounds.height) / 2 - glyphBounds.minY
+        )
+        CTLineDraw(line, context)
+
+        guard let image = context.makeImage() else { return nil }
+        imageCache.setObject(
+            image,
+            forKey: cacheKey,
+            cost: pixelDimension * pixelDimension * 4
+        )
+        return image
+    }
+
+    static func resetCacheForTesting() {
+        imageCache.removeAllObjects()
+    }
+}
+
+private struct ReaderContentThumbnailTile: View {
 
     enum Content {
         case icon(URL, placeholder: String)
@@ -1259,8 +1334,8 @@ private struct ReaderContentThumbnailTile: View {
 
     @ViewBuilder
     private func initialImage(_ initial: String) -> some View {
-        if let image = Self.renderedInitialImage(
-            initial,
+        if let image = ReaderContentInitialImageRenderer.render(
+            initial: initial,
             dimension: min(width, height),
             displayScale: displayScale
         ) {
@@ -1272,67 +1347,6 @@ private struct ReaderContentThumbnailTile: View {
                 .frame(width: min(width, height), height: min(width, height))
                 .foregroundStyle(Color.secondary.opacity(0.9))
         }
-    }
-
-    private static func renderedInitialImage(
-        _ initial: String,
-        dimension: CGFloat,
-        displayScale: CGFloat
-    ) -> CGImage? {
-        let scale = max(displayScale, 1)
-        let pixelDimension = max(1, Int((dimension * scale).rounded(.up)))
-        let cacheKey = "\(initial)|\(pixelDimension)" as NSString
-        if let cachedImage = initialImageCache.object(forKey: cacheKey) {
-            return cachedImage
-        }
-
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
-            data: nil,
-            width: pixelDimension,
-            height: pixelDimension,
-            bitsPerComponent: 8,
-            bytesPerRow: pixelDimension * 4,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-
-        let fontSize = CGFloat(pixelDimension) * 0.42
-        guard let baseFont = CTFontCreateUIFontForLanguage(.system, fontSize, nil) else {
-            return nil
-        }
-        let font = CTFontCreateCopyWithSymbolicTraits(
-            baseFont,
-            fontSize,
-            nil,
-            .boldTrait,
-            .boldTrait
-        ) ?? baseFont
-        let attributedInitial = NSAttributedString(
-            string: initial,
-            attributes: [
-                NSAttributedString.Key(kCTFontAttributeName as String): font,
-                NSAttributedString.Key(kCTForegroundColorAttributeName as String):
-                    CGColor(gray: 1, alpha: 1),
-            ]
-        )
-        let line = CTLineCreateWithAttributedString(attributedInitial)
-        let glyphBounds = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
-        context.textPosition = CGPoint(
-            x: (CGFloat(pixelDimension) - glyphBounds.width) / 2 - glyphBounds.minX,
-            y: (CGFloat(pixelDimension) - glyphBounds.height) / 2 - glyphBounds.minY
-        )
-        CTLineDraw(line, context)
-
-        guard let image = context.makeImage() else { return nil }
-        initialImageCache.setObject(
-            image,
-            forKey: cacheKey,
-            cost: pixelDimension * pixelDimension * 4
-        )
-        return image
     }
 
     private var placeholderLetter: String? {

@@ -230,25 +230,33 @@ actor EBookSectionProcessingDeduper {
     }
 }
 
+public enum EBookNativeSectionPageStatsOutcome: Equatable, Sendable {
+    /// Native processing produced and published an authoritative section row.
+    case produced
+    /// This section cannot produce page stats for the current processing contract.
+    /// Retrying without a causal contract change would repeat the same result.
+    case unsupported
+}
+
 public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
     public let sectionHref: String
     public let requestBytes: Int
     public let responseBytes: Int
     public let pageStatsRequested: Bool
-    public let pageStatsProduced: Bool
+    public let pageStatsOutcome: EBookNativeSectionPageStatsOutcome
 
     public init(
         sectionHref: String,
         requestBytes: Int,
         responseBytes: Int,
         pageStatsRequested: Bool = true,
-        pageStatsProduced: Bool = false
+        pageStatsOutcome: EBookNativeSectionPageStatsOutcome = .unsupported
     ) {
         self.sectionHref = sectionHref
         self.requestBytes = requestBytes
         self.responseBytes = responseBytes
         self.pageStatsRequested = pageStatsRequested
-        self.pageStatsProduced = pageStatsProduced
+        self.pageStatsOutcome = pageStatsOutcome
     }
 }
 
