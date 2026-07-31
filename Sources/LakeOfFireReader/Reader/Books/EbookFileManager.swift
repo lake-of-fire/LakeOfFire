@@ -99,14 +99,12 @@ public struct EbookFileManager {
                 || !toUpdateWithAuthor.isEmpty
                 || !toUpdateWithPublicationDate.isEmpty
                 || !toUpdateAsPhysicalMedia.isEmpty {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
                 try await applyMetadataUpdates(
                     images: toUpdateWithImage,
                     titles: toUpdateWithTitle,
                     authors: toUpdateWithAuthor,
                     publicationDates: toUpdateWithPublicationDate,
-                    physicalMedia: toUpdateAsPhysicalMedia,
-                    in: realm
+                    physicalMedia: toUpdateAsPhysicalMedia
                 )
             }
         })
@@ -119,11 +117,17 @@ public struct EbookFileManager {
         authors: [(ContentFile, String?)],
         publicationDates: [(ContentFile, Date)],
         physicalMedia: [ContentFile],
-        in realm: Realm,
         at date: Date = Date()
     ) async throws {
         guard !images.isEmpty || !titles.isEmpty || !authors.isEmpty
             || !publicationDates.isEmpty || !physicalMedia.isEmpty else {
+            return
+        }
+        guard let realm = images.first?.0.realm
+            ?? titles.first?.0.realm
+            ?? authors.first?.0.realm
+            ?? publicationDates.first?.0.realm
+            ?? physicalMedia.first?.realm else {
             return
         }
 

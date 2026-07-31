@@ -175,7 +175,6 @@ final class SyncMutationBoundaryTests: XCTestCase {
             authors: [],
             publicationDates: [(file, publicationDate)],
             physicalMedia: [],
-            in: realm,
             at: mutationDate
         )
 
@@ -191,7 +190,6 @@ final class SyncMutationBoundaryTests: XCTestCase {
             authors: [],
             publicationDates: [(file, publicationDate)],
             physicalMedia: [],
-            in: realm,
             at: mutationDate.addingTimeInterval(60)
         )
 

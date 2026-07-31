@@ -239,12 +239,11 @@ public extension Bookmark {
         at date: Date = Date()
     ) async throws {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
-        let activeRecords = Array(
-            realm.objects(self).filter("isDeleted == false")
-        )
-        guard !activeRecords.isEmpty else { return }
         try await realm.asyncWrite {
-            for record in activeRecords where !record.isDeleted {
+            let activeRecords = Array(
+                realm.objects(self).filter("isDeleted == false")
+            )
+            for record in activeRecords {
                 record.isDeleted = true
                 record.refreshChangeMetadata(
                     explicitlyModified: true,
