@@ -14,9 +14,12 @@ final class ReaderContentInitialImageRendererTests: XCTestCase {
         let twoX = try image(initial: "A", dimension: 24, displayScale: 2)
         let threeX = try image(initial: "A", dimension: 24, displayScale: 3)
 
-        XCTAssertEqual((oneX.width, oneX.height), (24, 24))
-        XCTAssertEqual((twoX.width, twoX.height), (48, 48))
-        XCTAssertEqual((threeX.width, threeX.height), (72, 72))
+        XCTAssertEqual(oneX.width, 24)
+        XCTAssertEqual(oneX.height, 24)
+        XCTAssertEqual(twoX.width, 48)
+        XCTAssertEqual(twoX.height, 48)
+        XCTAssertEqual(threeX.width, 72)
+        XCTAssertEqual(threeX.height, 72)
     }
 
     func testRenderReusesCachedImageForSameTextAndPixelSize() throws {
