@@ -6741,6 +6741,14 @@ class Reader {
                     ...details,
                 }, move)
                 : await move();
+            if (
+                !deferVisiblePageResetUntilMovement
+                && result === false
+            ) {
+                this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
+                    `${stage}.no-move`
+                );
+            }
             // A tentative lookup turn never commits its reset here. A real move
             // emits renderer relocation, whose normal invalidation is the single
             // destructive commit point. This avoids clearing freshly collected
@@ -6772,6 +6780,14 @@ class Reader {
                 });
             }
         }
+    }
+    #restoreNativeLookupTargetsAfterUncommittedPageTurn(reason) {
+        this.#scheduleNativeLookupHitTargetRefreshSettle(
+            `page-turn-uncommitted:${reason}`
+        );
+        postNativeLookupPageTurnDisplayReady(
+            `page-turn-uncommitted:${reason}`
+        );
     }
     #pageReadMarkerTransitionMode(reason = 'unspecified') {
         const value = String(reason || '');
@@ -7574,6 +7590,11 @@ class Reader {
                 composed: true,
                 detail: { leftOpacity: '', rightOpacity: '', source: 'ebook-viewer', reason: 'mainDocumentSwipe.touchend' },
             }));
+        }
+        if (state?.nativeLookupCancelled === true && state?.triggered !== true) {
+            this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
+                'mainDocumentSwipe.abandoned'
+            );
         }
         this.#mainDocumentSwipeState = null;
     }
@@ -8844,7 +8865,17 @@ class Reader {
             direction,
             navigationDetails
         );
-        return result?.moved === true;
+        const moved = result?.moved === true;
+        if (
+            !moved
+            && result?.pageTurnRunResult?.ignored !== true
+            && navigationDetails.deferVisiblePageResetUntilMovement !== true
+        ) {
+            this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
+                'physicalArrowKey.no-move'
+            );
+        }
+        return moved;
     }
     #lookupContentWindows(preferredContentIndex = null) {
         const renderer = this.view?.renderer;
