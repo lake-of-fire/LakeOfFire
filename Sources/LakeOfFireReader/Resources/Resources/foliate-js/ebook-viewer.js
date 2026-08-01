@@ -774,6 +774,9 @@ const requestNativeVisibleTrackedWordsPrime = (doc, index, reason = 'visible-pri
 
 const getPrimaryRendererContentIndex = (renderer) => {
     try {
+        if (typeof renderer?.currentIndex === 'number') {
+            return renderer.currentIndex;
+        }
         const contents = renderer?.getContents?.();
         const primaryContent = Array.isArray(contents) && contents.length > 0 ? contents[0] ?? null : null;
         return typeof primaryContent?.index === 'number' ? primaryContent.index : null;
@@ -5297,6 +5300,7 @@ class Reader {
     #mainDocumentSwipeState = null;
     #pageTurnInFlight = false;
     #queuedPageTurnRun = null;
+    #pageTurnIdleResolvers = [];
     initialDisplaySettled = false;
     hasReachedLoadingDidDisplayBoundary = false;
     initialDisplaySettledPromise = null;
@@ -6699,9 +6703,14 @@ class Reader {
         markInputSource = null,
         clearReadChromeReason = 'page-turn-start',
         deferVisiblePageResetUntilMovement = false,
+        ignoreIfPageTurnInFlight = false,
+        serializedContinuation = false,
         details = {},
     }) {
-        if (this.#pageTurnInFlight) {
+        if (this.#pageTurnInFlight && !serializedContinuation) {
+            if (ignoreIfPageTurnInFlight) {
+                return { ignored: true, reason: 'pageTurnInFlight' };
+            }
             this.#queuedPageTurnRun?.resolve?.({
                 ignored: true,
                 reason: 'pageTurnQueuedSuperseded',
@@ -6763,7 +6772,6 @@ class Reader {
             });
             throw error;
         } finally {
-            this.#pageTurnInFlight = false;
             manabiTimelineMeasure('pageTurn.run', startedAt, {
                 stage,
                 markInputSource,
@@ -6774,12 +6782,29 @@ class Reader {
             this.#queuedPageTurnRun = null;
             if (queuedPageTurnRun) {
                 queueMicrotask(() => {
-                    void this.#runPageTurn(queuedPageTurnRun)
+                    void this.#runPageTurn({
+                        ...queuedPageTurnRun,
+                        serializedContinuation: true,
+                    })
                         .then(queuedPageTurnRun.resolve)
                         .catch(queuedPageTurnRun.reject);
                 });
+            } else {
+                this.#pageTurnInFlight = false;
+                const idleResolvers = this.#pageTurnIdleResolvers.splice(0);
+                for (const resolve of idleResolvers) {
+                    resolve();
+                }
             }
         }
+    }
+    #waitForPageTurnChainIdle() {
+        if (!this.#pageTurnInFlight && !this.#queuedPageTurnRun) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            this.#pageTurnIdleResolvers.push(resolve);
+        });
     }
     #restoreNativeLookupTargetsAfterUncommittedPageTurn(reason) {
         this.#scheduleNativeLookupHitTargetRefreshSettle(
@@ -8907,6 +8932,7 @@ class Reader {
             {
                 captureSettledPosition: true,
                 deferVisiblePageResetUntilMovement: true,
+                ignoreIfPageTurnInFlight: true,
             },
             (result) => {
                 if (result?.moved === true) {
@@ -8953,6 +8979,7 @@ class Reader {
         }
         const moved = turnResult?.moved === true;
         if (!moved) {
+            await this.#waitForPageTurnChainIdle();
             postNativeLookupPageTurnDisplayReady('lookup-navigation.terminal-edge');
             return {
                 opened: false,

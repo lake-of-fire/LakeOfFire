@@ -82,6 +82,7 @@ export class FixedLayout extends HTMLElement {
         iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts')
         iframe.setAttribute('scrolling', 'no')
         iframe.setAttribute('part', 'filter')
+        iframe.dataset.index = String(index)
         this.#root.append(element)
         if (!src) return { blank: true, element, iframe }
         return new Promise(resolve => {
@@ -102,6 +103,7 @@ export class FixedLayout extends HTMLElement {
     }
     #render(side = this.#side) {
         if (!side) return
+        this.#side = side
         const left = this.#left ?? {}
         const right = this.#center ?? this.#right
         const target = side === 'left' ? left : right
@@ -229,9 +231,12 @@ export class FixedLayout extends HTMLElement {
     }
     get index() {
         const spread = this.#spreads[this.#index]
-        const section = spread?.center ?? (this.side === 'left'
+        const section = spread?.center ?? (this.#side === 'left'
             ? spread.left ?? spread.right : spread.right ?? spread.left)
         return this.book.sections.indexOf(section)
+    }
+    get currentIndex() {
+        return this.index
     }
     #reportLocation(reason) {
         this.dispatchEvent(new CustomEvent('relocate', { detail:
@@ -249,7 +254,11 @@ export class FixedLayout extends HTMLElement {
     async goToSpread(index, side, reason) {
         if (index < 0 || index > this.#spreads.length - 1) return
         if (index === this.#index) {
+            const previousSectionIndex = this.index
             this.#render(side)
+            if (this.index !== previousSectionIndex) {
+                this.#reportLocation(reason)
+            }
             return
         }
         this.#index = index
@@ -296,7 +305,7 @@ export class FixedLayout extends HTMLElement {
             doc: frame.contentDocument,
             iframe: frame,
             element: frame.parentElement,
-            // TODO: index, overlayer
+            index: Number(frame.dataset.index),
         }))
     }
     destroy() {
