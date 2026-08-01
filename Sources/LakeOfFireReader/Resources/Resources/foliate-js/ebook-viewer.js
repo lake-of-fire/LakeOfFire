@@ -6741,11 +6741,11 @@ class Reader {
                     ...details,
                 }, move)
                 : await move();
-            const resolvedResult = result ?? {};
-            if (deferVisiblePageResetUntilMovement && resolvedResult?.moved === true) {
-                this.#clearVisiblePageReadChrome(clearReadChromeReason);
-            }
-            return resolvedResult;
+            // A tentative lookup turn never commits its reset here. A real move
+            // emits renderer relocation, whose normal invalidation is the single
+            // destructive commit point. This avoids clearing freshly collected
+            // destination geometry if relocation settled before this promise.
+            return result ?? {};
         } catch (error) {
             manabiTimelineMark('pageTurn.reader.run.error', {
                 stage,
