@@ -8872,6 +8872,18 @@ class Reader {
             this.#activeLookupNavigationToken = navigationToken;
         }
         const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
+        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
+            return {
+                opened: false,
+                pageTurnAttempted: false,
+                pageTurnRequested: false,
+                moved: false,
+                failureReason: 'superseded',
+                kind,
+                direction,
+                navigationToken,
+            };
+        }
         const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
         let turnResult;
         try {
