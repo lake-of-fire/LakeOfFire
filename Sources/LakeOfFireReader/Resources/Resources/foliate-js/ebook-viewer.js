@@ -5301,6 +5301,7 @@ class Reader {
     #pageTurnInFlight = false;
     #queuedPageTurnRun = null;
     #pageTurnIdleResolvers = [];
+    #pendingAbandonedSwipeInvalidationGeneration = null;
     initialDisplaySettled = false;
     hasReachedLoadingDidDisplayBoundary = false;
     initialDisplaySettledPromise = null;
@@ -6741,6 +6742,7 @@ class Reader {
             this.#clearVisiblePageReadChrome(clearReadChromeReason);
         }
         let result = null;
+        let restoredUncommittedTargets = false;
         try {
             result = markInputSource
                 ? await runWithNavigationIntent({
@@ -6750,18 +6752,29 @@ class Reader {
                     ...details,
                 }, move)
                 : await move();
-            if (
-                !deferVisiblePageResetUntilMovement
-                && result === false
-            ) {
-                this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
-                    `${stage}.no-move`
-                );
+            const authoritativeNoMove = result === false || result?.moved === false;
+            const pendingAbandonedSwipeMatches =
+                this.#pendingAbandonedSwipeInvalidationGeneration !== null
+                && this.#pendingAbandonedSwipeInvalidationGeneration
+                    === this.visiblePageCollectionGeneration;
+            if (authoritativeNoMove) {
+                this.#pendingAbandonedSwipeInvalidationGeneration = null;
+                if (!deferVisiblePageResetUntilMovement || pendingAbandonedSwipeMatches) {
+                    this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
+                        `${stage}.no-move`
+                    );
+                    restoredUncommittedTargets = true;
+                }
+            } else if (result === true || result?.moved === true) {
+                this.#pendingAbandonedSwipeInvalidationGeneration = null;
             }
             // A tentative lookup turn never commits its reset here. A real move
             // emits renderer relocation, whose normal invalidation is the single
             // destructive commit point. This avoids clearing freshly collected
             // destination geometry if relocation settled before this promise.
+            if (restoredUncommittedTargets && result && typeof result === 'object') {
+                return { ...result, restoredUncommittedTargets: true };
+            }
             return result ?? {};
         } catch (error) {
             manabiTimelineMark('pageTurn.reader.run.error', {
@@ -6791,6 +6804,10 @@ class Reader {
                 });
             } else {
                 this.#pageTurnInFlight = false;
+                // An ambiguous renderer result cannot prove whether movement
+                // committed. Do not let an abandoned-swipe marker leak into a
+                // later, unrelated page-turn chain.
+                this.#pendingAbandonedSwipeInvalidationGeneration = null;
                 const idleResolvers = this.#pageTurnIdleResolvers.splice(0);
                 for (const resolve of idleResolvers) {
                     resolve();
@@ -7617,9 +7634,14 @@ class Reader {
             }));
         }
         if (state?.nativeLookupCancelled === true && state?.triggered !== true) {
-            this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
-                'mainDocumentSwipe.abandoned'
-            );
+            if (this.#pageTurnInFlight || this.#queuedPageTurnRun) {
+                this.#pendingAbandonedSwipeInvalidationGeneration =
+                    this.visiblePageCollectionGeneration;
+            } else {
+                this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
+                    'mainDocumentSwipe.abandoned'
+                );
+            }
         }
         this.#mainDocumentSwipeState = null;
     }
@@ -8840,7 +8862,8 @@ class Reader {
                     settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
                 }
                 return completeTurn({
-                    moved: changed === true
+                    moved: moveResult === true
+                        || changed === true
                         || this.#physicalPagePositionChanged(
                             positionBeforeTurn,
                             settledPositionAfterTurn
@@ -8890,17 +8913,7 @@ class Reader {
             direction,
             navigationDetails
         );
-        const moved = result?.moved === true;
-        if (
-            !moved
-            && result?.pageTurnRunResult?.ignored !== true
-            && navigationDetails.deferVisiblePageResetUntilMovement !== true
-        ) {
-            this.#restoreNativeLookupTargetsAfterUncommittedPageTurn(
-                'physicalArrowKey.no-move'
-            );
-        }
-        return moved;
+        return result?.moved === true;
     }
     #lookupContentWindows(preferredContentIndex = null) {
         const renderer = this.view?.renderer;
@@ -8956,6 +8969,8 @@ class Reader {
             settledPositionAfterTurn: detailedTurnResult?.settledPositionAfterTurn ?? null,
             displaySettledSequenceBeforeTurn:
                 detailedTurnResult?.displaySettledSequenceBeforeTurn ?? null,
+            restoredUncommittedTargets:
+                detailedTurnResult?.restoredUncommittedTargets === true,
         };
     }
     async performLookupNavigationPageTurn(request = {}) {
@@ -8980,7 +8995,9 @@ class Reader {
         const moved = turnResult?.moved === true;
         if (!moved) {
             await this.#waitForPageTurnChainIdle();
-            postNativeLookupPageTurnDisplayReady('lookup-navigation.terminal-edge');
+            if (turnResult?.restoredUncommittedTargets !== true) {
+                postNativeLookupPageTurnDisplayReady('lookup-navigation.terminal-edge');
+            }
             return {
                 opened: false,
                 pageTurnAttempted: true,
@@ -9751,6 +9768,7 @@ class Reader {
     async #onRelocate({
         detail
     }) {
+        this.#pendingAbandonedSwipeInvalidationGeneration = null;
         const {
             fraction,
             location,

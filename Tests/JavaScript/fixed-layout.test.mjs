@@ -65,11 +65,11 @@ test('fixed layout reports the selected page when relocating within an existing 
     layout.addEventListener('relocate', event => relocations.push(event.detail))
     layout.open({ dir: 'ltr', rendition: {}, sections })
 
-    await layout.goTo({ index: 0 })
+    assert.equal(await layout.goTo({ index: 0 }), true)
     assert.equal(layout.index, 0)
     assert.equal(relocations.length, 1)
 
-    await layout.goTo({ index: 1 })
+    assert.equal(await layout.goTo({ index: 1 }), true)
 
     assert.equal(layout.index, 1)
     assert.equal(layout.currentIndex, 1)
@@ -79,7 +79,7 @@ test('fixed layout reports the selected page when relocating within an existing 
     assert.equal(relocations.at(-1)?.index, 1)
     assert.equal(relocations.length, 2)
 
-    await layout.goTo({ index: 1 })
+    assert.equal(await layout.goTo({ index: 1 }), false)
     assert.equal(relocations.length, 2)
 })
 
