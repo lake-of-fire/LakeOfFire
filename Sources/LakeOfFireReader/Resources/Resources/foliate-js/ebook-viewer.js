@@ -8715,18 +8715,22 @@ class Reader {
         }
         return comparablePairs.length > 0 ? false : null;
     }
-    async #handleKeydown(event, navigationDetails = {}) {
+    async #handleKeydownDetailed(event, navigationDetails = {}, serializedCompletion = null) {
         const k = event.key;
         const renderer = this.view?.renderer;
-        if (!renderer) return false;
+        if (!renderer) {
+            return { moved: false, failureReason: 'missingRenderer' };
+        }
         const isRTL = this.isRTL;
         const method = k === 'ArrowLeft' || k === 'h'
             ? 'goLeft'
             : (k === 'ArrowRight' || k === 'l' ? 'goRight' : null);
-        if (!method) return false;
+        if (!method) {
+            return { moved: false, failureReason: 'unsupportedDirection' };
+        }
 
-        const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
-        const result = await this.#runPageTurn({
+        const captureSettledPosition = navigationDetails.captureSettledPosition === true;
+        const turnResult = await this.#runPageTurn({
             stage: 'pageTurn.keydown',
             markInputSource: `pageTurn.keydown.${k}`,
             details: {
@@ -8735,39 +8739,87 @@ class Reader {
                 isRTL,
                 ...navigationDetails,
             },
-            move: async () => method === 'goLeft'
-                ? await this.view.goLeft()
-                : await this.view.goRight(),
+            move: async () => {
+                const completeTurn = (result) => {
+                    serializedCompletion?.(result);
+                    return result;
+                };
+                // Keep observation inside the serialized physical-turn run. A queued
+                // opposite-direction request must not move before this request has
+                // measured its own result, and it must take its "before" snapshot
+                // only after the preceding turn is complete.
+                const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
+                const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
+                const moveResult = method === 'goLeft'
+                    ? await this.view.goLeft()
+                    : await this.view.goRight();
+                const positionAfterTurn = await this.#physicalPagePositionSnapshot();
+                const changed = this.#physicalPagePositionChanged(
+                    positionBeforeTurn,
+                    positionAfterTurn
+                );
+                let settledPositionAfterTurn = positionAfterTurn;
+                const observesSettlement = moveResult !== false
+                    && (captureSettledPosition || changed !== true);
+                if (observesSettlement) {
+                    // Some paginator transitions resolve before the next renderer
+                    // position snapshot. Observe one frame of settlement without
+                    // issuing another navigation request.
+                    await this.#waitForAnimationFrames(1);
+                    settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
+                }
+                return completeTurn({
+                    moved: changed === true
+                        || this.#physicalPagePositionChanged(
+                            positionBeforeTurn,
+                            settledPositionAfterTurn
+                        ) === true,
+                    moveResult,
+                    positionBeforeTurn,
+                    positionAfterTurn,
+                    settledPositionAfterTurn,
+                    displaySettledSequenceBeforeTurn,
+                });
+            },
         });
-        if (result?.ignored === true) {
-            return false;
+        if (turnResult?.ignored === true) {
+            return {
+                moved: false,
+                failureReason: turnResult.reason || 'pageTurnIgnored',
+                pageTurnRunResult: turnResult,
+            };
         }
-        const positionAfterTurn = await this.#physicalPagePositionSnapshot();
-        const changed = this.#physicalPagePositionChanged(
-            positionBeforeTurn,
-            positionAfterTurn
-        );
-        if (changed === true) {
-            return true;
-        }
-        if (result === false) {
-            return false;
-        }
-        // Some paginator transitions resolve before the next renderer position
-        // snapshot. Give that same physical turn one frame to publish its state;
-        // never turn the retry into another page-navigation request.
-        await this.#waitForAnimationFrames(1);
-        const settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
-        return this.#physicalPagePositionChanged(positionBeforeTurn, settledPositionAfterTurn) === true;
+        return turnResult ?? { moved: false, failureReason: 'missingTurnResult' };
     }
-    async handlePhysicalArrowKey(direction, navigationDetails = {}) {
+    async #handleKeydown(event, navigationDetails = {}) {
+        const result = await this.#handleKeydownDetailed(event, navigationDetails);
+        return result?.moved === true;
+    }
+    async #handlePhysicalArrowKeyDetailed(
+        direction,
+        navigationDetails = {},
+        serializedCompletion = null
+    ) {
         const key = direction === 'left'
             ? 'ArrowLeft'
             : direction === 'right'
                 ? 'ArrowRight'
                 : null;
-        if (!key) return false;
-        return await this.#handleKeydown({ key }, navigationDetails) === true;
+        if (!key) {
+            return { moved: false, failureReason: 'unsupportedDirection' };
+        }
+        return await this.#handleKeydownDetailed(
+            { key },
+            navigationDetails,
+            serializedCompletion
+        );
+    }
+    async handlePhysicalArrowKey(direction, navigationDetails = {}) {
+        const result = await this.#handlePhysicalArrowKeyDetailed(
+            direction,
+            navigationDetails
+        );
+        return result?.moved === true;
     }
     #lookupContentWindows(preferredContentIndex = null) {
         const renderer = this.view?.renderer;
@@ -8783,7 +8835,7 @@ class Reader {
             )
             .filter((view) => view && !isCacheWarmerDocument(view.document));
     }
-    async #turnLookupNavigationPage(direction) {
+    async #turnLookupNavigationPage(direction, navigationToken = null) {
         const renderer = this.view?.renderer;
         if (!renderer || !this.view) {
             return {
@@ -8794,18 +8846,34 @@ class Reader {
         const normalizedDirection = direction === 'previous' ? 'previous' : 'next';
         const movesLeft = normalizedDirection === 'next' ? this.isRTL : !this.isRTL;
         const physicalDirection = movesLeft ? 'left' : 'right';
-        const moved = await this.handlePhysicalArrowKey(physicalDirection) === true;
-        if (moved) {
-            this.#applyLogicalPageTurnNavigationVisibility(
-                normalizedDirection === 'next' ? 'forward' : 'backward',
-                'lookup-navigation.page'
-            );
-        }
+        const detailedTurnResult = await this.#handlePhysicalArrowKeyDetailed(
+            physicalDirection,
+            { captureSettledPosition: true },
+            (result) => {
+                if (
+                    result?.moved === true
+                    && (!navigationToken || this.#isLookupNavigationTokenActive(navigationToken))
+                ) {
+                    this.#applyLogicalPageTurnNavigationVisibility(
+                        normalizedDirection === 'next' ? 'forward' : 'backward',
+                        'lookup-navigation.page'
+                    );
+                }
+            }
+        );
+        const moved = detailedTurnResult?.moved === true;
         return {
             moved,
             mode: 'physicalArrowKey',
             physicalDirection,
-            failureReason: moved ? null : 'pageTurnNotHandled',
+            failureReason: moved
+                ? null
+                : (detailedTurnResult?.failureReason || 'pageTurnNotHandled'),
+            positionBeforeTurn: detailedTurnResult?.positionBeforeTurn ?? null,
+            positionAfterTurn: detailedTurnResult?.positionAfterTurn ?? null,
+            settledPositionAfterTurn: detailedTurnResult?.settledPositionAfterTurn ?? null,
+            displaySettledSequenceBeforeTurn:
+                detailedTurnResult?.displaySettledSequenceBeforeTurn ?? null,
         };
     }
     #isLookupNavigationTokenActive(token) {
@@ -8871,7 +8939,6 @@ class Reader {
         if (navigationToken) {
             this.#activeLookupNavigationToken = navigationToken;
         }
-        const positionBeforeTurn = await this.#physicalPagePositionSnapshot();
         if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
             return {
                 opened: false,
@@ -8884,10 +8951,9 @@ class Reader {
                 navigationToken,
             };
         }
-        const displaySettledSequenceBeforeTurn = this.displaySettledSequence;
         let turnResult;
         try {
-            turnResult = await this.#turnLookupNavigationPage(direction);
+            turnResult = await this.#turnLookupNavigationPage(direction, navigationToken);
         } catch (error) {
             turnResult = {
                 moved: false,
@@ -8896,8 +8962,36 @@ class Reader {
             };
         }
         const moved = turnResult?.moved === true;
+        const positionBeforeTurn = turnResult?.positionBeforeTurn ?? null;
+        const positionAfterTurn = turnResult?.positionAfterTurn ?? null;
+        const settledPositionAfterTurn = turnResult?.settledPositionAfterTurn
+            ?? positionAfterTurn;
+        const displaySettledSequenceBeforeTurn =
+            turnResult?.displaySettledSequenceBeforeTurn
+            ?? this.displaySettledSequence;
+        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
+            return {
+                opened: false,
+                pageTurnAttempted: true,
+                pageTurnRequested: moved,
+                moved,
+                failureReason: 'superseded',
+                kind,
+                direction,
+                navigationToken,
+                turnResult,
+            };
+        }
         if (!moved) {
             this.#clearLookupNavigationTokenIfActive(navigationToken);
+            try {
+                this.#refreshLookupNavigationVisibleTargets('lookup-navigation.terminal-edge');
+            } catch (error) {
+                manabiTimelineMark('lookup-navigation.terminal-edge.refresh.error', {
+                    message: error?.message || String(error),
+                });
+            }
+            postNativeLookupPageTurnDisplayReady('lookup-navigation.terminal-edge');
             return {
                 opened: false,
                 pageTurnAttempted: true,
@@ -8910,22 +9004,6 @@ class Reader {
                 turnResult,
             };
         }
-        if (navigationToken && !this.#isLookupNavigationTokenActive(navigationToken)) {
-            return {
-                opened: false,
-                pageTurnAttempted: true,
-                pageTurnRequested: true,
-                moved: true,
-                failureReason: 'superseded',
-                kind,
-                direction,
-                navigationToken,
-                turnResult,
-            };
-        }
-        const positionAfterTurn = await this.#physicalPagePositionSnapshot();
-        await this.#waitForAnimationFrames(1);
-        const settledPositionAfterTurn = await this.#physicalPagePositionSnapshot();
         const crossedSection = (
             Number.isFinite(positionBeforeTurn?.index)
             && Number.isFinite(settledPositionAfterTurn?.index)
