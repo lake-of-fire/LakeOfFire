@@ -167,24 +167,24 @@ export class FixedLayout extends HTMLElement {
         }
     }
     #goLeft() {
-        if (this.#center) return
-        if (this.#left?.blank) return true
+        if (this.#center || this.#left?.blank) return false
         if (this.#portrait && this.#left?.element?.style?.display === 'none') {
             this.#right.element.style.display = 'none'
             this.#left.element.style.display = 'block'
             this.#side = 'left'
             return true
         }
+        return false
     }
     #goRight() {
-        if (this.#center) return
-        if (this.#right?.blank) return true
+        if (this.#center || this.#right?.blank) return false
         if (this.#portrait && this.#right?.element?.style?.display === 'none') {
             this.#left.element.style.display = 'none'
             this.#right.element.style.display = 'block'
             this.#side = 'right'
             return true
         }
+        return false
     }
     open(book) {
         this.book = book
@@ -252,14 +252,15 @@ export class FixedLayout extends HTMLElement {
         }
     }
     async goToSpread(index, side, reason) {
-        if (index < 0 || index > this.#spreads.length - 1) return
+        if (index < 0 || index > this.#spreads.length - 1) return false
         if (index === this.#index) {
             const previousSectionIndex = this.index
             this.#render(side)
-            if (this.index !== previousSectionIndex) {
+            const moved = this.index !== previousSectionIndex
+            if (moved) {
                 this.#reportLocation(reason)
             }
-            return
+            return moved
         }
         this.#index = index
         const spread = this.#spreads[index]
@@ -277,6 +278,7 @@ export class FixedLayout extends HTMLElement {
             await this.#showSpread({ left, right, side })
         }
         this.#reportLocation(reason)
+        return true
     }
     async select(target) {
         await this.goTo(target)
@@ -286,19 +288,25 @@ export class FixedLayout extends HTMLElement {
         const { book } = this
         const resolved = await target
         const section = book.sections[resolved.index]
-        if (!section) return
+        if (!section) return false
         const { index, side } = this.getSpreadOf(section)
-        await this.goToSpread(index, side)
+        return await this.goToSpread(index, side)
     }
     async next() {
         const s = this.rtl ? this.#goLeft() : this.#goRight()
-        if (s) this.#reportLocation('page')
-        else return this.goToSpread(this.#index + 1, this.rtl ? 'right' : 'left', 'page')
+        if (s) {
+            this.#reportLocation('page')
+            return true
+        }
+        return await this.goToSpread(this.#index + 1, this.rtl ? 'right' : 'left', 'page')
     }
     async prev() {
         const s = this.rtl ? this.#goRight() : this.#goLeft()
-        if (s) this.#reportLocation('page')
-        else return this.goToSpread(this.#index - 1, this.rtl ? 'left' : 'right', 'page')
+        if (s) {
+            this.#reportLocation('page')
+            return true
+        }
+        return await this.goToSpread(this.#index - 1, this.rtl ? 'left' : 'right', 'page')
     }
     getContents() {
         return Array.from(this.#root.querySelectorAll('iframe'), frame => ({

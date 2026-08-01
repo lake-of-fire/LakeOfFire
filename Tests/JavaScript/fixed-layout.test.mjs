@@ -31,8 +31,16 @@ class FakeShadowRoot extends FakeElement {
 class FakeIFrame extends FakeElement {
     constructor() {
         super()
-        this.contentDocument = {}
+        this.contentDocument = {
+            documentElement: { nodeName: 'html' },
+            querySelector() { return null },
+        }
     }
+    set src(value) {
+        this._src = value
+        queueMicrotask(() => this.dispatchEvent(new Event('load')))
+    }
+    get src() { return this._src }
 }
 
 globalThis.HTMLElement = class extends FakeElement {
@@ -74,3 +82,52 @@ test('fixed layout reports the selected page when relocating within an existing 
     await layout.goTo({ index: 1 })
     assert.equal(relocations.length, 2)
 })
+
+test('fixed layout returns false without relocating at terminal edges', async () => {
+    const sections = [{ linear: 'yes', load: async () => 'page-0' }]
+    const layout = new FixedLayout()
+    const relocations = []
+    layout.addEventListener('relocate', event => relocations.push(event.detail))
+    layout.open({
+        dir: 'ltr',
+        rendition: { spread: 'none', viewport: { width: 1000, height: 1000 } },
+        sections,
+    })
+
+    assert.equal(await layout.goTo({ index: 0 }), true)
+    assert.equal(await layout.next(), false)
+    assert.equal(await layout.prev(), false)
+    assert.deepEqual(relocations.map(event => event.index), [0])
+})
+
+for (const {
+    direction,
+    expectedNextIndex,
+} of [
+    { direction: 'ltr', expectedNextIndex: 1 },
+    { direction: 'rtl', expectedNextIndex: 1 },
+]) {
+    test(`fixed layout ${direction} portrait navigation reports only real side changes`, async () => {
+        const sections = [
+            { linear: 'yes', load: async () => 'page-0' },
+            { linear: 'yes', load: async () => 'page-1' },
+        ]
+        const layout = new FixedLayout()
+        const relocations = []
+        layout.addEventListener('relocate', event => relocations.push(event.detail))
+        layout.open({
+            dir: direction,
+            rendition: { viewport: { width: 1000, height: 1000 } },
+            sections,
+        })
+
+        assert.equal(await layout.goTo({ index: 0 }), true)
+        assert.equal(await layout.next(), true)
+        assert.equal(layout.index, expectedNextIndex)
+        assert.equal(await layout.next(), false)
+        assert.equal(await layout.prev(), true)
+        assert.equal(layout.index, 0)
+        assert.equal(await layout.prev(), false)
+        assert.deepEqual(relocations.map(event => event.index), [0, 1, 0])
+    })
+}
