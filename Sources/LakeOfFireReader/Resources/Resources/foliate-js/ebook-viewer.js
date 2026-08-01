@@ -8684,14 +8684,29 @@ class Reader {
         if (!renderer) {
             return null;
         }
-        const metrics = typeof renderer.pageMetrics === 'function'
-            ? await renderer.pageMetrics().catch(() => null)
+        const index = getPrimaryRendererContentIndex(renderer);
+        const sectionIndex = Number.isFinite(this.view?.lastLocation?.sectionIndex)
+            ? this.view.lastLocation.sectionIndex
             : null;
+        let metrics = null;
+        if (typeof renderer.pageMetrics === 'function') {
+            let timeoutHandle = null;
+            try {
+                // Metrics enrich same-section motion verification, but a stalled
+                // renderer measurement must not hold the user's navigation input.
+                metrics = await Promise.race([
+                    Promise.resolve().then(() => renderer.pageMetrics()).catch(() => null),
+                    new Promise((resolve) => {
+                        timeoutHandle = setTimeout(() => resolve(null), 1000);
+                    }),
+                ]);
+            } finally {
+                clearTimeout(timeoutHandle);
+            }
+        }
         return {
-            index: getPrimaryRendererContentIndex(renderer),
-            sectionIndex: Number.isFinite(this.view?.lastLocation?.sectionIndex)
-                ? this.view.lastLocation.sectionIndex
-                : null,
+            index,
+            sectionIndex,
             page: Number.isFinite(metrics?.page) ? metrics.page : null,
             start: Number.isFinite(metrics?.start) ? metrics.start : null,
         };
