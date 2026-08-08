@@ -442,6 +442,16 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(decoded))
     }
 
+    func testRawFallbackWithoutGeneratedSegmentsIsNotDurableCacheAuthority() {
+        let payload = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>raw source</body></html>".utf8),
+            segmentSidecar: Data(),
+            isAuthoritativelyProcessed: false
+        )
+
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
+    }
+
     func testProcessedSectionEnvelopeRejectsLegacyAndTruncatedValues() {
         let payload = EbookProcessedSectionPayload(
             documentHTML: Data("<html><body>猫</body></html>".utf8),
