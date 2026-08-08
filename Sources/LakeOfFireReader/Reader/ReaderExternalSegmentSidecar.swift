@@ -1,13 +1,23 @@
 import CryptoKit
 import Foundation
 
+public enum ReaderCompactSegmentSidecarSchema {
+    public static let currentVersion = 9
+}
+
 public struct EbookProcessedSectionPayload: Sendable {
     public let documentHTML: Data
     public let segmentSidecar: Data
+    public let isAuthoritativelyProcessed: Bool
 
-    public init(documentHTML: Data, segmentSidecar: Data) {
+    public init(
+        documentHTML: Data,
+        segmentSidecar: Data,
+        isAuthoritativelyProcessed: Bool = true
+    ) {
         self.documentHTML = documentHTML
         self.segmentSidecar = segmentSidecar
+        self.isAuthoritativelyProcessed = isAuthoritativelyProcessed
     }
 
     public var combinedByteCount: Int {
@@ -18,6 +28,7 @@ public struct EbookProcessedSectionPayload: Sendable {
 public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
     _ payload: EbookProcessedSectionPayload
 ) -> Bool {
+    guard payload.isAuthoritativelyProcessed else { return false }
     let documentSegmentCount = generatedReaderSegmentCount(in: payload.documentHTML)
     guard !payload.segmentSidecar.isEmpty else { return documentSegmentCount == 0 }
     return readerSegmentSidecarHasDurableSegmentIdentities(
@@ -32,7 +43,7 @@ private func readerSegmentSidecarHasDurableSegmentIdentities(
 ) -> Bool {
     guard let object = try? JSONSerialization.jsonObject(with: sidecar),
           let root = object as? [String: Any],
-          (root["v"] as? NSNumber)?.intValue == 9,
+          (root["v"] as? NSNumber)?.intValue == ReaderCompactSegmentSidecarSchema.currentVersion,
           let tables = root["t"] as? [String: Any],
           let hashes = tables["h"] as? [String],
           let sentenceIdentifiers = tables["sid"] as? [String],
@@ -82,6 +93,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
     private let countLimit: Int
     private let directoryURL: URL
     private var entries = [String: ReaderExternalSegmentSidecarEntry]()
+    private var durableTokens = Set<String>()
     private var tokensInAccessOrder = [String]()
     private var totalBytes = 0
 
@@ -104,10 +116,10 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         let token = Self.contentToken(for: data)
         let signature = "sha256:\(data.count):\(token)"
         let entry = ReaderExternalSegmentSidecarEntry(data: data, signature: signature)
-        _ = persistIfNeeded(data, token: token)
+        let isDurable = persistIfNeeded(data, token: token)
 
         lock.lock()
-        insertIntoMemory(entry, token: token)
+        insertIntoMemory(entry, token: token, isDurable: isDurable)
         lock.unlock()
         return (token, signature)
     }
@@ -132,7 +144,7 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
             signature: "sha256:\(data.count):\(token)"
         )
         lock.lock()
-        insertIntoMemory(entry, token: token)
+        insertIntoMemory(entry, token: token, isDurable: true)
         lock.unlock()
         return entry
     }
@@ -153,14 +165,20 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
 
     private func insertIntoMemory(
         _ entry: ReaderExternalSegmentSidecarEntry,
-        token: String
+        token: String,
+        isDurable: Bool
     ) {
         if let previous = entries.updateValue(entry, forKey: token) {
             totalBytes -= previous.data.count
         }
+        if isDurable {
+            durableTokens.insert(token)
+        } else {
+            durableTokens.remove(token)
+        }
         touch(token)
         totalBytes += entry.data.count
-        evictEntriesIfNeeded()
+        evictDurableEntriesIfNeeded()
     }
 
     private func touch(_ token: String) {
@@ -168,10 +186,13 @@ final class ReaderExternalSegmentSidecarStore: @unchecked Sendable {
         tokensInAccessOrder.append(token)
     }
 
-    private func evictEntriesIfNeeded() {
-        while entries.count > countLimit || totalBytes > totalByteLimit {
-            guard let token = tokensInAccessOrder.first else { break }
-            tokensInAccessOrder.removeFirst()
+    private func evictDurableEntriesIfNeeded() {
+        while entries.count > countLimit || (totalBytes > totalByteLimit && entries.count > 1) {
+            guard let index = tokensInAccessOrder.firstIndex(where: durableTokens.contains) else {
+                break
+            }
+            let token = tokensInAccessOrder.remove(at: index)
+            durableTokens.remove(token)
             if let removed = entries.removeValue(forKey: token) {
                 totalBytes -= removed.data.count
             }
@@ -263,7 +284,9 @@ struct ReaderPublishedSegmentSidecar: Sendable {
     let endpointURL: String?
 }
 
-private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC3".utf8)
+// Version 4 invalidates processed-section cache entries written before raw
+// fallback payloads were prevented from becoming durable cache authority.
+private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC4".utf8)
 private let readerProcessedSegmentSidecarEnvelopeLengthByteCount = MemoryLayout<UInt64>.size
 
 func splitCanonicalReaderSegmentSidecar(

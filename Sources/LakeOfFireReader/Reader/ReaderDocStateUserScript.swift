@@ -78,7 +78,7 @@ struct ReaderDocStateUserScript {
                 lookupHighlightMode: body?.dataset?.manabiLookupHighlightMode ?? null,
                 furiganaEnabled: body?.dataset?.manabiFuriganaEnabled ?? null,
                 readerRenderReady: body?.dataset?.mnbReaderRenderReady ?? html?.dataset?.mnbReaderRenderReady ?? null,
-                fontPending: html?.dataset?.manabiFontPending ?? null,
+                fontPending: html?.dataset?.mnbFontPending ?? null,
                 fontReady: html?.dataset?.manabiFontReady ?? null,
                 layoutComplete: html?.dataset?.manabiLayoutComplete ?? null,
                 subscriptionActive: body?.dataset?.manabiSubscriptionIsActive ?? null
@@ -210,10 +210,15 @@ struct ReaderDocStateUserScript {
                     (document.documentElement?.dataset?.mnbReaderRenderReady === '1'
                     || document.body?.dataset?.mnbReaderRenderReady === '1')
                     && !!document.getElementById('reader-content')
-                    && (document.documentElement?.dataset?.manabiFontPending ?? null) !== '1'
+                    && (document.documentElement?.dataset?.mnbFontPending ?? null) !== '1'
                     && window.getComputedStyle(document.body).visibility !== 'hidden'
                     && window.getComputedStyle(document.body).display !== 'none'
                     && Number.parseFloat(window.getComputedStyle(document.body).opacity || '1') > 0.01,
+                readerRenderGeneration:
+                    document.documentElement?.dataset?.mnbReaderRenderGeneration
+                    ?? document.body?.dataset?.mnbReaderRenderGeneration
+                    ?? null,
+                mnbFontPending: document.documentElement?.dataset?.mnbFontPending ?? null,
                 reason
             };
         }
@@ -257,7 +262,11 @@ struct ReaderDocStateUserScript {
                 childList: true,
                 subtree: true,
                 attributes: true,
-                attributeFilter: ["data-mnb-reader-render-ready", "data-manabi-font-pending"]
+                attributeFilter: [
+                    "data-mnb-reader-render-ready",
+                    "data-mnb-reader-render-generation",
+                    "data-mnb-font-pending"
+                ]
             });
         }
         document.addEventListener("readystatechange", () => { postState("readystatechange"); });

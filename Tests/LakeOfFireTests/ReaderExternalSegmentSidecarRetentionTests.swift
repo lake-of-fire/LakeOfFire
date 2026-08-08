@@ -116,7 +116,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         XCTAssertEqual(recreatedStore.entry(for: stored.token)?.data, originalData)
     }
 
-    func testMemoryBoundsStillApplyWhenDurablePersistenceFails() throws {
+    func testAdvertisedSidecarsRemainReachableWhenDurablePersistenceFails() throws {
         let directoryURL = temporaryDirectoryURL()
         try Data("not a directory".utf8).write(to: directoryURL)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -130,11 +130,11 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
         let first = store.insert(firstData)
         let second = store.insert(secondData)
 
-        XCTAssertNil(store.entry(for: first.token))
+        XCTAssertEqual(store.entry(for: first.token)?.data, firstData)
         XCTAssertEqual(store.entry(for: second.token)?.data, secondData)
     }
 
-    func testOversizedNondurableEntryIsNotRetained() throws {
+    func testOversizedNondurableAdvertisedSidecarRemainsReachable() throws {
         let directoryURL = temporaryDirectoryURL()
         try Data("not a directory".utf8).write(to: directoryURL)
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -147,7 +147,7 @@ final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
 
         let stored = store.insert(data)
 
-        XCTAssertNil(store.entry(for: stored.token))
+        XCTAssertEqual(store.entry(for: stored.token)?.data, data)
     }
 
     func testMissingExternalSidecarForcesProcessingRegeneration() async throws {

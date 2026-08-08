@@ -150,6 +150,26 @@ public struct ReaderPackageEntrySource: Sendable {
         return ReaderPackageEntryResponseMetadata(mimeType: mimeType, textEncodingName: textEncodingName)
     }
 
+    public func mimeType(
+        subpath rawSubpath: String,
+        data: Data
+    ) throws -> ReaderPackageEntryResponseMetadata {
+        let metadata = try mimeType(subpath: rawSubpath)
+        guard metadata.textEncodingName != nil else { return metadata }
+        return ReaderPackageEntryResponseMetadata(
+            mimeType: metadata.mimeType,
+            textEncodingName: Self.detectedTextEncoding(in: data).ianaName
+        )
+    }
+
+    public static func decodeText(_ data: Data) -> String {
+        let encoding = detectedTextEncoding(in: data).foundationEncoding
+        if let decoded = String(data: data, encoding: encoding) {
+            return decoded
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
     private static func knownResponseMetadata(
         forExtension fileExtension: String
     ) -> ReaderPackageEntryResponseMetadata? {
@@ -204,6 +224,43 @@ public struct ReaderPackageEntrySource: Sendable {
         )
     }
 
+    private struct DetectedTextEncoding {
+        let ianaName: String
+        let foundationEncoding: String.Encoding
+    }
+
+    private static func detectedTextEncoding(in data: Data) -> DetectedTextEncoding {
+        let prefix = Array(data.prefix(4))
+        if prefix.starts(with: [0xEF, 0xBB, 0xBF]) {
+            return DetectedTextEncoding(ianaName: "utf-8", foundationEncoding: .utf8)
+        }
+        if prefix.starts(with: [0xFF, 0xFE]) {
+            return DetectedTextEncoding(ianaName: "utf-16le", foundationEncoding: .utf16)
+        }
+        if prefix.starts(with: [0xFE, 0xFF]) {
+            return DetectedTextEncoding(ianaName: "utf-16be", foundationEncoding: .utf16)
+        }
+        if prefix.count == 4 {
+            if prefix[1] == 0x00,
+               prefix[3] == 0x00,
+               prefix[0] != 0x00 || prefix[2] != 0x00 {
+                return DetectedTextEncoding(
+                    ianaName: "utf-16le",
+                    foundationEncoding: .utf16LittleEndian
+                )
+            }
+            if prefix[0] == 0x00,
+               prefix[2] == 0x00,
+               prefix[1] != 0x00 || prefix[3] != 0x00 {
+                return DetectedTextEncoding(
+                    ianaName: "utf-16be",
+                    foundationEncoding: .utf16BigEndian
+                )
+            }
+        }
+        return DetectedTextEncoding(ianaName: "utf-8", foundationEncoding: .utf8)
+    }
+
     public static func sanitizeSubpath(_ rawSubpath: String) throws -> String {
         guard !rawSubpath.isEmpty,
               !rawSubpath.hasPrefix("/"),
@@ -229,22 +286,22 @@ public struct ReaderPackageEntrySource: Sendable {
 
     public static func resolveDirectoryURL(rootURL: URL, subpath rawSubpath: String) throws -> URL {
         let subpath = try sanitizeSubpath(rawSubpath)
-        let standardizedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        let resolvedURL = standardizedRootURL
+        let resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedURL = resolvedRootURL
             .appendingPathComponent(subpath)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        let rootPath = standardizedRootURL.path.hasSuffix("/")
-            ? standardizedRootURL.path
-            : standardizedRootURL.path + "/"
-        guard resolvedURL.path.hasPrefix(rootPath) else {
+        let rootComponents = resolvedRootURL.pathComponents
+        let resolvedComponents = resolvedURL.pathComponents
+        guard resolvedComponents.count > rootComponents.count,
+              Array(resolvedComponents.prefix(rootComponents.count)) == rootComponents else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
         return resolvedURL
     }
 
     private func enumerateDirectoryEntries(rootURL: URL) throws -> [ReaderPackageEntryMetadata] {
-        let standardizedRootURL = rootURL.standardizedFileURL
+        let standardizedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
         let enumerator = FileManager.default.enumerator(
             at: standardizedRootURL,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
@@ -253,11 +310,16 @@ public struct ReaderPackageEntrySource: Sendable {
 
         var entries = [ReaderPackageEntryMetadata]()
         while let fileURL = enumerator?.nextObject() as? URL {
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true else { continue }
             let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
             let subpath = try Self.sanitizeSubpath(relativePath)
-            _ = try Self.resolveDirectoryURL(rootURL: standardizedRootURL, subpath: subpath)
+            guard (try? Self.resolveDirectoryURL(
+                rootURL: standardizedRootURL,
+                subpath: subpath
+            )) != nil else {
+                continue
+            }
+            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
         }
         return entries.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
@@ -500,19 +562,24 @@ public actor ReaderPackageEntrySourceCache {
         let generationID: String
     }
 
+    private let countLimit: Int
     private var cachedSources: [String: CacheRecord] = [:]
+    private var accessOrder: [String] = []
 
-    public init() { }
+    public init(countLimit: Int = 8) {
+        self.countLimit = max(1, countLimit)
+    }
 
     public func cachedSource(
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> CachedSource {
+        try Task.checkCancellation()
         let diagnosticLocalURL = Self.diagnosticLocalFileURL(forPackageURL: readerFileURL)
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
         let cacheKey = diagnosticLocalURL.map { "diagnosticLocalFilePath:\($0.standardizedFileURL.path)" }
             ?? canonicalReaderBackingURL.absoluteString
-        if let cached = freshCachedSource(forKey: cacheKey) {
+        if let cached = try freshCachedSource(forKey: cacheKey) {
             return cached
         }
         let localURL: URL
@@ -524,11 +591,14 @@ public actor ReaderPackageEntrySourceCache {
                 readerFileManager: readerFileManager
             )
         }
+        try Task.checkCancellation()
         let freshnessToken = try Self.freshnessToken(for: localURL)
+        try Task.checkCancellation()
 
         if let cached = cachedSources[cacheKey],
            cached.localURL == localURL,
            cached.freshnessToken == freshnessToken {
+            recordAccess(forKey: cacheKey)
             return CachedSource(
                 source: cached.source,
                 entries: cached.entries,
@@ -538,13 +608,17 @@ public actor ReaderPackageEntrySourceCache {
 
         let source = try ReaderPackageEntrySource(localURL: localURL)
         let entries = try source.enumerateEntries()
+        try Task.checkCancellation()
         let generationID = Self.generationID(for: freshnessToken)
-        cachedSources[cacheKey] = CacheRecord(
-            source: source,
-            entries: entries,
-            localURL: localURL,
-            freshnessToken: freshnessToken,
-            generationID: generationID
+        store(
+            CacheRecord(
+                source: source,
+                entries: entries,
+                localURL: localURL,
+                freshnessToken: freshnessToken,
+                generationID: generationID
+            ),
+            forKey: cacheKey
         )
         return CachedSource(
             source: source,
@@ -553,18 +627,51 @@ public actor ReaderPackageEntrySourceCache {
         )
     }
 
-    private func freshCachedSource(forKey cacheKey: String) -> CachedSource? {
-        guard let cached = cachedSources[cacheKey],
-              let freshnessToken = try? Self.freshnessToken(for: cached.localURL),
-              cached.freshnessToken == freshnessToken else {
+    private func freshCachedSource(forKey cacheKey: String) throws -> CachedSource? {
+        guard let cached = cachedSources[cacheKey] else {
             return nil
         }
+        guard let freshnessToken = try? Self.freshnessToken(for: cached.localURL),
+              cached.freshnessToken == freshnessToken else {
+            removeCachedSource(forKey: cacheKey)
+            return nil
+        }
+        try Task.checkCancellation()
+        recordAccess(forKey: cacheKey)
         return CachedSource(
             source: cached.source,
             entries: cached.entries,
             generationID: cached.generationID
         )
     }
+
+    private func store(_ record: CacheRecord, forKey cacheKey: String) {
+        cachedSources[cacheKey] = record
+        recordAccess(forKey: cacheKey)
+        while cachedSources.count > countLimit, let oldestKey = accessOrder.first {
+            removeCachedSource(forKey: oldestKey)
+        }
+    }
+
+    private func recordAccess(forKey cacheKey: String) {
+        accessOrder.removeAll { $0 == cacheKey }
+        accessOrder.append(cacheKey)
+    }
+
+    private func removeCachedSource(forKey cacheKey: String) {
+        cachedSources.removeValue(forKey: cacheKey)
+        accessOrder.removeAll { $0 == cacheKey }
+    }
+
+#if DEBUG
+    func cachedSourceCountForTesting() -> Int {
+        cachedSources.count
+    }
+
+    func cachedSourcePathsInLRUOrderForTesting() -> [String] {
+        accessOrder.compactMap { cachedSources[$0]?.localURL.standardizedFileURL.path }
+    }
+#endif
 
     private static func generationID(for freshnessToken: String) -> String {
         let digest = SHA256.hash(data: Data(freshnessToken.utf8))

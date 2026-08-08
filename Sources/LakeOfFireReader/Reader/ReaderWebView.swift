@@ -205,6 +205,7 @@ public struct ReaderWebView: View {
         [
             readerModeViewModel.ebookProcessedTextCacheReader != nil ? "processedTextRead=1" : "processedTextRead=0",
             readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "processedTextWrite=1" : "processedTextWrite=0",
+            readerModeViewModel.ebookProcessingVariantProvider != nil ? "processingVariant=1" : "processingVariant=0",
             readerModeViewModel.ebookSectionPresentationProvider != nil ? "presentation=1" : "presentation=0",
             readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
             readerModeViewModel.processHTMLDocument != nil ? "htmlDocument=1" : "htmlDocument=0",
@@ -302,6 +303,7 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
             ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
+            ebookURLSchemeHandler.ebookProcessingVariantProvider = readerModeViewModel.ebookProcessingVariantProvider
             ebookURLSchemeHandler.ebookSectionPresentationProvider = readerModeViewModel.ebookSectionPresentationProvider
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
             ebookURLSchemeHandler.processHTMLDocument = readerModeViewModel.processHTMLDocument

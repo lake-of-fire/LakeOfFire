@@ -3,6 +3,46 @@ import ZIPFoundation
 @testable import LakeOfFireContent
 
 final class ReaderPackageEntrySourceTests: XCTestCase {
+    func testTextDecodingRecognizesUTF16BOMsAndXMLSignatures() throws {
+        try withPackageSource { source in
+            let text = "<html><body>日本語</body></html>"
+            let littleEndian = Data([0xFF, 0xFE]) + (try XCTUnwrap(
+                text.data(using: .utf16LittleEndian)
+            ))
+            let bigEndian = Data([0xFE, 0xFF]) + (try XCTUnwrap(
+                text.data(using: .utf16BigEndian)
+            ))
+            let littleEndianSignature = try XCTUnwrap(text.data(using: .utf16LittleEndian))
+            let bigEndianSignature = try XCTUnwrap(text.data(using: .utf16BigEndian))
+
+            XCTAssertEqual(ReaderPackageEntrySource.decodeText(littleEndian), text)
+            XCTAssertEqual(ReaderPackageEntrySource.decodeText(bigEndian), text)
+            XCTAssertEqual(ReaderPackageEntrySource.decodeText(littleEndianSignature), text)
+            XCTAssertEqual(ReaderPackageEntrySource.decodeText(bigEndianSignature), text)
+
+            XCTAssertEqual(
+                try source.mimeType(subpath: "chapter.xhtml", data: littleEndian).textEncodingName,
+                "utf-16le"
+            )
+            XCTAssertEqual(
+                try source.mimeType(subpath: "chapter.xhtml", data: bigEndianSignature).textEncodingName,
+                "utf-16be"
+            )
+        }
+    }
+
+    func testDataAwareMIMETypeDoesNotAssignEncodingToBinaryContent() throws {
+        try withPackageSource { source in
+            let metadata = try source.mimeType(
+                subpath: "font.ttf",
+                data: Data([0xFF, 0xFE, 0x41, 0x00])
+            )
+
+            XCTAssertEqual(metadata.mimeType, "font/ttf")
+            XCTAssertNil(metadata.textEncodingName)
+        }
+    }
+
     func testKnownEbookMIMETypesAreDeterministicAndCaseInsensitive() throws {
         try withPackageSource { source in
             let expectations: [String: (mimeType: String, textEncodingName: String?)] = [
@@ -147,6 +187,111 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
         }
     }
 
+    func testDirectoryEnumerationSkipsEscapingSymlinkAndKeepsValidEntries() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let packageRoot = temporaryRoot.appendingPathComponent("book", isDirectory: true)
+            let outsideFileURL = temporaryRoot.appendingPathComponent("outside.xhtml")
+            let validFileURL = packageRoot.appendingPathComponent("chapter.xhtml")
+            let escapingLinkURL = packageRoot.appendingPathComponent("escaping.xhtml")
+            try FileManager.default.createDirectory(
+                at: packageRoot,
+                withIntermediateDirectories: true
+            )
+            try Data("valid".utf8).write(to: validFileURL)
+            try Data("outside".utf8).write(to: outsideFileURL)
+            try FileManager.default.createSymbolicLink(
+                at: escapingLinkURL,
+                withDestinationURL: outsideFileURL
+            )
+            let source = try ReaderPackageEntrySource(localURL: packageRoot)
+
+            XCTAssertEqual(try source.enumerateEntries().map(\.path), ["chapter.xhtml"])
+        }
+    }
+
+    func testPackageEntrySourceCacheEvictsLeastRecentlyUsedSources() async throws {
+        try await withTemporaryDirectory { temporaryRoot in
+            let packages = try (1...4).map { index in
+                let packageURL = temporaryRoot.appendingPathComponent("book-\(index)", isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: packageURL,
+                    withIntermediateDirectories: true
+                )
+                try Data("chapter-\(index)".utf8).write(
+                    to: packageURL.appendingPathComponent("chapter.xhtml")
+                )
+                return (packageURL, try diagnosticReaderURL(for: packageURL, index: index))
+            }
+            let cache = ReaderPackageEntrySourceCache(countLimit: 2)
+            let readerFileManager = ReaderFileManager()
+
+            for package in packages.prefix(3) {
+                _ = try await cache.cachedSource(
+                    forPackageURL: package.1,
+                    readerFileManager: readerFileManager
+                )
+            }
+            let initialCount = await cache.cachedSourceCountForTesting()
+            let initialOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+            XCTAssertEqual(initialCount, 2)
+            XCTAssertEqual(
+                initialOrder,
+                packages[1...2].map { $0.0.standardizedFileURL.path }
+            )
+
+            _ = try await cache.cachedSource(
+                forPackageURL: packages[1].1,
+                readerFileManager: readerFileManager
+            )
+            _ = try await cache.cachedSource(
+                forPackageURL: packages[3].1,
+                readerFileManager: readerFileManager
+            )
+            let finalOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+            XCTAssertEqual(
+                finalOrder,
+                [packages[1].0.standardizedFileURL.path, packages[3].0.standardizedFileURL.path]
+            )
+        }
+    }
+
+    func testPackageEntrySourceCacheDoesNotPublishPrecancelledRequest() async throws {
+        try await withTemporaryDirectory { temporaryRoot in
+            let packageURL = temporaryRoot.appendingPathComponent("cancelled", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: packageURL,
+                withIntermediateDirectories: true
+            )
+            try Data("chapter".utf8).write(to: packageURL.appendingPathComponent("chapter.xhtml"))
+            let readerURL = try diagnosticReaderURL(for: packageURL, index: 1)
+            let cache = ReaderPackageEntrySourceCache(countLimit: 2)
+            let readerFileManager = ReaderFileManager()
+            var continuation: AsyncStream<Void>.Continuation!
+            let startStream = AsyncStream<Void> { continuation = $0 }
+            let request = Task {
+                var iterator = startStream.makeAsyncIterator()
+                _ = await iterator.next()
+                return try await cache.cachedSource(
+                    forPackageURL: readerURL,
+                    readerFileManager: readerFileManager
+                )
+            }
+            await Task.yield()
+            request.cancel()
+            continuation.yield(())
+            continuation.finish()
+
+            do {
+                _ = try await request.value
+                XCTFail("Expected cancellation")
+            } catch is CancellationError {
+                // Expected.
+            }
+            let cachedSourceCount = await cache.cachedSourceCountForTesting()
+            XCTAssertEqual(cachedSourceCount, 0)
+        }
+    }
+
     func testArchiveEnumerationRejectsUnsafeEntryPaths() throws {
         try withTemporaryDirectory { temporaryRoot in
             let archiveURL = temporaryRoot.appendingPathComponent("unsafe.epub")
@@ -263,6 +408,32 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: directoryURL) }
         try operation(directoryURL)
+    }
+
+    private func withTemporaryDirectory(
+        _ operation: (URL) async throws -> Void
+    ) async throws {
+        let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "reader-package-source-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        try await operation(directoryURL)
+    }
+
+    private func diagnosticReaderURL(for packageURL: URL, index: Int) throws -> URL {
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/load/local/Books/book-\(index).epub"
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
+        ]
+        return try XCTUnwrap(components.url)
     }
 
     private func makeArchive(

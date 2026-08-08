@@ -3,6 +3,7 @@ import SwiftSoup
 import ZIPFoundation
 @preconcurrency import WebKit
 @testable import LakeOfFireContent
+@testable import LakeOfFireFiles
 @testable import LakeOfFireReader
 
 private final class EbookNavigationDelegate: NSObject, WKNavigationDelegate {
@@ -34,6 +35,97 @@ private final class EbookNavigationDelegate: NSObject, WKNavigationDelegate {
         self.error = error
         completionExpectation.fulfill()
     }
+}
+
+private enum EbookJavaScriptProbeError: Error {
+    case timedOut
+}
+
+private struct EbookJavaScriptProbeValue: @unchecked Sendable {
+    let value: Any?
+}
+
+@MainActor
+private final class EbookJavaScriptProbeCompletion {
+    private var continuation: CheckedContinuation<EbookJavaScriptProbeValue, Error>?
+    private var task: Task<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<EbookJavaScriptProbeValue, Error>) {
+        self.continuation = continuation
+    }
+
+    func install(task: Task<Void, Never>) {
+        self.task = task
+    }
+
+    func resume(with result: Result<EbookJavaScriptProbeValue, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        task?.cancel()
+        task = nil
+        continuation.resume(with: result)
+    }
+}
+
+@MainActor
+private func callEbookJavaScriptProbe(
+    in webView: WKWebView,
+    script: String,
+    timeout: TimeInterval = 30
+) async throws -> Any? {
+    let result = try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<EbookJavaScriptProbeValue, Error>) in
+        let completion = EbookJavaScriptProbeCompletion(continuation)
+        let task = Task { @MainActor in
+            do {
+                let result = try await webView.callAsyncJavaScript(
+                    script,
+                    arguments: [:],
+                    in: nil,
+                    contentWorld: .page
+                )
+                completion.resume(with: .success(EbookJavaScriptProbeValue(value: result)))
+            } catch {
+                completion.resume(with: .failure(error))
+            }
+        }
+        completion.install(task: task)
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+            completion.resume(with: .failure(EbookJavaScriptProbeError.timedOut))
+        }
+    }
+    return result.value
+}
+
+private final class TestURLSchemeTask: NSObject, WKURLSchemeTask {
+    let request: URLRequest
+    private(set) var responses: [URLResponse] = []
+    private(set) var finishCount = 0
+    private(set) var failures: [Error] = []
+
+    init(request: URLRequest) {
+        self.request = request
+    }
+
+    func didReceive(_ response: URLResponse) {
+        responses.append(response)
+    }
+
+    func didReceive(_ data: Data) {}
+
+    func didFinish() {
+        finishCount += 1
+    }
+
+    func didFailWithError(_ error: Error) {
+        failures.append(error)
+    }
+}
+
+private func malformedURLRequest() -> URLRequest {
+    var request = URLRequest(url: URL(string: "about:blank")!)
+    request.url = nil
+    return request
 }
 
 private actor EBookProcessorInvocationCounter {
@@ -89,11 +181,13 @@ private actor EBookProcessingGate {
 
 private func ebookTestPayload(
     _ documentHTML: String,
-    sidecar: String = ""
+    sidecar: String = "",
+    isAuthoritativelyProcessed: Bool = true
 ) -> EbookProcessedSectionPayload {
     EbookProcessedSectionPayload(
         documentHTML: Data(documentHTML.utf8),
-        segmentSidecar: Data(sidecar.utf8)
+        segmentSidecar: Data(sidecar.utf8),
+        isAuthoritativelyProcessed: isAuthoritativelyProcessed
     )
 }
 
@@ -147,6 +241,73 @@ private func nestedResourceAudio() -> Data {
 }
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testURLSchemeCompletionOwnershipKeepsHashCollisionsIndependent() {
+        final class CollidingTask: NSObject {
+            override var hash: Int { 1 }
+        }
+        let ownership = URLSchemeTaskCompletionOwnership()
+        let first = CollidingTask()
+        let second = CollidingTask()
+        XCTAssertEqual(first.hash, second.hash)
+
+        ownership.begin(first)
+        ownership.begin(second)
+
+        XCTAssertTrue(ownership.cancel(first))
+        XCTAssertFalse(ownership.claimCompletion(first))
+        XCTAssertTrue(ownership.claimCompletion(second))
+    }
+
+    func testURLSchemeCompletionOwnershipCancelsAttachedWorkExactlyOnce() {
+        let ownership = URLSchemeTaskCompletionOwnership()
+        let task = NSObject()
+        let counter = SynchronousInvocationCounter()
+        ownership.begin(task)
+        XCTAssertTrue(ownership.attachCancellation(task) { counter.increment() })
+
+        XCTAssertTrue(ownership.cancel(task))
+        XCTAssertFalse(ownership.cancel(task))
+        XCTAssertFalse(ownership.claimCompletion(task))
+        XCTAssertEqual(counter.value(), 1)
+    }
+
+    func testURLSchemeCompletionOwnershipCancelsLateWorkAttachment() {
+        let ownership = URLSchemeTaskCompletionOwnership()
+        let task = NSObject()
+        let counter = SynchronousInvocationCounter()
+        ownership.begin(task)
+        XCTAssertTrue(ownership.cancel(task))
+
+        XCTAssertFalse(ownership.attachCancellation(task) { counter.increment() })
+        XCTAssertEqual(counter.value(), 1)
+    }
+
+    @MainActor
+    func testReaderFileHandlerTerminatesMalformedRequestExactlyOnce() {
+        let handler = ReaderFileURLSchemeHandler()
+        let task = TestURLSchemeTask(request: malformedURLRequest())
+
+        handler.webView(WKWebView(), start: task)
+        handler.webView(WKWebView(), stop: task)
+
+        XCTAssertEqual(task.failures.count, 1)
+        XCTAssertEqual(task.finishCount, 0)
+        XCTAssertTrue(task.responses.isEmpty)
+    }
+
+    @MainActor
+    func testEbookHandlerTerminatesMalformedRequestExactlyOnce() {
+        let handler = EbookURLSchemeHandler()
+        let task = TestURLSchemeTask(request: malformedURLRequest())
+
+        handler.webView(WKWebView(), start: task)
+        handler.webView(WKWebView(), stop: task)
+
+        XCTAssertEqual(task.failures.count, 1)
+        XCTAssertEqual(task.finishCount, 0)
+        XCTAssertTrue(task.responses.isEmpty)
+    }
+
     func testExternalizingTypedSidecarAvoidsEmbeddedJSONRoundTrip() throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("manabi-sidecar-\(UUID().uuidString)", isDirectory: true)
@@ -452,6 +613,82 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(payload))
     }
 
+    func testEbookTextProcessorPropagatesCancellation() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+
+        do {
+            _ = try await ebookTextProcessor(
+                contentURL: contentURL,
+                sectionLocation: "item/xhtml/title.xhtml",
+                content: "<html><body>Original</body></html>",
+                contentFingerprint: "fingerprint",
+                isCacheWarmer: false,
+                processReadabilityContent: { _, _, _, _, _, _, _ in
+                    throw CancellationError()
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+            XCTFail("Cancellation must not become a successful raw section response")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    func testEbookTextProcessorRejectsSuccessfulResultAfterTaskCancellation() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let task = Task {
+            try await ebookTextProcessor(
+                contentURL: contentURL,
+                sectionLocation: "item/xhtml/title.xhtml",
+                content: "<html><body>Original</body></html>",
+                contentFingerprint: "fingerprint",
+                isCacheWarmer: false,
+                processReadabilityContent: { content, _, sectionURL, _, _, _, _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return try SwiftSoup.parse(content, sectionURL?.absoluteString ?? "")
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled processing must not publish a successful document")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    func testEbookTextProcessorMarksRecoverableFallbackAsNonAuthoritative() async throws {
+        enum ExpectedProcessingError: Error {
+            case failed
+        }
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let originalText = "<html><body>Original</body></html>"
+
+        let result = try await ebookTextProcessor(
+            contentURL: contentURL,
+            sectionLocation: "item/xhtml/title.xhtml",
+            content: originalText,
+            contentFingerprint: "fingerprint",
+            isCacheWarmer: false,
+            processReadabilityContent: { _, _, _, _, _, _, _ in
+                throw ExpectedProcessingError.failed
+            },
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
+        XCTAssertTrue(result.segmentSidecar.isEmpty)
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
+    }
+
     func testProcessedSectionEnvelopeRejectsLegacyAndTruncatedValues() {
         let payload = EbookProcessedSectionPayload(
             documentHTML: Data("<html><body>猫</body></html>".utf8),
@@ -692,7 +929,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 baseURL: "ebook://ebook/entry-source/token/",
                 sourceHref: "chapter.xhtml"
             ),
-            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/\"></head>"
+            "<!doctype html><html><head><base href=\"ebook://ebook/entry-source/token/\">"
+                + "<style id=\"mnb-paginator-layout-bootstrap\">html{display:none!important}</style></head>"
                 + "<body data-mnb-source-href=\"chapter.xhtml\"><section>fragment</section></body></html>"
         )
     }
@@ -1264,29 +1502,59 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         await fulfillment(of: [completionExpectation], timeout: 10)
         XCTAssertNil(navigationDelegate.error)
 
-        let result = try await webView.callAsyncJavaScript(
+        let result = try await callEbookJavaScriptProbe(
+            in: webView,
+            script:
             """
+            const withTimeout = (label, operation, milliseconds = 2000) => Promise.race([
+                Promise.resolve(operation),
+                new Promise((_, reject) => setTimeout(
+                    () => reject(new Error(`${label}-timeout`)),
+                    milliseconds
+                )),
+            ]);
+            document.getElementById("mnb-paginator-layout-bootstrap")?.remove();
+            await new Promise(resolve => requestAnimationFrame(resolve));
             const image = document.getElementById("cover");
             const audio = document.getElementById("sample-audio");
             const mediaBootstrap = document.querySelector('script[src*="ebook-package-media.js"]');
             const mediaBootstrapStatus = mediaBootstrap
-                ? await fetch(mediaBootstrap.src).then(response => response.status)
+                ? await withTimeout(
+                    "media-bootstrap-fetch",
+                    fetch(mediaBootstrap.src).then(response => response.status)
+                )
                 : null;
             let mediaBootstrapError = null;
             try {
-                await globalThis.manabiEbookPackageMediaHydration;
+                await withTimeout(
+                    "media-bootstrap-hydration",
+                    globalThis.manabiEbookPackageMediaHydration
+                );
             } catch (error) {
                 mediaBootstrapError = String(error);
             }
-            const fetchedAudioResponse = await fetch("../Media/tone.wav");
-            const fetchedAudioBlob = await fetchedAudioResponse.blob();
+            const fetchedAudioResponse = await withTimeout(
+                "audio-fetch",
+                fetch("../Media/tone.wav")
+            );
+            const fetchedAudioBlob = await withTimeout(
+                "audio-blob",
+                fetchedAudioResponse.blob()
+            );
             let decodedAudioDuration = null;
             let decodedAudioError = null;
             try {
                 const audioContext = new AudioContext();
-                const decodedAudio = await audioContext.decodeAudioData(await fetchedAudioBlob.arrayBuffer());
+                const fetchedAudioData = await withTimeout(
+                    "audio-array-buffer",
+                    fetchedAudioBlob.arrayBuffer()
+                );
+                const decodedAudio = await withTimeout(
+                    "audio-decode",
+                    audioContext.decodeAudioData(fetchedAudioData)
+                );
                 decodedAudioDuration = decodedAudio.duration;
-                await audioContext.close();
+                await withTimeout("audio-context-close", audioContext.close());
             } catch (error) {
                 decodedAudioError = String(error);
             }
@@ -1298,12 +1566,18 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 /ebook-package-media\\.js$/,
                 "ebook-paginator-writing-direction.js"
             );
-            const writingDirectionModule = await import(writingDirectionModuleURL);
+            const writingDirectionModule = await withTimeout(
+                "writing-direction-import",
+                import(writingDirectionModuleURL)
+            );
             const renderReadinessModuleURL = mediaBootstrap.src.replace(
                 /ebook-package-media\\.js$/,
                 "ebook-render-readiness.js"
             );
-            const renderReadinessModule = await import(renderReadinessModuleURL);
+            const renderReadinessModule = await withTimeout(
+                "render-readiness-import",
+                import(renderReadinessModuleURL)
+            );
             document.body.classList.add("reader-is-single-media-element-without-text");
             const imageRenderReadiness = renderReadinessModule.classifyEbookRenderReadiness(
                 document,
@@ -1361,18 +1635,26 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             const restoredWritingMode = getComputedStyle(document.body).writingMode;
             let fontLoadError = null;
             let fontLoadStatus = null;
+            let fetchedFontResponse = await withTimeout("font-fetch", fetch(fontURL));
+            const fetchedFontData = await withTimeout(
+                "font-array-buffer",
+                fetchedFontResponse.arrayBuffer()
+            );
             try {
                 const fontFace = new FontFace(
                     "ManabiFixtureFont",
-                    `url("${fontURL}") format("truetype")`
+                    fetchedFontData
                 );
-                await fontFace.load();
+                await withTimeout("font-load", fontFace.load());
                 document.fonts.add(fontFace);
                 fontLoadStatus = fontFace.status;
             } catch (error) {
                 fontLoadError = String(error);
             }
-            const missingStatus = await fetch("../Styles/missing.css").then(response => response.status);
+            const missingStatus = await withTimeout(
+                "missing-resource-fetch",
+                fetch("../Styles/missing.css").then(response => response.status)
+            );
             return {
                 baseURL: document.baseURI,
                 backgroundColor: getComputedStyle(document.body).backgroundColor,
@@ -1387,6 +1669,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 decodedAudioError,
                 fetchedAudioByteCount: fetchedAudioBlob.size,
                 fetchedAudioType: fetchedAudioBlob.type,
+                fetchedFontByteCount: fetchedFontData.byteLength,
+                fetchedFontStatus: fetchedFontResponse.status,
                 fontLoadError,
                 fontLoadStatus,
                 fontURL,
@@ -1408,10 +1692,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 writingDirectionModuleURL,
                 bodyText: document.body.textContent.trim(),
             };
-            """,
-            arguments: [:],
-            in: nil,
-            contentWorld: .page
+            """
         )
         let values = try XCTUnwrap(result as? [String: Any])
         let baseURL = try XCTUnwrap(values["baseURL"] as? String)
@@ -1427,6 +1708,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual((values["decodedAudioDuration"] as? NSNumber)?.doubleValue ?? 0, 0.1, accuracy: 0.01)
         XCTAssertEqual((values["fetchedAudioByteCount"] as? NSNumber)?.intValue, 844)
         XCTAssertTrue((values["fetchedAudioType"] as? String)?.hasPrefix("audio/") == true)
+        XCTAssertGreaterThan((values["fetchedFontByteCount"] as? NSNumber)?.intValue ?? 0, 1_000)
+        XCTAssertEqual((values["fetchedFontStatus"] as? NSNumber)?.intValue, 200)
         XCTAssertTrue(values["fontLoadError"] is NSNull, "\(values)")
         XCTAssertEqual(values["fontLoadStatus"] as? String, "loaded")
         XCTAssertTrue((values["fontURL"] as? String)?.contains("/load/viewer-assets/") == true)
@@ -1532,6 +1815,142 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(completionCountAfterRelease, 1)
     }
 
+    func testProcessTextRequestKeySeparatesYomitanGenerations() {
+        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
+        let firstVariant = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmdict", "jmnedict"],
+            yomitanResolvedDictionaryID: 42,
+            yomitanJMDictGenerationKey: "jmdict-generation-1",
+            yomitanJMnedictGenerationKey: "jmnedict-generation-1",
+            includeJLPTClasses: true,
+            romajiModeEnabled: false
+        )
+        let secondVariant = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmnedict", "jmdict"],
+            yomitanResolvedDictionaryID: 42,
+            yomitanJMDictGenerationKey: "jmdict-generation-2",
+            yomitanJMnedictGenerationKey: "jmnedict-generation-1",
+            includeJLPTClasses: true,
+            romajiModeEnabled: false
+        )
+
+        let firstKey = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            text: "<html><body>raw</body></html>",
+            processingVariant: firstVariant
+        )
+        let secondKey = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            text: "<html><body>raw</body></html>",
+            processingVariant: secondVariant
+        )
+
+        XCTAssertNotEqual(firstKey, secondKey)
+    }
+
+    func testEbookProcessingVariantNormalizesDictionaryOrderAndDuplicates() {
+        let first = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmnedict", "jmdict", "jmdict"],
+            includeJLPTClasses: false,
+            romajiModeEnabled: true
+        )
+        let second = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmdict", "jmnedict"],
+            includeJLPTClasses: false,
+            romajiModeEnabled: true
+        )
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.availableDictionaryIDs, ["jmdict", "jmnedict"])
+    }
+
+    func testOptionalEbookProcessingVariantPreservesMissingContext() async throws {
+        let absent = try await withEbookProcessingVariant(nil) {
+            EbookProcessingVariantContext.current
+        }
+        XCTAssertNil(absent)
+
+        let variant = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmdict"],
+            includeJLPTClasses: true,
+            romajiModeEnabled: false
+        )
+        let present = try await withEbookProcessingVariant(variant) {
+            EbookProcessingVariantContext.current
+        }
+        XCTAssertEqual(present, variant)
+    }
+
+    func testReaderModeRenderGenerationRejectsStaleAndCancelledOwners() {
+        let current = UUID()
+
+        XCTAssertTrue(readerModeRenderGenerationIsCurrent(
+            activeGeneration: current,
+            expectedGeneration: current,
+            taskIsCancelled: false
+        ))
+        XCTAssertFalse(readerModeRenderGenerationIsCurrent(
+            activeGeneration: UUID(),
+            expectedGeneration: current,
+            taskIsCancelled: false
+        ))
+        XCTAssertFalse(readerModeRenderGenerationIsCurrent(
+            activeGeneration: current,
+            expectedGeneration: current,
+            taskIsCancelled: true
+        ))
+    }
+
+    func testReaderModeReadyGenerationAcceptsOnlyCurrentOrCompletedOwner() {
+        let current = UUID()
+        let stale = UUID()
+
+        XCTAssertTrue(readerModeReadyGenerationIsCurrent(
+            activeGeneration: current,
+            completedGeneration: nil,
+            reportedGeneration: current
+        ))
+        XCTAssertFalse(readerModeReadyGenerationIsCurrent(
+            activeGeneration: current,
+            completedGeneration: stale,
+            reportedGeneration: stale
+        ))
+        XCTAssertTrue(readerModeReadyGenerationIsCurrent(
+            activeGeneration: nil,
+            completedGeneration: current,
+            reportedGeneration: current
+        ))
+    }
+
+    func testProcessTextRequestKeyDistinguishesRawBytesWithSameLossyUTF8Text() {
+        let contentURL = URL(string: "ebook://ebook/load/local/Books/test.epub")!
+        let firstData = Data([0x80])
+        let secondData = Data([0x81])
+        XCTAssertEqual(
+            String(decoding: firstData, as: UTF8.self),
+            String(decoding: secondData, as: UTF8.self)
+        )
+
+        let firstKey = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            contentData: firstData
+        )
+        let secondKey = EBookProcessTextRequestKey(
+            contentURL: contentURL,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            contentData: secondData
+        )
+
+        XCTAssertNotEqual(firstKey, secondKey)
+    }
+
     func testProcessTextRequestDeduperDoesNotRetainCompletedResponses() async throws {
         let counter = EBookProcessorInvocationCounter()
         let key = EBookProcessTextRequestKey(
@@ -1604,6 +2023,99 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue(second.didCoalesce)
         let invocationCount = await counter.value()
         XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testProcessTextRequestDeduperKeepsProducerAliveWhenOriginalCallerCancels() async throws {
+        let key = EBookProcessTextRequestKey(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            text: "<html><body>raw</body></html>"
+        )
+        let gate = EBookProcessingGate()
+        let started = expectation(description: "Shared producer starts")
+        let deduper = EBookProcessTextRequestDeduper()
+
+        let originalCaller = Task {
+            try await deduper.process(key: key) {
+                started.fulfill()
+                await gate.waitUntilReleased()
+                try Task.checkCancellation()
+                return ebookTestPayload("<html><body>shared</body></html>")
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+        let activeWaiter = Task {
+            try await deduper.process(key: key) {
+                XCTFail("The active waiter must reuse the independent producer")
+                return ebookTestPayload("<html><body>duplicate</body></html>")
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) == 1 {
+                break
+            }
+            await Task.yield()
+        }
+
+        originalCaller.cancel()
+        await gate.release()
+
+        do {
+            _ = try await originalCaller.value
+            XCTFail("The cancelled caller must retain its own cancellation result")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let waiterResult = try await activeWaiter.value
+        XCTAssertEqual(
+            String(decoding: waiterResult.payload.documentHTML, as: UTF8.self),
+            "<html><body>shared</body></html>"
+        )
+        XCTAssertTrue(waiterResult.didCoalesce)
+    }
+
+    func testProcessTextRequestDeduperCancelsProducerWhenLastWaiterCancels() async throws {
+        let key = EBookProcessTextRequestKey(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            isCacheWarmer: false,
+            text: "<html><body>raw</body></html>"
+        )
+        let producerStarted = expectation(description: "Producer starts")
+        let producerCancelled = expectation(description: "Orphaned producer is cancelled")
+        let deduper = EBookProcessTextRequestDeduper()
+
+        let onlyCaller = Task {
+            try await deduper.process(key: key) {
+                producerStarted.fulfill()
+                return try await withTaskCancellationHandler {
+                    try await Task.sleep(for: .seconds(60))
+                    return ebookTestPayload("<html><body>unexpected</body></html>")
+                } onCancel: {
+                    producerCancelled.fulfill()
+                }
+            }
+        }
+        await fulfillment(of: [producerStarted], timeout: 1)
+        onlyCaller.cancel()
+
+        do {
+            _ = try await onlyCaller.value
+            XCTFail("The cancelled caller must not receive a result")
+        } catch is CancellationError {
+            // Expected.
+        }
+        await fulfillment(of: [producerCancelled], timeout: 1)
+
+        let replacement = try await deduper.process(key: key) {
+            ebookTestPayload("<html><body>replacement</body></html>")
+        }
+        XCTAssertEqual(
+            String(decoding: replacement.payload.documentHTML, as: UTF8.self),
+            "<html><body>replacement</body></html>"
+        )
+        XCTAssertFalse(replacement.didCoalesce)
     }
 
     func testCancelledCoalescedWaiterDoesNotCancelOrAwaitOwner() async throws {

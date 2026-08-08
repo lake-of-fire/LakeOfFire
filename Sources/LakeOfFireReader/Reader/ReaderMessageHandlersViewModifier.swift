@@ -358,10 +358,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let pageURL = URL(string: href)
                 else { return }
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
+                let renderGeneration = (body["readerRenderGeneration"] as? String)
+                    .flatMap(UUID.init(uuidString:))
                 let hasReaderContent = body["hasReaderContent"] as? Bool ?? false
                 let readyState = body["readyState"] as? String ?? "unknown"
                 let reason = body["reason"] as? String ?? "unknown"
-                let manabiFontPending = body["manabiFontPending"].map { String(describing: $0) } ?? "nil"
+                let manabiFontPending = body["mnbFontPending"].map { String(describing: $0) } ?? "nil"
                 let bodyVisibility = body["bodyVisibility"] as? String ?? "nil"
                 let bodyOpacity = body["bodyOpacity"].map { String(describing: $0) } ?? "nil"
 
@@ -386,13 +388,20 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "bodyOpacity=\(bodyOpacity)",
                     "reason=\(reason)"
                 )
+                let accepted = readerModeViewModel.handleRenderedReaderDocumentReady(
+                    pageURL: pageURL,
+                    hasReaderContent: true,
+                    renderGeneration: renderGeneration
+                )
+                guard accepted else { return }
+                if !readerViewModel.state.hasReaderRenderReady {
+                    var newState = readerViewModel.state
+                    newState.markReaderRenderReady()
+                    readerViewModel.state = newState
+                }
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
                 }
-                readerModeViewModel.handleRenderedReaderDocumentReady(
-                    pageURL: pageURL,
-                    hasReaderContent: true
-                )
             }),
             ("readabilityNeedsUpdate", { @MainActor [weak self] message in
                 guard let self else { return }
