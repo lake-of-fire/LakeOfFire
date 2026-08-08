@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
-    documentHasLocalWritingDirectionSignal,
     writingDirectionFromDocumentEvidence,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator-writing-direction.js'
 
@@ -84,20 +84,16 @@ test('the computed cascade wins over contradictory raw inline declaration text',
     })
 })
 
-test('local writing-direction compatibility helper reports only document-owned evidence', () => {
-    const localHorizontal = makeDocument({
-        bodyAttributes: { 'data-mnb-foliate-writing-direction': 'horizontal' },
-    })
-    assert.equal(documentHasLocalWritingDirectionSignal(localHorizontal), true)
+test('paginator does not mutate a section from publication-wide direction history', () => {
+    const paginatorSource = readFileSync(new URL(
+        '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator.js',
+        import.meta.url,
+    ), 'utf8')
 
-    const localInline = makeDocument({
-        bodyAttributes: { style: 'writing-mode: vertical-lr' },
-    })
-    assert.equal(documentHasLocalWritingDirectionSignal(localInline), true)
-
-    const unsignalled = makeDocument()
-    assert.equal(documentHasLocalWritingDirectionSignal(unsignalled), false)
-    assert.deepEqual(unsignalled.body.dataset, {})
+    assert.doesNotMatch(paginatorSource, /writingDirectionObservation/)
+    assert.doesNotMatch(paginatorSource, /ApplyPreferredWritingDirection/)
+    assert.doesNotMatch(paginatorSource, /RememberObservedWritingDirection/)
+    assert.doesNotMatch(paginatorSource, /BodylessComputedStyle|bodylessStyle/)
 })
 
 test('shared document evidence ignores blank and invalid declarations before valid evidence', () => {

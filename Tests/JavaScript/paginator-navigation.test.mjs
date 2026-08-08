@@ -213,9 +213,9 @@ test('destroy releases the exact container scroll and resize lifecycle', () => {
         container.dispatchEvent(new Event('scroll'))
         assert.equal(scrollEvents, 2)
 
-        paginator.open({ dir: 'ltr', sections: [] }, true)
-        assert.equal(container.listenerCount('scroll'), 3)
-        assert.equal(observer.observed.has(container), true)
+        assert.equal(paginator.open({ dir: 'ltr', sections: [] }, true), false)
+        assert.equal(container.listenerCount('scroll'), 0)
+        assert.equal(observer.observed.has(container), false)
         paginator.destroy()
     } finally {
         globalThis.setTimeout = originalSetTimeout
@@ -223,19 +223,21 @@ test('destroy releases the exact container scroll and resize lifecycle', () => {
     }
 })
 
-test('destroy and reopen own one exact host input lifecycle', () => {
+test('paginator publication ownership is single-use and terminal after destroy', () => {
     const paginator = new Paginator()
     const book = { dir: 'ltr', sections: [] }
     const inputTypes = ['touchstart', 'touchmove', 'touchend', 'load', 'wheel']
 
-    paginator.open(book)
+    assert.equal(paginator.open(book), true)
+    for (const type of inputTypes) assert.equal(paginator.listenerCount(type), 1, type)
+    assert.equal(paginator.open(book), false)
     for (const type of inputTypes) assert.equal(paginator.listenerCount(type), 1, type)
 
     paginator.destroy()
     for (const type of inputTypes) assert.equal(paginator.listenerCount(type), 0, type)
 
-    paginator.open(book)
-    for (const type of inputTypes) assert.equal(paginator.listenerCount(type), 1, type)
+    assert.equal(paginator.open(book), false)
+    for (const type of inputTypes) assert.equal(paginator.listenerCount(type), 0, type)
     paginator.destroy()
 })
 
@@ -396,6 +398,44 @@ test('superseding a suspended section load releases the late section reference',
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(unloadCount, 1)
     assert.equal(paginator.navigationInFlight, false)
+})
+
+test('late section cleanup remains bound to the section that acquired the resource', async () => {
+    const paginator = new Paginator()
+    let resolveSection
+    let originalUnloadCount = 0
+    let replacementUnloadCount = 0
+    const originalSection = {
+        id: 'original.xhtml',
+        linear: 'yes',
+        load() {
+            return new Promise(resolve => { resolveSection = resolve })
+        },
+        unload() { originalUnloadCount += 1 },
+    }
+    paginator.sections = [originalSection]
+
+    const older = paginator.goTo({ index: 0 }, { relocationID: 'original-load' })
+    while (!resolveSection) await new Promise(resolve => setImmediate(resolve))
+
+    const newer = paginator.goTo({ index: -1 }, { relocationID: 'replacement-load' })
+    assert.deepEqual(await older, {
+        ignored: true,
+        reason: 'rendererNavigationSuperseded',
+    })
+    assert.equal(await newer, false)
+
+    paginator.sections = [{
+        id: 'replacement.xhtml',
+        linear: 'yes',
+        load: async () => 'replacement-url',
+        unload() { replacementUnloadCount += 1 },
+    }]
+    resolveSection('original-url')
+    await new Promise(resolve => setImmediate(resolve))
+
+    assert.equal(originalUnloadCount, 1)
+    assert.equal(replacementUnloadCount, 0)
 })
 
 test('destroying a paginator settles suspended direct navigation and releases its late section reference', async () => {
