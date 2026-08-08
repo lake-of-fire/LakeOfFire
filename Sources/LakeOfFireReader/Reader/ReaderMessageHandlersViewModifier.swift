@@ -336,7 +336,7 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                 guard accepted else { return }
                 if !readerViewModel.state.hasReaderRenderReady {
                     var newState = readerViewModel.state
-                    newState.hasReaderRenderReady = true
+                    newState.markReaderRenderReady()
                     readerViewModel.state = newState
                 }
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
