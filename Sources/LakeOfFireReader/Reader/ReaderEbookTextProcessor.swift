@@ -106,6 +106,8 @@ public func ebookTextProcessor(
     processHTMLBytes: (([UInt8], Bool) async -> [UInt8])?,
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> EbookProcessedSectionPayload {
+    try Task.checkCancellation()
+
     var sectionLocationComponents = URLComponents(url: contentURL, resolvingAgainstBaseURL: false)
     var sectionLocationQueryItems = sectionLocationComponents?.queryItems ?? []
     sectionLocationQueryItems.removeAll { $0.name == "subpath" }
@@ -131,6 +133,7 @@ public func ebookTextProcessor(
         }
         
         if doc == nil {
+            try Task.checkCancellation()
             // TODO: Consolidate our parsing boilerplate
             let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
             let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
@@ -142,6 +145,7 @@ public func ebookTextProcessor(
             }
         }
         
+        try Task.checkCancellation()
         guard var doc else {
             print("Error: Unexpectedly failed to receive doc")
             return EbookProcessedSectionPayload(
@@ -163,6 +167,7 @@ public func ebookTextProcessor(
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
         doc = preprocessEbookContent(doc: doc)
+        try Task.checkCancellation()
         
         var payload: EbookProcessedSectionPayload
         if let processHTMLDocument {
@@ -206,8 +211,8 @@ public func ebookTextProcessor(
 
         try Task.checkCancellation()
         return payload
-    } catch is CancellationError {
-        throw CancellationError()
+    } catch let cancellationError as CancellationError {
+        throw cancellationError
     } catch {
         if Task.isCancelled {
             throw CancellationError()

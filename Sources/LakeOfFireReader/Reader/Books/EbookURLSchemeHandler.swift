@@ -120,6 +120,33 @@ fileprivate func ebookProcessedSectionBaseURL(contentURL: URL, sectionHref: Stri
     return "ebook://ebook/entry-source/\(token)/\(ebookPathEscaped(ebookDirectorySubpath(for: sectionHref)))"
 }
 
+func ebookPathBackedEntryRequest(
+    from url: URL
+) -> (mainDocumentURL: URL, subpath: String)? {
+    let pathPrefix = "/entry-source/"
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          components.percentEncodedPath.hasPrefix(pathPrefix) else {
+        return nil
+    }
+
+    let encodedPath = String(components.percentEncodedPath.dropFirst(pathPrefix.count))
+    guard let tokenEnd = encodedPath.firstIndex(of: "/") else { return nil }
+    let token = String(encodedPath[..<tokenEnd])
+    let encodedSubpath = String(encodedPath[encodedPath.index(after: tokenEnd)...])
+    // Decode the URL path exactly once. `URL.path` is already decoded, so
+    // decoding it again would collapse a literal package name such as `%20`.
+    guard let subpath = encodedSubpath.removingPercentEncoding,
+          let sourceURLString = ebookString(fromBase64URLToken: token),
+          let mainDocumentURL = URL(string: sourceURLString),
+          mainDocumentURL.scheme == "ebook",
+          mainDocumentURL.host == "ebook",
+          mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
+        return nil
+    }
+
+    return (mainDocumentURL, subpath)
+}
+
 func ebookHTTPResponse(
     url: URL,
     mimeType: String,
@@ -389,8 +416,10 @@ public actor EBookProcessingActor {
         sectionHref: String,
         source: ReaderPackageEntrySource
     ) async throws -> EBookNativeSectionPrewarmResult {
+        try Task.checkCancellation()
         let entryData = try source.readEntry(subpath: sectionHref)
-        let entryText = String(decoding: entryData, as: UTF8.self)
+        try Task.checkCancellation()
+        let entryText = ReaderPackageEntrySource.decodeText(entryData)
         let processedPayload = try await process(
             contentURL: contentURL,
             location: sectionHref,
@@ -398,6 +427,7 @@ public actor EBookProcessingActor {
             contentFingerprint: ebookProcessDataFingerprint(entryData),
             isCacheWarmer: true
         )
+        try Task.checkCancellation()
         return EBookNativeSectionPrewarmResult(
             sectionHref: sectionHref,
             requestBytes: entryData.count,
@@ -412,8 +442,10 @@ public actor EBookProcessingActor {
         contentFingerprint: String? = nil,
         isCacheWarmer: Bool
     ) async throws -> EbookProcessedSectionPayload {
+        try Task.checkCancellation()
         let resolvedContentFingerprint = contentFingerprint ?? ebookProcessTextFingerprint(text)
         guard let ebookTextProcessor else {
+            try Task.checkCancellation()
             return EbookProcessedSectionPayload(
                 documentHTML: Data(text.utf8),
                 segmentSidecar: Data(),
@@ -432,6 +464,7 @@ public actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
+        try Task.checkCancellation()
         if !isCacheWarmer,
            ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
            let ebookProcessedTextCacheWriter {
@@ -439,8 +472,11 @@ public actor EBookProcessingActor {
             // The writer detaches its persisted write internally, so awaiting it here
             // prevents an immediate reload from racing an unstarted utility task
             // without putting disk I/O on the visible processing path.
+            try Task.checkCancellation()
             await ebookProcessedTextCacheWriter(contentURL, location, resolvedContentFingerprint, result)
+            try Task.checkCancellation()
         }
+        try Task.checkCancellation()
         return result
     }
 }
@@ -597,7 +633,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
     
     private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
-    private let sectionProcessingDeduper = EBookSectionProcessingDeduper()
+    private static let sharedSectionProcessingDeduper = EBookSectionProcessingDeduper()
+    private let sectionProcessingDeduper = EbookURLSchemeHandler.sharedSectionProcessingDeduper
     
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -813,7 +850,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         Date().timeIntervalSince(sidecarPublishStartedAt) * 1000
                     )
                     let processedResponseByteCount = processedPayload.combinedByteCount
-                    let writingHint = ebookProcessedSectionWritingHint(from: url)
                     let responseBodyAttributes = [
                         "data-mnb-native-cache-outcome": cacheOutcome,
                         "data-mnb-native-cache-probe-outcome": cacheProbeOutcome,
@@ -840,7 +876,6 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             contentURL: mainDocumentURL,
                             sectionHref: sectionHref
                         ),
-                        writingHint: writingHint,
                         bodyAttributes: responseBodyAttributes,
                         presentation: sectionPresentation,
                         additionalHeadMarkup: publishedSidecar.headDescriptor,
@@ -922,23 +957,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 }
             } else if url.path == "/entry" || url.path.hasPrefix("/entry-source/") {
-                let entrySourcePathPrefix = "/entry-source/"
-                let pathBackedEntry: (mainDocumentURL: URL, subpath: String)? = {
-                    guard url.path.hasPrefix(entrySourcePathPrefix) else { return nil }
-                    let path = String(url.path.dropFirst(entrySourcePathPrefix.count))
-                    guard let tokenEnd = path.firstIndex(of: "/") else { return nil }
-                    let token = String(path[..<tokenEnd])
-                    let rawSubpath = String(path[path.index(after: tokenEnd)...])
-                    guard let sourceURLString = ebookString(fromBase64URLToken: token),
-                          let mainDocumentURL = URL(string: sourceURLString),
-                          mainDocumentURL.scheme == "ebook",
-                          mainDocumentURL.host == "ebook",
-                          mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
-                        return nil
-                    }
-                    return (mainDocumentURL, rawSubpath.removingPercentEncoding ?? rawSubpath)
-                }()
-                guard let entryRequest = pathBackedEntry ?? {
+                guard let entryRequest = ebookPathBackedEntryRequest(from: url) ?? {
                     guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
                           let subpath = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                         .queryItems?
@@ -968,7 +987,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     try Task.checkCancellation()
                     let data = try cachedSource.source.readEntry(subpath: subpath)
                     try Task.checkCancellation()
-                    let metadata = try cachedSource.source.mimeType(subpath: subpath)
+                    let metadata = try cachedSource.source.mimeType(subpath: subpath, data: data)
                     let response = ebookHTTPResponse(
                         url: url,
                         mimeType: metadata.mimeType,

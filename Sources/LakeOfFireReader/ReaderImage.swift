@@ -1,9 +1,6 @@
-import LakeOfFireWeb
 import LakeOfFireFiles
 import SwiftUI
 import LakeOfFireContent
-import LakeOfFireCore
-import ZIPFoundation
 import Nuke
 import LakeImage
 
@@ -15,8 +12,6 @@ fileprivate extension URL {
     }
 }
 
-fileprivate let zipArchiveExtensions = ["zip", "epub"]
-
 fileprivate let readerImageProvider = CustomImageProvider { url in
     guard url.scheme == "reader-file" && url.host == "file" else { return nil }
 
@@ -24,21 +19,13 @@ fileprivate let readerImageProvider = CustomImageProvider { url in
           let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
 
     guard let readerFileURL = url.deletingQuery else { return nil }
-    let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
-
-    var isDirectory: ObjCBool = false
-    let fileExists = FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory)
-    if try isPackageFile(at: fileURL) || (fileExists && isDirectory.boolValue) {
-        let filePath = fileURL.appendingPathComponent(subpathValue)
-        return try? Data(contentsOf: filePath)
-    }
-
-    guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-    guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
-    guard let entry = archive[subpathValue], entry.type == .file else { return nil }
-    var imageData = Data()
-    try archive.extract(entry, consumer: { imageData.append($0) })
-    return imageData
+    let localPackageURL = try ReaderFileManager.shared.localFileURL(
+        forReaderFileURL: readerFileURL
+    )
+    return try readerPackageImageData(
+        localPackageURL: localPackageURL,
+        subpath: subpathValue
+    )
 }
 
 public struct ReaderImage: View {
@@ -78,7 +65,10 @@ public struct ReaderImage: View {
     }
 }
 
-fileprivate func isPackageFile(at url: URL) throws -> Bool {
-    let resourceValues = try url.resourceValues(forKeys: [.isPackageKey])
-    return resourceValues.isPackage ?? false
+func readerPackageImageData(
+    localPackageURL: URL,
+    subpath: String
+) throws -> Data {
+    let source = try ReaderPackageEntrySource(localURL: localPackageURL)
+    return try source.readEntry(subpath: subpath)
 }

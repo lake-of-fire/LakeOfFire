@@ -11,6 +11,7 @@ const NS = {
     NCX: 'http://www.daisy.org/z3986/2005/ncx/',
     XLINK: 'http://www.w3.org/1999/xlink',
     SMIL: 'http://www.w3.org/ns/SMIL',
+    SVG: 'http://www.w3.org/2000/svg',
 }
 
 const MIME = {
@@ -58,38 +59,76 @@ const childGetter = (doc, ns) => {
     }
 }
 
+const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/
+const hasURIScheme = value => URI_SCHEME.test(String(value ?? ''))
+const trimASCIIURLWhitespace = value => String(value ?? '')
+    .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '')
+
+const resolvePackageEntryPath = value => {
+    const normalized = trimASCIIURLWhitespace(value)
+    if (!normalized
+        || hasURIScheme(normalized)
+        || normalized.startsWith('/')
+        || normalized.startsWith('//')) return null
+
+    const path = normalized.split('#', 1)[0].split('?', 1)[0]
+    let decoded
+    try {
+        // `decodeURI` decodes ordinary filename escapes while preserving escaped
+        // path delimiters such as `%2F`, matching package-entry identity.
+        decoded = decodeURI(path)
+    } catch (_error) {
+        return null
+    }
+    if (!decoded || decoded.includes('\\') || decoded.includes('\0')) return null
+
+    const resolved = []
+    for (const component of decoded.split('/')) {
+        if (!component) return null
+        if (component === '.') continue
+        if (component === '..') {
+            if (!resolved.length) return null
+            resolved.pop()
+        } else resolved.push(component)
+    }
+    return resolved.join('/') || null
+}
+
 const resolveURL = (url, relativeTo) => {
     try {
-        if (relativeTo.includes(':')) return new URL(url, relativeTo)
-        // the base needs to be a valid URL, so set a base URL and then remove it
+        const base = trimASCIIURLWhitespace(relativeTo)
+        const target = String(url ?? '')
+        // Package paths are not URLs, so resolve them under a temporary origin
+        // and remove that origin afterward. A colon inside a path segment is not
+        // a URI scheme and must not switch this operation into absolute-URL mode.
         const root = 'https://invalid.invalid/'
-        const obj = new URL(url, root + relativeTo)
-        obj.search = ''
-        return decodeURI(obj.href.replace(root, ''))
+        const absoluteBase = hasURIScheme(base)
+        const networkBase = base.startsWith('//')
+        // URL parsing ignores surrounding ASCII whitespace. Classify the target
+        // after the same normalization so a formatted outbound href cannot be
+        // mistaken for a package path and lose its query.
+        const normalizedTarget = trimASCIIURLWhitespace(target)
+        const externalTarget = hasURIScheme(normalizedTarget)
+            || normalizedTarget.startsWith('//')
+        const containerTarget = !absoluteBase && !networkBase && !externalTarget
+        const obj = new URL(
+            target,
+            absoluteBase ? base : networkBase ? `https:${base}` : root + base,
+        )
+        // Queries are not part of an OCF container resource path, but they are
+        // semantically significant for outbound links and remote resources.
+        if (containerTarget) obj.search = ''
+        // Preserve the browser's serialized encoding for outbound URLs. Running
+        // `decodeURI` over a remote query can collapse deliberate double encoding
+        // before the external-link consumer parses the URL again.
+        return containerTarget ? decodeURI(obj.href.replace(root, '')) : obj.href
     } catch (e) {
         console.warn(e)
         return url
     }
 }
 
-const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
-
-const manabiEpubReaderLoadLog = (stage, payload = {}) => {
-    try {
-        void stage
-        void payload
-    } catch (_error) {}
-}
-
-const manabiPerfNow = () => {
-    try {
-        return performance?.now?.() ?? Date.now()
-    } catch (_error) {
-        return Date.now()
-    }
-}
-
-const manabiRoundMs = value => Number.isFinite(value) ? Math.round(value) : null
+const isExternal = uri => hasURIScheme(uri) && !/^blob:/i.test(String(uri))
 
 // like `path.relative()` in Node.js
 const pathRelative = (from, to) => {
@@ -113,6 +152,415 @@ const replaceSeries = async (str, regex, f) => {
 }
 
 const regexEscape = str => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
+
+// `replaceString` is deliberately a lightweight fallback for JavaScript rather
+// than a JavaScript parser. Restrict rewriting to complete standalone or quoted
+// URL tokens so a local asset such as `image.png` cannot rewrite arbitrary text,
+// longer filenames, nested paths, or the suffix of an external URL.
+const RAW_RESOURCE_REFERENCE_QUOTES = new Set(['"', "'", '`'])
+const rawResourceReferenceIsComplete = (source, offset, length) => {
+    const before = offset > 0 ? source[offset - 1] : null
+    const after = offset + length < source.length
+        ? source[offset + length]
+        : null
+    return (before == null || RAW_RESOURCE_REFERENCE_QUOTES.has(before))
+        && (after == null || RAW_RESOURCE_REFERENCE_QUOTES.has(after))
+}
+
+// Blob URL lookup excludes fragments, but not queries. Appending a publication
+// query to an object URL therefore makes the generated URL unresolvable. Raw
+// replacement consumes the query while retaining a fragment, matching loadHref.
+const RAW_RESOURCE_SUFFIX = String.raw`(?:\?[^"'\x60\s#]*)?(#[^"'\x60\s]*)?`
+
+const RESOURCE_LINK_RELATIONS = new Set([
+    'apple-touch-icon',
+    'icon',
+    'manifest',
+    'mask-icon',
+    'modulepreload',
+    'prefetch',
+    'preload',
+    'resource',
+    'stylesheet',
+])
+
+// SVG paint servers and effects are CSS values even when serialized as
+// presentation attributes. Once the document is blob-backed, package-relative
+// URLs in these attributes need the same lexical URL rewriting as a style
+// declaration. Restrict the pass to attributes whose value grammar can carry a
+// resource URL; arbitrary SVG/XML metadata must remain untouched.
+const SVG_CSS_RESOURCE_ATTRIBUTES = [
+    'clip-path',
+    'color-profile',
+    'cursor',
+    'fill',
+    'filter',
+    'marker',
+    'marker-end',
+    'marker-mid',
+    'marker-start',
+    'mask',
+    'stroke',
+]
+const linkElementLoadsResource = element => String(
+    element?.getAttribute?.('rel') ?? ''
+).split(/[\t\n\f\r ]+/).some(token => (
+    RESOURCE_LINK_RELATIONS.has(token.toLowerCase())
+))
+
+const isASCIIWhitespace = char => char === ' '
+    || char === '\t'
+    || char === '\n'
+    || char === '\f'
+    || char === '\r'
+
+const isCSSNameCharacter = char => char != null
+    && (char === '\\' || /[A-Za-z0-9_-]/.test(char) || char.codePointAt(0) >= 0x80)
+
+const isCSSNewline = char => char === '\n' || char === '\r' || char === '\f'
+
+const skipCSSEscape = (source, start) => {
+    let position = start + 1
+    if (position >= source.length) return position
+    if (source[position] === '\r' && source[position + 1] === '\n') {
+        return position + 2
+    }
+    if (/[0-9a-fA-F]/.test(source[position])) {
+        let digits = 0
+        while (digits < 6 && /[0-9a-fA-F]/.test(source[position])) {
+            position += 1
+            digits += 1
+        }
+        if (source[position] === '\r' && source[position + 1] === '\n') {
+            return position + 2
+        }
+        return isASCIIWhitespace(source[position]) ? position + 1 : position
+    }
+    return position + 1
+}
+
+// Consume a CSS identifier while retaining the browser's escape semantics.
+// Resource-bearing function and at-keyword names may legally contain escapes
+// (`u\72l`, `image\2d set`, `@\69mport`); resolving only their literal
+// spellings leaves valid package-relative URLs stranded inside blob stylesheets.
+const parseCSSIdentifier = (source, start) => {
+    let position = start
+    while (position < source.length) {
+        const char = source[position]
+        if (char === '\\') {
+            const escaped = source[position + 1]
+            // A backslash followed by EOF or a newline is not a valid escape in
+            // an identifier token, so it terminates this candidate.
+            if (escaped == null || isCSSNewline(escaped)) break
+            position = skipCSSEscape(source, position)
+            continue
+        }
+        if (!isCSSNameCharacter(char)) break
+        position += 1
+    }
+    if (position === start) return null
+    return {
+        end: position,
+        value: decodeCSSURLValue(source.slice(start, position)),
+    }
+}
+
+const skipCSSString = (source, start, quote) => {
+    let position = start + 1
+    while (position < source.length) {
+        const char = source[position]
+        if (char === '\\') {
+            position = skipCSSEscape(source, position)
+            continue
+        }
+        position += 1
+        if (char === quote) break
+    }
+    return position
+}
+
+const skipCSSWhitespaceAndComments = (source, start) => {
+    let position = start
+    while (position < source.length) {
+        while (isASCIIWhitespace(source[position])) position += 1
+        if (source[position] !== '/' || source[position + 1] !== '*') break
+        const commentEnd = source.indexOf('*/', position + 2)
+        if (commentEnd < 0) return source.length
+        position = commentEnd + 2
+    }
+    return position
+}
+
+const decodeCSSURLValue = value => String(value ?? '').replace(
+    /\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[\t\n\f\r ])?|\r\n|[\n\r\f]|(.))/g,
+    (_match, hex, escaped) => {
+        if (hex) {
+            const codePoint = Number.parseInt(hex, 16)
+            const invalid = codePoint === 0
+                || codePoint > 0x10FFFF
+                || (codePoint >= 0xD800 && codePoint <= 0xDFFF)
+            return invalid ? '\uFFFD' : String.fromCodePoint(codePoint)
+        }
+        return escaped ?? ''
+    },
+)
+
+const escapeCSSStringValue = (value, quote = '"') => String(value).replace(
+    /(["'\\\n\r\f])/g,
+    char => char === quote || char === '\\'
+        ? `\\${char}`
+        : `\\${char.codePointAt(0).toString(16)} `,
+)
+
+const parseCSSQuotedValue = (source, start) => {
+    const quote = source[start]
+    if (quote !== '"' && quote !== "'") return null
+    let position = start + 1
+    while (position < source.length) {
+        const char = source[position]
+        if (char === '\\') {
+            position = skipCSSEscape(source, position)
+            continue
+        }
+        if (char === quote) {
+            return {
+                end: position + 1,
+                quote,
+                value: decodeCSSURLValue(source.slice(start + 1, position)),
+            }
+        }
+        position += 1
+    }
+    return null
+}
+
+const parseCSSURLFunction = (source, start) => {
+    const first = source[start]
+    if (first !== 'u' && first !== 'U' && first !== '\\') return null
+    if (isCSSNameCharacter(source[start - 1])) return null
+    const identifier = parseCSSIdentifier(source, start)
+    if (identifier?.value.toLowerCase() !== 'url') return null
+    if (source[identifier.end] !== '(') return null
+
+    let position = skipCSSWhitespaceAndComments(source, identifier.end + 1)
+    const quoted = parseCSSQuotedValue(source, position)
+    if (quoted) {
+        position = skipCSSWhitespaceAndComments(source, quoted.end)
+        if (source[position] !== ')') return null
+        return {
+            replaceStart: start,
+            replaceEnd: position + 1,
+            value: quoted.value,
+            render: replacement => `url("${escapeCSSStringValue(replacement)}")`,
+        }
+    }
+
+    const valueStart = position
+    let valueEnd = position
+    while (position < source.length) {
+        const char = source[position]
+        if (char === '\\') {
+            position = skipCSSEscape(source, position)
+            valueEnd = position
+            continue
+        }
+        if (char === ')') {
+            return {
+                replaceStart: start,
+                replaceEnd: position + 1,
+                value: decodeCSSURLValue(source.slice(valueStart, valueEnd)),
+                render: replacement => `url("${escapeCSSStringValue(replacement)}")`,
+            }
+        }
+        if (isASCIIWhitespace(char) || (char === '/' && source[position + 1] === '*')) {
+            valueEnd = position
+            position = skipCSSWhitespaceAndComments(source, position)
+            if (source[position] !== ')') return null
+            return {
+                replaceStart: start,
+                replaceEnd: position + 1,
+                value: decodeCSSURLValue(source.slice(valueStart, valueEnd)),
+                render: replacement => `url("${escapeCSSStringValue(replacement)}")`,
+            }
+        }
+        position += 1
+        valueEnd = position
+    }
+    return null
+}
+
+const parseCSSQuotedImport = (source, start) => {
+    if (source[start] !== '@') return null
+    const identifier = parseCSSIdentifier(source, start + 1)
+    if (identifier?.value.toLowerCase() !== 'import') return null
+    const valueStart = skipCSSWhitespaceAndComments(source, identifier.end)
+    const quoted = parseCSSQuotedValue(source, valueStart)
+    if (!quoted) return null
+    return {
+        replaceStart: valueStart,
+        replaceEnd: quoted.end,
+        value: quoted.value,
+        render: replacement => `${quoted.quote}${escapeCSSStringValue(replacement, quoted.quote)}${quoted.quote}`,
+    }
+}
+
+const CSS_IMAGE_SET_FUNCTIONS = new Set(['-webkit-image-set', 'image-set'])
+const parseCSSImageSetStart = (source, start) => {
+    const first = source[start]
+    if (first !== '-' && first !== 'i' && first !== 'I' && first !== '\\') return null
+    if (isCSSNameCharacter(source[start - 1])) return null
+    const identifier = parseCSSIdentifier(source, start)
+    if (!CSS_IMAGE_SET_FUNCTIONS.has(identifier?.value.toLowerCase())) return null
+    if (source[identifier.end] !== '(') return null
+    return { end: identifier.end + 1 }
+}
+
+const rewriteCSS = async (source, replaceURL, transformCode) => {
+    const text = String(source ?? '')
+    const parts = []
+    const functionStack = []
+    let cursor = 0
+    let position = 0
+    const directImageSet = () => {
+        const frame = functionStack.at(-1)
+        return frame?.imageSet ? frame : null
+    }
+    const appendProtected = (start, end, replacement = text.slice(start, end)) => {
+        parts.push(transformCode(text.slice(cursor, start)))
+        parts.push(replacement)
+        cursor = end
+        position = end
+    }
+    const replaceParsed = async parsed => {
+        const original = text.slice(parsed.replaceStart, parsed.replaceEnd)
+        const replacement = parsed.value
+            ? await replaceURL(parsed.value)
+            : parsed.value
+        appendProtected(
+            parsed.replaceStart,
+            parsed.replaceEnd,
+            replacement === parsed.value ? original : parsed.render(replacement),
+        )
+    }
+    while (position < text.length) {
+        const char = text[position]
+        if (char === '/' && text[position + 1] === '*') {
+            const commentEnd = text.indexOf('*/', position + 2)
+            appendProtected(position, commentEnd < 0 ? text.length : commentEnd + 2)
+            continue
+        }
+        if (char === '"' || char === "'") {
+            const imageSet = functionStack.length ? directImageSet() : null
+            if (imageSet?.awaitingSource) {
+                const parsed = parseCSSQuotedValue(text, position)
+                if (parsed) {
+                    imageSet.awaitingSource = false
+                    await replaceParsed({
+                        replaceStart: position,
+                        replaceEnd: parsed.end,
+                        value: parsed.value,
+                        render: replacement => (
+                            `${parsed.quote}${escapeCSSStringValue(replacement, parsed.quote)}${parsed.quote}`
+                        ),
+                    })
+                    continue
+                }
+            }
+            appendProtected(position, skipCSSString(text, position, char))
+            continue
+        }
+        const parsed = parseCSSURLFunction(text, position)
+            ?? parseCSSQuotedImport(text, position)
+        if (parsed) {
+            const imageSet = functionStack.length ? directImageSet() : null
+            if (imageSet?.awaitingSource && parsed.replaceStart === position) {
+                imageSet.awaitingSource = false
+            }
+            await replaceParsed(parsed)
+            continue
+        }
+        const imageSetStart = parseCSSImageSetStart(text, position)
+        if (imageSetStart) {
+            const parentImageSet = functionStack.length ? directImageSet() : null
+            if (parentImageSet?.awaitingSource) parentImageSet.awaitingSource = false
+            functionStack.push({ imageSet: true, awaitingSource: true })
+            position = imageSetStart.end
+            continue
+        }
+        if (char === '(') {
+            if (functionStack.length) {
+                const imageSet = directImageSet()
+                if (imageSet?.awaitingSource) imageSet.awaitingSource = false
+                functionStack.push({ imageSet: false })
+            }
+            position += 1
+            continue
+        }
+        if (char === ')') {
+            if (functionStack.length) functionStack.pop()
+            position += 1
+            continue
+        }
+        if (char === ',' && functionStack.length) {
+            const imageSet = directImageSet()
+            if (imageSet) {
+                imageSet.awaitingSource = true
+                position += 1
+                continue
+            }
+        }
+        if (!isASCIIWhitespace(char) && functionStack.length) {
+            const imageSet = directImageSet()
+            if (imageSet?.awaitingSource) imageSet.awaitingSource = false
+        }
+        position += 1
+    }
+    parts.push(transformCode(text.slice(cursor)))
+    return parts.join('')
+}
+
+// Parse enough of the HTML `srcset` algorithm to preserve data URLs and commas
+// inside descriptor functions while exposing each candidate URL for replacement.
+// Candidate validation remains the browser's responsibility.
+const parseSrcsetCandidates = value => {
+    const source = String(value ?? '')
+    const candidates = []
+    let position = 0
+    while (position < source.length) {
+        while (
+            position < source.length
+            && (isASCIIWhitespace(source[position]) || source[position] === ',')
+        ) position += 1
+        if (position >= source.length) break
+
+        const urlStart = position
+        while (position < source.length && !isASCIIWhitespace(source[position])) {
+            position += 1
+        }
+        let url = source.slice(urlStart, position)
+        if (!url) continue
+
+        if (url.endsWith(',')) {
+            url = url.replace(/,+$/, '')
+            if (url) candidates.push({ url, descriptor: '' })
+            continue
+        }
+
+        const descriptorStart = position
+        let parentheses = 0
+        while (position < source.length) {
+            const char = source[position]
+            if (char === '(') parentheses += 1
+            else if (char === ')' && parentheses > 0) parentheses -= 1
+            else if (char === ',' && parentheses === 0) break
+            position += 1
+        }
+        const descriptor = source.slice(descriptorStart, position).trim()
+        if (position < source.length && source[position] === ',') position += 1
+        candidates.push({ url, descriptor })
+    }
+    return candidates
+}
 
 const LANGS = {
     attrs: ['dir', 'xml:lang']
@@ -452,7 +900,7 @@ class Encryption {
     constructor(algorithms) {
         this.#algorithms = algorithms
     }
-    async init(encryption, opf) {
+    async init(encryption, opf, resolveURI) {
         if (!encryption) return
         const data = Array.from(
             encryption.getElementsByTagNameNS(NS.ENC, 'EncryptedData'), el => ({
@@ -466,6 +914,8 @@ class Encryption {
                 uri
             }
             of data) {
+            const resolvedURI = resolveURI(uri)
+            if (!resolvedURI) continue
             if (!this.#decoders.has(algorithm)) {
                 const algo = this.#algorithms[algorithm]
                 if (!algo) {
@@ -475,7 +925,7 @@ class Encryption {
                 const key = await algo.key(opf)
                 this.#decoders.set(algorithm, blob => algo.decode(key, blob))
             }
-            this.#uris.set(uri, algorithm)
+            this.#uris.set(resolvedURI, algorithm)
         }
     }
     getDecoder(uri) {
@@ -570,23 +1020,12 @@ class Resources {
     }
 }
 
-const splitInternalResourceReference = href => {
-    const queryIndex = href.indexOf('?')
-    const fragmentIndex = href.indexOf('#')
-    let resourceEnd = href.length
-    if (queryIndex >= 0) resourceEnd = Math.min(resourceEnd, queryIndex)
-    if (fragmentIndex >= 0) resourceEnd = Math.min(resourceEnd, fragmentIndex)
-    return {
-        resourceHref: href.slice(0, resourceEnd),
-        fragment: fragmentIndex >= 0 ? href.slice(fragmentIndex) : '',
-    }
-}
-
 export class Loader {
     #cache = new Map()
     #children = new Map()
     #refCount = new Map()
-    #pendingLoads = new Map()
+    #pending = new Map()
+    #transientChildren = new Map()
     #destroyed = false
     allowScript = false
     constructor({
@@ -605,11 +1044,14 @@ export class Loader {
         // needed only when replacing in (X)HTML w/o parsing (see below)
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
     }
-    createURL(href, data, type, parent, cacheKey = href) {
-        if (this.#destroyed || data == null) return ''
-        const url = URL.createObjectURL(new Blob([data], {
-            type
-        }))
+    #assertActive() {
+        if (!this.#destroyed) return
+        const error = new Error('EPUB resource loader was destroyed')
+        error.name = 'AbortError'
+        throw error
+    }
+    #createObjectURL(href, data, type, parent) {
+        const url = URL.createObjectURL(new Blob([data], { type }))
         try {
             globalThis.__manabiBlobResourceMap ??= new Map()
             globalThis.__manabiBlobResourceMap.set(url, {
@@ -619,38 +1061,70 @@ export class Loader {
                 bytes: data?.byteLength ?? data?.length ?? null,
             })
         } catch (_error) {}
-        this.#cache.set(cacheKey, url)
-        this.#refCount.set(cacheKey, 1)
-        if (parent) {
-            const childList = this.#children.get(parent)
-            if (childList) childList.push(cacheKey)
-            else this.#children.set(parent, [cacheKey])
-        }
+        return url
+    }
+    #forgetURL(url) {
+        try {
+            globalThis.__manabiBlobResourceMap?.delete?.(url)
+        } catch (_error) {}
+        if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
+    }
+    #recordChild(parent, href) {
+        if (!parent) return false
+        const childList = this.#children.get(parent)
+        if (childList?.includes(href)) return false
+        if (childList) childList.push(href)
+        else this.#children.set(parent, [href])
+        return true
+    }
+    #cacheURL(href, url, parent) {
+        this.#cache.set(href, url)
+        this.#refCount.set(href, 1)
+        this.#recordChild(parent, href)
+        return url
+    }
+    createURL(href, data, type, parent) {
+        if (this.#destroyed) return ''
+        if (this.#cache.has(href)) return this.ref(href, parent)
+        if (data == null) return ''
+        return this.#cacheURL(
+            href,
+            this.#createObjectURL(href, data, type, parent),
+            parent,
+        )
+    }
+    #createTransientURL(href, data, type, parent) {
+        if (this.#destroyed) return ''
+        if (data == null) return ''
+        const existing = this.#transientChildren.get(parent)?.get(href)
+        if (existing) return existing
+        const url = this.#createObjectURL(href, data, type, parent)
+        const children = this.#transientChildren.get(parent) ?? new Map()
+        children.set(href, url)
+        this.#transientChildren.set(parent, children)
         return url
     }
     createDirectURL(href, url, parent) {
-        if (this.#destroyed || !url) return ''
-        this.#cache.set(href, url)
-        this.#refCount.set(href, 1)
-        if (parent) {
-            const childList = this.#children.get(parent)
-            if (childList) childList.push(href)
-            else this.#children.set(parent, [href])
+        if (this.#destroyed) return ''
+        if (this.#cache.has(href)) return this.ref(href, parent)
+        return url ? this.#cacheURL(href, url, parent) : ''
+    }
+    #releaseChildren(parent) {
+        const childList = this.#children.get(parent)
+        if (childList) {
+            this.#children.delete(parent)
+            while (childList.length) this.unref(childList.pop())
         }
-        return url
+        const transientChildren = this.#transientChildren.get(parent)
+        if (transientChildren) {
+            this.#transientChildren.delete(parent)
+            for (const url of transientChildren.values()) this.#forgetURL(url)
+        }
     }
     ref(href, parent) {
         if (this.#destroyed || !this.#cache.has(href)) return null
-        if (!parent) {
+        if (!parent || this.#recordChild(parent, href)) {
             this.#refCount.set(href, this.#refCount.get(href) + 1)
-            return this.#cache.get(href)
-        }
-        const childList = this.#children.get(parent)
-        if (!childList?.includes(href)) {
-            this.#refCount.set(href, this.#refCount.get(href) + 1)
-            //console.log(`referencing ${href}, now ${this.#refCount.get(href)}`)
-            if (childList) childList.push(href)
-            else this.#children.set(parent, [href])
         }
         return this.#cache.get(href)
     }
@@ -661,110 +1135,130 @@ export class Loader {
         if (count < 1) {
             //console.log(`unloading ${href}`)
             const url = this.#cache.get(href)
-            try {
-                globalThis.__manabiBlobResourceMap?.delete?.(url)
-            } catch (_error) {}
-            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
+            this.#forgetURL(url)
             this.#cache.delete(href)
             this.#refCount.delete(href)
-            // unref children
-            const childList = this.#children.get(href)
-            if (childList)
-                while (childList.length) this.unref(childList.pop())
-            this.#children.delete(href)
+            this.#releaseChildren(href)
         } else this.#refCount.set(href, count)
     }
-    #rollbackUncommittedChildren(parent, retainedChildren) {
-        const childList = this.#children.get(parent)
-        if (!childList?.length) return
-        const retained = []
-        for (const child of childList) {
-            if (retainedChildren.has(child)) retained.push(child)
-            else this.unref(child)
-        }
-        if (retained.length) this.#children.set(parent, retained)
-        else this.#children.delete(parent)
+    async #loadUncachedItem(item, parents, parent) {
+        if (this.#destroyed) return null
+        const { href, mediaType } = item
+        const isScript = MIME.JS.test(mediaType)
+        const shouldReplace =
+            isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType)
+        if (shouldReplace) return await this.loadReplaced(item, parents)
+        const data = await this.loadBlob(href)
+        if (this.#destroyed) return null
+        return this.createURL(href, data, mediaType, parent)
     }
-    // load manifest item, recursively loading all resources as needed
+    // Load one manifest resource at a time. Concurrent callers share replacement
+    // work, then acquire their own top-level or parent-scoped reference.
     async loadItem(item, parents = []) {
         if (this.#destroyed || !item) return null
-        const { href } = item
-        const parent = parents.at(-1)
-        if (this.#cache.has(href)) return this.ref(href, parent)
-
-        // Concurrent section, prefetch, and replacement requests must share the
-        // one href-keyed cache publication. Otherwise a late stale request can
-        // overwrite the current URL and its eventual unload can revoke the URL
-        // still owned by a newer request. Recursive self-references deliberately
-        // bypass the pending request so they retain the existing cycle breaker.
-        const canCoalesce = parents.every(candidate => candidate !== href)
-        if (canCoalesce) {
-            const pending = this.#pendingLoads.get(href)
-            if (pending) {
-                const url = await pending
-                if (this.#destroyed || !url) return null
-                return this.ref(href, parent)
-            }
-            const retainedChildren = new Set(this.#children.get(href) ?? [])
-            const load = (async () => {
-                try {
-                    const value = await this.#loadItemUncoalesced(item, parents)
-                    if (!value || !this.#cache.has(href)) {
-                        this.#rollbackUncommittedChildren(href, retainedChildren)
-                    }
-                    return value
-                } catch (error) {
-                    this.#rollbackUncommittedChildren(href, retainedChildren)
-                    throw error
-                }
-            })()
-            this.#pendingLoads.set(href, load)
-            try {
-                return await load
-            } finally {
-                if (this.#pendingLoads.get(href) === load) {
-                    this.#pendingLoads.delete(href)
-                }
-            }
-        }
-        return this.#loadItemUncoalesced(item, parents)
-    }
-    async #loadItemUncoalesced(item, parents = []) {
-        if (this.#destroyed || !item) return null
-        const {
-            href,
-            mediaType
-        } = item
+        const { href, mediaType } = item
         const isScript = MIME.JS.test(mediaType)
         if (isScript && !this.allowScript) return null
+
         const parent = parents.at(-1)
+        // Circular references need a raw URL for the current replacement pass,
+        // but they must not enter the href cache or create a ref-count cycle.
+        if (parents.includes(href)) {
+            const existing = this.#transientChildren.get(parent)?.get(href)
+            if (existing) return existing
+            return this.#createTransientURL(
+                href,
+                await this.loadBlob(href),
+                mediaType,
+                parent,
+            )
+        }
         if (this.#cache.has(href)) return this.ref(href, parent)
 
-        const isRecursiveReference = parents.some(candidate => candidate === href)
-        const shouldReplace =
-            (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
-            // prevent circular references
-            && !isRecursiveReference
-        if (shouldReplace) return this.loadReplaced(item, parents)
-        const blob = await this.loadBlob(href)
-        if (this.#destroyed) return null
-        // A circular dependency needs a raw resource URL to break recursion, but it
-        // must not overwrite the href-keyed publication owned by the outer load.
-        // Track the dependency under an exact transient key so parent unload still
-        // revokes it after the final replacement URL is released.
-        const cacheKey = isRecursiveReference ? Symbol(`recursive:${href}`) : href
-        return this.createURL(href, blob, mediaType, parent, cacheKey)
+        const pending = this.#pending.get(href)
+        if (pending) {
+            const result = await pending
+            if (this.#destroyed) return null
+            return result ? this.ref(href, parent) : result
+        }
+
+        // Install ownership before starting user-supplied async loaders so a
+        // synchronous re-entry cannot create a second independent acquisition.
+        const load = Promise.resolve()
+            .then(() => this.#loadUncachedItem(item, parents, parent))
+        this.#pending.set(href, load)
+        try {
+            const result = await load
+            // The uncached worker can commit an object URL and resolve its promise
+            // before this initiating caller resumes. Teardown queued in between
+            // revokes that URL, so the first caller needs the same terminal check
+            // already performed by callers that joined `#pending`.
+            if (this.#destroyed) return null
+            if (!result) this.#releaseChildren(href)
+            return result
+        } catch (error) {
+            // Child assets loaded while replacing this parent are owned by the
+            // parent transaction. A failed parent has no later unload callback.
+            this.#releaseChildren(href)
+            throw error
+        } finally {
+            if (this.#pending.get(href) === load) this.#pending.delete(href)
+        }
     }
     async loadHref(href, base, parents = []) {
         if (this.#destroyed) return null
-        if (typeof href !== 'string' || !href || isExternal(href)) return href
-        const { resourceHref, fragment } = splitInternalResourceReference(href)
-        if (!resourceHref) return href
-        const path = resolveURL(resourceHref, base)
+        const originalHref = String(href ?? '')
+        const normalizedHref = trimASCIIURLWhitespace(originalHref)
+        if (!normalizedHref) return ''
+        if (normalizedHref.startsWith('#')) return normalizedHref
+        // A query-only path still targets the current processed document. Keep
+        // it local instead of attempting to publish another copy of that item.
+        if (normalizedHref.startsWith('?')) return normalizedHref
+        if (isExternal(normalizedHref)) {
+            // Keep the existing external-resource policy, but let URL parsing
+            // perform the same whitespace and escaping normalization the browser
+            // applies when the reference is eventually consumed.
+            return String(resolveURL(normalizedHref, base))
+        }
+
+        const resolved = String(resolveURL(normalizedHref, base))
+        const fragmentIndex = resolved.indexOf('#')
+        const path = fragmentIndex >= 0 ? resolved.slice(0, fragmentIndex) : resolved
+        const fragment = fragmentIndex >= 0 ? resolved.slice(fragmentIndex) : ''
+        const normalizedBase = trimASCIIURLWhitespace(base)
+        const baseIsPackagePath = !hasURIScheme(normalizedBase)
+            && !normalizedBase.startsWith('//')
+        if (fragment && baseIsPackagePath) {
+            const resolvedBase = String(resolveURL('', normalizedBase))
+            const baseFragmentIndex = resolvedBase.indexOf('#')
+            const basePath = baseFragmentIndex >= 0
+                ? resolvedBase.slice(0, baseFragmentIndex)
+                : resolvedBase
+            // An explicit current-document reference (for example,
+            // `chapter.svg#paint`) must remain local to the processed document.
+            // Loading the manifest item again enters the circular-reference path
+            // and points at an unprocessed transient copy instead.
+            if (path === basePath) return fragment
+        }
+
         const item = this.manifest.find(item => item.href === path)
-        if (!item) return href
-        const url = await this.loadItem(item, parents.concat(base))
-        return url && fragment ? `${url}${fragment}` : url
+        // Blob-backed documents cannot safely resolve scheme-relative URLs,
+        // or relative URLs whose source stylesheet/document itself is remote.
+        // Preserve package-relative fallback text for undeclared local assets,
+        // but return the already-resolved absolute URL for remote resources.
+        if (!item) return isExternal(resolved) ? resolved : originalHref
+        const loaded = await this.loadItem(item, parents.concat(base))
+        return loaded ? `${loaded}${fragment}` : originalHref
+    }
+    async #replaceSrcset(value, href, parents) {
+        const candidates = parseSrcsetCandidates(value)
+        if (!candidates.length) return value
+        const rewritten = []
+        for (const { url, descriptor } of candidates) {
+            const loaded = await this.loadHref(url, href, parents)
+            rewritten.push(descriptor ? `${loaded} ${descriptor}` : loaded)
+        }
+        return rewritten.join(', ')
     }
     async loadReplaced(item, parents = []) {
         if (this.#destroyed) return null
@@ -772,42 +1266,18 @@ export class Loader {
             href,
             mediaType
         } = item
-        const loadStartedAt = manabiPerfNow()
-        manabiEpubReaderLoadLog('epub.loadReplaced.start', {
-            href,
-            mediaType,
-            parent: parents.at(-1) ?? null,
-            parentCount: parents.length,
-        })
         const parent = parents.at(-1)
         if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
             const directURL = await this.replaceURL(href, mediaType)
             if (this.#destroyed) return null
             if (!directURL) {
                 const error = new Error(`Direct processed section URL required for ${href}`)
-                manabiEpubReaderLoadLog('epub.loadReplaced.directURL.error', {
-                    href,
-                    mediaType,
-                    elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-                    error: error.message,
-                })
                 throw error
             }
-            manabiEpubReaderLoadLog('epub.loadReplaced.directURL', {
-                href,
-                mediaType,
-                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-            })
             return this.createDirectURL(href, directURL, parent)
         }
         const str = await this.loadText(href)
         if (this.#destroyed) return null
-        manabiEpubReaderLoadLog('epub.loadReplaced.text', {
-            href,
-            mediaType,
-            chars: str?.length ?? 0,
-            elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-        })
         if (str == null) return null
 
         // note that one can also just use `replaceString` for everything:
@@ -824,12 +1294,6 @@ export class Loader {
         if (this.replaceText) {
             replacedStr = await this.replaceText(href, str, mediaType)
             if (this.#destroyed) return null
-            manabiEpubReaderLoadLog('epub.loadReplaced.replaceText', {
-                href,
-                mediaType,
-                chars: replacedStr?.length ?? 0,
-                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-            })
         }
 
         if (replacedStr == null) {
@@ -841,108 +1305,157 @@ export class Loader {
             let effectiveMediaType = mediaType
             let doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             // change to HTML if it's not valid XHTML
-            const parserError = effectiveMediaType === MIME.XHTML
-                ? doc.querySelector('parsererror')
-                : null
-            if (parserError) {
-                console.warn(parserError.innerText)
+            if (effectiveMediaType === MIME.XHTML && doc.querySelector('parsererror')) {
+                console.warn(doc.querySelector('parsererror').innerText)
                 effectiveMediaType = MIME.HTML
                 doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             }
-            // replace hrefs in XML processing instructions
-            // this is mainly for SVGs that use xml-stylesheet
+            // Replace resource URLs in processing instructions such as
+            // xml-stylesheet. Comments or a doctype may legally precede the PI,
+            // so inspect all document children rather than only a leading run.
             if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
-                let child = doc.firstChild
-                while (child instanceof ProcessingInstruction) {
-                    if (child.data) {
-                        const replacedData = await replaceSeries(child.data,
-                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                            .then(p2 => `${p1}${p2}${p3}`))
-                        child.replaceWith(doc.createProcessingInstruction(
-                            child.target, replacedData))
-                    }
-                    child = child.nextSibling
+                for (const child of Array.from(doc.childNodes ?? [])) {
+                    if (!(child instanceof ProcessingInstruction)
+                        || child.target?.toLowerCase?.() !== 'xml-stylesheet'
+                        || !child.data) continue
+                    const replacedData = await replaceSeries(
+                        child.data,
+                        /(\bhref\s*=\s*['"])([^'"]*)(['"])/i,
+                        (_, p1, p2, p3) => this.loadHref(p2, href, parents)
+                            .then(value => `${p1}${value}${p3}`),
+                    )
+                    child.replaceWith(doc.createProcessingInstruction(
+                        child.target,
+                        replacedData,
+                    ))
                 }
             }
-            // replace hrefs (excluding anchors)
-            // TODO: srcset?
+            // Replace stylesheet links plus resource-bearing SVG2 `href`
+            // attributes. Navigation anchors remain publication links and must
+            // continue through the reader's normal link handling. Local SVG
+            // fragment references are preserved by `loadHref`.
             const replace = async (el, attr) => el.setAttribute(attr,
                 await this.loadHref(el.getAttribute(attr), href, parents))
-            for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
-            manabiEpubReaderLoadLog('epub.loadReplaced.links', {
-                href,
-                mediaType,
-                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-            })
+            const replaceSrcset = async (el, attr) => el.setAttribute(attr,
+                await this.#replaceSrcset(el.getAttribute(attr), href, parents))
+            const hrefElements = new Set(
+                Array.from(doc.querySelectorAll('link[href]'))
+                    .filter(linkElementLoadsResource)
+            )
+            for (const el of doc.querySelectorAll('[href]')) {
+                const isSVGResource = el.namespaceURI === NS.SVG
+                    && el.localName?.toLowerCase?.() !== 'a'
+                if (isSVGResource) hrefElements.add(el)
+            }
+            for (const el of hrefElements) await replace(el, 'href')
             for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
-            manabiEpubReaderLoadLog('epub.loadReplaced.srcs', {
-                href,
-                mediaType,
-                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-            })
+            for (const el of doc.querySelectorAll('[srcset]')) {
+                await replaceSrcset(el, 'srcset')
+            }
+            for (const el of doc.querySelectorAll('[imagesrcset]')) {
+                await replaceSrcset(el, 'imagesrcset')
+            }
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
-            for (const el of Array.from(doc.getElementsByTagName('*'))
-                .filter(el => !el.hasAttribute('href') && el.hasAttributeNS(NS.XLINK, 'href'))) {
-                el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))
+            const replaceCSSURLs = value => rewriteCSS(
+                value,
+                url => this.loadHref(url, href, parents),
+                code => code,
+            )
+            // Consolidate less-common package resource attributes and inline
+            // CSS into one namespace-safe DOM pass. `getElementsByTagName('style')`
+            // matches qualified names, so it misses valid prefixed XML elements
+            // such as `<svg:style>` and `<html:style>`.
+            const allElements = Array.from(doc.getElementsByTagName('*'))
+            for (const el of allElements) {
+                const localName = el.localName?.toLowerCase?.()
+                if (
+                    el.namespaceURI === NS.XHTML
+                    && el.hasAttribute('background')
+                ) {
+                    await replace(el, 'background')
+                }
+                const isSVG = el.namespaceURI === NS.SVG
+                if (isSVG) {
+                    for (const attribute of SVG_CSS_RESOURCE_ATTRIBUTES) {
+                        if (!el.hasAttribute(attribute)) continue
+                        el.setAttribute(
+                            attribute,
+                            await replaceCSSURLs(el.getAttribute(attribute)),
+                        )
+                    }
+                }
+                if (
+                    localName !== 'a'
+                    && !el.hasAttribute('href')
+                    && el.hasAttributeNS(NS.XLINK, 'href')
+                ) {
+                    el.setAttributeNS(
+                        NS.XLINK,
+                        'href',
+                        await this.loadHref(
+                            el.getAttributeNS(NS.XLINK, 'href'),
+                            href,
+                            parents,
+                        ),
+                    )
+                }
+                if (
+                    localName === 'style'
+                    && (!el.namespaceURI || el.namespaceURI === NS.XHTML || isSVG)
+                    && el.textContent
+                ) {
+                    el.textContent = await this.replaceCSS(
+                        el.textContent,
+                        href,
+                        parents,
+                    )
+                }
+                if (el.hasAttribute('style')) {
+                    el.setAttribute(
+                        'style',
+                        await this.replaceCSS(el.getAttribute('style'), href, parents),
+                    )
+                }
             }
-            // replace inline styles
-            for (const el of doc.getElementsByTagName('style'))
-                if (el.textContent) el.textContent =
-                    await this.replaceCSS(el.textContent, href, parents)
-            for (const el of doc.querySelectorAll('[style]'))
-                el.setAttribute('style',
-                    await this.replaceCSS(el.getAttribute('style'), href, parents))
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
-            manabiEpubReaderLoadLog('epub.loadReplaced.finish', {
-                href,
-                mediaType: effectiveMediaType,
-                chars: textResult.length,
-                elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-            })
             const url = this.createURL(href, textResult, effectiveMediaType, parent)
-            if (url && effectiveMediaType !== mediaType) {
-                item.mediaType = effectiveMediaType
-            }
+            if (url && effectiveMediaType !== mediaType) item.mediaType = effectiveMediaType
             return url
         }
 
         const result = mediaType === MIME.CSS ?
             await this.replaceCSS(replacedStr, href, parents) :
             await this.replaceString(replacedStr, href, parents)
-        manabiEpubReaderLoadLog('epub.loadReplaced.finish', {
-            href,
-            mediaType,
-            chars: result?.length ?? 0,
-            elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
-        })
         return this.createURL(href, result, mediaType, parent)
     }
     async replaceCSS(str, href, parents = []) {
-        const replacedUrls = await replaceSeries(str,
-            /url\(\s*["']?([^'"\n]*?)\s*["']?\s*\)/gi,
-            (_, url) => this.loadHref(url, href, parents)
-            .then(url => `url("${url}")`))
-        // apart from `url()`, strings can be used for `@import` (but why?!)
-        const replacedImports = await replaceSeries(replacedUrls,
-            /@import\s*["']([^"'\n]*?)["']/gi,
-            (_, url) => this.loadHref(url, href, parents)
-            .then(url => `@import "${url}"`))
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
-        return replacedImports
-            // unprefix as most of the props are (only) supported unprefixed
-            .replace(/-epub-/gi, '')
-            // replace vw and vh as they cause problems with layout
-            .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
-            .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
-            // `page-break-*` unsupported in columns; replace with `column-break-*`
-            .replace(/page-break-(after|before|inside)/gi, (_, x) =>
-                `-webkit-column-break-${x}`)
+        return rewriteCSS(
+            str,
+            url => this.loadHref(url, href, parents),
+            code => code
+                // Unprefix declaration names without mutating selectors or values.
+                .replace(/(^|[;{(])(\s*)-epub-(?=[-a-z0-9_]+\s*:)/gi, '$1$2')
+                // Replace viewport dimensions without matching identifier suffixes.
+                .replace(
+                    /(^|[^a-z0-9_.-])(-?\d*\.?\d+)(vw|vh)\b/gi,
+                    (_, prefix, value, unit) => {
+                        const basis = unit.toLowerCase() === 'vw' ? w : h
+                        return `${prefix}${parseFloat(value) * basis / 100}px`
+                    },
+                )
+                // `page-break-*` declaration names are unsupported in columns.
+                .replace(
+                    /(^|[;{(])(\s*)page-break-(after|before|inside)(?=\s*:)/gi,
+                    (_, prefix, whitespace, name) =>
+                        `${prefix}${whitespace}-webkit-column-break-${name}`,
+                ),
+        )
     }
-    // find & replace exact relative paths for all assets without parsing
+    // find & replace all possible relative paths for all assets without parsing
     replaceString(str, href, parents = []) {
         const assetMap = new Map()
         for (const asset of this.assets) {
@@ -950,34 +1463,41 @@ export class Loader {
             if (asset.href === href) continue
             // href was decoded and resolved when parsing the manifest
             const relative = pathRelative(pathDirname(href), asset.href)
+            const relativeEnc = encodeURI(relative)
+            const explicitRelative = relative ? `./${relative}` : relative
+            const explicitRelativeEnc = encodeURI(explicitRelative)
             const rootRelative = '/' + asset.href
-            const urls = new Set([
+            const rootRelativeEnc = encodeURI(rootRelative)
+            for (const url of new Set([
                 relative,
-                encodeURI(relative),
+                relativeEnc,
+                explicitRelative,
+                explicitRelativeEnc,
                 rootRelative,
-                encodeURI(rootRelative),
-            ])
-            for (const url of urls) {
-                if (url && !assetMap.has(url)) assetMap.set(url, asset)
-            }
+                rootRelativeEnc,
+            ])) if (url && !assetMap.has(url)) assetMap.set(url, asset)
         }
-        const urls = Array.from(assetMap.keys()).sort((a, b) => b.length - a.length)
-        if (!urls.length) return str
-        // Match a complete URL path token rather than a manifest path embedded in
-        // an external URL or as the prefix of a different, longer resource name.
-        const pathCharacterClass = `A-Za-z0-9._~%!$&()*+,;=:@/-`
+        if (!assetMap.size) return str
+        // A manifest path may prefix another manifest path. Match the longest
+        // exact candidate first so `image.png` cannot corrupt `image.png.map`.
+        const urls = [...assetMap.keys()].sort((lhs, rhs) => rhs.length - lhs.length)
         const regex = new RegExp(
-            `(^|[^${pathCharacterClass}])(${urls.map(regexEscape).join('|')})(?![${pathCharacterClass}])([?#][^\\s"'\\x60<>]*)?`,
-            'g'
+            `(${urls.map(regexEscape).join('|')})${RAW_RESOURCE_SUFFIX}`,
+            'g',
         )
-        return replaceSeries(str, regex, async (_match, prefix, url, suffix = '') => {
-            const replacement = await this.loadItem(
-                assetMap.get(url),
-                parents.concat(href)
-            )
-            const { fragment } = splitInternalResourceReference(suffix)
-            return `${prefix}${replacement}${fragment}`
-        })
+        return replaceSeries(
+            str,
+            regex,
+            async (match, reference, fragment, offset, source) => {
+                if (!rawResourceReferenceIsComplete(source, offset, match.length)) {
+                    return match
+                }
+                const asset = assetMap.get(reference)
+                if (!asset) return match
+                const loaded = await this.loadItem(asset, parents.concat(href))
+                return loaded ? `${loaded}${fragment ?? ''}` : match
+            },
+        )
     }
     unloadItem(item) {
         this.unref(item?.href)
@@ -993,20 +1513,15 @@ export class Loader {
                 owner.destroy?.()
             } catch (_error) {}
         }
-        for (const url of this.#cache.values()) {
-            try {
-                globalThis.__manabiBlobResourceMap?.delete?.(url)
-            } catch (_error) {}
-            if (typeof url === 'string' && url.startsWith('blob:')) {
-                try {
-                    URL.revokeObjectURL(url)
-                } catch (_error) {}
-            }
+        for (const url of this.#cache.values()) this.#forgetURL(url)
+        for (const children of this.#transientChildren.values()) {
+            for (const url of children.values()) this.#forgetURL(url)
         }
         this.#cache.clear()
         this.#children.clear()
         this.#refCount.clear()
-        this.#pendingLoads.clear()
+        this.#pending.clear()
+        this.#transientChildren.clear()
         this.manifest = []
         this.assets = []
         return true
@@ -1077,12 +1592,17 @@ ${doc.querySelector('parsererror').innerText}`)
             .filter(file => file.mediaType === 'application/oebps-package+xml')
 
         if (!opfs.length) throw new Error('No package document defined in container')
-        const opfPath = opfs[0].fullPath
+        const opfPath = resolvePackageEntryPath(opfs[0].fullPath)
+        if (!opfPath) throw new Error('Invalid package document path in container')
         const opf = await this.#loadXML(opfPath)
         if (!opf) throw new Error('Failed to load package document')
 
         const $encryption = await this.#loadXML('META-INF/encryption.xml')
-        await this.#encryption.init($encryption, opf)
+        await this.#encryption.init(
+            $encryption,
+            opf,
+            resolvePackageEntryPath,
+        )
         this.#assertActive()
 
         this.resources = new Resources({
@@ -1133,20 +1653,16 @@ ${doc.querySelector('parsererror').innerText}`)
             this.pageList = nav.pageList
             this.landmarks = nav.landmarks
         } catch (e) {
-            this.#assertActive()
             console.warn(e)
         }
-        this.#assertActive()
         if (!this.toc && ncxPath) try {
             const resolve = url => resolveURL(url, ncxPath)
             const ncx = parseNCX(await this.#loadXML(ncxPath), resolve)
             this.toc = ncx.toc
             this.pageList = ncx.pageList
         } catch (e) {
-            this.#assertActive()
             console.warn(e)
         }
-        this.#assertActive()
         this.landmarks ??= this.resources.guide
 
         const {
@@ -1227,7 +1743,6 @@ ${doc.querySelector('parsererror').innerText}`)
         return this.parser.parseFromString(str, item.mediaType)
     }
     async loadMediaOverlay(item) {
-        this.#assertActive()
         const id = item.mediaOverlay
         if (!id) return null
         const media = this.resources.getItemByID(id)
@@ -1267,9 +1782,7 @@ ${doc.querySelector('parsererror').innerText}`)
         if (!cover?.href) return null
         const data = await this.loadBlob(cover.href)
         this.#assertActive()
-        return new Blob([data], {
-            type: cover.mediaType
-        })
+        return new Blob([data], { type: cover.mediaType })
     }
     async getCalibreBookmarks() {
         this.#assertActive()
