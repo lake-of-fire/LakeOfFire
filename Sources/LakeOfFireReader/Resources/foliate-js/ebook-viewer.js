@@ -4240,6 +4240,7 @@ class Reader {
         r: null
     }
     #mainDocumentSwipeState = null;
+    hasCompletedLastPositionLoadAttempt = false
     hasLoadedLastPosition = false
     markedAsFinished = false;
     showingCompletionButtons = false;
@@ -5733,6 +5734,13 @@ class Reader {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`${reason}.settled`);
         }, 180);
     }
+    completeLastPositionLoadAttempt() {
+        this.hasCompletedLastPositionLoadAttempt = true;
+    }
+    completeLastPositionLoad() {
+        this.hasLoadedLastPosition = true;
+        this.completeLastPositionLoadAttempt();
+    }
     #updateEbookSubscriptionPreviewPageState({
         localSectionIndex = null,
     } = {}) {
@@ -5945,6 +5953,7 @@ class Reader {
             ? performance.now()
             : Date.now();
 
+        this.hasCompletedLastPositionLoadAttempt = false
         this.hasLoadedLastPosition = false
         this.lastCFIPersistenceObservation = null;
         this.unstableCFIs.clear();
@@ -8694,7 +8703,7 @@ window.loadLastPosition = async ({
             await waitForFrames(2);
             const defaultState = captureRestoreState('after-default-next');
         }
-        globalThis.reader.hasLoadedLastPosition = true
+        globalThis.reader.completeLastPositionLoad()
         globalThis.reader.refreshNativeLookupHitTargets?.('load-last-position-done');
         const doneState = captureRestoreState('done');
         globalThis.reader?.maybeFlashInitialForwardSideNavChevron?.(doneState);
@@ -8714,6 +8723,7 @@ window.loadLastPosition = async ({
     } catch (error) {
         if (globalThis.reader) {
             globalThis.reader.hasLoadedLastPosition = false;
+            globalThis.reader.completeLastPositionLoadAttempt();
         }
         throw error;
     } finally {

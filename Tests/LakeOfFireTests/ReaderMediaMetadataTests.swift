@@ -586,6 +586,43 @@ final class ReaderMediaMetadataTests: XCTestCase {
     }
 
     @MainActor
+    func testReadAloudVoiceCacheInvalidatesAfterBackgroundVoiceChangeNotification() async {
+        let synthesizer = FakeReaderSpeechSynthesizer()
+        var resolutionCount = 0
+        let viewModel = ReaderMediaPlayerViewModel(
+            readAloudController: ReaderReadAloudController(synthesizer: synthesizer),
+            readAloudAudioSessionLeaseFactory: { FakeReadAloudAudioSessionLease() },
+            readAloudVoiceResolver: { _, _ in
+                resolutionCount += 1
+                return nil
+            }
+        )
+        let utterances = (1...10).map {
+            ReaderTTSUtterance(sentenceIdentifier: "s\($0)", text: "Sentence \($0).")
+        }
+        XCTAssertTrue(viewModel.presentAITTS(
+            utterances: utterances,
+            preferredLanguage: "en-US",
+            autoplay: true
+        ))
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 1)
+
+        await Task.detached {
+            NotificationCenter.default.post(
+                name: AVSpeechSynthesizer.availableVoicesDidChangeNotification,
+                object: nil
+            )
+            await MainActor.run {}
+        }.value
+        await Task.yield()
+
+        viewModel.seekAITTS(toSentenceIdentifier: "s7", shouldPlay: false)
+        viewModel.playAITTS()
+        XCTAssertEqual(resolutionCount, 2)
+    }
+
+    @MainActor
     func testAITTSQueueReplenishesOneUtteranceWhenOneFinishes() throws {
         let synthesizer = FakeReaderSpeechSynthesizer()
         let viewModel = ReaderMediaPlayerViewModel(

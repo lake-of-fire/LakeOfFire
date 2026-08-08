@@ -429,13 +429,29 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     // Using AnyView avoids templating this struct with another generic.
     var customMenuOptions: ((C) -> AnyView)? = nil
 
-    @State private var resolvedContentFile: ContentFile?
-    @State private var contentFileLookupStarted = false
-    @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
-
     static var buttonSize: CGFloat {
         return 26
     }
+
+    var body: some View {
+        ReaderContentCellBody(
+            item: item,
+            appearance: appearance,
+            customMenuOptions: customMenuOptions
+        )
+    }
+}
+
+/// Keeps Realm observation at the cell boundary so nested builders use one resolved object.
+@MainActor
+private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
+    let item: C
+    let appearance: ReaderContentCellAppearance
+    let customMenuOptions: ((C) -> AnyView)?
+
+    @State private var resolvedContentFile: ContentFile?
+    @State private var contentFileLookupStarted = false
+    @ScaledMetric(relativeTo: .caption2) private var scaledSmallNewBadgeHeight: CGFloat = 15
 
     private let progressBarWidth: CGFloat = 21.0
 

@@ -1052,10 +1052,12 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ))
     }
 
-    @objc
+    @objc nonisolated
     private func handleAvailableVoicesDidChange() {
-        cachedReadAloudVoiceConfiguration = nil
-        cachedReadAloudVoice = nil
+        Task { @MainActor [weak self] in
+            self?.cachedReadAloudVoiceConfiguration = nil
+            self?.cachedReadAloudVoice = nil
+        }
     }
 
     @MainActor

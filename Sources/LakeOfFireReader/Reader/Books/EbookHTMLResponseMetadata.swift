@@ -376,7 +376,7 @@ func ebookHTMLDataWithInjectedDirectSectionResponseMetadata(
         bodyAttributes: bodyAttributes,
         presentation: presentation,
         additionalHeadMarkup: additionalHeadMarkup,
-        suppressesInitialPaginatorLayout: false
+        suppressesInitialPaginatorLayout: true
     )
 }
 

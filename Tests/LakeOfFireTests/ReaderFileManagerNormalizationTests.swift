@@ -1,8 +1,32 @@
 import XCTest
+import RealmSwift
 import SwiftCloudDrive
 @testable import LakeOfFireContent
 
+@MainActor
+private final class CountingReaderFileManager: ReaderFileManager, @unchecked Sendable {
+    private(set) var metadataScanCount = 0
+    var scanError: (any Swift.Error)?
+
+    override func refreshFilesMetadata(
+        drive: CloudDrive,
+        relativePath: RootRelativePath? = nil,
+        realmConfiguration: Realm.Configuration? = nil
+    ) async throws -> [ThreadSafeReference<ContentFile>]? {
+        metadataScanCount += 1
+        if let scanError {
+            throw scanError
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        return []
+    }
+}
+
 final class ReaderFileManagerNormalizationTests: XCTestCase {
+    private enum MetadataScanError: Swift.Error {
+        case failed
+    }
+
     private final class SequencedRootProvider: @unchecked Sendable {
         private let lock = NSLock()
         private let roots: [URL]
@@ -31,6 +55,20 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         return url
     }
 
+    private func makeHistoryRealmConfiguration() -> Realm.Configuration {
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: "ReaderFileManagerNormalization.\(UUID().uuidString)"
+        )
+        configuration.objectTypes = [
+            Bookmark.self,
+            ContentFile.self,
+            ContentPackageFile.self,
+            HistoryRecord.self,
+            FeedEntry.self,
+        ]
+        return configuration
+    }
+
     private func writeFixture(relativePath: String, under rootURL: URL) throws -> URL {
         let fileURL = rootURL.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(
@@ -39,6 +77,36 @@ final class ReaderFileManagerNormalizationTests: XCTestCase {
         )
         try Data("ebook fixture".utf8).write(to: fileURL)
         return fileURL
+    }
+
+    @MainActor
+    func testConcurrentMetadataRefreshesShareOneScan() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+
+        async let first: Void = manager.refreshAllFilesMetadata()
+        async let second: Void = manager.refreshAllFilesMetadata()
+        _ = try await (first, second)
+
+        XCTAssertEqual(manager.metadataScanCount, 1)
+    }
+
+    @MainActor
+    func testMetadataRefreshPropagatesScanFailure() async throws {
+        let rootURL = try temporaryDirectory()
+        let manager = CountingReaderFileManager()
+        manager.scanError = MetadataScanError.failed
+        manager.historyRealmConfigurationOverride = makeHistoryRealmConfiguration()
+        manager.localDrive = try await CloudDrive(storage: .localDirectory(rootURL: rootURL))
+
+        do {
+            try await manager.refreshAllFilesMetadata()
+            XCTFail("Expected the metadata scan failure to propagate.")
+        } catch MetadataScanError.failed {
+            XCTAssertEqual(manager.metadataScanCount, 1)
+        }
     }
 
     func testCanonicalReaderBackingURLStripsQueryAndFragmentFromReaderFileURL() {

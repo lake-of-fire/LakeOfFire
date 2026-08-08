@@ -3253,6 +3253,15 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
                 )
             }
 
+            if renderBaseURL.scheme?.lowercased() == "internal",
+               frameInfo == nil || frameIsMainFrame {
+                transformedHTMLBytes = Array(externalizingCanonicalReaderSegmentSidecar(
+                    in: transformedHTMLBytes,
+                    scheme: .internalReader
+                ).documentHTML)
+                transformedHTMLString = nil
+            }
+
             debugPrint(
                 "# READERLOAD stage=readerMode.showReadabilityContent.transformed",
                 "renderBaseURL=\(renderBaseURL.absoluteString)",

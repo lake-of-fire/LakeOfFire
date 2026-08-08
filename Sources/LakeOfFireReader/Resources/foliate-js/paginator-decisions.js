@@ -1,5 +1,13 @@
 const LOCKED_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 180
 const POST_PAGE_TURN_DUPLICATE_SUPPRESSION_MS = 240
+const PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID = 'mnb-paginator-layout-bootstrap'
+
+export const revealPaginatorDocument = doc => {
+    const bootstrapStyle = doc?.getElementById?.(PAGINATOR_LAYOUT_BOOTSTRAP_STYLE_ID)
+    if (!bootstrapStyle) return false
+    bootstrapStyle.remove()
+    return true
+}
 
 export const lockedPageTurnQueueDecision = ({
     pendingQueueAllowed,

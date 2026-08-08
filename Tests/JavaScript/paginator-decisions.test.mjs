@@ -7,9 +7,22 @@ import {
     pageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision,
     paginatorAnchorForLocalPage,
+    revealPaginatorDocument,
     resolveBlankPageTarget,
     shouldSuppressPostPageTurnDuplicate,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/paginator-decisions.js'
+
+test('reveals a document by removing its one-shot layout bootstrap', () => {
+    let removalCount = 0
+    const bootstrap = { remove: () => { removalCount += 1 } }
+    const document = {
+        getElementById: () => removalCount === 0 ? bootstrap : null,
+    }
+
+    assert.equal(revealPaginatorDocument(document), true)
+    assert.equal(revealPaginatorDocument(document), false)
+    assert.equal(removalCount, 1)
+})
 
 test('blank page resolution moves only to adjacent visible content', () => {
     const blank = { textCharCount: 0, mediaCount: 0 }

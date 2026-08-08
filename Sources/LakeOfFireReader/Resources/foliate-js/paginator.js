@@ -12,6 +12,7 @@ import {
     pageSummaryIsVisiblyBlank as manabiPageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision as manabiPageTurnBoundaryDecision,
     paginatorAnchorForLocalPage as manabiPaginatorAnchorForLocalPage,
+    revealPaginatorDocument as manabiRevealPaginatorDocument,
     resolveBlankPageTarget as manabiResolveBlankPageTarget,
     shouldSuppressPostPageTurnDuplicate as manabiShouldSuppressPostPageTurnDuplicate,
 } from './paginator-decisions.js'
@@ -499,6 +500,7 @@ class View {
             'margin': 'auto',
         })
         this.setImageSize()
+        manabiRevealPaginatorDocument(doc)
         this.#debouncedExpand()
         //        await this.expand()
     }
@@ -553,6 +555,7 @@ class View {
             'margin': '0',
         })
         this.setImageSize()
+        manabiRevealPaginatorDocument(doc)
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")

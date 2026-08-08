@@ -1,5 +1,34 @@
 import XCTest
+import WebKit
 @testable import LakeOfFireReader
+
+private final class CapturingURLSchemeTask: NSObject, WKURLSchemeTask {
+    let request: URLRequest
+    private(set) var response: URLResponse?
+    private(set) var data = Data()
+    private(set) var finished = false
+    private(set) var failure: Error?
+
+    init(url: URL) {
+        request = URLRequest(url: url)
+    }
+
+    func didReceive(_ response: URLResponse) {
+        self.response = response
+    }
+
+    func didReceive(_ data: Data) {
+        self.data.append(data)
+    }
+
+    func didFinish() {
+        finished = true
+    }
+
+    func didFailWithError(_ error: Error) {
+        failure = error
+    }
+}
 
 private actor SidecarProcessorInvocationCounter {
     private var invocationCount = 0
@@ -14,6 +43,40 @@ private actor SidecarProcessorInvocationCounter {
 }
 
 final class ReaderExternalSegmentSidecarRetentionTests: XCTestCase {
+    @MainActor
+    func testInternalReaderSchemeHandlerServesStoredSidecar() throws {
+        let directoryURL = temporaryDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let store = ReaderExternalSegmentSidecarStore(directoryURL: directoryURL)
+        let data = validSidecarData(runtimeIDToken: "!article")
+        let externalized = externalizingCanonicalReaderSegmentSidecar(
+            in: Array(inlineHTML(sidecarData: data).utf8),
+            scheme: .internalReader,
+            store: store
+        )
+        let endpointString = try XCTUnwrap(externalized.endpointURL)
+        let endpoint = try XCTUnwrap(URL(string: endpointString))
+        let task = CapturingURLSchemeTask(url: endpoint)
+        let handler = InternalURLSchemeHandler()
+        handler.externalSegmentSidecarStore = store
+
+        handler.webView(WKWebView(), start: task)
+
+        XCTAssertEqual(task.data, data)
+        XCTAssertEqual((task.response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(
+            (task.response as? HTTPURLResponse)?.value(
+                forHTTPHeaderField: "X-Manabi-Sidecar-Signature"
+            ),
+            externalized.signature
+        )
+        XCTAssertFalse(String(decoding: externalized.documentHTML, as: UTF8.self).contains(
+            #"id="mnb-segment-metadata""#
+        ))
+        XCTAssertTrue(task.finished)
+        XCTAssertNil(task.failure)
+    }
+
     func testContentAddressedSidecarSurvivesMemoryEvictionAndStoreRecreation() throws {
         let directoryURL = temporaryDirectoryURL()
         defer { try? FileManager.default.removeItem(at: directoryURL) }

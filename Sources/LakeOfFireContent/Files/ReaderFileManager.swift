@@ -71,6 +71,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     nonisolated(unsafe) public static var shared = ReaderFileManager()
 
+    /// Keeps isolated import/index tests and callers on one content Realm.
+    var historyRealmConfigurationOverride: Realm.Configuration?
+
     private let defaultLocalRootURLProvider: @Sendable () -> URL
 
     public init() {
@@ -79,6 +82,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     init(defaultLocalRootURLProvider: @escaping @Sendable () -> URL) {
         self.defaultLocalRootURLProvider = defaultLocalRootURLProvider
+    }
+
+    private var resolvedHistoryRealmConfiguration: Realm.Configuration {
+        historyRealmConfigurationOverride ?? ReaderContentLoader.historyRealmConfiguration
     }
     
     // TODO: Pull these from callbacks per above
@@ -129,7 +136,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         }
     }
     
-    private var refreshAllFilesMetadataTask: Task<Void, Never>?
+    private var refreshAllFilesMetadataTask: Task<Void, any Swift.Error>?
+    @MainActor private var lastRefreshAllFilesMetadataStartedAt: Date?
+    @MainActor private var refreshAllFilesMetadataNeedsFollowUp = false
+    private static let refreshAllFilesMetadataDebounceInterval: TimeInterval = 2
 
     private static let internalStorageRootPrefixes: Set<String> = [
         "manabi-caches",
@@ -402,19 +412,27 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
 
     @MainActor
     public func ensureImported(downloadable: Downloadable) async throws -> URL? {
+        let realmConfiguration = resolvedHistoryRealmConfiguration
         guard await downloadable.existsLocally() else { return nil }
         if let existingReaderURL = try await readerFileURL(for: downloadable) {
-            try await refreshMetadataForExistingLibraryFile(downloadable.localDestination)
+            try await refreshMetadataForExistingLibraryFile(
+                downloadable.localDestination,
+                realmConfiguration: realmConfiguration
+            )
             return existingReaderURL
         }
         return try await importFile(
             fileURL: downloadable.localDestination,
-            fromDownloadURL: downloadable.url
+            fromDownloadURL: downloadable.url,
+            realmConfiguration: realmConfiguration
         )
     }
 
     @MainActor
-    private func refreshMetadataForExistingLibraryFile(_ fileURL: URL) async throws {
+    private func refreshMetadataForExistingLibraryFile(
+        _ fileURL: URL,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
         let drives = [cloudDrive, localDrive].compactMap { drive in
             drive?.isConnected == true ? drive : nil
         }
@@ -422,17 +440,27 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             guard let relativePath = Self.relativePath(for: fileURL, relativeTo: drive.rootDirectory) else { continue }
             let parentPath = URL(fileURLWithPath: relativePath).deletingLastPathComponent().relativePath
             let parent = RootRelativePath(path: parentPath == "." ? "" : parentPath)
-            let discoveredReferences = try await refreshFilesMetadata(drive: drive, relativePath: parent) ?? []
-            try await publishDiscoveredFiles(discoveredReferences)
-            try await refreshAllFilesMetadata()
+            let discoveredReferences = try await refreshFilesMetadata(
+                drive: drive,
+                relativePath: parent,
+                realmConfiguration: realmConfiguration
+            ) ?? []
+            try await publishDiscoveredFiles(
+                discoveredReferences,
+                realmConfiguration: realmConfiguration
+            )
+            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
             return
         }
     }
 
     @MainActor
-    private func publishDiscoveredFiles(_ references: [ThreadSafeReference<ContentFile>]) async throws {
+    private func publishDiscoveredFiles(
+        _ references: [ThreadSafeReference<ContentFile>],
+        realmConfiguration: Realm.Configuration
+    ) async throws {
         guard !references.isEmpty else { return }
-        let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+        let realm = try await Realm.open(configuration: realmConfiguration)
         var mergedFiles = files ?? []
         for reference in references {
             guard let discoveredFile = realm.resolve(reference), !discoveredFile.isDeleted else { continue }
@@ -447,6 +475,19 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
+        try await importFile(
+            fileURL: fileURL,
+            fromDownloadURL: downloadURL,
+            realmConfiguration: resolvedHistoryRealmConfiguration
+        )
+    }
+
+    @MainActor
+    private func importFile(
+        fileURL: URL,
+        fromDownloadURL downloadURL: URL?,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
         let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
@@ -502,9 +543,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         do {
             _ = try await refreshFilesMetadata(
                 drive: drive,
-                relativePath: targetDirectory
+                relativePath: targetDirectory,
+                realmConfiguration: realmConfiguration
             )
-            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
             guard let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive) else {
                 debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
@@ -516,7 +558,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            try await refreshAllFilesMetadata()
+            try await refreshAllFilesMetadata(force: true, realmConfiguration: realmConfiguration)
             return content.url
         } catch {
             debugPrint("Error importing file:", error)
@@ -525,64 +567,99 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     @MainActor
-    public func refreshAllFilesMetadata() async throws {
-        refreshAllFilesMetadataTask?.cancel()
-        refreshAllFilesMetadataTask = Task { @MainActor in
-            do {
-                guard localDrive != nil || cloudDrive != nil else { return }
-                var files = [ThreadSafeReference<ContentFile>]()
-                for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
-                    try Task.checkCancellation()
-                    if let discovered = try await refreshFilesMetadata(drive: drive) {
-                        files.append(contentsOf: discovered)
-                    }
-                }
-                
-                let discoveredFiles = files
-                try await { @MainActor [weak self] in
-                    try Task.checkCancellation()
-                    guard let self = self else { return }
-                    let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-                    let files = try discoveredFiles.compactMap {
-                        try Task.checkCancellation()
-                        return realm.resolve($0)
-                    }
-                    self.files = try files.map {
-                        try Task.checkCancellation()
-                        return $0.freeze()
-                    }
-                    objectWillChange.send()
-                    let discoveredURLs = try files.map {
-                        try Task.checkCancellation()
-                        return $0.url
-                    }
-                    
-                    // Delete orphans (objects with no corresponding file on disk)
-                    try await { @RealmBackgroundActor in
-                        try Task.checkCancellation()
-                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                        let existingURLs = try discoveredURLs.map {
-                            try Task.checkCancellation()
-                            return $0.absoluteString
-                        }
-                        let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
-                        //await realm.asyncRefresh()
-                        try await realm.asyncWrite {
-                            for orphan in orphans {
-                                try Task.checkCancellation()
-                                orphan.isDeleted = true
-                                orphan.refreshChangeMetadata(explicitlyModified: true)
-                            }
-                        }
-                    }()
-                }()
-            } catch {
-                if !(error is CancellationError) {
-                    Logger.shared.logger.error("\(error)")
-                }
+    public func refreshAllFilesMetadata(force: Bool = false) async throws {
+        try await refreshAllFilesMetadata(
+            force: force,
+            realmConfiguration: resolvedHistoryRealmConfiguration
+        )
+    }
+
+    @MainActor
+    private func refreshAllFilesMetadata(
+        force: Bool,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        if let refreshAllFilesMetadataTask {
+            if force {
+                refreshAllFilesMetadataNeedsFollowUp = true
             }
+            try await refreshAllFilesMetadataTask.value
+            return
         }
-        await refreshAllFilesMetadataTask?.value
+        if !force,
+           files != nil,
+           let lastRefreshAllFilesMetadataStartedAt,
+           Date().timeIntervalSince(lastRefreshAllFilesMetadataStartedAt)
+                < Self.refreshAllFilesMetadataDebounceInterval {
+            return
+        }
+
+        refreshAllFilesMetadataNeedsFollowUp = false
+        lastRefreshAllFilesMetadataStartedAt = Date()
+        refreshAllFilesMetadataTask = Task { @MainActor in
+            defer {
+                refreshAllFilesMetadataTask = nil
+            }
+            repeat {
+                refreshAllFilesMetadataNeedsFollowUp = false
+                do {
+                    guard localDrive != nil || cloudDrive != nil else { return }
+                    var files = [ThreadSafeReference<ContentFile>]()
+                    for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
+                        try Task.checkCancellation()
+                        if let discovered = try await refreshFilesMetadata(
+                            drive: drive,
+                            realmConfiguration: realmConfiguration
+                        ) {
+                            files.append(contentsOf: discovered)
+                        }
+                    }
+
+                    let discoveredFiles = files
+                    try await { @MainActor [weak self] in
+                        try Task.checkCancellation()
+                        guard let self = self else { return }
+                        let realm = try await Realm.open(configuration: realmConfiguration)
+                        let files = try discoveredFiles.compactMap {
+                            try Task.checkCancellation()
+                            return realm.resolve($0)
+                        }
+                        self.files = files
+                        let discoveredURLs = try files.map {
+                            try Task.checkCancellation()
+                            return $0.url
+                        }
+
+                        // Delete orphans (objects with no corresponding file on disk)
+                        try await { @RealmBackgroundActor in
+                            try Task.checkCancellation()
+                            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                                for: realmConfiguration
+                            )
+                            let existingURLs = try discoveredURLs.map {
+                                try Task.checkCancellation()
+                                return $0.absoluteString
+                            }
+                            let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
+                            //await realm.asyncRefresh()
+                            try await realm.asyncWrite {
+                                for orphan in orphans {
+                                    try Task.checkCancellation()
+                                    orphan.isDeleted = true
+                                    orphan.refreshChangeMetadata(explicitlyModified: true)
+                                }
+                            }
+                        }()
+                    }()
+                } catch {
+                    if !(error is CancellationError) {
+                        Logger.shared.logger.error("\(error)")
+                    }
+                    throw error
+                }
+            } while refreshAllFilesMetadataNeedsFollowUp && !Task.isCancelled
+        }
+        try await refreshAllFilesMetadataTask?.value
     }
     
     static let additionalFilePackageSuffixesToAvoidDescendingInto = [
@@ -590,7 +667,12 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     ]
     
     @MainActor
-    func refreshFilesMetadata(drive: CloudDrive, relativePath: RootRelativePath? = nil) async throws -> [ThreadSafeReference<ContentFile>]? {
+    func refreshFilesMetadata(
+        drive: CloudDrive,
+        relativePath: RootRelativePath? = nil,
+        realmConfiguration: Realm.Configuration? = nil
+    ) async throws -> [ThreadSafeReference<ContentFile>]? {
+        let realmConfiguration = realmConfiguration ?? resolvedHistoryRealmConfiguration
         var files = [ThreadSafeReference<ContentFile>]()
         var filesToUpdate: [(readerFileURL: URL, absoluteFileURL: URL)] = []
         do {
@@ -636,7 +718,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 if !url.isFilePackage(),
                    !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
                    isDirectory {
-                    let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
+                    let discoveredFiles = try await refreshFilesMetadata(
+                        drive: drive,
+                        relativePath: tryRelativePath,
+                        realmConfiguration: realmConfiguration
+                    )
                     files.append(contentsOf: discoveredFiles ?? [])
                 } else {
                     let indexDecision = Self.contentFileIndexDecision(at: absoluteFileURL)
@@ -691,7 +777,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             let updatedFiles = try await { @RealmBackgroundActor in
                 var updatedFiles = [ContentFile]()
                 var allFileRefs = [ThreadSafeReference<ContentFile>]()
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: realmConfiguration
+                )
 
                 try await realm.asyncWrite {
                     for (readerFileURL, absoluteFileURL) in pendingFilesToUpdate {

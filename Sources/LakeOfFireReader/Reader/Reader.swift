@@ -470,7 +470,7 @@ func syncEbookViewerChromeInsets(
 
 fileprivate struct ThemeModifier: ViewModifier {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
-    @AppStorage("readerFontSize") private var readerFontSize: Double?
+    let readerFontSize: Double?
     let lightModeTheme: LightModeTheme
     let darkModeTheme: DarkModeTheme
     @Environment(\.colorScheme) private var colorScheme
@@ -925,6 +925,7 @@ public struct Reader: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("readerFontSize") private var readerFontSize: Double?
 
     @State private var obscuredInsets: EdgeInsets? = nil
 
@@ -1137,6 +1138,7 @@ public struct Reader: View {
         ))
         .modifier(ReaderStateChangeModifier())
         .modifier(ThemeModifier(
+            readerFontSize: readerFontSize,
             lightModeTheme: lightModeTheme,
             darkModeTheme: darkModeTheme
         ))
