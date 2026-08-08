@@ -783,6 +783,7 @@ public class ReaderFileManager: ObservableObject {
         do {
             for url in try await drive.contentsOfDirectory(
                 at: relativePath ?? .root,
+                includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles, .producesRelativePathURLs]
             ) {
                 try Task.checkCancellation()
@@ -801,7 +802,16 @@ public class ReaderFileManager: ObservableObject {
                 let lastPathComponent = url.lastPathComponent.lowercased()
                 let isDirectory: Bool
                 do {
-                    isDirectory = try await drive.directoryExists(at: tryRelativePath)
+                    let resourceValues = try url.resourceValues(forKeys: [.isDirectoryKey])
+                    if let value = resourceValues.isDirectory {
+                        isDirectory = value
+                    } else if case .localDirectory = drive.storage {
+                        // The directory enumeration already supplied this URL;
+                        // avoid a second coordinated claim for local files.
+                        isDirectory = url.hasDirectoryPath
+                    } else {
+                        isDirectory = try await drive.directoryExists(at: tryRelativePath)
+                    }
                 } catch {
                     if Self.isMissingFileError(error) {
                         Self.logContentFileDecision(
