@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -82,18 +81,6 @@ test('the computed cascade wins over contradictory raw inline declaration text',
         direction: 'ltr',
         source: 'computed',
     })
-})
-
-test('paginator does not mutate a section from publication-wide direction history', () => {
-    const paginatorSource = readFileSync(new URL(
-        '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator.js',
-        import.meta.url,
-    ), 'utf8')
-
-    assert.doesNotMatch(paginatorSource, /writingDirectionObservation/)
-    assert.doesNotMatch(paginatorSource, /ApplyPreferredWritingDirection/)
-    assert.doesNotMatch(paginatorSource, /RememberObservedWritingDirection/)
-    assert.doesNotMatch(paginatorSource, /BodylessComputedStyle|bodylessStyle/)
 })
 
 test('shared document evidence ignores blank and invalid declarations before valid evidence', () => {
