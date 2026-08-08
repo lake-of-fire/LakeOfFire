@@ -48,6 +48,12 @@ private final class LockedCancellationCounter: @unchecked Sendable {
     }
 }
 
+private func requestWithoutURL() -> URLRequest {
+    var request = URLRequest(url: URL(string: "about:blank")!)
+    request.url = nil
+    return request
+}
+
 final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
     func testCancellationRejectsLaterCompletion() {
         let ownership = URLSchemeTaskCompletionOwnership()
@@ -136,7 +142,7 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
     @MainActor
     func testReaderFileHandlerTerminatesMalformedRequest() {
         let handler = ReaderFileURLSchemeHandler()
-        let task = TestURLSchemeTask(request: URLRequest())
+        let task = TestURLSchemeTask(request: requestWithoutURL())
         let webView = WKWebView()
 
         handler.webView(webView, start: task)
@@ -150,7 +156,7 @@ final class URLSchemeTaskCompletionOwnershipTests: XCTestCase {
     @MainActor
     func testEbookHandlerTerminatesMalformedRequest() {
         let handler = EbookURLSchemeHandler()
-        let task = TestURLSchemeTask(request: URLRequest())
+        let task = TestURLSchemeTask(request: requestWithoutURL())
         let webView = WKWebView()
 
         handler.webView(webView, start: task)
