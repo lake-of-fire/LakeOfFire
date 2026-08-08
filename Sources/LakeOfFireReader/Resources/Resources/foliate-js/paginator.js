@@ -21,13 +21,9 @@ import {
 import { installBookContentStyles } from './book-content-style.js'
 import { rendererNavigationNotOwned } from './renderer-navigation.js'
 import {
-    writingDirectionFromDocumentEvidence as manabiWritingDirectionFromDocumentEvidence,
+    applyObservedWritingDirectionToDocument as manabiApplyPreferredWritingDirectionToDocument,
     writingDirectionInputsForDocument as manabiWritingDirectionInputsForDocument,
 } from './paginator-writing-direction.js'
-import {
-    SectionResourceLease,
-    SinglePublicationRendererLifetime,
-} from './ebook-restore-coordination.js'
 
 export {
     manabiNormalizeSingleMediaPageTarget,
@@ -40,6 +36,8 @@ export {
 
 const MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS = true;
 const MANABI_ENABLE_PAGINATOR_DIAGNOSTICS = false;
+const MANABI_NEIGHBOR_PREFETCH_DELAY_MS = 0;
+const MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS = 1500;
 const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
     ? {
         gapPct: 5,
@@ -71,7 +69,12 @@ const CSS_DEFAULTS = MANABI_ENABLE_COLUMNIZATION_OPTIMIZATIONS
     };
 
 const MANABI_DISABLE_POST_LOAD_RERENDER = false;
+const MANABI_ENABLE_NEIGHBOR_PREFETCH = false;
+const MANABI_ENABLE_PREFETCH_PROMISE_REUSE = false;
+const MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT = false;
+const MANABI_ENABLE_SIMPLIFIED_SECTION_LOADING = true;
 const MANABI_ENABLE_PAGE_METRICS_CACHE = false;
+const MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD = 5;
 const MANABI_MIN_INLINE_CHARS_FOR_MULTICOLUMN = 17;
 const manabiDocumentIsProcessedEbook = doc => {
     const body = doc?.body;
@@ -139,6 +142,36 @@ const manabiShouldLogPaginatorReaderLoad = (cacheWarmer = false) => {
         || source.includes('initialRestore')
         || globalThis.__manabiTracePaginatorLoadBoundaries === true;
 };
+const manabiRememberObservedWritingDirection = (doc, direction) => {
+    if (!direction) return;
+    const source = direction.source ?? null;
+    const writingMode = direction.writingMode ?? null;
+    const explicitSource = source && source !== 'computed' && source !== 'bodyless-iframe';
+    if (!explicitSource && !direction.vertical) return;
+    const nextDirection = direction.vertical ? 'vertical' : 'horizontal';
+    if (!direction.vertical && source !== 'attribute' && source !== 'attribute-mode' && source !== 'inline') return;
+    if (globalThis.__manabiObservedBookWritingDirection === nextDirection
+        && globalThis.__manabiObservedBookWritingMode === writingMode) {
+        return;
+    }
+    globalThis.__manabiObservedBookWritingDirection = nextDirection;
+    globalThis.__manabiObservedBookWritingMode = writingMode;
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.direction.observedBookDirection', {
+        href: doc?.location?.href ?? null,
+        source,
+        writingMode,
+        observedDirection: nextDirection,
+    });
+};
+const manabiReaderLoadPayload = (payload = {}) => Object.fromEntries(
+    Object.entries(payload).filter(([key, value]) =>
+        value !== undefined
+        && key !== 'src'
+        && key !== 'url'
+        && key !== 'currentURL'
+        && key !== 'href'
+    )
+);
 const manabiReaderLoadSubpathFromURL = value => {
     const documentURL = String(value ?? '')
     if (!documentURL.includes('subpath=')) return null
@@ -149,6 +182,15 @@ const manabiReaderLoadSubpathFromURL = value => {
         return encodedSubpath.slice(0, 96)
     }
 };
+const manabiShouldEmitPaginatorFallbackReaderLoadLog = stage => {
+    if (globalThis.__manabiReaderLoadVerbose === true || globalThis.__manabiPaginatorVerbosePageTurns === true) return true;
+    if (typeof stage !== 'string') return false;
+    if (stage.includes('error') || stage.includes('fail') || stage.includes('invalid') || stage.includes('watchdog') || stage.includes('slow')) return true;
+    return stage === 'paginator.pageTurn.ignoreLocked'
+        || stage === 'paginator.pageTurn.dropDuplicate'
+        || stage === 'paginator.pageTurn.noMove'
+        || stage === 'paginator.pageTurn.anomaly';
+}
 const manabiPaginatorReaderLoadLog = (stage, payload = {}) => {
     try {
         void stage;
@@ -202,6 +244,13 @@ const manabiSetPropertyIfChanged = (style, property, value) => {
     }
     style.setProperty(property, value);
     return true;
+};
+const manabiBlobResourceInfo = url => {
+    try {
+        return globalThis.__manabiBlobResourceMap?.get?.(url) ?? null;
+    } catch (_error) {
+        return null;
+    }
 };
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
@@ -278,19 +327,196 @@ const uncollapse = range => {
     return range
 }
 
-function getDirectionFromDocument(doc) {
-    const body = doc?.body
-    const documentElement = doc?.documentElement
-    if (!body || !documentElement) return null
+const {
+    SHOW_ELEMENT,
+    SHOW_TEXT,
+    SHOW_CDATA_SECTION,
+    FILTER_ACCEPT,
+    FILTER_REJECT,
+    FILTER_SKIP
+} = NodeFilter
 
-    let computedStyle = null
+/**
+ * Creates a hidden iframe with a cloned document (head and empty body) to compute computed style.
+ * @param {Document} sourceDoc - The source document to clone.
+ * @returns {Promise<{cs: CSSStyleDeclaration, doc: Document}>} - Computed style and iframe document.
+ */
+async function getBodylessComputedStyle(sourceDoc) {
+    const startedAt = manabiPerfNow();
+    // 1. Clone a minimal document
+    const cloneDoc = document.implementation.createHTMLDocument();
+
+    // 2. Deep-clone the <head>, stripping unwanted styles/scripts
+    const clonedHead = sourceDoc.head.cloneNode(true);
+    ['mnb-font-data', 'mnb-custom-fonts'].forEach(id => {
+        const el = clonedHead.querySelector(`#${id}`);
+        if (el) el.remove();
+    });
+    // Refresh blob-based CSS
+    const stylesheetLinks = Array.from(clonedHead.querySelectorAll('link[rel="stylesheet"][href^="blob:"]'));
+    for (const link of stylesheetLinks) {
+        const cssFetchStartedAt = manabiPerfNow();
+        const originalHref = link.href;
+        const originalInfo = manabiBlobResourceInfo(originalHref);
+        try {
+            const css = await fetch(link.href).then(r => r.text());
+            const blobUrl = URL.createObjectURL(new Blob([css], {
+                type: 'text/css'
+            }));
+            try {
+                globalThis.__manabiBlobResourceMap?.set?.(blobUrl, {
+                    href: originalInfo?.href ?? originalHref,
+                    type: 'text/css',
+                    parent: originalInfo?.parent ?? null,
+                    bytes: css.length,
+                    source: 'bodyless-computed-style',
+                });
+            } catch (_error) {}
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch', cssFetchStartedAt, {
+                href: originalInfo?.href ?? originalHref,
+                bytes: css.length,
+            }, 25);
+            link.href = blobUrl;
+        } catch {
+            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.cssFetch.error', cssFetchStartedAt, {
+                href: originalInfo?.href ?? originalHref,
+            }, 25);
+            link.remove();
+        }
+    }
+    clonedHead.querySelectorAll('script').forEach(el => el.remove());
+    cloneDoc.head.replaceWith(clonedHead);
+
+    // 3. Shallow-clone the <body> (to preserve dir, but empty)
+    const bodyClone = sourceDoc.body.cloneNode(false);
+    cloneDoc.body.replaceWith(bodyClone);
+    // Copy all attributes from the source <html> (e.g. xmlns, xml:lang, class, lang)
+    for (const { name, value } of sourceDoc.documentElement.attributes) {
+        cloneDoc.documentElement.setAttribute(name, value);
+    }
+    // Override or add the 'dir' attribute explicitly
+    cloneDoc.documentElement.setAttribute(
+        'dir',
+        sourceDoc.documentElement.getAttribute('dir') || ''
+    );
+
+    // 4. Serialize the cloneDoc to HTML and create a Blob URL
+    const html = '<!doctype html>' + cloneDoc.documentElement.outerHTML;
+    const blob = new Blob([html], {
+        type: 'text/html'
+    });
+    const blobUrl = URL.createObjectURL(blob);
+
+    // 5. Create a hidden iframe, append, and wait for load
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;contain:strict;';
+    document.documentElement.appendChild(iframe);
+    const iframeLoadStartedAt = manabiPerfNow();
+    await new Promise(resolve => {
+        iframe.onload = resolve;
+        iframe.src = blobUrl;
+    });
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.iframeLoad', iframeLoadStartedAt, {
+        stylesheetCount: stylesheetLinks.length,
+    }, 25);
+
+    // wait a frame for CSS to apply before measuring
+    await new Promise(r => requestAnimationFrame(r));
+
+    // 6. Get computed style and doc
+    const bodylessDoc = iframe.contentDocument;
+    const bodylessStyle = iframe.contentWindow.getComputedStyle(bodylessDoc.body);
+
+    // 7. Cleanup
+    URL.revokeObjectURL(blobUrl);
+    iframe.remove();
+
+    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMeasure('bodylessStyle.total', startedAt, {
+        stylesheetCount: stylesheetLinks.length,
+    }, 25);
+    return { bodylessStyle, bodylessDoc };
+}
+
+/**
+ * Determines writing mode and directionality (vertical, verticalRTL, rtl) by using a computed style from a cloned iframe.
+ * @param {Document} sourceDoc - The source document to analyze.
+ * @returns {Promise<{vertical: boolean, verticalRTL: boolean, rtl: boolean}>}
+ */
+async function getDirection({ bodylessStyle, bodylessDoc }) {
+    const writingMode = bodylessStyle.writingMode;
+    const direction = bodylessStyle.direction;
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+        bodylessDoc.body.dir === 'rtl' ||
+        direction === 'rtl' ||
+        bodylessDoc.documentElement.dir === 'rtl';
+    return { vertical, verticalRTL, rtl };
+}
+
+function getDirectionFromDocument(doc) {
+    const body = doc?.body;
+    const documentElement = doc?.documentElement;
+    if (!body || !documentElement) return null;
+
+    let pageParams = null;
     try {
-        computedStyle = doc.defaultView?.getComputedStyle?.(body) ?? null
+        pageParams = new URL(doc.location?.href ?? '').searchParams;
     } catch (_error) {}
-    return manabiWritingDirectionFromDocumentEvidence(doc, {
-        computedWritingMode: computedStyle?.writingMode,
-        computedDirection: computedStyle?.direction,
-    })
+    const explicitDirection = body.getAttribute('data-mnb-writing-direction')?.trim?.().toLowerCase?.() ?? null;
+    const foliateDirection = body.getAttribute('data-mnb-foliate-writing-direction')?.trim?.().toLowerCase?.()
+        ?? pageParams?.get?.('mnbWritingDirection')?.trim?.().toLowerCase?.()
+        ?? null;
+    const foliateWritingMode = body.getAttribute('data-mnb-foliate-writing-mode')?.trim?.().toLowerCase?.()
+        ?? pageParams?.get?.('mnbWritingMode')?.trim?.().toLowerCase?.()
+        ?? null;
+    const styleText = [
+        body.getAttribute('style') ?? '',
+        documentElement.getAttribute('style') ?? '',
+        doc.getElementById?.('mnb-writing-direction-bootstrap')?.textContent ?? '',
+    ].join(';');
+    const writingModeMatch = styleText.match(/writing-mode\s*:\s*([^;]+)/i);
+    const directionMatch = styleText.match(/(?:^|;)\s*direction\s*:\s*([^;]+)/i);
+    let writingMode = foliateWritingMode || (writingModeMatch?.[1]?.trim?.().toLowerCase?.() ?? null);
+    let direction = directionMatch?.[1]?.trim?.().toLowerCase?.() ?? null;
+    let source = foliateWritingMode ? 'attribute-mode' : (writingMode ? 'inline' : null);
+    if (!writingMode && (
+        explicitDirection === 'vertical'
+        || foliateDirection === 'vertical'
+        || body.classList?.contains?.('reader-vertical-writing')
+        || documentElement.classList?.contains?.('vrtl')
+    )) {
+        writingMode = 'vertical-rl';
+        source = explicitDirection === 'vertical' || foliateDirection === 'vertical' ? 'attribute' : 'class';
+    }
+    if (!writingMode && (explicitDirection === 'horizontal' || foliateDirection === 'horizontal')) {
+        writingMode = 'horizontal-tb';
+        source = 'attribute';
+    }
+    if (!writingMode) {
+        try {
+            const computedStyle = doc.defaultView?.getComputedStyle?.(body);
+            const computedWritingMode = computedStyle?.writingMode?.trim?.().toLowerCase?.() ?? null;
+            const isProcessedEBook =
+                body.dataset?.isEbook === 'true'
+                || body.classList?.contains?.('readability-mode') === true
+                || doc.location?.href?.startsWith?.('ebook://ebook/processed-section') === true;
+            if (computedWritingMode && !(isProcessedEBook && computedWritingMode === 'horizontal-tb')) {
+                writingMode = computedWritingMode;
+                direction = computedStyle?.direction?.trim?.().toLowerCase?.() ?? direction;
+                source = 'computed';
+            }
+        } catch (_error) {}
+    }
+    if (!writingMode) return null;
+
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+        body.dir === 'rtl' ||
+        documentElement.dir === 'rtl' ||
+        direction === 'rtl';
+    return { vertical, verticalRTL, rtl, writingMode, direction, source };
 }
 
 const makeMarginals = (length, part) => Array.from({
@@ -572,16 +798,34 @@ class View {
                             });
                         }
 
-                        const direction = await manabiRunPaginatorBoundary(
+                        let direction = await manabiRunPaginatorBoundary(
                             'paginator.view.direction.document',
                             {
                                 ...basePayload,
                                 href: doc?.location?.href ?? null,
+                                appliedPreferredDirection: manabiApplyPreferredWritingDirectionToDocument(doc),
                             },
                             () => getDirectionFromDocument(doc),
                             { logReaderLoad }
                         );
-                        const directionSource = direction?.source ?? 'computed-default';
+                        let directionSource = 'document';
+                        if (!direction) {
+                            const { bodylessStyle, bodylessDoc } = await manabiRunPaginatorBoundary(
+                                'paginator.view.direction.bodylessStyle',
+                                { ...basePayload, href: doc?.location?.href ?? null },
+                                () => getBodylessComputedStyle(doc),
+                                { logReaderLoad }
+                            )
+                            direction = await manabiRunPaginatorBoundary(
+                                'paginator.view.direction.bodyless',
+                                { ...basePayload, href: doc?.location?.href ?? null },
+                                () => getDirection({ bodylessStyle, bodylessDoc }),
+                                { logReaderLoad }
+                            );
+                            directionSource = 'bodyless-iframe';
+                        } else {
+                            directionSource = direction.source ?? directionSource;
+                        }
                         MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.direction.inputs', {
                             ...basePayload,
                             ...manabiWritingDirectionInputsForDocument(doc),
@@ -603,6 +847,10 @@ class View {
                                 bodyClass: doc?.body?.className ?? null,
                             });
                         }
+                        manabiRememberObservedWritingDirection(doc, {
+                            ...direction,
+                            source: directionSource,
+                        });
                         this.#vertical = direction.vertical;
                         this.#verticalRTL = direction.verticalRTL;
                         this.#rtl = direction.rtl;
@@ -963,6 +1211,7 @@ class View {
         height,
         gap,
         columnWidth,
+        divisor,
     }) {
         //        console.log("columnize...")
         await this.#awaitDirection();
@@ -1507,7 +1756,6 @@ export class Paginator extends HTMLElement {
     #liveScrollListener = null
     #settledScrollListener = null
     #containerLifecycleInstalled = false
-    #publicationLifetime = new SinglePublicationRendererLifetime()
     #lifecycleGeneration = 0
     #lifecycleCancellationListeners = new Set()
     #vertical = null
@@ -1541,7 +1789,8 @@ export class Paginator extends HTMLElement {
     #wheelCooldownTimer = null
     #lastWheelDeltaX = 0
     #suspendOnExpandAnchor = false
-    #currentSectionLease = null
+    #prefetchTimer = null
+    #prefetchCache = new Map()
     #pendingPageTurnDirection = null
     #pendingPageTurnStep = null
     #pendingPageTurnQueueAllowed = false
@@ -1862,7 +2111,12 @@ export class Paginator extends HTMLElement {
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
     open(book, isCacheWarmer = false) {
-        if (!this.#publicationLifetime.claimOpen()) return false
+        const previousLifecycleGeneration = this.#lifecycleGeneration
+        this.#cancelLifecycleNavigation(
+            previousLifecycleGeneration,
+            'rendererReopened'
+        )
+        this.#releaseHostInputHandlers()
         this.#destroyed = false
         this.#lifecycleGeneration += 1
         // Keep layout measurable; hide visually until first anchor is settled.
@@ -1881,7 +2135,6 @@ export class Paginator extends HTMLElement {
         if (!this.#isCacheWarmer) {
             this.#installHostInputHandlers()
         }
-        return true
     }
     #installDocumentInputHandlers(doc, opts) {
         if (!doc?.addEventListener || this.#documentInputCleanups.has(doc)) return false
@@ -2089,35 +2342,126 @@ export class Paginator extends HTMLElement {
             }
         }
     }
-    #beginSectionLoad(section) {
-        const lease = new SectionResourceLease(section)
-        let loadResult
-        try {
-            if (typeof section?.load !== 'function') {
-                throw new TypeError('Paginator section is not loadable')
-            }
-            loadResult = section.load()
-        } catch (error) {
-            lease.markFailed()
-            return { lease, promise: Promise.reject(error) }
+    #cacheNeighborPrefetch(index, promise) {
+        const entry = {
+            promise: null,
+            fulfilled: false,
+            rejected: false,
+            released: false,
+            dropped: false,
         }
-        const promise = Promise.resolve(loadResult).then(
-            value => {
-                lease.markLoaded()
+        entry.promise = Promise.resolve(promise)
+            .then(value => {
+                entry.fulfilled = true
+                if (entry.dropped) this.#releaseNeighborPrefetch(index, entry, false)
                 return value
-            },
-            error => {
-                lease.markFailed()
+            })
+            .catch(error => {
+                entry.rejected = true
+                if (this.#prefetchCache.get(index) === entry) {
+                    this.#prefetchCache.delete(index)
+                }
                 throw error
-            },
-        )
-        return { lease, promise }
+            })
+        this.#prefetchCache.set(index, entry)
+        return entry
     }
-    #commitSectionLease(lease) {
-        if (!lease || this.#currentSectionLease === lease) return
-        const previousLease = this.#currentSectionLease
-        this.#currentSectionLease = lease
-        previousLease?.release()
+    #releaseNeighborPrefetch(index, entry = this.#prefetchCache.get(index), remove = true) {
+        if (!entry || entry.released) return
+        if (remove && this.#prefetchCache.get(index) === entry) {
+            this.#prefetchCache.delete(index)
+        }
+        if (!entry.fulfilled) {
+            entry.dropped = true
+            return
+        }
+        entry.released = true
+        this.sections[index]?.unload?.()
+    }
+    #consumeNeighborPrefetch(index, entry = this.#prefetchCache.get(index)) {
+        if (!entry || entry.released) return
+        if (this.#prefetchCache.get(index) === entry) {
+            this.#prefetchCache.delete(index)
+        }
+        entry.released = true
+        entry.consumed = true
+    }
+    async #isWithinNeighborPrefetchWindow() {
+        if (!this.#view || this.#isCacheWarmer) return false
+        try {
+            const metrics = await this.pageMetrics()
+            const lastReadablePage = Math.max(1, metrics.pages - 2)
+            const remainingPages = Math.max(0, lastReadablePage - metrics.page)
+            return remainingPages <= MANABI_NEIGHBOR_PREFETCH_END_PAGE_THRESHOLD
+        } catch (_error) {
+            return false
+        }
+    }
+    #scheduleNeighborPrefetch(reason = 'unknown', delayMs = MANABI_NEIGHBOR_PREFETCH_DELAY_MS) {
+        if (!MANABI_ENABLE_NEIGHBOR_PREFETCH || this.#isCacheWarmer) return
+        const index = this.#index
+        clearTimeout(this.#prefetchTimer)
+        this.#prefetchTimer = setTimeout(() => {
+            void this.#refreshNeighborPrefetch(index, reason).catch(() => undefined)
+        }, delayMs)
+    }
+    async #refreshNeighborPrefetch(index, reason = 'unknown') {
+        if (this.#index !== index) return
+
+        const nextIndex = this.#adjacentIndex(1)
+        const withinPrefetchWindow = await this.#isWithinNeighborPrefetchWindow()
+        const wanted = withinPrefetchWindow && nextIndex != null ? [nextIndex] : []
+        const keep = new Set([index, ...wanted].filter(i => this.#prefetchCache.has(i)))
+        for (const [i, entry] of this.#prefetchCache) {
+            if (!keep.has(i)) this.#releaseNeighborPrefetch(i, entry)
+        }
+
+        wanted.forEach(i => {
+            if (
+                i >= 0 &&
+                i < this.sections.length &&
+                this.sections[i].linear !== 'no'
+            ) {
+                const entry = this.#prefetchCache.get(i)
+                    ?? this.#cacheNeighborPrefetch(i, this.sections[i].load())
+                void entry.promise.catch(() => undefined)
+            }
+        })
+    }
+    async #waitForNeighborPrefetch(index) {
+        const entry = this.#prefetchCache.get(index)
+        if (!entry?.promise) return null
+        try {
+            await entry.promise
+        } catch (_error) {
+            return null
+        }
+        return entry.fulfilled ? entry : null
+    }
+    async #loadOwnedSectionReference(index, operation, navigationOwner = null) {
+        let ownsReference = false
+        const release = () => {
+            if (!ownsReference) return false
+            ownsReference = false
+            this.sections[index]?.unload?.()
+            return true
+        }
+        const cleanupLateValue = () => {
+            this.sections[index]?.unload?.()
+        }
+        const src = await this.#waitForNavigationBoundary(
+            navigationOwner,
+            operation,
+            { cleanupLateValue }
+        )
+        ownsReference = true
+        return {
+            src,
+            release,
+            transfer() {
+                ownsReference = false
+            },
+        }
     }
     async #onBeforeExpand() {
         this.#view.cachedViewSize = null;
@@ -2851,6 +3195,7 @@ export class Paginator extends HTMLElement {
 
                 const elements = Array.from(this.#view.document.body.getElementsByTagName('reader-sentinel'))
                 let visibleIDSet = new Set(visibleSentinelIDs)
+                let visibleSource = 'observer'
                 if (visibleIDSet.size === 0) {
                     const containerRect = this.#container && typeof this.#container.getBoundingClientRect === 'function'
                         ? this.#container.getBoundingClientRect()
@@ -2878,6 +3223,7 @@ export class Paginator extends HTMLElement {
                                 visibleIDSet.add(element.id)
                             }
                         }
+                        visibleSource = 'geometry'
                     }
                 }
                 resolve?.(this.#expandedVisibleSentinelIDs(elements, visibleIDSet))
@@ -3787,7 +4133,9 @@ export class Paginator extends HTMLElement {
             }
         }
     }
-    #onTouchEnd() {
+    #onTouchEnd(e) {
+        const touch = e.changedTouches?.[0] ?? null;
+        const touchState = this.#touchState;
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
         if (this.#skipTouchEndOpacity) {
@@ -4435,12 +4783,14 @@ export class Paginator extends HTMLElement {
             detail.visibleSentinelIDs = pageTurnVisibleSentinelIDs
             detail.visibleRangeSource = 'page-sentinel-geometry-range'
         }
+        let relocationMetrics = null
         if ((reason === 'page' || reason === 'navigation') && this.#pendingPageTurnDirection) {
             detail.pageTurnDirection = this.#pendingPageTurnDirection;
         }
         if (this.scrolled) {
             const metrics = knownMetrics || await this.pageMetrics()
             requireCurrent?.()
+            relocationMetrics = metrics
             detail.fraction = metrics.viewSize > 0 ? metrics.start / metrics.viewSize : 0
             logProgressInputs(this.#layoutMetricDiagnostics(metrics, {
                 reason,
@@ -4451,6 +4801,7 @@ export class Paginator extends HTMLElement {
         } else {
             const metrics = knownMetrics || await this.pageMetrics()
             requireCurrent?.()
+            relocationMetrics = metrics
             const { page, pages } = metrics
             if (pages <= 2) {
                 detail.fraction = 0;
@@ -5194,47 +5545,140 @@ export class Paginator extends HTMLElement {
                     select
                 }, navigationOwner)
             } else {
-                const onLoad = async detail => {
-                    try {
-                        this.#requireNavigationCurrent(navigationOwner, lifecycleGeneration)
-                    } catch (_error) {
-                        return
+                if (MANABI_ENABLE_SIMPLIFIED_SECTION_LOADING) {
+                    const oldIndex = this.#index
+                    const onLoad = async (detail) => {
+                        this.dispatchEvent(new CustomEvent('load', {
+                            detail
+                        }))
                     }
-                    this.dispatchEvent(new CustomEvent('load', { detail }))
+                    if (shouldLogReaderLoad) {
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.simplified', {
+                            index,
+                            sectionID: this.sections?.[index]?.id ?? null,
+                        });
+                    }
+                    let loadedReference = null
+                    try {
+                        loadedReference = await this.#loadOwnedSectionReference(
+                            index,
+                            () => this.sections[index].load(),
+                            navigationOwner
+                        )
+                        await this.#display({
+                            index,
+                            src: loadedReference.src,
+                            anchor,
+                            localPage,
+                            onLoad,
+                            select,
+                        }, navigationOwner)
+                        loadedReference.transfer()
+                        this.sections[oldIndex]?.unload?.()
+                        return true
+                    } catch (error) {
+                        loadedReference?.release?.()
+                        throw error
+                    }
                 }
-                if (shouldLogReaderLoad) {
-                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.start', {
-                        index,
-                        sectionID: this.sections?.[index]?.id ?? null,
-                    })
-                }
-                const targetSection = this.sections[index]
-                const {
-                    lease: targetSectionLease,
-                    promise: sectionLoadPromise,
-                } = this.#beginSectionLoad(targetSection)
-                let displayCommitted = false
-                try {
-                    const src = await this.#waitForNavigationBoundary(
+                let prefetchEntry = null
+                let usedPrefetchPromise = false
+                if (MANABI_ENABLE_PREFETCH_WAIT_FOR_IN_FLIGHT) {
+                    prefetchEntry = await this.#waitForNavigationBoundary(
                         navigationOwner,
-                        sectionLoadPromise,
+                        () => manabiRunPaginatorBoundary(
+                            'paginator.prefetch.wait',
+                            {
+                                index,
+                                sectionID: this.sections?.[index]?.id ?? null,
+                            },
+                            () => this.#waitForNeighborPrefetch(index),
+                            { logReaderLoad: shouldLogReaderLoad }
+                        ),
                         { lifecycleGeneration }
                     )
-                    await this.#display({
-                        index,
-                        src,
-                        anchor,
-                        localPage,
-                        onLoad,
-                        select,
-                    }, navigationOwner)
-                    this.#requireNavigationCurrent(navigationOwner, lifecycleGeneration)
-                    this.#commitSectionLease(targetSectionLease)
-                    displayCommitted = true
-                } catch (error) {
-                    if (!displayCommitted) targetSectionLease.release()
-                    throw error
                 }
+
+                const oldIndex = this.#index
+                const onLoad = async (detail) => {
+                    this.dispatchEvent(new CustomEvent('load', {
+                        detail
+                    }))
+                }
+
+                try {
+                    let sectionLoadPromise;
+                    if (
+                        MANABI_ENABLE_PREFETCH_PROMISE_REUSE
+                        && prefetchEntry?.promise
+                        && this.#prefetchCache.get(index) === prefetchEntry
+                    ) {
+                        usedPrefetchPromise = true;
+                        MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiTimelineMark('paginator.section.load.prefetchReuse', {
+                            index,
+                            sectionID: this.sections?.[index]?.id ?? null,
+                        });
+                        if (shouldLogReaderLoad) {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.prefetchReuse', {
+                                index,
+                                sectionID: this.sections?.[index]?.id ?? null,
+                            });
+                        }
+                        sectionLoadPromise = prefetchEntry.promise;
+                    } else {
+                        if (shouldLogReaderLoad) {
+                            MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.start', {
+                                index,
+                                sectionID: this.sections?.[index]?.id ?? null,
+                            });
+                        }
+                        sectionLoadPromise = this.sections[index].load()
+                            .then(src => {
+                                if (shouldLogReaderLoad) {
+                                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.finish', {
+                                        index,
+                                        sectionID: this.sections?.[index]?.id ?? null,
+                                        src,
+                                    });
+                                }
+                                return src
+                            })
+                            .catch(error => {
+                                if (shouldLogReaderLoad) {
+                                    MANABI_ENABLE_PAGINATOR_DIAGNOSTICS && manabiPaginatorReaderLoadLog('paginator.section.load.error', {
+                                        index,
+                                        sectionID: this.sections?.[index]?.id ?? null,
+                                        error: error?.message || String(error),
+                                    });
+                                }
+                                throw error
+                            });
+                    }
+                    await this.#display(Promise.resolve(sectionLoadPromise)
+                        .then(src => ({
+                            index,
+                            src,
+                            anchor,
+                            localPage,
+                            onLoad,
+                            select
+                        }))
+                        .catch(error => {
+                            throw error
+                        }), navigationOwner);
+                    this.sections[oldIndex]?.unload?.()
+                } catch (error) {
+                    throw error;
+                } finally {
+                    if (prefetchEntry) {
+                        if (usedPrefetchPromise) this.#consumeNeighborPrefetch(index, prefetchEntry)
+                        else this.#releaseNeighborPrefetch(index, prefetchEntry)
+                    }
+                }
+                this.#scheduleNeighborPrefetch(
+                    'section-display',
+                    MANABI_NEIGHBOR_PREFETCH_AFTER_SECTION_DISPLAY_DELAY_MS
+                )
             }
             return true
         } finally {
@@ -5972,6 +6416,7 @@ export class Paginator extends HTMLElement {
                     elapsedMs: this.#lockedAt == null ? null : manabiRound(manabiPerfNow() - this.#lockedAt, 1),
                 })
             }
+            if (!shouldGo) this.#scheduleNeighborPrefetch('page-turn.within-section')
         } catch (error) {
             if (error instanceof PaginatorDirectNavigationCancelled) {
                 movementResult = rendererNavigationNotOwned(error.reason)
@@ -6075,7 +6520,7 @@ export class Paginator extends HTMLElement {
         this.#view?.document?.defaultView?.focus?.()
     }
     destroy() {
-        if (!this.#publicationLifetime.destroy()) return
+        if (this.#destroyed) return
         const lifecycleGeneration = this.#lifecycleGeneration
         this.#destroyed = true
         this.#lifecycleGeneration += 1
@@ -6091,13 +6536,17 @@ export class Paginator extends HTMLElement {
         this.#releaseContainerLifecycle()
         this.#releaseHostInputHandlers()
         this.#setLoading(false, 'paginator.destroy')
+        clearTimeout(this.#prefetchTimer)
+        this.#prefetchTimer = null
+        for (const [index, entry] of this.#prefetchCache) {
+            this.#releaseNeighborPrefetch(index, entry)
+        }
+        this.#prefetchCache = new Map()
         this.#unloadViewDocument(this.#view, 'paginator.destroy')
         this.#view?.destroy?.()
         this.#view = null
         this.#releaseAllDocumentInputHandlers()
-        const currentSectionLease = this.#currentSectionLease
-        this.#currentSectionLease = null
-        currentSectionLease?.release()
+        this.sections?.[this.#index]?.unload?.()
     }
     // Public navigation edge detection methods
     async canTurnPrev() {
