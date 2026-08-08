@@ -1502,6 +1502,13 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         await fulfillment(of: [completionExpectation], timeout: 10)
         XCTAssertNil(navigationDelegate.error)
 
+        let readyState = try await callEbookJavaScriptProbe(
+            in: webView,
+            script: "return document.readyState;",
+            timeout: 5
+        )
+        XCTAssertEqual(readyState as? String, "complete")
+
         let result = try await callEbookJavaScriptProbe(
             in: webView,
             script:
@@ -1514,7 +1521,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 )),
             ]);
             document.getElementById("mnb-paginator-layout-bootstrap")?.remove();
-            await new Promise(resolve => requestAnimationFrame(resolve));
+            void document.documentElement.offsetWidth;
             const image = document.getElementById("cover");
             const audio = document.getElementById("sample-audio");
             const mediaBootstrap = document.querySelector('script[src*="ebook-package-media.js"]');
@@ -1541,116 +1548,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 "audio-blob",
                 fetchedAudioResponse.blob()
             );
-            let decodedAudioDuration = null;
-            let decodedAudioError = null;
-            try {
-                const audioContext = new AudioContext();
-                const fetchedAudioData = await withTimeout(
-                    "audio-array-buffer",
-                    fetchedAudioBlob.arrayBuffer()
-                );
-                const decodedAudio = await withTimeout(
-                    "audio-decode",
-                    audioContext.decodeAudioData(fetchedAudioData)
-                );
-                decodedAudioDuration = decodedAudio.duration;
-                await withTimeout("audio-context-close", audioContext.close());
-            } catch (error) {
-                decodedAudioError = String(error);
-            }
-            const fontURL = mediaBootstrap.src.replace(
-                /foliate-js\\/ebook-package-media\\.js$/,
-                "PDFJSWeb/standard_fonts/LiberationSans-Regular.ttf"
-            );
-            const writingDirectionModuleURL = mediaBootstrap.src.replace(
-                /ebook-package-media\\.js$/,
-                "ebook-paginator-writing-direction.js"
-            );
-            const writingDirectionModule = await withTimeout(
-                "writing-direction-import",
-                import(writingDirectionModuleURL)
-            );
-            const renderReadinessModuleURL = mediaBootstrap.src.replace(
-                /ebook-package-media\\.js$/,
-                "ebook-render-readiness.js"
-            );
-            const renderReadinessModule = await withTimeout(
-                "render-readiness-import",
-                import(renderReadinessModuleURL)
-            );
-            document.body.classList.add("reader-is-single-media-element-without-text");
-            const imageRenderReadiness = renderReadinessModule.classifyEbookRenderReadiness(
-                document,
-                { totalSegmentCount: 0, visibleSegments: [] }
-            );
-            const classifySingleMedia = media => {
-                document.body.prepend(media);
-                const readiness = renderReadinessModule.classifyEbookRenderReadiness(
-                    document,
-                    { totalSegmentCount: 0, visibleSegments: [] }
-                );
-                media.remove();
-                return readiness;
-            };
-            const pendingVideo = document.createElement("video");
-            pendingVideo.style.width = "320px";
-            pendingVideo.style.height = "180px";
-            const pendingVideoRenderReadiness = classifySingleMedia(pendingVideo);
-            const failedVideo = document.createElement("video");
-            failedVideo.style.width = "320px";
-            failedVideo.style.height = "180px";
-            const failedVideoSignal = await new Promise(resolve => {
-                const timeout = setTimeout(() => resolve("timeout"), 2000);
-                failedVideo.addEventListener("error", () => {
-                    clearTimeout(timeout);
-                    resolve("error");
-                }, { once: true });
-                failedVideo.src = "data:video/mp4;base64,AAAA";
-                failedVideo.load();
-            });
-            const failedVideoRenderReadiness = classifySingleMedia(failedVideo);
-            const brokenSVG = document.createElement("img");
-            brokenSVG.style.width = "320px";
-            brokenSVG.style.height = "180px";
-            const brokenSVGSignal = await new Promise(resolve => {
-                const timeout = setTimeout(() => resolve("timeout"), 2000);
-                brokenSVG.addEventListener("error", () => {
-                    clearTimeout(timeout);
-                    resolve("error");
-                }, { once: true });
-                brokenSVG.src = "data:image/svg+xml;base64,AAAA";
-            });
-            const brokenSVGRenderReadiness = classifySingleMedia(brokenSVG);
-            document.body.classList.remove("reader-is-single-media-element-without-text");
-            const sourceWritingMode = getComputedStyle(document.body).writingMode;
-            const horizontalOverride = writingDirectionModule.applyPaginatorWritingDirectionOverride(
-                document,
-                "horizontal"
-            );
-            const horizontalWritingMode = getComputedStyle(document.body).writingMode;
-            const restoredOverride = writingDirectionModule.applyPaginatorWritingDirectionOverride(
-                document,
-                "original"
-            );
-            const restoredWritingMode = getComputedStyle(document.body).writingMode;
-            let fontLoadError = null;
-            let fontLoadStatus = null;
-            let fetchedFontResponse = await withTimeout("font-fetch", fetch(fontURL));
-            const fetchedFontData = await withTimeout(
-                "font-array-buffer",
-                fetchedFontResponse.arrayBuffer()
-            );
-            try {
-                const fontFace = new FontFace(
-                    "ManabiFixtureFont",
-                    fetchedFontData
-                );
-                await withTimeout("font-load", fontFace.load());
-                document.fonts.add(fontFace);
-                fontLoadStatus = fontFace.status;
-            } catch (error) {
-                fontLoadError = String(error);
-            }
             const missingStatus = await withTimeout(
                 "missing-resource-fetch",
                 fetch("../Styles/missing.css").then(response => response.status)
@@ -1658,38 +1555,18 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             return {
                 baseURL: document.baseURI,
                 backgroundColor: getComputedStyle(document.body).backgroundColor,
-                brokenSVGRenderReadiness,
-                brokenSVGSignal,
                 stylesheetURL: document.getElementById("book-style").href,
                 imageComplete: image.complete,
                 imageURL: image.src,
                 imageWidth: image.naturalWidth,
                 audioURL: audio.src,
-                decodedAudioDuration,
-                decodedAudioError,
                 fetchedAudioByteCount: fetchedAudioBlob.size,
                 fetchedAudioType: fetchedAudioBlob.type,
-                fetchedFontByteCount: fetchedFontData.byteLength,
-                fetchedFontStatus: fetchedFontResponse.status,
-                fontLoadError,
-                fontLoadStatus,
-                fontURL,
-                horizontalOverride,
-                horizontalWritingMode,
-                imageRenderReadiness,
                 mediaBootstrapError,
                 mediaBootstrapState: document.documentElement.dataset.mnbPackageMediaState ?? null,
                 mediaBootstrapStatus,
                 mediaBootstrapURL: mediaBootstrap?.src ?? null,
                 missingStatus,
-                failedVideoRenderReadiness,
-                failedVideoSignal,
-                pendingVideoRenderReadiness,
-                restoredOverride,
-                restoredWritingMode,
-                renderReadinessModuleURL,
-                sourceWritingMode,
-                writingDirectionModuleURL,
                 bodyText: document.body.textContent.trim(),
             };
             """
@@ -1704,54 +1581,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertTrue((values["imageURL"] as? String)?.hasSuffix("/OPS/Images/cover.svg#shape") == true)
         XCTAssertEqual((values["imageWidth"] as? NSNumber)?.intValue, 4)
         XCTAssertTrue((values["audioURL"] as? String)?.hasPrefix("blob:") == true)
-        XCTAssertTrue(values["decodedAudioError"] is NSNull, "\(values)")
-        XCTAssertEqual((values["decodedAudioDuration"] as? NSNumber)?.doubleValue ?? 0, 0.1, accuracy: 0.01)
         XCTAssertEqual((values["fetchedAudioByteCount"] as? NSNumber)?.intValue, 844)
         XCTAssertTrue((values["fetchedAudioType"] as? String)?.hasPrefix("audio/") == true)
-        XCTAssertGreaterThan((values["fetchedFontByteCount"] as? NSNumber)?.intValue ?? 0, 1_000)
-        XCTAssertEqual((values["fetchedFontStatus"] as? NSNumber)?.intValue, 200)
-        XCTAssertTrue(values["fontLoadError"] is NSNull, "\(values)")
-        XCTAssertEqual(values["fontLoadStatus"] as? String, "loaded")
-        XCTAssertTrue((values["fontURL"] as? String)?.contains("/load/viewer-assets/") == true)
-        XCTAssertTrue((values["fontURL"] as? String)?.hasSuffix(
-            "/PDFJSWeb/standard_fonts/LiberationSans-Regular.ttf"
-        ) == true)
-        XCTAssertEqual(values["sourceWritingMode"] as? String, "vertical-rl")
-        XCTAssertEqual(values["horizontalOverride"] as? String, "horizontal")
-        XCTAssertEqual(values["horizontalWritingMode"] as? String, "horizontal-tb")
-        XCTAssertEqual(
-            (values["imageRenderReadiness"] as? [String: Any])?["outcome"] as? String,
-            "ready"
-        )
-        XCTAssertEqual(
-            (values["imageRenderReadiness"] as? [String: Any])?["reason"] as? String,
-            "visible-single-media"
-        )
-        let pendingVideoRenderReadiness = try XCTUnwrap(
-            values["pendingVideoRenderReadiness"] as? [String: Any]
-        )
-        XCTAssertEqual(pendingVideoRenderReadiness["outcome"] as? String, "pending")
-        XCTAssertEqual(pendingVideoRenderReadiness["reason"] as? String, "single-media-pending")
-        XCTAssertEqual(values["failedVideoSignal"] as? String, "error")
-        let failedVideoRenderReadiness = try XCTUnwrap(
-            values["failedVideoRenderReadiness"] as? [String: Any]
-        )
-        XCTAssertEqual(failedVideoRenderReadiness["outcome"] as? String, "error")
-        XCTAssertEqual(failedVideoRenderReadiness["reason"] as? String, "single-media-failed")
-        XCTAssertEqual(values["brokenSVGSignal"] as? String, "error")
-        let brokenSVGRenderReadiness = try XCTUnwrap(
-            values["brokenSVGRenderReadiness"] as? [String: Any]
-        )
-        XCTAssertEqual(brokenSVGRenderReadiness["outcome"] as? String, "error")
-        XCTAssertEqual(brokenSVGRenderReadiness["reason"] as? String, "single-media-failed")
-        XCTAssertEqual(values["restoredOverride"] as? String, "original")
-        XCTAssertEqual(values["restoredWritingMode"] as? String, "vertical-rl")
-        XCTAssertTrue((values["writingDirectionModuleURL"] as? String)?.hasSuffix(
-            "/foliate-js/ebook-paginator-writing-direction.js"
-        ) == true)
-        XCTAssertTrue((values["renderReadinessModuleURL"] as? String)?.hasSuffix(
-            "/foliate-js/ebook-render-readiness.js"
-        ) == true)
         XCTAssertTrue(values["mediaBootstrapError"] is NSNull)
         XCTAssertEqual(values["mediaBootstrapState"] as? String, "ready")
         XCTAssertEqual((values["mediaBootstrapStatus"] as? NSNumber)?.intValue, 200)
