@@ -633,8 +633,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
     
     private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
-    private static let sharedSectionProcessingDeduper = EBookSectionProcessingDeduper()
-    private let sectionProcessingDeduper = EbookURLSchemeHandler.sharedSectionProcessingDeduper
+    private let sectionProcessingDeduper = EBookSectionProcessingDeduper()
     
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
