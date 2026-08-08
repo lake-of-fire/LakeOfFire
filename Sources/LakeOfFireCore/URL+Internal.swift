@@ -5,25 +5,43 @@ public extension URL {
         return absoluteString.hasPrefix("internal://local/snippet?key=")
     }
 
+    var readerLoaderContentURL: URL? {
+        guard scheme?.lowercased() == "internal",
+              host?.lowercased() == "local",
+              path == "/load/reader" else {
+            return nil
+        }
+
+        func absoluteURL(from value: String) -> URL? {
+            URL(string: value).flatMap { $0.scheme == nil ? nil : $0 }
+        }
+
+        if let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
+           let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
+            if let readerURL = absoluteURL(from: readerURLString) {
+                return readerURL
+            }
+            if let decodedReaderURL = readerURLString.removingPercentEncoding,
+               let readerURL = absoluteURL(from: decodedReaderURL) {
+                return readerURL
+            }
+        }
+
+        guard let range = absoluteString.range(of: "reader-url=") else {
+            return nil
+        }
+        let rawReaderURL = String(absoluteString[range.upperBound...])
+        if let decodedReaderURL = rawReaderURL.removingPercentEncoding,
+           let readerURL = absoluteURL(from: decodedReaderURL) {
+            return readerURL
+        }
+        return absoluteURL(from: rawReaderURL)
+    }
+
     var snippetKey: String? {
         let absolute = absoluteString
         if absolute.hasPrefix("internal://local/load/reader") {
-            if let components = URLComponents(string: absolute),
-               let readerURLString = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
-                let decodedReaderURL = readerURLString.removingPercentEncoding ?? readerURLString
-                if let readerURL = URL(string: decodedReaderURL),
-                   let key = readerURL.snippetKey {
-                    return key
-                }
-            }
-            if let range = absolute.range(of: "reader-url=") {
-                let rawURL = String(absolute[range.upperBound...]).removingPercentEncoding ?? ""
-                if let readerURL = URL(string: rawURL),
-                   let key = readerURL.snippetKey {
-                    return key
-                }
-            }
-            return nil
+            return readerLoaderContentURL?.snippetKey
         }
 
         let eligiblePrefix = absolute.hasPrefix("internal://local/snippet")

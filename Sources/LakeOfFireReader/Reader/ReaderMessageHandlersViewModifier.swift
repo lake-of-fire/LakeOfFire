@@ -325,14 +325,23 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                       let pageURL = URL(string: href)
                 else { return }
                 let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
+                let renderGeneration = (body["readerRenderGeneration"] as? String)
+                    .flatMap(UUID.init(uuidString:))
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
+                let accepted = readerModeViewModel.handleRenderedReaderDocumentReady(
+                    pageURL: pageURL,
+                    hasReaderContent: true,
+                    renderGeneration: renderGeneration
+                )
+                guard accepted else { return }
+                if !readerViewModel.state.hasReaderRenderReady {
+                    var newState = readerViewModel.state
+                    newState.hasReaderRenderReady = true
+                    readerViewModel.state = newState
+                }
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
                 }
-                readerModeViewModel.handleRenderedReaderDocumentReady(
-                    pageURL: pageURL,
-                    hasReaderContent: true
-                )
             }),
             ("readabilityNeedsUpdate", { @MainActor [weak self] message in
                 guard let self else { return }

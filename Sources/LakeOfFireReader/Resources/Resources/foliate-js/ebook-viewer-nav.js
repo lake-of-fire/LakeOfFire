@@ -1,3 +1,8 @@
+import {
+    getPrimaryRendererContent,
+    getPrimaryRendererContentIndex,
+} from './renderer-content.js'
+
 const MAX_RELOCATE_STACK = 50;
 const FRACTION_EPSILON = 0.000001;
 const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
@@ -32,20 +37,6 @@ const normalizeSpineHrefForPageNum = (href) => {
     if (!trimmed) return null;
     const hashIndex = trimmed.indexOf('#');
     return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
-};
-
-const getPrimaryRendererContent = (renderer) => {
-    try {
-        const contents = renderer?.getContents?.();
-        return Array.isArray(contents) && contents.length > 0 ? contents[0] ?? null : null;
-    } catch (_error) {
-        return null;
-    }
-};
-
-const getPrimaryRendererContentIndex = (renderer) => {
-    const content = getPrimaryRendererContent(renderer);
-    return typeof content?.index === 'number' ? content.index : null;
 };
 
 const getRendererContentHref = (renderer) => {
@@ -157,7 +148,9 @@ export class NavigationHUD {
             back: [],
             forward: [],
         };
-        this._explicitRelocateHistoryMutationSource = null;
+        this._explicitRelocateHistoryMutations = new Map();
+        this._explicitRelocateHistoryMutationSequence = 0;
+        this.relocateSequence = 0;
         this.scrubSession = null;
         this.pendingReleasedScrubDescriptor = null;
         this.pendingRelocateJump = null;
@@ -165,6 +158,7 @@ export class NavigationHUD {
         this.rendererPageSnapshot = null;
         this.nativeOverlayPageSnapshot = null;
         this.rendererSnapshotRefreshHandle = null;
+        this.rendererSnapshotRequestToken = 0;
         this.lastTerminalPagesLeftSection = null;
         this.lastTerminalPagesLeftPageNumber = null;
         this.sectionProgressRequestToken = 0;
@@ -181,6 +175,8 @@ export class NavigationHUD {
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
+        this.destroyed = false;
+        this.titleLocationFadeTimer = null;
         this.bookTitle = '';
         this.lastPagesLeftLabel = '';
         this.auxiliaryInsetsFrame = 0;
@@ -194,16 +190,75 @@ export class NavigationHUD {
         this._applyRelocateButtonEdges();
     }
 
-    requestExplicitRelocateHistoryMutation(source = 'unknown') {
-        this._explicitRelocateHistoryMutationSource = source;
+    destroy() {
+        if (this.destroyed) return false;
+        this.destroyed = true;
+        this.relocateSequence += 1;
+        this.primaryLineRequestToken += 1;
+        this.rendererSnapshotRequestToken += 1;
+        this.sectionProgressRequestToken += 1;
+        if (this.rendererSnapshotRefreshHandle) {
+            cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
+            this.rendererSnapshotRefreshHandle = null;
+        }
+        if (this.auxiliaryInsetsFrame) {
+            cancelAnimationFrame(this.auxiliaryInsetsFrame);
+            this.auxiliaryInsetsFrame = 0;
+        }
+        if (this.titleLocationFadeTimer) {
+            clearTimeout(this.titleLocationFadeTimer);
+            this.titleLocationFadeTimer = null;
+        }
+        this._explicitRelocateHistoryMutations.clear();
+        this.pendingScrubCommit = null;
+        this.pendingReleasedScrubDescriptor = null;
+        this.pendingRelocateJump = null;
+        this.scrubSession = null;
+        this.isProcessingRelocateJump = false;
+        this.onJumpRequest = null;
+        this.getRenderer = null;
+        this.onHideNavigationDueToScrollChange = null;
+        return true;
     }
 
-    #consumeExplicitRelocateHistoryMutation() {
-        const source = this._explicitRelocateHistoryMutationSource ?? null;
-        this._explicitRelocateHistoryMutationSource = null;
-        if (source) {
+    requestExplicitRelocateHistoryMutation(source = 'unknown', relocationID = null) {
+        if (this.destroyed) return null;
+        const resolvedRelocationID = typeof relocationID === 'string'
+            && relocationID.length > 0
+            ? relocationID
+            : `nav-relocate-${++this._explicitRelocateHistoryMutationSequence}`;
+        const ownership = { source, relocationID: resolvedRelocationID };
+        this._explicitRelocateHistoryMutations.set(resolvedRelocationID, ownership);
+        return ownership;
+    }
+
+    cancelExplicitRelocateHistoryMutation(ownership) {
+        const relocationID = ownership?.relocationID ?? null;
+        if (
+            typeof relocationID !== 'string'
+            || this._explicitRelocateHistoryMutations.get(relocationID) !== ownership
+        ) {
+            return false;
         }
-        return source;
+        this._explicitRelocateHistoryMutations.delete(relocationID);
+        return true;
+    }
+
+    #explicitRelocateOwnershipForDetail(detail) {
+        const relocationID = typeof detail?.relocationID === 'string'
+            && detail.relocationID.length > 0
+            ? detail.relocationID
+            : null;
+        return relocationID
+            ? (this._explicitRelocateHistoryMutations.get(relocationID) ?? null)
+            : null;
+    }
+
+    #consumeExplicitRelocateHistoryMutation(detail) {
+        const ownership = this.#explicitRelocateOwnershipForDetail(detail);
+        if (!ownership) return null;
+        this._explicitRelocateHistoryMutations.delete(ownership.relocationID);
+        return ownership.source;
     }
 
     linearSectionCount = null;
@@ -212,6 +267,7 @@ export class NavigationHUD {
     pageTargetSectionOffsets = new Map();
 
     setIsRTL(isRTL) {
+        if (this.destroyed) return;
         this.isRTL = !!isRTL;
         this._applyRelocateButtonEdges();
         this._updateSectionProgress({ source: 'rtl' });
@@ -224,6 +280,7 @@ export class NavigationHUD {
     }
 
     setPageTargets(pageList) {
+        if (this.destroyed) return;
         this.sectionPageCounts.clear?.();
         this.lastSectionIndexSeen = null;
         this.lastScrubberFraction = null;
@@ -252,6 +309,7 @@ export class NavigationHUD {
     }
     
     setNavContext(context) {
+        if (this.destroyed) return;
         this.navContext = context ?? null;
         this.linearSectionIndexes = new Set();
         this.sectionIndexByHref = new Map();
@@ -279,6 +337,7 @@ export class NavigationHUD {
     }
     
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
+        if (this.destroyed) return this.hideNavigationDueToScroll;
         const sequence = (globalThis.__manabiNavVisibilitySequence = Number(globalThis.__manabiNavVisibilitySequence || 0) + 1);
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
@@ -354,6 +413,7 @@ export class NavigationHUD {
 
     // External toggle for full nav hide (not the scroll HUD hide).
     setNavHiddenState(shouldHide) {
+        if (this.destroyed) return;
         const previous = this.navHidden;
         this.navHidden = !!shouldHide;
         this._applyLabelVariant();
@@ -366,12 +426,14 @@ export class NavigationHUD {
     }
 
     setBookTitle(title) {
+        if (this.destroyed) return;
         const normalized = typeof title === 'string' ? title.replace(/\s+/g, ' ').trim() : '';
         this.bookTitle = normalized;
         this.refreshTitleLocationVisibility('book-title');
     }
 
     refreshTitleLocationVisibility(source = 'refresh') {
+        if (this.destroyed) return;
         this._updateTitleLocationLabel({ source });
     }
 
@@ -437,9 +499,9 @@ export class NavigationHUD {
         this._applyTitleLocationUIFont();
         const layers = this._titleLocationTextLayers();
         if (!layers) return;
-        if (target.__titleLocationFadeTimer) {
-            clearTimeout(target.__titleLocationFadeTimer);
-            target.__titleLocationFadeTimer = null;
+        if (this.titleLocationFadeTimer) {
+            clearTimeout(this.titleLocationFadeTimer);
+            this.titleLocationFadeTimer = null;
         }
         if (visible && label) {
             target.hidden = false;
@@ -467,15 +529,15 @@ export class NavigationHUD {
         for (const layer of layers) {
             layer.dataset.active = 'false';
         }
-        target.__titleLocationFadeTimer = setTimeout(() => {
-            if (target.dataset.visible === 'false') {
+        this.titleLocationFadeTimer = setTimeout(() => {
+            if (!this.destroyed && target.dataset.visible === 'false') {
                 for (const layer of layers) {
                     layer.textContent = '';
                 }
                 target.dataset.titleLocationText = '';
                 target.hidden = true;
             }
-            target.__titleLocationFadeTimer = null;
+            this.titleLocationFadeTimer = null;
         }, 260);
     }
 
@@ -602,7 +664,23 @@ export class NavigationHUD {
     }
     
     async handleRelocate(detail) {
-        if (!detail) return;
+        if (this.destroyed || !detail) return;
+        const relocateSequence = ++this.relocateSequence;
+        // A relocation is a new renderer-snapshot publication boundary. Cancel a
+        // callback that has not started and invalidate any older refresh already
+        // awaiting renderer metrics before it can publish over this relocation.
+        this.rendererSnapshotRequestToken += 1;
+        if (this.rendererSnapshotRefreshHandle) {
+            cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
+            this.rendererSnapshotRefreshHandle = null;
+        }
+        const explicitRelocateSource =
+            this.#consumeExplicitRelocateHistoryMutation(detail);
+        // Invalidate any older section-progress calculation immediately. A newer
+        // relocation can await its renderer snapshot before reaching the normal
+        // progress refresh, which must not leave the older request able to commit.
+        this.sectionProgressRequestToken += 1;
+        const isCurrentRelocate = () => !this.destroyed && relocateSequence === this.relocateSequence;
         const previousSectionIndex = typeof this.lastRelocateDetail?.sectionIndex === 'number'
             ? this.lastRelocateDetail.sectionIndex
             : (typeof this.lastRelocateDetail?.index === 'number' ? this.lastRelocateDetail.index : null);
@@ -639,25 +717,29 @@ export class NavigationHUD {
             this._scheduleRendererSnapshotRefresh('relocate-detail');
         } else {
             await this._refreshRendererSnapshot();
+            if (!isCurrentRelocate()) return;
         }
-        this._applyPageTurnNavigationVisibility(detail);
+        this._applyPageTurnNavigationVisibility(detail, explicitRelocateSource);
         this.lastRelocateDetail = detail;
-        this._handleRelocateHistory(detail);
+        this._handleRelocateHistory(detail, explicitRelocateSource);
         this._updatePrimaryLine(detail);
         this._toggleCompletionStack();
         await this._updateSectionProgress({ refreshSnapshot: false, source: 'relocate' });
+        if (!isCurrentRelocate()) return;
         this._updateRelocateButtons();
         this._pruneBackStackIfReturnedToOrigin(detail);
     }
 
-    _applyPageTurnNavigationVisibility(detail) {
+    _applyPageTurnNavigationVisibility(detail, explicitRelocateSource = undefined) {
         const reportedDirection = typeof detail?.pageTurnDirection === 'string'
             ? detail.pageTurnDirection.toLowerCase()
             : null;
         if (reportedDirection !== 'forward' && reportedDirection !== 'backward') {
-            const explicitRelocateSource = this._explicitRelocateHistoryMutationSource ?? null;
+            const resolvedExplicitRelocateSource = explicitRelocateSource === undefined
+                ? (this.#explicitRelocateOwnershipForDetail(detail)?.source ?? null)
+                : explicitRelocateSource;
             const shouldRevealForExplicitRelocate = !!(
-                EXPLICIT_RELOCATE_HISTORY_SOURCES.has(explicitRelocateSource)
+                EXPLICIT_RELOCATE_HISTORY_SOURCES.has(resolvedExplicitRelocateSource)
                 || this.isProcessingRelocateJump
                 || this.pendingRelocateJump
             );
@@ -666,7 +748,7 @@ export class NavigationHUD {
                 globalThis.__manabiIgnoreNextIncomingRevealNavigationCount = 0;
                 this.setHideNavigationDueToScroll(false, 'relocate.explicit', {
                     reason: detail?.reason ?? null,
-                    explicitRelocateSource,
+                    explicitRelocateSource: resolvedExplicitRelocateSource,
                     sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
                     pageNumber: this.rendererPageSnapshot?.current ?? null,
                     pageCount: this.rendererPageSnapshot?.total ?? null,
@@ -676,7 +758,7 @@ export class NavigationHUD {
                         hideNavigationDueToScroll: false,
                         source: 'relocate.explicit',
                         reason: detail?.reason ?? null,
-                        explicitRelocateSource,
+                        explicitRelocateSource: resolvedExplicitRelocateSource,
                     });
                 } catch (error) {
                 }
@@ -818,6 +900,7 @@ export class NavigationHUD {
     }
 
     _postNativeOverlayState(source = 'refresh') {
+        if (this.destroyed) return;
         const percentLabel = this.navHiddenOverlay?.percent?.textContent
             || this.navPrimaryTextCompact?.textContent
             || this.navPrimaryTextFull?.textContent
@@ -982,11 +1065,13 @@ export class NavigationHUD {
     }
 
     _requestAuxiliaryInsetsUpdate() {
+        if (this.destroyed) return;
         if (this.auxiliaryInsetsFrame) {
             return;
         }
         this.auxiliaryInsetsFrame = requestAnimationFrame(() => {
             this.auxiliaryInsetsFrame = 0;
+            if (this.destroyed) return;
             this._updateAuxiliaryInsets();
         });
     }
@@ -1153,7 +1238,7 @@ export class NavigationHUD {
         const candidates = [
             { source: 'detail.sectionIndex', value: detail?.sectionIndex },
             { source: 'detail.index', value: detail?.index },
-            { source: 'renderer.contents[0].index', value: rendererContent?.index },
+            { source: 'renderer.primaryContent.index', value: rendererContent?.index },
             { source: 'renderer.currentIndex', value: renderer?.currentIndex },
             { source: 'last-relocate.sectionIndex', value: this.lastRelocateDetail?.sectionIndex },
             { source: 'last-relocate.index', value: this.lastRelocateDetail?.index },
@@ -1165,7 +1250,7 @@ export class NavigationHUD {
             }
         }
         const hrefCandidates = [
-            { source: 'renderer.contents[0].doc.body.dataset.mnbSourceHref', value: getRendererContentHref(renderer) },
+            { source: 'renderer.primaryContent.doc.body.dataset.mnbSourceHref', value: getRendererContentHref(renderer) },
             { source: 'detail.tocItem.href', value: detail?.tocItem?.href },
             { source: 'renderer.tocItem.href', value: renderer?.tocItem?.href },
             { source: 'last-location.tocItem.href', value: globalThis.reader?.view?.lastLocation?.tocItem?.href },
@@ -1239,6 +1324,7 @@ export class NavigationHUD {
     }
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
+        if (this.destroyed) return;
         const startedAt = performance.now();
         const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
@@ -1249,7 +1335,7 @@ export class NavigationHUD {
             const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
             const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
             const pagesLeft = result?.pagesLeft ?? null;
-            if (requestToken !== this.sectionProgressRequestToken) {
+            if (this.destroyed || requestToken !== this.sectionProgressRequestToken) {
                 return;
             }
             if (
@@ -1391,12 +1477,16 @@ export class NavigationHUD {
         };
     }
     
-    _handleRelocateHistory(detail) {
+    _handleRelocateHistory(detail, explicitMutationSource = undefined) {
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
         const reason = (detail?.reason || '').toLowerCase();
-        const explicitMutationSource = this.#consumeExplicitRelocateHistoryMutation();
-        const explicitMutate = EXPLICIT_RELOCATE_HISTORY_SOURCES.has(explicitMutationSource);
+        const resolvedExplicitMutationSource = explicitMutationSource === undefined
+            ? this.#consumeExplicitRelocateHistoryMutation(detail)
+            : explicitMutationSource;
+        const explicitMutate = EXPLICIT_RELOCATE_HISTORY_SOURCES.has(
+            resolvedExplicitMutationSource
+        );
         const isImplicitProgressEvent = !reason || reason === 'page' || reason === 'navigation' || reason === 'live-scroll';
         const shouldMutateRelocateHistory = !!(
             (explicitMutate && !this.pendingScrubCommit)
@@ -1418,7 +1508,7 @@ export class NavigationHUD {
             currentFraction: typeof this.currentLocationDescriptor?.fraction === 'number'
                 ? safeRound(this.currentLocationDescriptor.fraction, 6)
                 : null,
-            explicitMutationSource,
+            explicitMutationSource: resolvedExplicitMutationSource,
             explicitMutate,
             shouldMutateRelocateHistory,
             isProcessingRelocateJump: !!this.isProcessingRelocateJump,
@@ -1543,15 +1633,13 @@ export class NavigationHUD {
         const rawLocCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
-        const rendererCurrentIndex = (() => {
-            try {
-                const renderer = this.getRenderer?.();
-                if (typeof renderer?.currentIndex === 'number') return renderer.currentIndex;
-                return getPrimaryRendererContentIndex(renderer);
-            } catch (_error) {
-                return null;
-            }
-        })();
+        let renderer = null;
+        try {
+            renderer = this.getRenderer?.() ?? null;
+        } catch (_error) {
+            renderer = null;
+        }
+        const rendererCurrentIndex = getPrimaryRendererContentIndex(renderer);
         const sectionIndex = typeof detail?.sectionIndex === 'number'
             ? Math.max(0, Math.round(detail.sectionIndex))
             : (typeof detail?.index === 'number'
@@ -1727,31 +1815,29 @@ export class NavigationHUD {
         return '';
     }
 
-    async _refreshRendererSnapshot() {
+    async _refreshRendererSnapshot(requestToken = null) {
+        if (this.destroyed) return null;
+        const resolvedRequestToken = Number.isInteger(requestToken)
+            ? requestToken
+            : ++this.rendererSnapshotRequestToken;
+        const isCurrentRequest = () => !this.destroyed && resolvedRequestToken === this.rendererSnapshotRequestToken;
         const renderer = this.getRenderer?.();
         if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
             return null;
         }
         try {
+            let normalized = null;
             if (typeof renderer.pageMetrics === 'function') {
                 const metrics = await renderer.pageMetrics();
-                const normalized = this._normalizeRendererPageInfo(metrics?.page, metrics?.pages, renderer);
-                if (!normalized) return null;
-                this.rendererPageSnapshot = normalized;
-                this.nativeOverlayPageSnapshot = {
-                    current: normalized.current,
-                    total: normalized.total,
-                    source: 'renderer',
-                };
-                this._updateFallbackTotalPages(normalized.total);
-                return normalized;
+                normalized = this._normalizeRendererPageInfo(metrics?.page, metrics?.pages, renderer);
+            } else {
+                const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
+                if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
+                    return null;
+                }
+                normalized = this._normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
             }
-            const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
-            if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
-                return null;
-            }
-            const normalized = this._normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
-            if (!normalized) return null;
+            if (!normalized || !isCurrentRequest()) return null;
             this.rendererPageSnapshot = normalized;
             this.nativeOverlayPageSnapshot = {
                 current: normalized.current,
@@ -1766,17 +1852,22 @@ export class NavigationHUD {
     }
 
     _scheduleRendererSnapshotRefresh(source = 'scheduled') {
+        if (this.destroyed) return;
         if (this.rendererSnapshotRefreshHandle) {
             cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
             this.rendererSnapshotRefreshHandle = null;
         }
+        const requestToken = ++this.rendererSnapshotRequestToken;
         this.rendererSnapshotRefreshHandle = requestAnimationFrame(async () => {
             this.rendererSnapshotRefreshHandle = null;
+            if (this.destroyed) return;
             try {
-                await this._refreshRendererSnapshot();
+                await this._refreshRendererSnapshot(requestToken);
+                if (requestToken !== this.rendererSnapshotRequestToken) return;
                 if (this.lastRelocateDetail) {
                     this._updatePrimaryLine(this.lastRelocateDetail);
                     await this._updateSectionProgress({ refreshSnapshot: false, source: `snapshot-refresh:${source}` });
+                    if (requestToken !== this.rendererSnapshotRequestToken) return;
                     this._updateRelocateButtons(`snapshot-refresh:${source}`);
                 }
             } catch (_error) {
@@ -2028,6 +2119,7 @@ export class NavigationHUD {
     }
 
     _updateRelocateButtons(source = 'unknown') {
+        if (this.destroyed) return;
         const startedAt = performance.now();
         const backStack = this.relocateStacks.back;
         const forwardStack = this.relocateStacks.forward;
@@ -2155,6 +2247,7 @@ export class NavigationHUD {
     }
     
     async _handleRelocateJump(direction) {
+        if (this.destroyed) return;
 
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length) {
@@ -2171,13 +2264,13 @@ export class NavigationHUD {
             return;
         }
 
-        this.requestExplicitRelocateHistoryMutation?.('relocate-button');
+        const explicitRelocateOwnership = this.requestExplicitRelocateHistoryMutation?.(
+            'relocate-button'
+        );
 
         const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
             ?? this._cloneDescriptor(this.currentLocationDescriptor)
             ?? (this.lastRelocateDetail ? this._makeLocationDescriptor(this.lastRelocateDetail) : null);
-        const opposite = direction === 'back' ? 'forward' : 'back';
-        const oppositeStack = this.relocateStacks?.[opposite];
 
         this.pendingRelocateJump = {
             direction,
@@ -2187,18 +2280,26 @@ export class NavigationHUD {
         this.isProcessingRelocateJump = true;
         this._updateRelocateButtons();
 
-        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
-
         try {
-
-            await this.onJumpRequest?.(descriptor);
-
+            const accepted = this.onJumpRequest
+                ? await this.onJumpRequest(descriptor, {
+                    relocationID: explicitRelocateOwnership?.relocationID ?? null,
+                })
+                : false;
+            if (this.destroyed) return;
+            if (accepted !== true) {
+                this.cancelExplicitRelocateHistoryMutation(explicitRelocateOwnership);
+                this.pendingRelocateJump = null;
+                this.isProcessingRelocateJump = false;
+                this._updateRelocateButtons();
+            }
         } catch (error) {
+            if (this.destroyed) return;
             console.error('Failed to navigate to saved location', error);
+            this.cancelExplicitRelocateHistoryMutation(explicitRelocateOwnership);
             this.pendingRelocateJump = null;
             this.isProcessingRelocateJump = false;
             this._updateRelocateButtons();
-        } finally {
         }
     }
 }

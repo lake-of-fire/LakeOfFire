@@ -67,6 +67,34 @@ public enum EbookHTMLProcessingContext {
     @TaskLocal public static var isEbookHTML: Bool = false
 }
 
+public struct EbookProcessingVariant: Hashable, Sendable {
+    public let availableDictionaryIDs: [String]
+    public let includeJLPTClasses: Bool
+    public let romajiModeEnabled: Bool
+
+    public init(
+        availableDictionaryIDs: [String],
+        includeJLPTClasses: Bool,
+        romajiModeEnabled: Bool
+    ) {
+        self.availableDictionaryIDs = Array(Set(availableDictionaryIDs)).sorted()
+        self.includeJLPTClasses = includeJLPTClasses
+        self.romajiModeEnabled = romajiModeEnabled
+    }
+
+    public static let unspecified = EbookProcessingVariant(
+        availableDictionaryIDs: [],
+        includeJLPTClasses: false,
+        romajiModeEnabled: false
+    )
+}
+
+public enum EbookProcessingVariantContext {
+    @TaskLocal public static var current: EbookProcessingVariant?
+}
+
+public typealias EbookProcessingVariantProvider = @Sendable () async -> EbookProcessingVariant
+
 public func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
@@ -86,6 +114,7 @@ public func ebookTextProcessor(
     let sectionLocationURL = sectionLocationComponents?.url ?? contentURL
     
     do {
+        try Task.checkCancellation()
         var doc: SwiftSoup.Document?
         
         if let processReadabilityContent {
@@ -98,6 +127,7 @@ public func ebookTextProcessor(
                 contentFingerprint,
                 { $0 }
             )
+            try Task.checkCancellation()
         }
         
         if doc == nil {
@@ -116,7 +146,8 @@ public func ebookTextProcessor(
             print("Error: Unexpectedly failed to receive doc")
             return EbookProcessedSectionPayload(
                 documentHTML: Data(content.utf8),
-                segmentSidecar: Data()
+                segmentSidecar: Data(),
+                isAuthoritativelyProcessed: false
             )
         }
         
@@ -138,6 +169,7 @@ public func ebookTextProcessor(
             let processedPayload: EbookProcessedSectionPayload = try await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 try await processHTMLDocument(doc, isCacheWarmer)
             }
+            try Task.checkCancellation()
             payload = processedPayload
         } else {
             var htmlBytes = try doc.outerHtmlUTF8FromCurrentTreeSplicingBody()
@@ -148,6 +180,7 @@ public func ebookTextProcessor(
                         isCacheWarmer
                     )
                 }
+                try Task.checkCancellation()
             }
             payload = splitCanonicalReaderSegmentSidecar(from: htmlBytes)
                 ?? EbookProcessedSectionPayload(
@@ -163,20 +196,29 @@ public func ebookTextProcessor(
                     isCacheWarmer
                 )
             }
+            try Task.checkCancellation()
             payload = EbookProcessedSectionPayload(
                 documentHTML: Data(html.utf8),
-                segmentSidecar: payload.segmentSidecar
+                segmentSidecar: payload.segmentSidecar,
+                isAuthoritativelyProcessed: payload.isAuthoritativelyProcessed
             )
         }
 
+        try Task.checkCancellation()
         return payload
+    } catch is CancellationError {
+        throw CancellationError()
     } catch {
+        if Task.isCancelled {
+            throw CancellationError()
+        }
         if ebookTextProcessorReplaceTextDetailedLoggingEnabled {
             debugPrint("Error processing readability content for ebook", error)
         }
     }
     return EbookProcessedSectionPayload(
         documentHTML: Data(content.utf8),
-        segmentSidecar: Data()
+        segmentSidecar: Data(),
+        isAuthoritativelyProcessed: false
     )
 }

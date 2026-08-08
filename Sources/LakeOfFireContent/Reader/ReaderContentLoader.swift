@@ -103,17 +103,7 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        if pageURL.isReaderURLLoaderURL,
-           let components = URLComponents(url: pageURL, resolvingAgainstBaseURL: false),
-           let readerURLItem = components.queryItems?.first(where: { $0.name == "reader-url" }),
-           let readerURLValue = readerURLItem.value,
-           let contentURL = URL(string: readerURLValue) {
-            return contentURL
-        }
-        if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
-            return contentURL
-        }
-        return nil
+        pageURL.readerLoaderContentURL
     }
 
     private static func loadAllTaskKey(url: URL, skipContentFiles: Bool, skipFeedEntries: Bool) -> String {

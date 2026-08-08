@@ -1,3 +1,9 @@
+const canonicalDocumentURL = value => {
+    if (typeof value !== 'string' || value.length === 0) return null
+    const hashIndex = value.indexOf('#')
+    return hashIndex >= 0 ? value.slice(0, hashIndex) : value
+}
+
 const contentScriptFrameIdentifier = doc => {
     const view = doc?.defaultView ?? null
     return doc?.body?.dataset?.swiftuiwebviewFrameUuid
@@ -8,7 +14,7 @@ const contentScriptFrameIdentifier = doc => {
 
 export const ebookDocumentFrameIdentity = doc => {
     if (!doc || typeof doc !== 'object') return null
-    const documentURL = doc.location?.href || doc.URL || null
+    const documentURL = canonicalDocumentURL(doc.location?.href || doc.URL || null)
     const frameIdentifier = contentScriptFrameIdentifier(doc)
     if (!documentURL || !frameIdentifier) return null
     return {

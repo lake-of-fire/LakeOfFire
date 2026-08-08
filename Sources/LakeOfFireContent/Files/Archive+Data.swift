@@ -164,17 +164,22 @@ public struct ReaderPackageEntrySource: Sendable {
 
     public static func resolveDirectoryURL(rootURL: URL, subpath rawSubpath: String) throws -> URL {
         let subpath = try sanitizeSubpath(rawSubpath)
-        let standardizedRootURL = rootURL.standardizedFileURL
-        let resolvedURL = standardizedRootURL.appendingPathComponent(subpath).standardizedFileURL
-        let rootPath = standardizedRootURL.path.hasSuffix("/") ? standardizedRootURL.path : standardizedRootURL.path + "/"
-        guard resolvedURL.path.hasPrefix(rootPath) else {
+        let resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedURL = resolvedRootURL
+            .appendingPathComponent(subpath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let rootComponents = resolvedRootURL.pathComponents
+        let resolvedComponents = resolvedURL.pathComponents
+        guard resolvedComponents.count > rootComponents.count,
+              Array(resolvedComponents.prefix(rootComponents.count)) == rootComponents else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
         return resolvedURL
     }
 
     private func enumerateDirectoryEntries(rootURL: URL) throws -> [ReaderPackageEntryMetadata] {
-        let standardizedRootURL = rootURL.standardizedFileURL
+        let standardizedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
         let enumerator = FileManager.default.enumerator(
             at: standardizedRootURL,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
@@ -183,10 +188,13 @@ public struct ReaderPackageEntrySource: Sendable {
 
         var entries = [ReaderPackageEntryMetadata]()
         while let fileURL = enumerator?.nextObject() as? URL {
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true else { continue }
             let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
             let subpath = try Self.sanitizeSubpath(relativePath)
+            guard (try? Self.resolveDirectoryURL(rootURL: standardizedRootURL, subpath: subpath)) != nil else {
+                continue
+            }
+            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
         }
         return entries.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
@@ -211,9 +219,15 @@ public struct ReaderPackageEntrySource: Sendable {
             throw ReaderPackageEntrySourceError.unsupportedSource
         }
 
+        var seenSubpaths = Set<String>()
         return archive.compactMap { entry in
-            guard entry.type == .file else { return nil }
-            return ReaderPackageEntryMetadata(path: entry.path, size: Int(entry.uncompressedSize))
+            guard entry.type == .file,
+                  let subpath = try? Self.sanitizeSubpath(entry.path),
+                  subpath == entry.path,
+                  seenSubpaths.insert(subpath).inserted else {
+                return nil
+            }
+            return ReaderPackageEntryMetadata(path: subpath, size: Int(entry.uncompressedSize))
         }
         .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
@@ -245,9 +259,6 @@ public struct ReaderPackageEntrySource: Sendable {
 
 public actor ReaderPackageEntrySourceCache {
     public static let shared = ReaderPackageEntrySourceCache()
-    private static let expandedArchiveCacheRootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        .appendingPathComponent("lakeoffire-expanded-archives", isDirectory: true)
-
     public struct CachedSource: Sendable {
         public let source: ReaderPackageEntrySource
         public let entries: [ReaderPackageEntryMetadata]
@@ -265,19 +276,24 @@ public actor ReaderPackageEntrySourceCache {
         let freshnessToken: String
     }
 
+    private let countLimit: Int
     private var cachedSources: [String: CacheRecord] = [:]
+    private var accessOrder: [String] = []
 
-    public init() { }
+    public init(countLimit: Int = 8) {
+        self.countLimit = max(1, countLimit)
+    }
 
     public func cachedSource(
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> CachedSource {
+        try Task.checkCancellation()
         let diagnosticLocalURL = Self.diagnosticLocalFileURL(forPackageURL: readerFileURL)
         let canonicalReaderBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
         let cacheKey = diagnosticLocalURL.map { "diagnosticLocalFilePath:\($0.standardizedFileURL.path)" }
             ?? canonicalReaderBackingURL.absoluteString
-        if let cached = freshCachedSource(forKey: cacheKey) {
+        if let cached = try freshCachedSource(forKey: cacheKey) {
             return cached
         }
         let localURL: URL
@@ -289,45 +305,81 @@ public actor ReaderPackageEntrySourceCache {
                 readerFileManager: readerFileManager
             )
         }
+        try Task.checkCancellation()
         let freshnessToken = try Self.freshnessToken(for: localURL)
+        try Task.checkCancellation()
 
         if let cached = cachedSources[cacheKey],
            cached.localURL == localURL,
            cached.freshnessToken == freshnessToken {
+            try Task.checkCancellation()
+            recordAccess(forKey: cacheKey)
             return CachedSource(source: cached.source, entries: cached.entries)
         }
 
         let source = try Self.preparedSource(for: localURL)
         let entries = try source.enumerateEntries()
-        cachedSources[cacheKey] = CacheRecord(
-            source: source,
-            entries: entries,
-            localURL: localURL,
-            freshnessToken: freshnessToken
+        try Task.checkCancellation()
+        store(
+            CacheRecord(
+                source: source,
+                entries: entries,
+                localURL: localURL,
+                freshnessToken: freshnessToken
+            ),
+            forKey: cacheKey
         )
         return CachedSource(source: source, entries: entries)
     }
 
-    private func freshCachedSource(forKey cacheKey: String) -> CachedSource? {
-        guard let cached = cachedSources[cacheKey],
-              let freshnessToken = try? Self.freshnessToken(for: cached.localURL),
-              cached.freshnessToken == freshnessToken else {
+    private func freshCachedSource(forKey cacheKey: String) throws -> CachedSource? {
+        guard let cached = cachedSources[cacheKey] else {
             return nil
         }
+        guard let freshnessToken = try? Self.freshnessToken(for: cached.localURL),
+              cached.freshnessToken == freshnessToken else {
+            removeCachedSource(forKey: cacheKey)
+            return nil
+        }
+        try Task.checkCancellation()
+        recordAccess(forKey: cacheKey)
         return CachedSource(source: cached.source, entries: cached.entries)
     }
+
+    private func store(_ record: CacheRecord, forKey cacheKey: String) {
+        cachedSources[cacheKey] = record
+        recordAccess(forKey: cacheKey)
+        while cachedSources.count > countLimit, let oldestKey = accessOrder.first {
+            removeCachedSource(forKey: oldestKey)
+        }
+    }
+
+    private func recordAccess(forKey cacheKey: String) {
+        accessOrder.removeAll { $0 == cacheKey }
+        accessOrder.append(cacheKey)
+    }
+
+    private func removeCachedSource(forKey cacheKey: String) {
+        cachedSources.removeValue(forKey: cacheKey)
+        accessOrder.removeAll { $0 == cacheKey }
+    }
+
+#if DEBUG
+    func cachedSourceCountForTesting() -> Int {
+        cachedSources.count
+    }
+
+    func cachedSourcePathsInLRUOrderForTesting() -> [String] {
+        accessOrder.compactMap { cachedSources[$0]?.localURL.standardizedFileURL.path }
+    }
+#endif
 
     private static func resolvedLocalURL(
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> URL {
         let readerBackingURL = readerFileManager.canonicalReaderBackingURL(for: readerFileURL) ?? readerFileURL
-        let localURL = try await readerFileManager.resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
-        var isDirectory = ObjCBool(false)
-        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            return localURL
-        }
-        return localURL
+        return try await readerFileManager.resolveReadableLocalURL(forReaderBackingURL: readerBackingURL)
     }
 
     private static func diagnosticLocalFileURL(forPackageURL readerFileURL: URL) -> URL? {
@@ -348,105 +400,7 @@ public actor ReaderPackageEntrySourceCache {
     }
 
     private static func preparedSource(for localURL: URL) throws -> ReaderPackageEntrySource {
-        var isDirectory = ObjCBool(false)
-        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
-           isDirectory.boolValue {
-            return try ReaderPackageEntrySource(localURL: localURL)
-        }
-
-        return try ReaderPackageEntrySource(localURL: localURL)
-    }
-
-    private static func expandedArchiveDirectory(for localURL: URL, freshnessToken: String) throws -> URL {
-        let cacheDirectoryURL = expandedArchiveCacheRootURL
-            .appendingPathComponent(cacheDirectoryName(for: localURL, freshnessToken: freshnessToken), isDirectory: true)
-
-        if FileManager.default.fileExists(atPath: cacheDirectoryURL.path) {
-            return cacheDirectoryURL
-        }
-
-        try FileManager.default.createDirectory(at: expandedArchiveCacheRootURL, withIntermediateDirectories: true)
-
-        let workingDirectoryURL = expandedArchiveCacheRootURL
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
-
-        do {
-            try extractArchive(at: localURL, to: workingDirectoryURL)
-            try FileManager.default.moveItem(at: workingDirectoryURL, to: cacheDirectoryURL)
-            return cacheDirectoryURL
-        } catch {
-            try? FileManager.default.removeItem(at: workingDirectoryURL)
-            throw error
-        }
-    }
-
-    private static func cacheDirectoryName(for localURL: URL, freshnessToken: String) -> String {
-        let raw = "\(localURL.standardizedFileURL.path)|\(freshnessToken)"
-        let hash = String(raw.hashValue.magnitude, radix: 16)
-        let basename = localURL.deletingPathExtension().lastPathComponent
-        let sanitizedBasename = basename
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
-        return "\(sanitizedBasename)-\(hash)"
-    }
-
-    private static func extractArchive(at archiveURL: URL, to rootURL: URL) throws {
-        guard let archive = Archive(url: archiveURL, accessMode: .read) else {
-            throw ReaderPackageEntrySourceError.unsupportedSource
-        }
-
-        for entry in archive {
-            switch entry.type {
-            case .directory:
-                let destinationURL = try directoryDestinationURL(rootURL: rootURL, entryPath: entry.path)
-                try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-            case .file:
-                let destinationURL = try fileDestinationURL(rootURL: rootURL, entryPath: entry.path)
-                try FileManager.default.createDirectory(
-                    at: destinationURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try archive.extract(entry, to: destinationURL)
-            default:
-                continue
-            }
-        }
-    }
-
-    private static func directoryDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
-            return rootURL
-        }
-        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
-    }
-
-    private static func fileDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
-        guard let subpath = try archiveEntrySubpath(rawEntryPath) else {
-            throw ReaderPackageEntrySourceError.invalidSubpath
-        }
-        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
-    }
-
-    private static func archiveEntrySubpath(_ rawEntryPath: String) throws -> String? {
-        let trimmed = rawEntryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.contains("\\") else {
-            throw ReaderPackageEntrySourceError.invalidSubpath
-        }
-
-        let components = trimmed
-            .split(separator: "/", omittingEmptySubsequences: false)
-            .map(String.init)
-            .filter { !$0.isEmpty && $0 != "." }
-
-        guard !components.isEmpty else {
-            return nil
-        }
-        guard !components.contains("..") else {
-            throw ReaderPackageEntrySourceError.invalidSubpath
-        }
-        return components.joined(separator: "/")
+        try ReaderPackageEntrySource(localURL: localURL)
     }
 
     private static func freshnessToken(for localURL: URL) throws -> String {

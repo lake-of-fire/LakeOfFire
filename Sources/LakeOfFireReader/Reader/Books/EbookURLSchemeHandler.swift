@@ -146,11 +146,18 @@ struct EBookSectionProcessingRequestKey: Hashable, Sendable {
     let contentURLString: String
     let location: String
     let textFingerprint: String
+    let processingVariant: EbookProcessingVariant
 
-    init(contentURL: URL, location: String, contentData: Data) {
+    init(
+        contentURL: URL,
+        location: String,
+        contentData: Data,
+        processingVariant: EbookProcessingVariant
+    ) {
         contentURLString = contentURL.absoluteString
         self.location = location
         textFingerprint = ebookProcessDataFingerprint(contentData)
+        self.processingVariant = processingVariant
     }
 }
 
@@ -182,7 +189,20 @@ actor EBookSectionProcessingDeduper {
         case failure(String)
     }
 
-    private var inFlightWaitersByKey: [EBookSectionProcessingRequestKey: [CheckedContinuation<SectionProcessingOutcome, Never>]] = [:]
+    private struct Waiter {
+        let continuation: CheckedContinuation<SectionProcessingOutcome, Never>
+        let didCoalesce: Bool
+    }
+
+    private struct InFlightOperation {
+        let id: UInt64
+        var producer: Task<Void, Never>?
+        var waiters: [UInt64: Waiter]
+    }
+
+    private var inFlightOperationByKey: [EBookSectionProcessingRequestKey: InFlightOperation] = [:]
+    private var nextOperationID: UInt64 = 0
+    private var nextWaiterID: UInt64 = 0
 
     private func resolve(_ outcome: SectionProcessingOutcome) throws -> EbookProcessedSectionPayload {
         switch outcome {
@@ -197,36 +217,116 @@ actor EBookSectionProcessingDeduper {
 
 #if DEBUG
     func inFlightWaiterCountForTesting(key: EBookSectionProcessingRequestKey) -> Int {
-        inFlightWaitersByKey[key]?.count ?? 0
+        inFlightOperationByKey[key]?.waiters.values.filter { $0.didCoalesce }.count ?? 0
     }
 #endif
 
-    func process(
+    private func complete(
         key: EBookSectionProcessingRequestKey,
-        operation: @Sendable () async throws -> EbookProcessedSectionPayload
-    ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool, cacheOutcome: String) {
-        if inFlightWaitersByKey[key] != nil {
-            let response = await withCheckedContinuation { continuation in
-                inFlightWaitersByKey[key, default: []].append(continuation)
-            }
-            return (try resolve(response), true, "coalesced")
+        operationID: UInt64,
+        outcome: SectionProcessingOutcome
+    ) {
+        guard let operation = inFlightOperationByKey[key], operation.id == operationID else {
+            return
+        }
+        inFlightOperationByKey.removeValue(forKey: key)
+        for waiter in operation.waiters.values {
+            waiter.continuation.resume(returning: outcome)
+        }
+    }
+
+    private func cancelWaiter(
+        key: EBookSectionProcessingRequestKey,
+        operationID: UInt64,
+        waiterID: UInt64
+    ) {
+        guard var operation = inFlightOperationByKey[key],
+              operation.id == operationID,
+              let waiter = operation.waiters.removeValue(forKey: waiterID) else {
+            return
         }
 
-        inFlightWaitersByKey[key] = []
-        let response: SectionProcessingOutcome
-        do {
-            response = .success(try await operation())
-        } catch is CancellationError {
-            response = .cancelled
-        } catch {
-            response = .failure(error.localizedDescription)
+        let producerToCancel: Task<Void, Never>?
+        if operation.waiters.isEmpty {
+            inFlightOperationByKey.removeValue(forKey: key)
+            producerToCancel = operation.producer
+        } else {
+            inFlightOperationByKey[key] = operation
+            producerToCancel = nil
         }
-        let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
-        for waiter in waiters {
-            waiter.resume(returning: response)
+        waiter.continuation.resume(returning: .cancelled)
+        producerToCancel?.cancel()
+    }
+
+    func process(
+        key: EBookSectionProcessingRequestKey,
+        operation: @Sendable @escaping () async throws -> EbookProcessedSectionPayload
+    ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool) {
+        try Task.checkCancellation()
+
+        nextWaiterID &+= 1
+        let waiterID = nextWaiterID
+        let operationID: UInt64
+        let didCoalesce: Bool
+
+        if let existingOperation = inFlightOperationByKey[key] {
+            operationID = existingOperation.id
+            didCoalesce = true
+        } else {
+            nextOperationID &+= 1
+            operationID = nextOperationID
+            didCoalesce = false
+            inFlightOperationByKey[key] = InFlightOperation(
+                id: operationID,
+                producer: nil,
+                waiters: [:]
+            )
+
+            let producer = Task { [operation] in
+                let outcome: SectionProcessingOutcome
+                do {
+                    outcome = .success(try await operation())
+                } catch is CancellationError {
+                    outcome = .cancelled
+                } catch {
+                    outcome = .failure(error.localizedDescription)
+                }
+                self.complete(key: key, operationID: operationID, outcome: outcome)
+            }
+            if var currentOperation = inFlightOperationByKey[key],
+               currentOperation.id == operationID {
+                currentOperation.producer = producer
+                inFlightOperationByKey[key] = currentOperation
+            } else {
+                producer.cancel()
+            }
         }
-        let resolvedResponse = try resolve(response)
-        return (resolvedResponse, false, "processed")
+
+        let response = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<SectionProcessingOutcome, Never>) in
+                guard var currentOperation = inFlightOperationByKey[key],
+                      currentOperation.id == operationID else {
+                    continuation.resume(returning: .cancelled)
+                    return
+                }
+                currentOperation.waiters[waiterID] = Waiter(
+                    continuation: continuation,
+                    didCoalesce: didCoalesce
+                )
+                inFlightOperationByKey[key] = currentOperation
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(
+                    key: key,
+                    operationID: operationID,
+                    waiterID: waiterID
+                )
+            }
+        }
+
+        try Task.checkCancellation()
+        return (try resolve(response), didCoalesce)
     }
 }
 
@@ -316,7 +416,8 @@ public actor EBookProcessingActor {
         guard let ebookTextProcessor else {
             return EbookProcessedSectionPayload(
                 documentHTML: Data(text.utf8),
-                segmentSidecar: Data()
+                segmentSidecar: Data(),
+                isAuthoritativelyProcessed: false
             )
         }
 
@@ -331,7 +432,9 @@ public actor EBookProcessingActor {
             processHTMLBytes,
             processHTML
         )
-        if !isCacheWarmer, let ebookProcessedTextCacheWriter {
+        if !isCacheWarmer,
+           ebookProcessedSectionPayloadHasDurableSegmentIdentities(result),
+           let ebookProcessedTextCacheWriter {
             // Publish to the foreground memory cache before returning the response.
             // The writer detaches its persisted write internally, so awaiting it here
             // prevents an immediate reload from racing an unstarted utility task
@@ -441,10 +544,48 @@ public typealias EbookProcessedTextCacheWriter = @Sendable (URL, String, String,
 public typealias EbookSectionPresentationProvider = @Sendable () async -> EbookSectionPresentation
 public typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
+struct EbookProcessedSectionCacheProbeResult: Sendable {
+    let payload: EbookProcessedSectionPayload?
+    let outcome: String
+}
+
+func probeEbookProcessedSectionCache(
+    reader: EbookProcessedTextCacheReader?,
+    contentURL: URL,
+    location: String,
+    contentFingerprint: String
+) async throws -> EbookProcessedSectionCacheProbeResult {
+    try Task.checkCancellation()
+    guard let reader else {
+        return EbookProcessedSectionCacheProbeResult(payload: nil, outcome: "unavailable")
+    }
+
+    do {
+        let candidate = try await reader(contentURL, location, contentFingerprint)
+        try Task.checkCancellation()
+        let payload = candidate.flatMap {
+            ebookProcessedSectionPayloadHasDurableSegmentIdentities($0) ? $0 : nil
+        }
+        return EbookProcessedSectionCacheProbeResult(
+            payload: payload,
+            outcome: payload == nil ? "miss" : "hit"
+        )
+    } catch is CancellationError {
+        throw CancellationError()
+    } catch {
+        try Task.checkCancellation()
+        return EbookProcessedSectionCacheProbeResult(
+            payload: nil,
+            outcome: "error:\(String(describing: type(of: error)))"
+        )
+    }
+}
+
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var ebookProcessedTextCacheReader: EbookProcessedTextCacheReader?
     nonisolated(unsafe) var ebookProcessedTextCacheWriter: EbookProcessedTextCacheWriter?
     nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
+    nonisolated(unsafe) var ebookProcessingVariantProvider: EbookProcessingVariantProvider?
     nonisolated(unsafe) var ebookSectionPresentationProvider: EbookSectionPresentationProvider?
     public var readerFileManager: ReaderFileManager?
     nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
@@ -455,9 +596,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) var sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
     nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
     
-    private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
-    private static let sharedSectionProcessingDeduper = EBookSectionProcessingDeduper()
-    private let sectionProcessingDeduper = EbookURLSchemeHandler.sharedSectionProcessingDeduper
+    private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
+    private let sectionProcessingDeduper = EBookSectionProcessingDeduper()
     
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -466,24 +606,64 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public override init() {
         super.init()
     }
+
+    func processSectionForRequest(
+        key: EBookSectionProcessingRequestKey,
+        operation: @Sendable @escaping () async throws -> EbookProcessedSectionPayload
+    ) async throws -> (payload: EbookProcessedSectionPayload, didCoalesce: Bool) {
+        try await sectionProcessingDeduper.process(key: key, operation: operation)
+    }
+
+    @discardableResult
+    private func finishActiveTask(
+        _ urlSchemeTask: WKURLSchemeTask,
+        response: URLResponse,
+        data: Data? = nil
+    ) -> Bool {
+        guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
+            return false
+        }
+        urlSchemeTask.didReceive(response)
+        if let data {
+            urlSchemeTask.didReceive(data)
+        }
+        urlSchemeTask.didFinish()
+        return true
+    }
+
+    @discardableResult
+    private func failActiveTask(
+        _ urlSchemeTask: WKURLSchemeTask,
+        error: Error
+    ) -> Bool {
+        guard schemeTaskCompletionOwnership.claimCompletion(urlSchemeTask as AnyObject) else {
+            return false
+        }
+        urlSchemeTask.didFailWithError(error)
+        return true
+    }
     
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+        schemeTaskCompletionOwnership.cancel(urlSchemeTask as AnyObject)
     }
     
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
-        schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
+        schemeTaskCompletionOwnership.begin(urlSchemeTask as AnyObject)
         
-        guard let url = urlSchemeTask.request.url else { return }
+        guard let url = urlSchemeTask.request.url else {
+            failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
+            return
+        }
         let sharedReaderFontAsset = self.sharedReaderFontAsset
         if let fontResponse = sharedReaderFontResponse(
             for: url,
             asset: sharedReaderFontAsset
         ) {
-            urlSchemeTask.didReceive(fontResponse.response)
-            urlSchemeTask.didReceive(fontResponse.data)
-            urlSchemeTask.didFinish()
-            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+            finishActiveTask(
+                urlSchemeTask,
+                response: fontResponse.response,
+                data: fontResponse.data
+            )
             return
         }
         if url.path.hasPrefix(ReaderExternalSegmentSidecarScheme.ebook.endpointPathPrefix) {
@@ -491,25 +671,25 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 for: url,
                 scheme: .ebook
             ) else {
-                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
                 return
             }
-            urlSchemeTask.didReceive(sidecar.response)
-            urlSchemeTask.didReceive(sidecar.data)
-            urlSchemeTask.didFinish()
-            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+            finishActiveTask(
+                urlSchemeTask,
+                response: sidecar.response,
+                data: sidecar.data
+            )
             return
         }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
-            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+            failActiveTask(urlSchemeTask, error: CustomSchemeHandlerError.fileNotFound)
             return
         }
         let ebookProcessedTextCacheReader = self.ebookProcessedTextCacheReader
         let ebookProcessedTextCacheWriter = self.ebookProcessedTextCacheWriter
         let ebookTextProcessor = self.ebookTextProcessor
+        let ebookProcessingVariantProvider = self.ebookProcessingVariantProvider
         let ebookSectionPresentationProvider = self.ebookSectionPresentationProvider
         let processReadabilityContent = self.processReadabilityContent
         let processHTMLDocument = self.processHTMLDocument
@@ -519,8 +699,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
         
-        Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
+        let workTask = Task.detached(priority: ebookURLSchemeTaskPriority(for: url)) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
+            guard !Task.isCancelled else { return }
             if url.path == "/processed-section" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/processed-section"),
                       let sectionHref = URLComponents(url: url, resolvingAgainstBaseURL: false)?
@@ -529,56 +710,49 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     .value,
                       !sectionHref.isEmpty else {
                     await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        }
+                        self.failActiveTask(
+                            urlSchemeTask,
+                            error: CustomSchemeHandlerError.fileNotFound
+                        )
                     }()
                     return
                 }
 
                 let requestStartedAt = Date()
                 do {
+                    try Task.checkCancellation()
+                    let processingVariant = await ebookProcessingVariantProvider?()
+                    try Task.checkCancellation()
+                    try await EbookProcessingVariantContext.$current.withValue(processingVariant) {
                     let isDirectSectionLoad = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                         .queryItems?
                         .contains(where: { $0.name == "direct" && $0.value == "1" }) == true
-                    async let sectionPresentation = ebookSectionPresentationProvider?()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    try Task.checkCancellation()
                     let sourceReadyElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                     let sourceData = try cachedSource.source.readEntry(subpath: sectionHref)
+                    try Task.checkCancellation()
                     let sourceReadElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000) - sourceReadyElapsedMs
                     let didCoalesce: Bool
                     let cacheOutcome: String
                     let processRequestKey = EBookSectionProcessingRequestKey(
                         contentURL: mainDocumentURL,
                         location: sectionHref,
-                        contentData: sourceData
+                        contentData: sourceData,
+                        processingVariant: processingVariant ?? .unspecified
                     )
                     let cacheProbeStartedAt = Date()
-                    let cachedPayload: EbookProcessedSectionPayload?
-                    let cacheProbeOutcome: String
-                    if let ebookProcessedTextCacheReader {
-                        do {
-                            let candidate = try await ebookProcessedTextCacheReader(
-                                mainDocumentURL,
-                                sectionHref,
-                                processRequestKey.textFingerprint
-                            )
-                            cachedPayload = candidate.flatMap {
-                                ebookProcessedSectionPayloadHasDurableSegmentIdentities($0) ? $0 : nil
-                            }
-                            cacheProbeOutcome = cachedPayload == nil ? "miss" : "hit"
-                        } catch {
-                            cachedPayload = nil
-                            cacheProbeOutcome = "error:\(String(describing: type(of: error)))"
-                        }
-                    } else {
-                        cachedPayload = nil
-                        cacheProbeOutcome = "unavailable"
-                    }
+                    let cacheProbe = try await probeEbookProcessedSectionCache(
+                        reader: ebookProcessedTextCacheReader,
+                        contentURL: mainDocumentURL,
+                        location: sectionHref,
+                        contentFingerprint: processRequestKey.textFingerprint
+                    )
+                    let cachedPayload = cacheProbe.payload
+                    let cacheProbeOutcome = cacheProbe.outcome
                     let cacheProbeElapsedMs = Int(Date().timeIntervalSince(cacheProbeStartedAt) * 1000)
                     let processedPayload: EbookProcessedSectionPayload
                     if let ebookTextProcessor {
@@ -588,7 +762,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             cacheOutcome = "final-direct-hit"
                         } else {
                             let sourceText = String(decoding: sourceData, as: UTF8.self)
-                            let processedResult = try await self.sectionProcessingDeduper.process(
+                            let processedResult = try await self.processSectionForRequest(
                                 key: processRequestKey
                             ) {
                                 let processingActor = EBookProcessingActor(
@@ -609,13 +783,23 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }
                             processedPayload = processedResult.payload
                             didCoalesce = processedResult.didCoalesce
-                            cacheOutcome = processedResult.didCoalesce
-                                ? "final-miss-coalesced"
-                                : "final-miss-processed"
+                            if processedPayload.isAuthoritativelyProcessed {
+                                cacheOutcome = processedResult.didCoalesce
+                                    ? "final-miss-coalesced"
+                                    : "final-miss-processed"
+                            } else {
+                                cacheOutcome = processedResult.didCoalesce
+                                    ? "final-miss-coalesced-fallback"
+                                    : "final-miss-fallback"
+                            }
                         }
                     } else {
                         throw CustomSchemeHandlerError.fileNotFound
                     }
+                    try Task.checkCancellation()
+
+                    let sectionPresentation = await ebookSectionPresentationProvider?()
+                    try Task.checkCancellation()
 
                     let processingElapsedMs = Int(Date().timeIntervalSince(requestStartedAt) * 1000)
                         - sourceReadyElapsedMs
@@ -638,6 +822,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         "data-mnb-native-cache-writer-available": ebookProcessedTextCacheWriter == nil ? "false" : "true",
                         "data-mnb-native-content-fingerprint": processRequestKey.textFingerprint,
                         "data-mnb-native-did-coalesce": didCoalesce ? "true" : "false",
+                        "data-mnb-native-processing-authoritative": processedPayload.isAuthoritativelyProcessed ? "true" : "false",
                         "data-mnb-native-response-bytes": "\(processedResponseByteCount)",
                         "data-mnb-native-source-bytes": "\(sourceData.count)",
                         "data-mnb-native-source-ready-ms": "\(sourceReadyElapsedMs)",
@@ -657,7 +842,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         ),
                         writingHint: writingHint,
                         bodyAttributes: responseBodyAttributes,
-                        presentation: await sectionPresentation,
+                        presentation: sectionPresentation,
                         additionalHeadMarkup: publishedSidecar.headDescriptor,
                         suppressesInitialPaginatorLayout: isDirectSectionLoad
                     )
@@ -674,6 +859,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             "X-Manabi-Response-Ready-Elapsed-Ms": "\(responseReadyElapsedMs)",
                             "X-Manabi-Response-Encode-Elapsed-Ms": "\(responseEncodeElapsedMs)",
                             "X-Manabi-Did-Coalesce": didCoalesce ? "true" : "false",
+                            "X-Manabi-Processing-Authoritative": processedPayload.isAuthoritativelyProcessed ? "true" : "false",
                             "X-Manabi-Sidecar-Delivery": publishedSidecar.endpointURL == nil ? "embedded-or-empty" : "external",
                             "X-Manabi-Sidecar-Bytes": "\(publishedSidecar.canonicalSidecarByteCount)",
                             "X-Manabi-Sidecar-Publish-Elapsed-Ms": "\(sidecarPublishElapsedMs)",
@@ -685,35 +871,36 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         textEncodingName: "utf-8"
                     )
                     await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didReceive(response)
-                            urlSchemeTask.didReceive(responseData)
-                            urlSchemeTask.didFinish()
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        }
+                        self.finishActiveTask(
+                            urlSchemeTask,
+                            response: response,
+                            data: responseData
+                        )
                     }()
+                    }
                 } catch {
                     await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didFailWithError(error)
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        }
+                        self.failActiveTask(urlSchemeTask, error: error)
                     }()
                 }
             } else if url.path == "/entries" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
                     await { @MainActor in
-                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        self.failActiveTask(
+                            urlSchemeTask,
+                            error: CustomSchemeHandlerError.fileNotFound
+                        )
                     }()
                     return
                 }
 
                 do {
+                    try Task.checkCancellation()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    try Task.checkCancellation()
                     let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
                     let data = try JSONEncoder().encode(responseBody)
                     let response = ebookHTTPResponse(
@@ -723,18 +910,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         textEncodingName: "utf-8"
                     )
                     await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didReceive(response)
-                            urlSchemeTask.didReceive(data)
-                            urlSchemeTask.didFinish()
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        } else {
-                        }
+                        self.finishActiveTask(
+                            urlSchemeTask,
+                            response: response,
+                            data: data
+                        )
                     }()
                 } catch {
                     await { @MainActor in
-                        urlSchemeTask.didFailWithError(error)
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        self.failActiveTask(urlSchemeTask, error: error)
                     }()
                 }
             } else if url.path == "/entry" || url.path.hasPrefix("/entry-source/") {
@@ -765,8 +949,10 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     return (mainDocumentURL, subpath)
                 }() else {
                     await { @MainActor in
-                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        self.failActiveTask(
+                            urlSchemeTask,
+                            error: CustomSchemeHandlerError.fileNotFound
+                        )
                     }()
                     return
                 }
@@ -774,11 +960,14 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 let subpath = entryRequest.subpath
 
                 do {
+                    try Task.checkCancellation()
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    try Task.checkCancellation()
                     let data = try cachedSource.source.readEntry(subpath: subpath)
+                    try Task.checkCancellation()
                     let metadata = try cachedSource.source.mimeType(subpath: subpath)
                     let response = ebookHTTPResponse(
                         url: url,
@@ -787,12 +976,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         textEncodingName: metadata.textEncodingName
                     )
                     await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didReceive(response)
-                            urlSchemeTask.didReceive(data)
-                            urlSchemeTask.didFinish()
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        }
+                        self.finishActiveTask(
+                            urlSchemeTask,
+                            response: response,
+                            data: data
+                        )
                     }()
                 } catch {
                     if let sourceError = error as? ReaderPackageEntrySourceError,
@@ -804,17 +992,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             headerFields: nil
                         )!
                         await { @MainActor in
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didReceive(response)
-                                urlSchemeTask.didFinish()
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }
+                            self.finishActiveTask(
+                                urlSchemeTask,
+                                response: response
+                            )
                         }()
                         return
                     }
                     await { @MainActor in
-                        urlSchemeTask.didFailWithError(error)
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        self.failActiveTask(urlSchemeTask, error: error)
                     }()
                 }
             } else if url.pathComponents.starts(with: ["/", "load"]) {
@@ -822,6 +1008,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 if let fileUrl = Self.bundleURLFromWebURL(url),
                    let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? await EbookViewerAssetCache.shared.data(for: fileUrl) {
+                    guard !Task.isCancelled else { return }
                     let response = ebookHTTPResponse(
                         url: url,
                         mimeType: mimeType,
@@ -832,13 +1019,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         additionalHeaderFields: ebookViewerAssetCacheHeaderFields()
                     )
                     await { @MainActor in
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didReceive(response)
-                            urlSchemeTask.didReceive(data)
-                            urlSchemeTask.didFinish()
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        } else {
-                        }
+                        self.finishActiveTask(
+                            urlSchemeTask,
+                            response: response,
+                            data: data
+                        )
                     }()
                 } else if let viewerHtmlPath = Self.viewerHTMLPath() {
                     // File viewer bundle file.
@@ -849,36 +1034,40 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 sharedFontCSSBase64: sharedFontCSSBase64,
                                 sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
                             )
+                            try Task.checkCancellation()
                             await { @MainActor in
-                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                    urlSchemeTask.didReceive(response)
-                                    urlSchemeTask.didReceive(data)
-                                    urlSchemeTask.didFinish()
-                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                } else {
-                                }
+                                self.finishActiveTask(
+                                    urlSchemeTask,
+                                    response: response,
+                                    data: data
+                                )
                             }()
                         } catch {
                             await { @MainActor in
-                                urlSchemeTask.didFailWithError(error)
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                self.failActiveTask(urlSchemeTask, error: error)
                             }()
                         }
                 } else {
                     await { @MainActor in
-                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        self.failActiveTask(
+                            urlSchemeTask,
+                            error: CustomSchemeHandlerError.fileNotFound
+                        )
                     }()
                 }
             } else {
                 await { @MainActor in
-                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                    }
+                    self.failActiveTask(
+                        urlSchemeTask,
+                        error: CustomSchemeHandlerError.fileNotFound
+                    )
                 }()
             }
         }
+        schemeTaskCompletionOwnership.attachCancellation(
+            urlSchemeTask as AnyObject,
+            cancellation: { workTask.cancel() }
+        )
     }
     
     nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {

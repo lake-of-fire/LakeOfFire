@@ -7,10 +7,12 @@ import {
     pageSummaryIsVisiblyBlank,
     pageTurnBoundaryDecision,
     paginatorAnchorForLocalPage,
+    paginatorPageTurnMovementResult,
     paginatorRenderSignature,
     preparePaginatorLayoutMeasurement,
     readerLoadPathsMatch,
     revealPaginatorDocument,
+    scrolledPageTurnDecision,
     resolveBlankPageTarget,
     shouldSuppressPostPageTurnDuplicate,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator-decisions.js'
@@ -131,5 +133,70 @@ test('single-media and duplicate-turn decisions preserve hotfix policy', () => {
         direction: 'backward',
         navigationSource: 'keyboard',
         elapsedMs: 80,
+    }), false)
+})
+
+
+test('scrolled page-turn decisions distinguish internal scroll, adjacent section, and terminal edge', () => {
+    assert.deepEqual(scrolledPageTurnDecision({
+        canScrollWithinSection: true,
+        adjacentIndex: null,
+    }), {
+        shouldScrollWithinSection: true,
+        shouldGoToAdjacentSection: false,
+        isTerminal: false,
+    })
+    assert.deepEqual(scrolledPageTurnDecision({
+        canScrollWithinSection: false,
+        adjacentIndex: 4,
+    }), {
+        shouldScrollWithinSection: false,
+        shouldGoToAdjacentSection: true,
+        isTerminal: false,
+    })
+    assert.deepEqual(scrolledPageTurnDecision({
+        canScrollWithinSection: false,
+        adjacentIndex: null,
+    }), {
+        shouldScrollWithinSection: false,
+        shouldGoToAdjacentSection: false,
+        isTerminal: true,
+    })
+})
+
+
+test('page-turn movement results preserve uncertainty after attempted motion loses final metrics', () => {
+    assert.equal(paginatorPageTurnMovementResult({
+        indexChanged: true,
+        attemptedMovement: true,
+        finalMetricsAvailable: false,
+    }), true)
+    assert.equal(paginatorPageTurnMovementResult({
+        pageChanged: true,
+        attemptedMovement: true,
+        finalMetricsAvailable: true,
+    }), true)
+    assert.equal(paginatorPageTurnMovementResult({
+        startChanged: true,
+        attemptedMovement: true,
+        finalMetricsAvailable: true,
+    }), true)
+    assert.equal(paginatorPageTurnMovementResult({
+        authoritativeNoMove: true,
+        attemptedMovement: false,
+        finalMetricsAvailable: false,
+    }), false)
+    assert.deepEqual(paginatorPageTurnMovementResult({
+        attemptedMovement: true,
+        hasComparablePosition: true,
+        finalMetricsAvailable: false,
+    }), {
+        movementDisposition: 'unknown',
+        reason: 'pageTurnFinalMetricsUnavailable',
+    })
+    assert.equal(paginatorPageTurnMovementResult({
+        attemptedMovement: true,
+        hasComparablePosition: true,
+        finalMetricsAvailable: true,
     }), false)
 })

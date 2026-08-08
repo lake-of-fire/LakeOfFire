@@ -177,6 +177,7 @@ public struct ReaderWebView: View {
         [
             readerModeViewModel.ebookProcessedTextCacheReader != nil ? "cacheReader=1" : "cacheReader=0",
             readerModeViewModel.ebookProcessedTextCacheWriter != nil ? "cacheWriter=1" : "cacheWriter=0",
+            readerModeViewModel.ebookProcessingVariantProvider != nil ? "processingVariant=1" : "processingVariant=0",
             readerModeViewModel.ebookSectionPresentationProvider != nil ? "presentation=1" : "presentation=0",
             readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
             readerModeViewModel.processHTMLDocument != nil ? "htmlDocument=1" : "htmlDocument=0",
@@ -273,6 +274,7 @@ public struct ReaderWebView: View {
             navigator.attachFallbackDelayNanoseconds = 700_000_000
             ebookURLSchemeHandler.ebookProcessedTextCacheReader = readerModeViewModel.ebookProcessedTextCacheReader
             ebookURLSchemeHandler.ebookProcessedTextCacheWriter = readerModeViewModel.ebookProcessedTextCacheWriter
+            ebookURLSchemeHandler.ebookProcessingVariantProvider = readerModeViewModel.ebookProcessingVariantProvider
             ebookURLSchemeHandler.ebookSectionPresentationProvider = readerModeViewModel.ebookSectionPresentationProvider
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent

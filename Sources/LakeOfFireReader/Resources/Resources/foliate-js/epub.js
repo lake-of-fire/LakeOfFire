@@ -570,10 +570,24 @@ class Resources {
     }
 }
 
-class Loader {
+const splitInternalResourceReference = href => {
+    const queryIndex = href.indexOf('?')
+    const fragmentIndex = href.indexOf('#')
+    let resourceEnd = href.length
+    if (queryIndex >= 0) resourceEnd = Math.min(resourceEnd, queryIndex)
+    if (fragmentIndex >= 0) resourceEnd = Math.min(resourceEnd, fragmentIndex)
+    return {
+        resourceHref: href.slice(0, resourceEnd),
+        fragment: fragmentIndex >= 0 ? href.slice(fragmentIndex) : '',
+    }
+}
+
+export class Loader {
     #cache = new Map()
     #children = new Map()
     #refCount = new Map()
+    #pendingLoads = new Map()
+    #destroyed = false
     allowScript = false
     constructor({
         loadText,
@@ -591,8 +605,8 @@ class Loader {
         // needed only when replacing in (X)HTML w/o parsing (see below)
         //.filter(({ mediaType }) => ![MIME.XHTML, MIME.HTML].includes(mediaType))
     }
-    createURL(href, data, type, parent) {
-        if (!data) return ''
+    createURL(href, data, type, parent, cacheKey = href) {
+        if (this.#destroyed || data == null) return ''
         const url = URL.createObjectURL(new Blob([data], {
             type
         }))
@@ -605,17 +619,17 @@ class Loader {
                 bytes: data?.byteLength ?? data?.length ?? null,
             })
         } catch (_error) {}
-        this.#cache.set(href, url)
-        this.#refCount.set(href, 1)
+        this.#cache.set(cacheKey, url)
+        this.#refCount.set(cacheKey, 1)
         if (parent) {
             const childList = this.#children.get(parent)
-            if (childList) childList.push(href)
-            else this.#children.set(parent, [href])
+            if (childList) childList.push(cacheKey)
+            else this.#children.set(parent, [cacheKey])
         }
         return url
     }
     createDirectURL(href, url, parent) {
-        if (!url) return ''
+        if (this.#destroyed || !url) return ''
         this.#cache.set(href, url)
         this.#refCount.set(href, 1)
         if (parent) {
@@ -626,6 +640,7 @@ class Loader {
         return url
     }
     ref(href, parent) {
+        if (this.#destroyed || !this.#cache.has(href)) return null
         if (!parent) {
             this.#refCount.set(href, this.#refCount.get(href) + 1)
             return this.#cache.get(href)
@@ -659,36 +674,100 @@ class Loader {
             this.#children.delete(href)
         } else this.#refCount.set(href, count)
     }
+    #rollbackUncommittedChildren(parent, retainedChildren) {
+        const childList = this.#children.get(parent)
+        if (!childList?.length) return
+        const retained = []
+        for (const child of childList) {
+            if (retainedChildren.has(child)) retained.push(child)
+            else this.unref(child)
+        }
+        if (retained.length) this.#children.set(parent, retained)
+        else this.#children.delete(parent)
+    }
     // load manifest item, recursively loading all resources as needed
     async loadItem(item, parents = []) {
-        if (!item) return null
+        if (this.#destroyed || !item) return null
+        const { href } = item
+        const parent = parents.at(-1)
+        if (this.#cache.has(href)) return this.ref(href, parent)
+
+        // Concurrent section, prefetch, and replacement requests must share the
+        // one href-keyed cache publication. Otherwise a late stale request can
+        // overwrite the current URL and its eventual unload can revoke the URL
+        // still owned by a newer request. Recursive self-references deliberately
+        // bypass the pending request so they retain the existing cycle breaker.
+        const canCoalesce = parents.every(candidate => candidate !== href)
+        if (canCoalesce) {
+            const pending = this.#pendingLoads.get(href)
+            if (pending) {
+                const url = await pending
+                if (this.#destroyed || !url) return null
+                return this.ref(href, parent)
+            }
+            const retainedChildren = new Set(this.#children.get(href) ?? [])
+            const load = (async () => {
+                try {
+                    const value = await this.#loadItemUncoalesced(item, parents)
+                    if (!value || !this.#cache.has(href)) {
+                        this.#rollbackUncommittedChildren(href, retainedChildren)
+                    }
+                    return value
+                } catch (error) {
+                    this.#rollbackUncommittedChildren(href, retainedChildren)
+                    throw error
+                }
+            })()
+            this.#pendingLoads.set(href, load)
+            try {
+                return await load
+            } finally {
+                if (this.#pendingLoads.get(href) === load) {
+                    this.#pendingLoads.delete(href)
+                }
+            }
+        }
+        return this.#loadItemUncoalesced(item, parents)
+    }
+    async #loadItemUncoalesced(item, parents = []) {
+        if (this.#destroyed || !item) return null
         const {
             href,
             mediaType
         } = item
-
-        const isScript = MIME.JS.test(item.mediaType)
+        const isScript = MIME.JS.test(mediaType)
         if (isScript && !this.allowScript) return null
-
         const parent = parents.at(-1)
         if (this.#cache.has(href)) return this.ref(href, parent)
 
+        const isRecursiveReference = parents.some(candidate => candidate === href)
         const shouldReplace =
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
             // prevent circular references
-            &&
-            parents.every(p => p !== href)
+            && !isRecursiveReference
         if (shouldReplace) return this.loadReplaced(item, parents)
-        return this.createURL(href, await this.loadBlob(href), mediaType, parent)
+        const blob = await this.loadBlob(href)
+        if (this.#destroyed) return null
+        // A circular dependency needs a raw resource URL to break recursion, but it
+        // must not overwrite the href-keyed publication owned by the outer load.
+        // Track the dependency under an exact transient key so parent unload still
+        // revokes it after the final replacement URL is released.
+        const cacheKey = isRecursiveReference ? Symbol(`recursive:${href}`) : href
+        return this.createURL(href, blob, mediaType, parent, cacheKey)
     }
     async loadHref(href, base, parents = []) {
-        if (isExternal(href)) return href
-        const path = resolveURL(href, base)
+        if (this.#destroyed) return null
+        if (typeof href !== 'string' || !href || isExternal(href)) return href
+        const { resourceHref, fragment } = splitInternalResourceReference(href)
+        if (!resourceHref) return href
+        const path = resolveURL(resourceHref, base)
         const item = this.manifest.find(item => item.href === path)
         if (!item) return href
-        return this.loadItem(item, parents.concat(base))
+        const url = await this.loadItem(item, parents.concat(base))
+        return url && fragment ? `${url}${fragment}` : url
     }
     async loadReplaced(item, parents = []) {
+        if (this.#destroyed) return null
         const {
             href,
             mediaType
@@ -703,6 +782,7 @@ class Loader {
         const parent = parents.at(-1)
         if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
             const directURL = await this.replaceURL(href, mediaType)
+            if (this.#destroyed) return null
             if (!directURL) {
                 const error = new Error(`Direct processed section URL required for ${href}`)
                 manabiEpubReaderLoadLog('epub.loadReplaced.directURL.error', {
@@ -721,13 +801,14 @@ class Loader {
             return this.createDirectURL(href, directURL, parent)
         }
         const str = await this.loadText(href)
+        if (this.#destroyed) return null
         manabiEpubReaderLoadLog('epub.loadReplaced.text', {
             href,
             mediaType,
             chars: str?.length ?? 0,
             elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
         })
-        if (!str) return null
+        if (str == null) return null
 
         // note that one can also just use `replaceString` for everything:
         // ```
@@ -742,6 +823,7 @@ class Loader {
         let replacedStr = str
         if (this.replaceText) {
             replacedStr = await this.replaceText(href, str, mediaType)
+            if (this.#destroyed) return null
             manabiEpubReaderLoadLog('epub.loadReplaced.replaceText', {
                 href,
                 mediaType,
@@ -750,22 +832,26 @@ class Loader {
             })
         }
 
-        if (!replacedStr) {
+        if (replacedStr == null) {
             return null
         }
 
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
-            let doc = new DOMParser().parseFromString(replacedStr, mediaType)
+            let effectiveMediaType = mediaType
+            let doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             // change to HTML if it's not valid XHTML
-            if (mediaType === MIME.XHTML && doc.querySelector('parsererror')) {
-                console.warn(doc.querySelector('parsererror').innerText)
-                item.mediaType = MIME.HTML
-                doc = new DOMParser().parseFromString(replacedStr, item.mediaType)
+            const parserError = effectiveMediaType === MIME.XHTML
+                ? doc.querySelector('parsererror')
+                : null
+            if (parserError) {
+                console.warn(parserError.innerText)
+                effectiveMediaType = MIME.HTML
+                doc = new DOMParser().parseFromString(replacedStr, effectiveMediaType)
             }
             // replace hrefs in XML processing instructions
             // this is mainly for SVGs that use xml-stylesheet
-            if ([MIME.XHTML, MIME.SVG].includes(item.mediaType)) {
+            if ([MIME.XHTML, MIME.SVG].includes(effectiveMediaType)) {
                 let child = doc.firstChild
                 while (child instanceof ProcessingInstruction) {
                     if (child.data) {
@@ -812,11 +898,15 @@ class Loader {
             const textResult = new XMLSerializer().serializeToString(doc)
             manabiEpubReaderLoadLog('epub.loadReplaced.finish', {
                 href,
-                mediaType: item.mediaType,
+                mediaType: effectiveMediaType,
                 chars: textResult.length,
                 elapsedMs: manabiRoundMs(manabiPerfNow() - loadStartedAt),
             })
-            return this.createURL(href, textResult, item.mediaType, parent)
+            const url = this.createURL(href, textResult, effectiveMediaType, parent)
+            if (url && effectiveMediaType !== mediaType) {
+                item.mediaType = effectiveMediaType
+            }
+            return url
         }
 
         const result = mediaType === MIME.CSS ?
@@ -852,34 +942,74 @@ class Loader {
             .replace(/page-break-(after|before|inside)/gi, (_, x) =>
                 `-webkit-column-break-${x}`)
     }
-    // find & replace all possible relative paths for all assets without parsing
+    // find & replace exact relative paths for all assets without parsing
     replaceString(str, href, parents = []) {
         const assetMap = new Map()
-        const urls = this.assets.map(asset => {
+        for (const asset of this.assets) {
             // do not replace references to the file itself
-            if (asset.href === href) return
+            if (asset.href === href) continue
             // href was decoded and resolved when parsing the manifest
             const relative = pathRelative(pathDirname(href), asset.href)
-            const relativeEnc = encodeURI(relative)
             const rootRelative = '/' + asset.href
-            const rootRelativeEnc = encodeURI(rootRelative)
-            const set = new Set([relative, relativeEnc, rootRelative, rootRelativeEnc])
-            for (const url of set) assetMap.set(url, asset)
-            return Array.from(set)
-        }).flat().filter(x => x)
+            const urls = new Set([
+                relative,
+                encodeURI(relative),
+                rootRelative,
+                encodeURI(rootRelative),
+            ])
+            for (const url of urls) {
+                if (url && !assetMap.has(url)) assetMap.set(url, asset)
+            }
+        }
+        const urls = Array.from(assetMap.keys()).sort((a, b) => b.length - a.length)
         if (!urls.length) return str
-        const regex = new RegExp(urls.map(regexEscape).join('|'), 'g')
-        return replaceSeries(str, regex, async (match) =>
-            this.loadItem(assetMap.get(match.replace(/^\//, '')),
-                parents.concat(href)))
+        // Match a complete URL path token rather than a manifest path embedded in
+        // an external URL or as the prefix of a different, longer resource name.
+        const pathCharacterClass = `A-Za-z0-9._~%!$&()*+,;=:@/-`
+        const regex = new RegExp(
+            `(^|[^${pathCharacterClass}])(${urls.map(regexEscape).join('|')})(?![${pathCharacterClass}])([?#][^\\s"'\\x60<>]*)?`,
+            'g'
+        )
+        return replaceSeries(str, regex, async (_match, prefix, url, suffix = '') => {
+            const replacement = await this.loadItem(
+                assetMap.get(url),
+                parents.concat(href)
+            )
+            const { fragment } = splitInternalResourceReference(suffix)
+            return `${prefix}${replacement}${fragment}`
+        })
     }
     unloadItem(item) {
         this.unref(item?.href)
     }
     destroy() {
-        for (const url of this.#cache.values()) {
-            if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url)
+        if (this.#destroyed) return false
+        this.#destroyed = true
+        const replacementOwners = new Set([this.replaceText, this.replaceURL].filter(Boolean))
+        this.replaceText = null
+        this.replaceURL = null
+        for (const owner of replacementOwners) {
+            try {
+                owner.destroy?.()
+            } catch (_error) {}
         }
+        for (const url of this.#cache.values()) {
+            try {
+                globalThis.__manabiBlobResourceMap?.delete?.(url)
+            } catch (_error) {}
+            if (typeof url === 'string' && url.startsWith('blob:')) {
+                try {
+                    URL.revokeObjectURL(url)
+                } catch (_error) {}
+            }
+        }
+        this.#cache.clear()
+        this.#children.clear()
+        this.#refCount.clear()
+        this.#pendingLoads.clear()
+        this.manifest = []
+        this.assets = []
+        return true
     }
 }
 
@@ -899,6 +1029,8 @@ const getPageSpread = properties => {
 export class EPUB {
     parser = new DOMParser()
     #loader
+    #sourceDestroy
+    #destroyed = false
     #encryption
     constructor({
         loadText,
@@ -906,17 +1038,27 @@ export class EPUB {
         getSize,
         replaceText,
         replaceURL,
-        sha1
+        sha1,
+        destroy: destroySource,
     }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.getSize = getSize
         this.replaceText = replaceText
         this.replaceURL = replaceURL
+        this.#sourceDestroy = typeof destroySource === 'function' ? destroySource : null
         this.#encryption = new Encryption(deobfuscators(sha1))
     }
+    #assertActive() {
+        if (!this.#destroyed) return
+        const error = new Error('EPUB has been destroyed')
+        error.name = 'AbortError'
+        throw error
+    }
     async #loadXML(uri) {
+        this.#assertActive()
         const str = await this.loadText(uri)
+        this.#assertActive()
         if (!str) return null
         const doc = this.parser.parseFromString(str, MIME.XML)
         if (doc.querySelector('parsererror'))
@@ -925,6 +1067,7 @@ ${doc.querySelector('parsererror').innerText}`)
         return doc
     }
     async init() {
+        this.#assertActive()
         const $container = await this.#loadXML('META-INF/container.xml')
         if (!$container) throw new Error('Failed to load container file')
 
@@ -940,6 +1083,7 @@ ${doc.querySelector('parsererror').innerText}`)
 
         const $encryption = await this.#loadXML('META-INF/encryption.xml')
         await this.#encryption.init($encryption, opf)
+        this.#assertActive()
 
         this.resources = new Resources({
             opf,
@@ -989,16 +1133,20 @@ ${doc.querySelector('parsererror').innerText}`)
             this.pageList = nav.pageList
             this.landmarks = nav.landmarks
         } catch (e) {
+            this.#assertActive()
             console.warn(e)
         }
+        this.#assertActive()
         if (!this.toc && ncxPath) try {
             const resolve = url => resolveURL(url, ncxPath)
             const ncx = parseNCX(await this.#loadXML(ncxPath), resolve)
             this.toc = ncx.toc
             this.pageList = ncx.pageList
         } catch (e) {
+            this.#assertActive()
             console.warn(e)
         }
+        this.#assertActive()
         this.landmarks ??= this.resources.guide
 
         const {
@@ -1069,13 +1217,17 @@ ${doc.querySelector('parsererror').innerText}`)
                 else this.metadata[key] = [value]
             }))
 
+        this.#assertActive()
         return this
     }
     async loadDocument(item) {
+        this.#assertActive()
         const str = await this.loadText(item.href)
+        this.#assertActive()
         return this.parser.parseFromString(str, item.mediaType)
     }
     async loadMediaOverlay(item) {
+        this.#assertActive()
         const id = item.mediaOverlay
         if (!id) return null
         const media = this.resources.getItemByID(id)
@@ -1110,15 +1262,19 @@ ${doc.querySelector('parsererror').innerText}`)
         return isExternal(uri)
     }
     async getCover() {
+        this.#assertActive()
         const cover = this.resources?.cover
-        return cover?.href ?
-            new Blob([await this.loadBlob(cover.href)], {
-                type: cover.mediaType
-            }) :
-            null
+        if (!cover?.href) return null
+        const data = await this.loadBlob(cover.href)
+        this.#assertActive()
+        return new Blob([data], {
+            type: cover.mediaType
+        })
     }
     async getCalibreBookmarks() {
+        this.#assertActive()
         const txt = await this.loadText('META-INF/calibre_bookmarks.txt')
+        this.#assertActive()
         const magic = 'encoding=json+base64:'
         if (txt?.startsWith(magic)) {
             const json = atob(txt.slice(magic.length))
@@ -1126,6 +1282,19 @@ ${doc.querySelector('parsererror').innerText}`)
         }
     }
     destroy() {
-        this.#loader?.destroy()
+        if (this.#destroyed) return false
+        this.#destroyed = true
+        const loader = this.#loader
+        this.#loader = null
+        try {
+            loader?.destroy?.()
+        } catch (_error) {}
+        const destroySource = this.#sourceDestroy
+        this.#sourceDestroy = null
+        try {
+            const result = destroySource?.()
+            Promise.resolve(result).catch(() => {})
+        } catch (_error) {}
+        return true
     }
 }

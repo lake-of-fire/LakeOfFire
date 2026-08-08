@@ -35,13 +35,21 @@ private actor EbookTestInvocationCounter {
 
 private func ebookTestPayload(
     _ documentHTML: String,
-    sidecar: String = ""
+    sidecar: String = "",
+    isAuthoritativelyProcessed: Bool = true
 ) -> EbookProcessedSectionPayload {
     EbookProcessedSectionPayload(
         documentHTML: Data(documentHTML.utf8),
-        segmentSidecar: Data(sidecar.utf8)
+        segmentSidecar: Data(sidecar.utf8),
+        isAuthoritativelyProcessed: isAuthoritativelyProcessed
     )
 }
+
+private let ebookTestProcessingVariant = EbookProcessingVariant(
+    availableDictionaryIDs: ["jmdict"],
+    includeJLPTClasses: false,
+    romajiModeEnabled: false
+)
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
     func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
@@ -264,7 +272,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let html = "<html><body><script id=\"mnb-segment-metadata\">{}</script></body></html>"
         let payload = try XCTUnwrap(splitCanonicalReaderSegmentSidecar(from: Array(html.utf8)))
         var legacyEncoded = encodedEbookProcessedSectionCacheValue(payload)
-        legacyEncoded.replaceSubrange(0..<7, with: Array("MNBPSC2".utf8))
+        legacyEncoded.replaceSubrange(0..<7, with: Array("MNBPSC3".utf8))
 
         XCTAssertNil(decodedEbookProcessedSectionCacheValue(legacyEncoded))
     }
@@ -306,11 +314,17 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             documentHTML: Data("<html><body><m-metadata>Plain text</m-metadata></body></html>".utf8),
             segmentSidecar: Data()
         )
+        let nonAuthoritativeFallback = EbookProcessedSectionPayload(
+            documentHTML: Data("<html><body>Raw fallback</body></html>".utf8),
+            segmentSidecar: Data(),
+            isAuthoritativelyProcessed: false
+        )
 
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(missingSidecar))
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(emptySidecar))
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incompleteSidecar))
         XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(segmentFreeDocument))
+        XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(nonAuthoritativeFallback))
     }
 
     func testInlineSharedReaderFontCSSInjectsBothDirectionalFamilies() throws {
@@ -479,6 +493,41 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result.pageStatsOutcome, .unsupported)
     }
 
+    func testReaderPackageDirectorySourceRejectsSymlinksEscapingThePackageRoot() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let internalFileURL = packageRoot.appendingPathComponent("internal.xhtml")
+        let outsideFileURL = temporaryRoot.appendingPathComponent("outside.xhtml")
+        let internalLinkURL = packageRoot.appendingPathComponent("internal-link.xhtml")
+        let escapingLinkURL = packageRoot.appendingPathComponent("escaping-link.xhtml")
+
+        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+        try Data("inside".utf8).write(to: internalFileURL)
+        try Data("outside".utf8).write(to: outsideFileURL)
+        try FileManager.default.createSymbolicLink(at: internalLinkURL, withDestinationURL: internalFileURL)
+        try FileManager.default.createSymbolicLink(at: escapingLinkURL, withDestinationURL: outsideFileURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        XCTAssertEqual(
+            String(decoding: try source.readEntry(subpath: "internal-link.xhtml"), as: UTF8.self),
+            "inside"
+        )
+        let enumeratedPaths = try source.enumerateEntries().map(\.path)
+        XCTAssertTrue(enumeratedPaths.contains("internal-link.xhtml"))
+        XCTAssertFalse(enumeratedPaths.contains("escaping-link.xhtml"))
+        XCTAssertThrowsError(try source.readEntry(subpath: "escaping-link.xhtml")) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath, received \(error)")
+                return
+            }
+        }
+    }
+
     func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -499,6 +548,97 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let entries = try source.enumerateEntries()
 
         XCTAssertEqual(entries.map(\.path), ["OPS/chapter1.xhtml"])
+    }
+
+    func testReaderPackageEntrySourceCacheEvictsLeastRecentlyUsedBooks() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        func makePackage(index: Int) throws -> (packageURL: URL, readerURL: URL) {
+            let packageURL = temporaryRoot
+                .appendingPathComponent("book-\(index).epub", isDirectory: true)
+            try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+            try Data("<html>\(index)</html>".utf8)
+                .write(to: packageURL.appendingPathComponent("chapter.xhtml"))
+            var components = URLComponents(string: "ebook://ebook/load/local/Books/book-\(index).epub")!
+            components.queryItems = [
+                URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
+            ]
+            return (packageURL, try XCTUnwrap(components.url))
+        }
+
+        let first = try makePackage(index: 1)
+        let second = try makePackage(index: 2)
+        let third = try makePackage(index: 3)
+        let fourth = try makePackage(index: 4)
+        let cache = ReaderPackageEntrySourceCache(countLimit: 2)
+        let fileManager = ReaderFileManager()
+
+        _ = try await cache.cachedSource(forPackageURL: first.readerURL, readerFileManager: fileManager)
+        _ = try await cache.cachedSource(forPackageURL: second.readerURL, readerFileManager: fileManager)
+        _ = try await cache.cachedSource(forPackageURL: third.readerURL, readerFileManager: fileManager)
+
+        let initialCount = await cache.cachedSourceCountForTesting()
+        let initialOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+        XCTAssertEqual(initialCount, 2)
+        XCTAssertEqual(
+            initialOrder,
+            [second.packageURL.standardizedFileURL.path, third.packageURL.standardizedFileURL.path]
+        )
+
+        _ = try await cache.cachedSource(forPackageURL: second.readerURL, readerFileManager: fileManager)
+        _ = try await cache.cachedSource(forPackageURL: fourth.readerURL, readerFileManager: fileManager)
+
+        let finalOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+        XCTAssertEqual(
+            finalOrder,
+            [second.packageURL.standardizedFileURL.path, fourth.packageURL.standardizedFileURL.path]
+        )
+    }
+
+    func testReaderPackageEntrySourceCacheDoesNotPublishFromAnAlreadyCancelledRequest() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageURL = temporaryRoot.appendingPathComponent("cancelled.epub", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+        try Data("<html></html>".utf8)
+            .write(to: packageURL.appendingPathComponent("chapter.xhtml"))
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        var continuation: AsyncStream<Void>.Continuation!
+        let startStream = AsyncStream<Void> { continuation = $0 }
+        var components = URLComponents(string: "ebook://ebook/load/local/Books/cancelled.epub")!
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
+        ]
+        let readerURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache(countLimit: 2)
+        let fileManager = ReaderFileManager()
+
+        let request = Task {
+            var iterator = startStream.makeAsyncIterator()
+            _ = await iterator.next()
+            return try await cache.cachedSource(
+                forPackageURL: readerURL,
+                readerFileManager: fileManager
+            )
+        }
+        await Task.yield()
+        request.cancel()
+        continuation.yield(())
+        continuation.finish()
+
+        do {
+            _ = try await request.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+        let cachedCount = await cache.cachedSourceCountForTesting()
+        XCTAssertEqual(cachedCount, 0)
     }
 
     func testReaderPackageArchiveSourceEnumeratesAndReadsEntriesWithoutExpansion() throws {
@@ -526,6 +666,49 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         XCTAssertEqual(entries.map(\.path), [chapterPath])
         XCTAssertEqual(String(decoding: try source.readEntry(subpath: chapterPath), as: UTF8.self), chapterHTML)
+    }
+
+    func testReaderPackageArchiveSourceAdvertisesOnlyFirstAddressableEntryPerPath() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let firstEntryData = Data("first".utf8)
+        let duplicateEntryData = Data("second-is-longer".utf8)
+
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        guard let archive = Archive(url: archiveURL, accessMode: .create) else {
+            XCTFail("Expected archive to be created")
+            return
+        }
+        func addEntry(path: String, data: Data) throws {
+            try archive.addEntry(
+                with: path,
+                type: .file,
+                uncompressedSize: Int64(data.count)
+            ) { position, size in
+                data.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        try addEntry(path: "OPS/chapter.xhtml", data: firstEntryData)
+        try addEntry(path: "../outside.xhtml", data: Data("outside".utf8))
+        try addEntry(path: "OPS\\windows.xhtml", data: Data("windows".utf8))
+        try addEntry(path: "OPS/chapter.xhtml", data: duplicateEntryData)
+
+        let source = try ReaderPackageEntrySource(localURL: archiveURL)
+
+        XCTAssertEqual(
+            try source.enumerateEntries(),
+            [ReaderPackageEntryMetadata(path: "OPS/chapter.xhtml", size: firstEntryData.count)]
+        )
+        XCTAssertEqual(
+            String(decoding: try source.readEntry(subpath: "OPS/chapter.xhtml"), as: UTF8.self),
+            "first"
+        )
+        XCTAssertThrowsError(try source.readEntry(subpath: "../outside.xhtml"))
+        XCTAssertThrowsError(try source.readEntry(subpath: "OPS\\windows.xhtml"))
     }
 
     func testCacheWarmerProcessingReturnsProcessedContent() async throws {
@@ -566,6 +749,124 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
 
         XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
+    }
+
+    func testEbookTextProcessorPropagatesCancellation() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+
+        do {
+            _ = try await ebookTextProcessor(
+                contentURL: contentURL,
+                sectionLocation: "item/xhtml/title.xhtml",
+                content: "<html><body>Original</body></html>",
+                contentFingerprint: "fingerprint",
+                isCacheWarmer: false,
+                processReadabilityContent: { _, _, _, _, _, _, _ in
+                    throw CancellationError()
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+            XCTFail("Cancellation must not become a successful raw section response")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testEbookTextProcessorRejectsSuccessfulReadabilityResultAfterTaskCancellation() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let task = Task {
+            try await ebookTextProcessor(
+                contentURL: contentURL,
+                sectionLocation: "item/xhtml/title.xhtml",
+                content: "<html><body>Original</body></html>",
+                contentFingerprint: "fingerprint",
+                isCacheWarmer: false,
+                processReadabilityContent: { content, _, sectionURL, _, _, _, _ in
+                    withUnsafeCurrentTask { currentTask in
+                        currentTask?.cancel()
+                    }
+                    return try SwiftSoup.parse(content, sectionURL?.absoluteString ?? "")
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled processing must not publish a successful document")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testEbookTextProcessorTreatsTaskCancellationAsCancellationEvenForAnotherError() async throws {
+        enum ExpectedProcessingError: Error {
+            case failedAfterCancellation
+        }
+
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let task = Task {
+            try await ebookTextProcessor(
+                contentURL: contentURL,
+                sectionLocation: "item/xhtml/title.xhtml",
+                content: "<html><body>Original</body></html>",
+                contentFingerprint: "fingerprint",
+                isCacheWarmer: false,
+                processReadabilityContent: { _, _, _, _, _, _, _ in
+                    withUnsafeCurrentTask { currentTask in
+                        currentTask?.cancel()
+                    }
+                    throw ExpectedProcessingError.failedAfterCancellation
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+        }
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled processing must not become a recoverable raw fallback")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testEbookTextProcessorMarksRecoverableFallbackAsNonAuthoritative() async throws {
+        enum ExpectedProcessingError: Error {
+            case failed
+        }
+
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
+        let originalText = "<html><body>Original</body></html>"
+        let result = try await ebookTextProcessor(
+            contentURL: contentURL,
+            sectionLocation: "item/xhtml/title.xhtml",
+            content: originalText,
+            contentFingerprint: "fingerprint",
+            isCacheWarmer: false,
+            processReadabilityContent: { _, _, _, _, _, _, _ in
+                throw ExpectedProcessingError.failed
+            },
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        XCTAssertEqual(String(decoding: result.documentHTML, as: UTF8.self), originalText)
+        XCTAssertTrue(result.segmentSidecar.isEmpty)
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
     }
 
     func testSectionProcessingDeduperCoalescesEquivalentInFlightRequests() async throws {
@@ -573,7 +874,8 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let key = EBookSectionProcessingRequestKey(
             contentURL: contentURL,
             location: "chapter.xhtml",
-            contentData: Data("本文".utf8)
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
         )
         let gate = EbookTestGate()
         let invocationCounter = EbookTestInvocationCounter()
@@ -615,12 +917,388 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(invocationCount, 1)
     }
 
+    func testSectionProcessingDeduperKeepsSharedProducerAliveWhenOriginalCallerIsCancelled() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
+        )
+        let gate = EbookTestGate()
+        let invocationCounter = EbookTestInvocationCounter()
+        let started = expectation(description: "shared producer starts")
+        let deduper = EBookSectionProcessingDeduper()
+
+        let originalCaller = Task {
+            try await deduper.process(key: key) {
+                await invocationCounter.increment()
+                started.fulfill()
+                await gate.waitUntilReleased()
+                try Task.checkCancellation()
+                return ebookTestPayload("shared-after-cancellation")
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+
+        let activeWaiter = Task {
+            try await deduper.process(key: key) {
+                XCTFail("The active waiter must reuse the independent shared producer")
+                return ebookTestPayload("duplicate")
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) > 0 {
+                break
+            }
+            await Task.yield()
+        }
+        let waiterCount = await deduper.inFlightWaiterCountForTesting(key: key)
+        XCTAssertEqual(waiterCount, 1)
+
+        originalCaller.cancel()
+        await gate.release()
+
+        do {
+            _ = try await originalCaller.value
+            XCTFail("The cancelled caller must retain its own cancellation result")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+
+        let activeResult = try await activeWaiter.value
+        XCTAssertEqual(
+            String(decoding: activeResult.payload.documentHTML, as: UTF8.self),
+            "shared-after-cancellation"
+        )
+        XCTAssertTrue(activeResult.didCoalesce)
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testSectionProcessingDeduperCancelledWaiterReturnsBeforeSharedProducerCompletes() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
+        )
+        let gate = EbookTestGate()
+        let started = expectation(description: "shared producer starts")
+        let cancelledWaiterFinished = expectation(description: "cancelled waiter finishes promptly")
+        let deduper = EBookSectionProcessingDeduper()
+
+        let activeCaller = Task {
+            try await deduper.process(key: key) {
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return ebookTestPayload("active-result")
+            }
+        }
+        await fulfillment(of: [started], timeout: 1)
+
+        let cancelledWaiter = Task {
+            try await deduper.process(key: key) {
+                XCTFail("The coalesced waiter must not start another producer")
+                return ebookTestPayload("duplicate")
+            }
+        }
+        for _ in 0..<1_000 {
+            if await deduper.inFlightWaiterCountForTesting(key: key) > 0 {
+                break
+            }
+            await Task.yield()
+        }
+
+        let cancellationObserver = Task {
+            do {
+                _ = try await cancelledWaiter.value
+                XCTFail("The cancelled waiter must not wait for the shared producer")
+            } catch is CancellationError {
+                cancelledWaiterFinished.fulfill()
+            } catch {
+                XCTFail("Expected CancellationError, received \(error)")
+            }
+        }
+        cancelledWaiter.cancel()
+        await fulfillment(of: [cancelledWaiterFinished], timeout: 1)
+
+        await gate.release()
+        let activeResult = try await activeCaller.value
+        _ = await cancellationObserver.result
+        XCTAssertEqual(String(decoding: activeResult.payload.documentHTML, as: UTF8.self), "active-result")
+    }
+
+    func testSectionProcessingDeduperCancelsProducerWhenItsLastWaiterCancels() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
+        )
+        let producerStarted = expectation(description: "producer starts")
+        let producerCancelled = expectation(description: "orphaned producer is cancelled")
+        let callerCancelled = expectation(description: "last waiter finishes with cancellation")
+        let deduper = EBookSectionProcessingDeduper()
+
+        let onlyCaller = Task {
+            try await deduper.process(key: key) {
+                producerStarted.fulfill()
+                return try await withTaskCancellationHandler {
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
+                    return ebookTestPayload("unexpected")
+                } onCancel: {
+                    producerCancelled.fulfill()
+                }
+            }
+        }
+        await fulfillment(of: [producerStarted], timeout: 1)
+
+        let cancellationObserver = Task {
+            do {
+                _ = try await onlyCaller.value
+                XCTFail("The last cancelled waiter must not receive a result")
+            } catch is CancellationError {
+                callerCancelled.fulfill()
+            } catch {
+                XCTFail("Expected CancellationError, received \(error)")
+            }
+        }
+        onlyCaller.cancel()
+        await fulfillment(of: [callerCancelled, producerCancelled], timeout: 1)
+        _ = await cancellationObserver.result
+
+        let replacement = try await deduper.process(key: key) {
+            ebookTestPayload("replacement")
+        }
+        XCTAssertEqual(String(decoding: replacement.payload.documentHTML, as: UTF8.self), "replacement")
+        XCTAssertFalse(replacement.didCoalesce)
+    }
+
+    func testProcessedSectionCacheProbePreservesCancellationAfterReaderReturns() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let gate = EbookTestGate()
+        let cacheReadStarted = expectation(description: "cache read starts")
+
+        let probe = Task {
+            try await probeEbookProcessedSectionCache(
+                reader: { _, _, _ in
+                    cacheReadStarted.fulfill()
+                    await gate.waitUntilReleased()
+                    return nil
+                },
+                contentURL: contentURL,
+                location: "chapter.xhtml",
+                contentFingerprint: "fingerprint"
+            )
+        }
+        await fulfillment(of: [cacheReadStarted], timeout: 1)
+        probe.cancel()
+        await gate.release()
+
+        do {
+            _ = try await probe.value
+            XCTFail("Cancellation must not become a cache miss")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testProcessedSectionCacheProbePropagatesReaderCancellation() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+
+        do {
+            _ = try await probeEbookProcessedSectionCache(
+                reader: { _, _, _ in throw CancellationError() },
+                contentURL: contentURL,
+                location: "chapter.xhtml",
+                contentFingerprint: "fingerprint"
+            )
+            XCTFail("Reader cancellation must not become a cache miss")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testProcessedSectionCacheProbeRejectsCancellationWithoutAReader() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let probe = Task {
+            try await probeEbookProcessedSectionCache(
+                reader: nil,
+                contentURL: contentURL,
+                location: "chapter.xhtml",
+                contentFingerprint: "fingerprint"
+            )
+        }
+        probe.cancel()
+
+        do {
+            _ = try await probe.value
+            XCTFail("Cancellation must not become an unavailable cache result")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+
+    func testProcessedSectionCacheProbeKeepsNonCancellationFailuresRetryable() async throws {
+        enum ExpectedCacheError: Error {
+            case failed
+        }
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+
+        let result = try await probeEbookProcessedSectionCache(
+            reader: { _, _, _ in throw ExpectedCacheError.failed },
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentFingerprint: "fingerprint"
+        )
+
+        XCTAssertNil(result.payload)
+        XCTAssertTrue(result.outcome.hasPrefix("error:"))
+    }
+
+    func testSectionProcessingDeduplicationDoesNotCrossHandlerOwners() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
+        )
+        let firstGate = EbookTestGate()
+        let firstStarted = expectation(description: "first handler processing starts")
+        let secondStarted = expectation(description: "second handler processing starts independently")
+        let firstHandler = EbookURLSchemeHandler()
+        let secondHandler = EbookURLSchemeHandler()
+
+        let firstTask = Task {
+            try await firstHandler.processSectionForRequest(key: key) {
+                firstStarted.fulfill()
+                await firstGate.waitUntilReleased()
+                return ebookTestPayload("first-owner")
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 1)
+
+        let secondTask = Task {
+            try await secondHandler.processSectionForRequest(key: key) {
+                secondStarted.fulfill()
+                return ebookTestPayload("second-owner")
+            }
+        }
+        await fulfillment(of: [secondStarted], timeout: 1)
+        let second = try await secondTask.value
+        await firstGate.release()
+        let first = try await firstTask.value
+
+        XCTAssertEqual(String(decoding: first.payload.documentHTML, as: UTF8.self), "first-owner")
+        XCTAssertEqual(String(decoding: second.payload.documentHTML, as: UTF8.self), "second-owner")
+        XCTAssertFalse(first.didCoalesce)
+        XCTAssertFalse(second.didCoalesce)
+    }
+
+    func testSectionProcessingDeduperProducerInheritsExactProcessingVariantContext() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let variant = EbookProcessingVariant(
+            availableDictionaryIDs: ["jmnedict", "jmdict"],
+            includeJLPTClasses: true,
+            romajiModeEnabled: true
+        )
+        let key = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: Data("本文".utf8),
+            processingVariant: variant
+        )
+        let deduper = EBookSectionProcessingDeduper()
+
+        let result = try await EbookProcessingVariantContext.$current.withValue(variant) {
+            try await deduper.process(key: key) {
+                XCTAssertEqual(EbookProcessingVariantContext.current, variant)
+                return ebookTestPayload("variant-owned")
+            }
+        }
+
+        XCTAssertEqual(String(decoding: result.payload.documentHTML, as: UTF8.self), "variant-owned")
+        XCTAssertFalse(result.didCoalesce)
+    }
+
+    func testSectionProcessingDeduperDoesNotCoalesceDifferentProcessingVariants() async throws {
+        let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
+        let contentData = Data("本文".utf8)
+        let firstKey = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: contentData,
+            processingVariant: EbookProcessingVariant(
+                availableDictionaryIDs: ["jmdict"],
+                includeJLPTClasses: false,
+                romajiModeEnabled: false
+            )
+        )
+        let secondKey = EBookSectionProcessingRequestKey(
+            contentURL: contentURL,
+            location: "chapter.xhtml",
+            contentData: contentData,
+            processingVariant: EbookProcessingVariant(
+                availableDictionaryIDs: ["jmdict", "jmnedict"],
+                includeJLPTClasses: true,
+                romajiModeEnabled: true
+            )
+        )
+        let firstGate = EbookTestGate()
+        let firstStarted = expectation(description: "first variant starts")
+        let secondStarted = expectation(description: "second variant starts independently")
+        let invocationCounter = EbookTestInvocationCounter()
+        let deduper = EBookSectionProcessingDeduper()
+
+        let firstTask = Task {
+            try await deduper.process(key: firstKey) {
+                await invocationCounter.increment()
+                firstStarted.fulfill()
+                await firstGate.waitUntilReleased()
+                return ebookTestPayload("first-variant")
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 1)
+
+        let secondTask = Task {
+            try await deduper.process(key: secondKey) {
+                await invocationCounter.increment()
+                secondStarted.fulfill()
+                return ebookTestPayload("second-variant")
+            }
+        }
+        await fulfillment(of: [secondStarted], timeout: 1)
+        let secondResult = try await secondTask.value
+        await firstGate.release()
+        let firstResult = try await firstTask.value
+
+        XCTAssertEqual(String(decoding: firstResult.payload.documentHTML, as: UTF8.self), "first-variant")
+        XCTAssertEqual(String(decoding: secondResult.payload.documentHTML, as: UTF8.self), "second-variant")
+        XCTAssertFalse(firstResult.didCoalesce)
+        XCTAssertFalse(secondResult.didCoalesce)
+        let invocationCount = await invocationCounter.count
+        XCTAssertEqual(invocationCount, 2)
+    }
+
     func testSectionProcessingDeduperDoesNotRetainCompletedResponses() async throws {
         let contentURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/test.epub"))
         let key = EBookSectionProcessingRequestKey(
             contentURL: contentURL,
             location: "chapter.xhtml",
-            contentData: Data("本文".utf8)
+            contentData: Data("本文".utf8),
+            processingVariant: ebookTestProcessingVariant
         )
         let deduper = EBookSectionProcessingDeduper()
         let invocationCounter = EbookTestInvocationCounter()
@@ -670,7 +1348,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
     func testForegroundProcessingPopulatesDisplayReadyProcessedTextCache() async throws {
         let writerCalled = expectation(description: "display-ready cache writer runs")
-        let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
+        let canonicalJSON = #"{"v":10,"t":{"h":[],"sid":[]},"s":[]}"#
         let processedHTML = "<html><body>foreground result<script id=\"mnb-segment-metadata\">\(canonicalJSON)</script></body></html>"
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheWriter: { _, _, _, payload in
@@ -695,5 +1373,32 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         )
 
         await fulfillment(of: [writerCalled], timeout: 1)
+    }
+
+    func testForegroundProcessingDoesNotCacheNonAuthoritativeFallback() async throws {
+        let writerInvocationCounter = EbookTestInvocationCounter()
+        let actor = EBookProcessingActor(
+            ebookProcessedTextCacheWriter: { _, _, _, _ in
+                await writerInvocationCounter.increment()
+            },
+            ebookTextProcessor: { _, _, text, _, _, _, _, _, _ in
+                ebookTestPayload(text, isAuthoritativelyProcessed: false)
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
+        )
+
+        let result = try await actor.process(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            location: "item/xhtml/chapter.xhtml",
+            text: "<html><body>raw fallback</body></html>",
+            isCacheWarmer: false
+        )
+
+        XCTAssertFalse(result.isAuthoritativelyProcessed)
+        let writerInvocationCount = await writerInvocationCounter.count
+        XCTAssertEqual(writerInvocationCount, 0)
     }
 }

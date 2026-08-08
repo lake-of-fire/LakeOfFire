@@ -90,6 +90,40 @@ export const lockedPageTurnQueueDecision = ({
         : { shouldQueue: true, reason: 'pageTurnQueueWithinSection', projectedQueuedPage }
 }
 
+export const scrolledPageTurnDecision = ({ canScrollWithinSection, adjacentIndex } = {}) => ({
+    shouldScrollWithinSection: canScrollWithinSection === true,
+    shouldGoToAdjacentSection:
+        canScrollWithinSection !== true && Number.isInteger(adjacentIndex),
+    isTerminal:
+        canScrollWithinSection !== true && !Number.isInteger(adjacentIndex),
+})
+
+export const paginatorPageTurnMovementResult = ({
+    indexChanged = false,
+    pageChanged = false,
+    startChanged = false,
+    hasComparablePosition = false,
+    shouldGoToAdjacentSection = false,
+    attemptedMovement = false,
+    authoritativeNoMove = false,
+    finalMetricsAvailable = true,
+} = {}) => {
+    if (authoritativeNoMove) return false
+    if (
+        indexChanged === true
+        || pageChanged === true
+        || startChanged === true
+        || (hasComparablePosition !== true && shouldGoToAdjacentSection === true)
+    ) return true
+    if (attemptedMovement === true && finalMetricsAvailable !== true) {
+        return {
+            movementDisposition: 'unknown',
+            reason: 'pageTurnFinalMetricsUnavailable',
+        }
+    }
+    return false
+}
+
 export const pageTurnBoundaryDecision = ({ currentPage, pageCount, step, adjacentIndex }) => {
     const requestedPage = Number.isFinite(currentPage) && Number.isFinite(step)
         ? currentPage + step

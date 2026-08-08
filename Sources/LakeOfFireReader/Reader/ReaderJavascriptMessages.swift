@@ -298,15 +298,29 @@ public struct ReaderOnErrorMessage {
     public let lineno: Int?
     public let colno: Int?
     public let error: String?
-    
+    public let documentStartedAtMilliseconds: Double?
+
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
+        self.init(body: message.body)
+    }
+
+    public init?(body rawBody: Any?) {
+        guard let body = rawBody as? [String: Any] else { return nil }
         guard let rawURL = body["source"] as? String, let url = URL(string: rawURL) else { return nil }
         self.message = body["message"] as? String
         source = url
         lineno = body["lineno"] as? Int
         colno = body["colno"] as? Int
         error = body["error"] as? String
+        let rawDocumentStartedAtMilliseconds =
+            (body["documentStartedAtMs"] as? NSNumber)?.doubleValue
+            ?? body["documentStartedAtMs"] as? Double
+        if let rawDocumentStartedAtMilliseconds,
+           rawDocumentStartedAtMilliseconds.isFinite {
+            documentStartedAtMilliseconds = rawDocumentStartedAtMilliseconds
+        } else {
+            documentStartedAtMilliseconds = nil
+        }
     }
 }
 

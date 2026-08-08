@@ -8,10 +8,16 @@ public enum ReaderCompactSegmentSidecarSchema {
 public struct EbookProcessedSectionPayload: Sendable {
     public let documentHTML: Data
     public let segmentSidecar: Data
+    public let isAuthoritativelyProcessed: Bool
 
-    public init(documentHTML: Data, segmentSidecar: Data) {
+    public init(
+        documentHTML: Data,
+        segmentSidecar: Data,
+        isAuthoritativelyProcessed: Bool = true
+    ) {
         self.documentHTML = documentHTML
         self.segmentSidecar = segmentSidecar
+        self.isAuthoritativelyProcessed = isAuthoritativelyProcessed
     }
 
     public var combinedByteCount: Int {
@@ -22,6 +28,7 @@ public struct EbookProcessedSectionPayload: Sendable {
 func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
     _ payload: EbookProcessedSectionPayload
 ) -> Bool {
+    guard payload.isAuthoritativelyProcessed else { return false }
     let documentSegmentCount = generatedReaderSegmentCount(in: payload.documentHTML)
     guard !payload.segmentSidecar.isEmpty else { return documentSegmentCount == 0 }
     guard let object = try? JSONSerialization.jsonObject(with: payload.segmentSidecar),
@@ -277,9 +284,9 @@ struct ReaderPublishedSegmentSidecar: Sendable {
     let endpointURL: String?
 }
 
-// Version 3 invalidates cached processed sections produced before durable `sid`
-// was mandatory for every ebook segment.
-private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC3".utf8)
+// Version 4 invalidates processed-section cache entries written before raw
+// fallback payloads were prevented from becoming durable cache authority.
+private let readerProcessedSegmentSidecarEnvelopePrefix = Array("MNBPSC4".utf8)
 private let readerProcessedSegmentSidecarEnvelopeLengthByteCount = MemoryLayout<UInt64>.size
 
 func splitCanonicalReaderSegmentSidecar(

@@ -52,3 +52,32 @@ test('scheduled publication rejects stale generations and detached documents', (
         currentDocuments: [current],
     }), true)
 })
+
+
+test('fragment-only navigation retains one frame publication key', () => {
+    const before = documentWithIdentity(
+        'ebook://book/chapter.xhtml?edition=1#before',
+        'frame-1'
+    )
+    const after = documentWithIdentity(
+        'ebook://book/chapter.xhtml?edition=1#after',
+        'frame-1'
+    )
+    const otherQuery = documentWithIdentity(
+        'ebook://book/chapter.xhtml?edition=2#after',
+        'frame-1'
+    )
+
+    assert.equal(
+        ebookDocumentFrameIdentity(before).frameKey,
+        ebookDocumentFrameIdentity(after).frameKey
+    )
+    assert.equal(
+        ebookDocumentFrameIdentity(before).documentURL,
+        'ebook://book/chapter.xhtml?edition=1'
+    )
+    assert.notEqual(
+        ebookDocumentFrameIdentity(before).frameKey,
+        ebookDocumentFrameIdentity(otherQuery).frameKey
+    )
+})

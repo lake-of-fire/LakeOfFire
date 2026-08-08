@@ -61,7 +61,11 @@ struct ReaderDocStateUserScript {
                 hasReaderContent,
                 hasReaderRenderReady: hasRenderReadyMarker
                     && hasReaderContent
-                    && (html?.dataset?.manabiFontPending ?? null) !== '1',
+                    && (html?.dataset?.mnbFontPending ?? null) !== '1',
+                readerRenderGeneration:
+                    html?.dataset?.mnbReaderRenderGeneration
+                    ?? body?.dataset?.mnbReaderRenderGeneration
+                    ?? null,
                 reason,
                 attempts: stateMachine.attempts
             };
@@ -100,7 +104,11 @@ struct ReaderDocStateUserScript {
                 childList: true,
                 subtree: true,
                 attributes: true,
-                attributeFilter: ["data-mnb-reader-render-ready", "data-manabi-font-pending"]
+                attributeFilter: [
+                    "data-mnb-reader-render-ready",
+                    "data-mnb-reader-render-generation",
+                    "data-mnb-font-pending"
+                ]
             });
         }
         document.addEventListener("readystatechange", () => { postState("readystatechange"); });
