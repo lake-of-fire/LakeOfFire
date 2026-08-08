@@ -1,55 +1,99 @@
-const parseViewport = str => str
-    ?.split(/[,;\s]/) // NOTE: technically, only the comma is valid
-    ?.filter(x => x)
-    ?.map(x => x.split('=').map(x => x.trim()))
+import {
+    SinglePublicationRendererLifetime,
+    readerRelocationDetailWithNavigationIntent,
+} from './ebook-restore-coordination.js'
 
-const normalizedViewport = value => {
-    const width = parseFloat(value?.width)
-    const height = parseFloat(value?.height)
-    return Number.isFinite(width) && width > 0
-        && Number.isFinite(height) && height > 0
-        ? { width, height }
-        : null
+const finitePositive = value => Number.isFinite(value) && value > 0
+
+const numericViewportPrefix = value => {
+    const number = typeof value === 'number'
+        ? value
+        : typeof value === 'string' ? Number.parseFloat(value) : Number.NaN
+    return finitePositive(number) ? number : null
 }
 
-const parsedViewport = value => {
-    try {
-        return normalizedViewport(Object.fromEntries(parseViewport(value) ?? []))
-    } catch (_error) {
-        return null
+const normalizedSVGAbsoluteLength = value => {
+    if (typeof value === 'number') return finitePositive(value) ? value : null
+    if (typeof value !== 'string') return null
+    const match = value.trim().match(
+        /^([+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(?:px)?$/i,
+    )
+    if (!match) return null
+    const number = Number(match[1])
+    return finitePositive(number) ? number : null
+}
+
+const parseFixedLayoutViewport = value => {
+    if (typeof value !== 'string') return null
+    const dimensions = {}
+    const declaration = /(?:^|[,;\s]+)(width|height)\s*=\s*([^,;\s]+)/gi
+    for (const match of value.matchAll(declaration)) {
+        const [, rawName, rawValue] = match
+        const name = rawName.toLowerCase()
+        if (!Object.hasOwn(dimensions, name)) dimensions[name] = rawValue
     }
+    return Object.keys(dimensions).length > 0 ? dimensions : null
+}
+
+const normalizedViewport = viewport => {
+    if (!viewport) return null
+    const width = numericViewportPrefix(viewport.width)
+    const height = numericViewportPrefix(viewport.height)
+    return width != null && height != null ? { width, height } : null
+}
+
+const normalizedSVGViewBox = element => {
+    const rawValue = element?.getAttribute?.('viewBox')
+    if (typeof rawValue !== 'string') return null
+    const values = rawValue.trim().split(/[\s,]+/)
+    if (values.length !== 4) return null
+    const [minX, minY, width, height] = values.map(Number)
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null
+    return finitePositive(width) && finitePositive(height) ? { width, height } : null
+}
+
+const normalizedSVGLength = (element, name) => {
+    const baseValue = element?.[name]?.baseVal
+    if (baseValue?.unitType !== 2) {
+        const value = Number(baseValue?.value)
+        if (finitePositive(value)) return value
+    }
+    return normalizedSVGAbsoluteLength(element?.getAttribute?.(name))
+}
+
+const normalizedSVGViewport = element => {
+    const viewBox = normalizedSVGViewBox(element)
+    if (viewBox) return viewBox
+    const width = normalizedSVGLength(element, 'width')
+    const height = normalizedSVGLength(element, 'height')
+    return width != null && height != null ? { width, height } : null
 }
 
 const getViewport = (doc, viewport) => {
-    // use `viewBox` for SVG
-    if (doc.documentElement?.nodeName === 'svg') {
-        const [, , width, height] = doc.documentElement
-            .getAttribute('viewBox')?.trim()?.split(/\s+/) ?? []
-        const svgViewport = normalizedViewport({ width, height })
+    const documentElement = doc?.documentElement
+    const rootName = documentElement?.localName ?? documentElement?.nodeName
+    if (rootName?.toLowerCase?.() === 'svg') {
+        const svgViewport = normalizedSVGViewport(documentElement)
         if (svgViewport) return svgViewport
     }
 
-    // get `viewport` `meta` element. Invalid web-style values such as
-    // `width=device-width` must not outrank a valid rendition fallback.
-    const metadataViewport = parsedViewport(doc.querySelector('meta[name="viewport"]')
-        ?.getAttribute('content'))
+    const metadataViewport = normalizedViewport(parseFixedLayoutViewport(
+        doc?.querySelector?.('meta[name="viewport"]')?.getAttribute?.('content'),
+    ))
     if (metadataViewport) return metadataViewport
 
-    // fallback to book's viewport
-    const bookViewport = typeof viewport === 'string'
-        ? parsedViewport(viewport)
-        : normalizedViewport(viewport)
+    const bookViewport = normalizedViewport(typeof viewport === 'string'
+        ? parseFixedLayoutViewport(viewport)
+        : viewport
+    )
     if (bookViewport) return bookViewport
 
-    // if no viewport (possibly with image directly in spine), get image size
-    const img = doc.querySelector('img')
-    const imageViewport = normalizedViewport({
-        width: img?.naturalWidth,
-        height: img?.naturalHeight,
-    })
+    const img = doc?.querySelector?.('img')
+    const imageViewport = normalizedViewport(img
+        ? { width: img.naturalWidth, height: img.naturalHeight }
+        : null)
     if (imageViewport) return imageViewport
 
-    // just show *something*, i guess...
     console.warn(new Error('Missing viewport properties'))
     return { width: 1000, height: 2000 }
 }
@@ -86,6 +130,7 @@ export class FixedLayout extends HTMLElement {
     #frameDocumentStates = new WeakMap()
     #navigationTransaction = null
     #destroyed = false
+    #publicationLifetime = new SinglePublicationRendererLifetime()
     constructor() {
         super()
 
@@ -127,12 +172,20 @@ export class FixedLayout extends HTMLElement {
             && options.relocationID.length > 0
             ? options.relocationID
             : null
+        const navigationIntent = Object.freeze(
+            readerRelocationDetailWithNavigationIntent({
+                rendererDetail: {},
+                navigationIntent: options?.navigationIntent ?? null,
+            })
+        )
         const transaction = {
             cancelled: this.#destroyed,
             reason: this.#destroyed ? 'fixedLayoutDestroyed' : null,
             cancellationListeners: new Set(),
             container: null,
             relocationID,
+            pageTurnAttemptID: options?.pageTurnAttemptID ?? null,
+            navigationIntent,
         }
         this.#navigationTransaction = transaction
         return transaction
@@ -521,6 +574,7 @@ export class FixedLayout extends HTMLElement {
         return true
     }
     #goLeft() {
+        this.#render(this.#side)
         if (this.#center || this.#left?.blank) return false
         if (this.#portrait && this.#left?.element?.style?.display === 'none') {
             this.#render('left')
@@ -529,6 +583,7 @@ export class FixedLayout extends HTMLElement {
         return false
     }
     #goRight() {
+        this.#render(this.#side)
         if (this.#center || this.#right?.blank) return false
         if (this.#portrait && this.#right?.element?.style?.display === 'none') {
             this.#render('right')
@@ -537,6 +592,7 @@ export class FixedLayout extends HTMLElement {
         return false
     }
     open(book) {
+        if (!this.#publicationLifetime.claimOpen()) return false
         this.#cancelNavigation(this.#navigationTransaction, 'fixedLayoutNavigationReset')
         this.#navigationTransaction = null
         this.#releaseSectionLeases(this.#activeSectionLeases)
@@ -595,6 +651,7 @@ export class FixedLayout extends HTMLElement {
             }
             return arr
         }, [{}]).filter(spread => spread.center || spread.left || spread.right)
+        return true
     }
     get index() {
         const spread = this.#spreads[this.#index]
@@ -605,17 +662,24 @@ export class FixedLayout extends HTMLElement {
     get currentIndex() {
         return this.index
     }
-    #reportLocation(reason, relocationID = null) {
-        const detail = {
+    #reportLocation(reason, transaction = null) {
+        const rendererDetail = {
             reason,
             range: null,
             index: this.index,
+            sectionIndex: this.index,
             fraction: 0,
             size: 1,
+            pageTurnAttemptID: transaction?.pageTurnAttemptID ?? null,
         }
+        const relocationID = transaction?.relocationID ?? null
         if (typeof relocationID === 'string' && relocationID.length > 0) {
-            detail.relocationID = relocationID
+            rendererDetail.relocationID = relocationID
         }
+        const detail = readerRelocationDetailWithNavigationIntent({
+            rendererDetail,
+            navigationIntent: transaction?.navigationIntent ?? null,
+        })
         this.dispatchEvent(new CustomEvent('relocate', { detail }))
     }
     getSpreadOf(section) {
@@ -662,11 +726,15 @@ export class FixedLayout extends HTMLElement {
         if (!hasRequestedSide) return false
         const resolvedSide = side
         if (index === this.#index) {
+            // ResizeObserver delivery is asynchronous. Reconcile current bounds
+            // before deciding whether this same-spread side is a real page turn.
+            this.#render(this.#side)
+            if (!this.#portrait || this.#center) return false
             const previousSectionIndex = this.index
             this.#render(resolvedSide)
             const moved = this.index !== previousSectionIndex
             this.#finishNavigation(transaction)
-            if (moved) this.#reportLocation(reason, transaction.relocationID)
+            if (moved) this.#reportLocation(reason, transaction)
             return moved
         }
 
@@ -729,7 +797,7 @@ export class FixedLayout extends HTMLElement {
             this.#activeContainer === committedContainer
             && this.index === committedSectionIndex
         ) {
-            this.#reportLocation(reason, transaction.relocationID)
+            this.#reportLocation(reason, transaction)
         }
         return true
     }
@@ -789,7 +857,7 @@ export class FixedLayout extends HTMLElement {
             const s = this.rtl ? this.#goLeft() : this.#goRight()
             if (s) {
                 this.#finishNavigation(transaction)
-                this.#reportLocation('page', transaction.relocationID)
+                this.#reportLocation('page', transaction)
                 return true
             }
             const targetIndex = this.#adjacentLinearSpreadIndex(1)
@@ -809,7 +877,7 @@ export class FixedLayout extends HTMLElement {
             const s = this.rtl ? this.#goRight() : this.#goLeft()
             if (s) {
                 this.#finishNavigation(transaction)
-                this.#reportLocation('page', transaction.relocationID)
+                this.#reportLocation('page', transaction)
                 return true
             }
             const targetIndex = this.#adjacentLinearSpreadIndex(-1)
@@ -822,18 +890,26 @@ export class FixedLayout extends HTMLElement {
         }, options)
     }
     getContents() {
+        if (!this.#publicationLifetime.isOpen) return []
         const frames = this.#center
             ? [this.#center]
             : [this.#left, this.#right].filter(Boolean)
-        return frames.map(frame => ({
+        const contents = frames.map(frame => ({
             doc: frame.iframe.contentDocument,
             iframe: frame.iframe,
             element: frame.element,
             index: Number(frame.iframe.dataset.index),
+            isVisible: frame.element?.style?.display !== 'none',
         }))
+        const primaryOffset = contents.findIndex(content => content.index === this.currentIndex)
+        if (this.#portrait && primaryOffset > 0) {
+            const [primaryContent] = contents.splice(primaryOffset, 1)
+            contents.unshift(primaryContent)
+        }
+        return contents
     }
     destroy() {
-        if (this.#destroyed) return
+        if (!this.#publicationLifetime.destroy()) return
         this.#destroyed = true
         this.#cancelNavigation(this.#navigationTransaction, 'fixedLayoutDestroyed')
         this.#navigationTransaction = null

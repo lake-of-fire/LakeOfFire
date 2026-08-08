@@ -1,7 +1,13 @@
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import ZIPFoundation
 import SwiftSoup
 @testable import LakeOfFireContent
+@testable import LakeOfFireCore
 @testable import LakeOfFireReader
 
 private actor EbookTestGate {
@@ -50,8 +56,58 @@ private let ebookTestProcessingVariant = EbookProcessingVariant(
     includeJLPTClasses: false,
     romajiModeEnabled: false
 )
+private func ebookUTF16Data(
+    _ text: String,
+    encoding: String.Encoding,
+    byteOrderMark: [UInt8] = []
+) -> Data {
+    var data = Data(byteOrderMark)
+    data.append(text.data(using: encoding)!)
+    return data
+}
+
+private func ebookTestBase64URLToken(for string: String) -> String {
+    Data(string.utf8)
+        .base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
 
 final class EbookURLSchemeHandlerTests: XCTestCase {
+    func testPathBackedEntryRequestDecodesPackageSubpathExactlyOnce() throws {
+        let mainDocumentURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/load/local/Books/test.epub")
+        )
+        let token = ebookTestBase64URLToken(for: mainDocumentURL.absoluteString)
+
+        let literalPercentURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/entry-source/\(token)/OPS/chapter%2520name.xhtml")
+        )
+        let literalPercentRequest = try XCTUnwrap(
+            ebookPathBackedEntryRequest(from: literalPercentURL)
+        )
+        XCTAssertEqual(literalPercentRequest.mainDocumentURL, mainDocumentURL)
+        XCTAssertEqual(literalPercentRequest.subpath, "OPS/chapter%20name.xhtml")
+
+        let literalEncodedSlashURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/entry-source/\(token)/OPS/chapter%252Fname.xhtml")
+        )
+        XCTAssertEqual(
+            ebookPathBackedEntryRequest(from: literalEncodedSlashURL)?.subpath,
+            "OPS/chapter%2Fname.xhtml"
+        )
+
+        let whitespaceURL = try XCTUnwrap(
+            URL(string: "ebook://ebook/entry-source/\(token)/%20chapter.xhtml%20")
+        )
+        let whitespaceRequest = try XCTUnwrap(
+            ebookPathBackedEntryRequest(from: whitespaceURL)
+        )
+        XCTAssertEqual(whitespaceRequest.mainDocumentURL, mainDocumentURL)
+        XCTAssertEqual(whitespaceRequest.subpath, " chapter.xhtml ")
+    }
+
     func testExternalizingCanonicalSidecarKeepsAggregateAndPublishesRawJSON() throws {
         let canonicalJSON = #"{"v":10,"t":{},"s":[]}"#
         let aggregateJSON = #"{"c":0,"j":[],"n":[],"k":[],"sid":[]}"#
@@ -98,7 +154,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let responseDocument = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
             first.documentHTML,
             baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
             bodyAttributes: [:],
             additionalHeadMarkup: first.headDescriptor
         ), as: UTF8.self)
@@ -360,18 +415,14 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
             Data(html.utf8),
             baseURL: "ebook://ebook/entry-source/token/chapter.xhtml?x=1&y=2",
-            writingHint: EBookProcessedSectionWritingHint(
-                direction: "vertical",
-                writingMode: "vertical-rl"
-            ),
             bodyAttributes: ["data-mnb-native-cache-outcome": "final-direct-hit"]
         ), as: UTF8.self)
 
         XCTAssertTrue(result.contains("<HEAD><base href=\"ebook://ebook/entry-source/token/chapter.xhtml?x=1&amp;y=2\">"))
         XCTAssertTrue(result.contains("<BODY class=\"book\""))
         XCTAssertTrue(result.contains("data-mnb-native-cache-outcome=\"final-direct-hit\""))
-        XCTAssertTrue(result.contains("data-mnb-writing-direction=\"vertical\""))
-        XCTAssertTrue(result.contains("data-mnb-writing-mode=\"vertical-rl\""))
+        XCTAssertFalse(result.contains("data-mnb-writing-direction="))
+        XCTAssertFalse(result.contains("data-mnb-writing-mode="))
         XCTAssertTrue(result.contains("<p>本文</p>"))
     }
 
@@ -379,7 +430,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
             Data("<section>本文</section>".utf8),
             baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
             bodyAttributes: ["data-test": "ok"]
         ), as: UTF8.self)
 
@@ -394,7 +444,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
             Data(html.utf8),
             baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
             bodyAttributes: ["data-response": "ready"],
             presentation: EbookSectionPresentation(
                 revision: "presentation-1",
@@ -417,7 +466,6 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         let result = String(decoding: ebookHTMLDataWithInjectedResponseMetadata(
             Data(html.utf8),
             baseURL: "ebook://ebook/entry-source/token/chapter.xhtml",
-            writingHint: nil,
             bodyAttributes: [:],
             presentation: EbookSectionPresentation(
                 revision: "presentation-2",
@@ -493,39 +541,103 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(result.pageStatsOutcome, .unsupported)
     }
 
-    func testReaderPackageDirectorySourceRejectsSymlinksEscapingThePackageRoot() throws {
+    func testNativeSectionPrewarmDecodesUTF16SourceText() async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let packageRoot = temporaryRoot
             .appendingPathComponent("book.epub", isDirectory: true)
-        let internalFileURL = packageRoot.appendingPathComponent("internal.xhtml")
-        let outsideFileURL = temporaryRoot.appendingPathComponent("outside.xhtml")
-        let internalLinkURL = packageRoot.appendingPathComponent("internal-link.xhtml")
-        let escapingLinkURL = packageRoot.appendingPathComponent("escaping-link.xhtml")
+        let contentDirectory = packageRoot
+            .appendingPathComponent("item/xhtml", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter.xhtml")
+        let chapterHTML = "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>日本語</body></html>"
+        let chapterData = ebookUTF16Data(
+            chapterHTML,
+            encoding: .utf16LittleEndian,
+            byteOrderMark: [0xFF, 0xFE]
+        )
 
-        try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
-        try Data("inside".utf8).write(to: internalFileURL)
-        try Data("outside".utf8).write(to: outsideFileURL)
-        try FileManager.default.createSymbolicLink(at: internalLinkURL, withDestinationURL: internalFileURL)
-        try FileManager.default.createSymbolicLink(at: escapingLinkURL, withDestinationURL: outsideFileURL)
+        try FileManager.default.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try chapterData.write(to: chapterURL)
         defer {
             try? FileManager.default.removeItem(at: temporaryRoot)
         }
 
         let source = try ReaderPackageEntrySource(localURL: packageRoot)
-        XCTAssertEqual(
-            String(decoding: try source.readEntry(subpath: "internal-link.xhtml"), as: UTF8.self),
-            "inside"
+        let actor = EBookProcessingActor(
+            ebookTextProcessor: { _, _, text, _, isCacheWarmer, _, _, _, _ in
+                XCTAssertEqual(text, chapterHTML)
+                XCTAssertTrue(isCacheWarmer)
+                return ebookTestPayload("<html><body>processed</body></html>")
+            },
+            processReadabilityContent: nil,
+            processHTMLDocument: nil,
+            processHTMLBytes: nil,
+            processHTML: nil
         )
-        let enumeratedPaths = try source.enumerateEntries().map(\.path)
-        XCTAssertTrue(enumeratedPaths.contains("internal-link.xhtml"))
-        XCTAssertFalse(enumeratedPaths.contains("escaping-link.xhtml"))
-        XCTAssertThrowsError(try source.readEntry(subpath: "escaping-link.xhtml")) { error in
-            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
-                XCTFail("Expected invalidSubpath, received \(error)")
-                return
-            }
+
+        let result = try await actor.prewarm(
+            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+            sectionHref: "item/xhtml/chapter.xhtml",
+            source: source
+        )
+
+        XCTAssertEqual(result.requestBytes, chapterData.count)
+    }
+
+    func testReaderPackageEntrySourceDetectsAndDecodesUTF16PublicationResources() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
         }
+
+        let source = try ReaderPackageEntrySource(localURL: temporaryRoot)
+        let text = "<package>日本語</package>"
+        let littleEndianWithBOM = ebookUTF16Data(
+            text,
+            encoding: .utf16LittleEndian,
+            byteOrderMark: [0xFF, 0xFE]
+        )
+        let bigEndianWithBOM = ebookUTF16Data(
+            text,
+            encoding: .utf16BigEndian,
+            byteOrderMark: [0xFE, 0xFF]
+        )
+        let littleEndianXMLSignature = ebookUTF16Data(text, encoding: .utf16LittleEndian)
+        let bigEndianXMLSignature = ebookUTF16Data(text, encoding: .utf16BigEndian)
+
+        XCTAssertEqual(ReaderPackageEntrySource.decodeText(littleEndianWithBOM), text)
+        XCTAssertEqual(ReaderPackageEntrySource.decodeText(bigEndianWithBOM), text)
+        XCTAssertEqual(ReaderPackageEntrySource.decodeText(littleEndianXMLSignature), text)
+        XCTAssertEqual(ReaderPackageEntrySource.decodeText(bigEndianXMLSignature), text)
+        let packageMetadata = try source.mimeType(
+            subpath: "OPS/package.opf",
+            data: littleEndianWithBOM
+        )
+        XCTAssertEqual(packageMetadata.textEncodingName, "utf-16le")
+        let packageResponse = ebookHTTPResponse(
+            url: URL(string: "ebook://ebook/entry?subpath=OPS/package.opf")!,
+            mimeType: packageMetadata.mimeType,
+            byteCount: littleEndianWithBOM.count,
+            textEncodingName: packageMetadata.textEncodingName
+        )
+        XCTAssertEqual(
+            packageResponse.value(forHTTPHeaderField: "Content-Type"),
+            "application/oebps-package+xml; charset=utf-16le"
+        )
+        XCTAssertEqual(
+            try source.mimeType(subpath: "OPS/chapter.xhtml", data: bigEndianWithBOM).textEncodingName,
+            "utf-16be"
+        )
+        XCTAssertEqual(
+            try source.mimeType(subpath: "OPS/book.css", data: Data("body {}".utf8)).textEncodingName,
+            "utf-8"
+        )
+        XCTAssertNil(
+            try source.mimeType(subpath: "OPS/cover.png", data: littleEndianWithBOM).textEncodingName
+        )
     }
 
     func testReaderPackageDirectoryEnumerationHandlesStandardizedRootPaths() throws {
@@ -550,96 +662,1207 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertEqual(entries.map(\.path), ["OPS/chapter1.xhtml"])
     }
 
-    func testReaderPackageEntrySourceCacheEvictsLeastRecentlyUsedBooks() async throws {
+    func testReaderPackageEntrySourcePreservesExactWhitespaceAndPercentPaths() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let payloads = [
+            "OPS/chapter.xhtml": "plain",
+            "OPS/chapter.xhtml ": "trailing-space",
+            "OPS/chapter.xhtml\u{00A0}": "trailing-nonbreaking-space",
+            "OPS/styles.css ": "body {}",
+            "OPS/chapter%20.xhtml": "literal-percent",
+            "OPS/chapter%2Fname.xhtml": "literal-encoded-slash",
+            " chapter.xhtml ": "root-whitespace",
+        ]
+
+        try FileManager.default.createDirectory(
+            at: contentDirectory,
+            withIntermediateDirectories: true
+        )
+        for (subpath, payload) in payloads {
+            let fileURL = packageRoot.appendingPathComponent(subpath)
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(payload.utf8).write(to: fileURL)
+        }
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 
-        func makePackage(index: Int) throws -> (packageURL: URL, readerURL: URL) {
-            let packageURL = temporaryRoot
-                .appendingPathComponent("book-\(index).epub", isDirectory: true)
-            try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
-            try Data("<html>\(index)</html>".utf8)
-                .write(to: packageURL.appendingPathComponent("chapter.xhtml"))
-            var components = URLComponents(string: "ebook://ebook/load/local/Books/book-\(index).epub")!
-            components.queryItems = [
-                URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
-            ]
-            return (packageURL, try XCTUnwrap(components.url))
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        XCTAssertEqual(Set(try source.enumerateEntries().map(\.path)), Set(payloads.keys))
+        for (subpath, payload) in payloads {
+            XCTAssertEqual(
+                String(decoding: try source.readEntry(subpath: subpath), as: UTF8.self),
+                payload
+            )
+            XCTAssertEqual(try ReaderPackageEntrySource.sanitizeSubpath(subpath), subpath)
         }
+        let xhtmlMetadata = try source.mimeType(subpath: "OPS/chapter.xhtml ")
+        XCTAssertEqual(xhtmlMetadata.mimeType, "application/xhtml+xml")
+        XCTAssertEqual(xhtmlMetadata.textEncodingName, "utf-8")
 
-        let first = try makePackage(index: 1)
-        let second = try makePackage(index: 2)
-        let third = try makePackage(index: 3)
-        let fourth = try makePackage(index: 4)
-        let cache = ReaderPackageEntrySourceCache(countLimit: 2)
-        let fileManager = ReaderFileManager()
-
-        _ = try await cache.cachedSource(forPackageURL: first.readerURL, readerFileManager: fileManager)
-        _ = try await cache.cachedSource(forPackageURL: second.readerURL, readerFileManager: fileManager)
-        _ = try await cache.cachedSource(forPackageURL: third.readerURL, readerFileManager: fileManager)
-
-        let initialCount = await cache.cachedSourceCountForTesting()
-        let initialOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
-        XCTAssertEqual(initialCount, 2)
-        XCTAssertEqual(
-            initialOrder,
-            [second.packageURL.standardizedFileURL.path, third.packageURL.standardizedFileURL.path]
+        let nonbreakingSpaceXHTMLMetadata = try source.mimeType(
+            subpath: "OPS/chapter.xhtml\u{00A0}"
         )
+        XCTAssertEqual(nonbreakingSpaceXHTMLMetadata.mimeType, "application/xhtml+xml")
+        XCTAssertEqual(nonbreakingSpaceXHTMLMetadata.textEncodingName, "utf-8")
 
-        _ = try await cache.cachedSource(forPackageURL: second.readerURL, readerFileManager: fileManager)
-        _ = try await cache.cachedSource(forPackageURL: fourth.readerURL, readerFileManager: fileManager)
+        let cssMetadata = try source.mimeType(subpath: "OPS/styles.css ")
+        XCTAssertEqual(cssMetadata.mimeType, "text/css")
+        XCTAssertEqual(cssMetadata.textEncodingName, "utf-8")
+    }
 
-        let finalOrder = await cache.cachedSourcePathsInLRUOrderForTesting()
+    func testReaderPackageEntrySourceUsesCanonicalImageMIMETypes() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: packageRoot,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
         XCTAssertEqual(
-            finalOrder,
-            [second.packageURL.standardizedFileURL.path, fourth.packageURL.standardizedFileURL.path]
+            try source.mimeType(subpath: "OPS/cover.jpg").mimeType,
+            "image/jpeg"
+        )
+        XCTAssertEqual(
+            try source.mimeType(subpath: "OPS/cover.svg").mimeType,
+            "image/svg+xml"
         )
     }
 
-    func testReaderPackageEntrySourceCacheDoesNotPublishFromAnAlreadyCancelledRequest() async throws {
+    func testReaderPackageImageDataUsesContainedPackageEntrySource() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let packageURL = temporaryRoot.appendingPathComponent("cancelled.epub", isDirectory: true)
-        try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
-        try Data("<html></html>".utf8)
-            .write(to: packageURL.appendingPathComponent("chapter.xhtml"))
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let coverURL = contentDirectory.appendingPathComponent("cover.png")
+        let outsideURL = temporaryRoot.appendingPathComponent("outside.png")
+        let coverData = Data([0x89, 0x50, 0x4E, 0x47])
+
+        try FileManager.default.createDirectory(
+            at: contentDirectory,
+            withIntermediateDirectories: true
+        )
+        try coverData.write(to: coverURL)
+        try Data("outside".utf8).write(to: outsideURL)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 
-        var continuation: AsyncStream<Void>.Continuation!
-        let startStream = AsyncStream<Void> { continuation = $0 }
-        var components = URLComponents(string: "ebook://ebook/load/local/Books/cancelled.epub")!
-        components.queryItems = [
-            URLQueryItem(name: "diagnosticLocalFilePath", value: packageURL.path),
-        ]
-        let readerURL = try XCTUnwrap(components.url)
-        let cache = ReaderPackageEntrySourceCache(countLimit: 2)
-        let fileManager = ReaderFileManager()
+        XCTAssertEqual(
+            try readerPackageImageData(
+                localPackageURL: packageRoot,
+                subpath: "OPS/cover.png"
+            ),
+            coverData
+        )
+        XCTAssertThrowsError(
+            try readerPackageImageData(
+                localPackageURL: packageRoot,
+                subpath: "../outside.png"
+            )
+        ) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected traversal to fail closed, got \(error)")
+                return
+            }
+        }
+    }
 
-        let request = Task {
-            var iterator = startStream.makeAsyncIterator()
-            _ = await iterator.next()
-            return try await cache.cachedSource(
-                forPackageURL: readerURL,
-                readerFileManager: fileManager
+    func testReaderPackageEntrySourceResolvesRendererCompatibleRelativeHrefs() {
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "../Images/cover%20art.jpg#thumbnail",
+                relativeTo: "OPS/Text"
+            ),
+            "OPS/Images/cover art.jpg"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "chapter%2Fpart.xhtml",
+                relativeTo: "OPS"
+            ),
+            "OPS/chapter%2Fpart.xhtml"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                " chapter.xhtml ",
+                relativeTo: "OPS"
+            ),
+            "OPS/chapter.xhtml"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "\u{00A0}chapter.xhtml\u{00A0}",
+                relativeTo: "OPS"
+            ),
+            "OPS/\u{00A0}chapter.xhtml\u{00A0}"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "OPS/chapter:one/package.opf",
+                relativeTo: ""
+            ),
+            "OPS/chapter:one/package.opf"
+        )
+        XCTAssertNil(
+            ReaderPackageEntrySource.resolveSubpath(
+                "web+epub:external.opf",
+                relativeTo: "OPS"
+            )
+        )
+        XCTAssertNil(
+            ReaderPackageEntrySource.resolveSubpath(
+                "../../../outside.jpg",
+                relativeTo: "OPS/Text"
+            )
+        )
+    }
+
+    func testEPubParserUsesTypedContainedPackageAndNormalizesCoverHref() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS/Text", isDirectory: true)
+        let imageDirectory = packageRoot
+            .appendingPathComponent("OPS/Images", isDirectory: true)
+        let outsideOPF = temporaryRoot.appendingPathComponent("outside.opf")
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: opfDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: imageDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let containerXML = """
+        <?xml version="1.0"?>
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles>
+            <rootfile full-path="../outside.opf" media-type="application/x-other"/>
+            <rootfile full-path="OPS/Text/package.opf" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """
+        try Data(containerXML.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+
+        let insideOPF = """
+        <package version="3.0" xmlns="http://www.idpf.org/2007/opf"
+                 xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <metadata>
+            <dc:title>Inside Book</dc:title>
+            <dc:creator>Inside Author</dc:creator>
+          </metadata>
+          <manifest>
+            <item id="cover" properties="cover-image"
+                  href="../Images/cover%20art.jpg" media-type="image/jpeg"/>
+            <item id="not-cover" properties="not-cover-image"
+                  href="../../../outside.jpg" media-type="image/jpeg"/>
+          </manifest>
+        </package>
+        """
+        try Data(insideOPF.utf8).write(
+            to: opfDirectory.appendingPathComponent("package.opf")
+        )
+        try Data([0xFF, 0xD8, 0xFF]).write(
+            to: imageDirectory.appendingPathComponent("cover art.jpg")
+        )
+
+        let outsideDocument = """
+        <package version="3.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <metadata><dc:title>Outside Book</dc:title></metadata>
+          <manifest>
+            <item id="cover" properties="cover-image"
+                  href="outside.jpg" media-type="image/jpeg"/>
+          </manifest>
+        </package>
+        """
+        try Data(outsideDocument.utf8).write(to: outsideOPF)
+
+        let metadata = try XCTUnwrap(
+            EPubParser.parseMetadataAndCover(from: packageRoot)
+        )
+        XCTAssertEqual(metadata.title, "Inside Book")
+        XCTAssertEqual(metadata.author, "Inside Author")
+        let coverHref = try XCTUnwrap(metadata.coverHref)
+        XCTAssertEqual(coverHref, "OPS/Images/cover art.jpg")
+        XCTAssertEqual(
+            try readerPackageImageData(
+                localPackageURL: packageRoot,
+                subpath: coverHref
+            ),
+            Data([0xFF, 0xD8, 0xFF])
+        )
+    }
+
+    func testEPubParserResolvesContainerRootfileURLExactlyOnce() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let packageURL = opfDirectory
+            .appendingPathComponent("package%2Fname x.opf")
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: opfDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try Data("""
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles>
+            <rootfile full-path="OPS/package%252Fname%20x.opf"
+                      media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+        try Data("""
+        <package xmlns="http://www.idpf.org/2007/opf"
+                 xmlns:dc="http://purl.org/dc/elements/1.1/"
+                 version="3.0">
+          <metadata><dc:title>Encoded Package Path</dc:title></metadata>
+          <manifest/>
+        </package>
+        """.utf8).write(to: packageURL)
+
+        let metadata = try XCTUnwrap(
+            EPubParser.parseMetadataAndCover(from: packageRoot)
+        )
+        XCTAssertEqual(metadata.title, "Encoded Package Path")
+    }
+
+    func testEPubParserSupportsNamespaceQualifiedPackageAndUsesPrimaryMetadata() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let imageDirectory = opfDirectory
+            .appendingPathComponent("Images", isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: imageDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let containerXML = """
+        <?xml version="1.0"?>
+        <c:container xmlns:c="urn:oasis:names:tc:opendocument:xmlns:container">
+          <c:rootfiles>
+            <c:rootfile full-path="OPS/package.opf"
+                        media-type="application/oebps-package+xml"/>
+          </c:rootfiles>
+        </c:container>
+        """
+        try Data(containerXML.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+
+        let packageDocument = """
+        <pkg:package xmlns:pkg="http://www.idpf.org/2007/opf"
+                     xmlns:dc="http://purl.org/dc/elements/1.1/"
+                     version="3.0">
+          <pkg:metadata>
+            <dc:title>Primary
+              Title</dc:title>
+            <dc:title>Secondary Title</dc:title>
+            <dc:creator>Primary
+              Author</dc:creator>
+            <dc:creator>Secondary Author</dc:creator>
+            <pkg:meta name="cover" content="legacy-cover"/>
+          </pkg:metadata>
+          <pkg:manifest>
+            <pkg:item id="legacy-cover" href="Images/legacy.jpg"
+                      media-type="image/jpeg"/>
+            <pkg:item id="primary-cover" href="Images/primary.jpg"
+                      media-type="image/jpeg" properties="other cover-image"/>
+          </pkg:manifest>
+          <pkg:spine/>
+        </pkg:package>
+        """
+        try Data(packageDocument.utf8).write(
+            to: opfDirectory.appendingPathComponent("package.opf")
+        )
+        try Data([0xFF, 0xD8, 0xFF]).write(
+            to: imageDirectory.appendingPathComponent("primary.jpg")
+        )
+
+        let metadata = try XCTUnwrap(
+            EPubParser.parseMetadataAndCover(from: packageRoot)
+        )
+        XCTAssertEqual(metadata.title, "Primary Title")
+        XCTAssertEqual(metadata.author, "Primary Author")
+        XCTAssertEqual(metadata.coverHref, "OPS/Images/primary.jpg")
+    }
+
+    func testEPubParserKeepsCoverlessMetadataAndParsesW3CDatePrecisions() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: opfDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try Data("""
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles>
+            <rootfile full-path="OPS/package.opf"
+                      media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+        try Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"></html>".utf8)
+            .write(to: opfDirectory.appendingPathComponent("chapter.xhtml"))
+
+        let cases: [(value: String, year: Int, month: Int, day: Int, hour: Int, minute: Int)] = [
+            ("2024", 2024, 1, 1, 0, 0),
+            ("2024-05", 2024, 5, 1, 0, 0),
+            ("2024-05-12", 2024, 5, 12, 0, 0),
+            ("2024-05-12T14:30Z", 2024, 5, 12, 14, 30),
+            ("2024-05-12T14:30:45Z", 2024, 5, 12, 14, 30),
+            ("2024-05-12T14:30:45.125Z", 2024, 5, 12, 14, 30),
+        ]
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        for (index, testCase) in cases.enumerated() {
+            let optionalUnsafeCover = index.isMultiple(of: 2) ? "" : """
+                <item id="cover" href="../../outside.jpg"
+                      media-type="image/jpeg" properties="cover-image"/>
+            """
+            let packageDocument = """
+            <package xmlns="http://www.idpf.org/2007/opf"
+                     xmlns:dc="http://purl.org/dc/elements/1.1/"
+                     version="3.0">
+              <metadata>
+                <dc:title>Coverless Book</dc:title>
+                <dc:creator>Metadata Author</dc:creator>
+                <dc:date>\(testCase.value)</dc:date>
+              </metadata>
+              <manifest>
+                <item id="chapter" href="chapter.xhtml"
+                      media-type="application/xhtml+xml"/>
+                \(optionalUnsafeCover)
+              </manifest>
+              <spine><itemref idref="chapter"/></spine>
+            </package>
+            """
+            try Data(packageDocument.utf8).write(
+                to: opfDirectory.appendingPathComponent("package.opf")
+            )
+
+            let metadata = try XCTUnwrap(
+                EPubParser.parseMetadataAndCover(from: packageRoot),
+                "Failed to parse \(testCase.value)"
+            )
+            XCTAssertEqual(metadata.title, "Coverless Book")
+            XCTAssertEqual(metadata.author, "Metadata Author")
+            XCTAssertNil(metadata.coverHref)
+            let publicationDate = try XCTUnwrap(metadata.publicationDate)
+            let dateComponents = calendar.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: publicationDate
+            )
+            XCTAssertEqual(dateComponents.year, testCase.year)
+            XCTAssertEqual(dateComponents.month, testCase.month)
+            XCTAssertEqual(dateComponents.day, testCase.day)
+            XCTAssertEqual(dateComponents.hour, testCase.hour)
+            XCTAssertEqual(dateComponents.minute, testCase.minute)
+        }
+    }
+
+    func testEPubParserIgnoresNestedPackageLookalikes() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let imageDirectory = opfDirectory
+            .appendingPathComponent("Images", isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: imageDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try Data("""
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles>
+            <rootfile full-path="OPS/package.opf"
+                      media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+
+        try Data("""
+        <package xmlns:dc="http://purl.org/dc/elements/1.1/"
+                 xmlns:ext="urn:example:extension"
+                 version="3.0">
+          <metadata>
+            <dc:title>Primary Title</dc:title>
+            <ext:wrapper>
+              <metadata><dc:title>Nested Title</dc:title></metadata>
+            </ext:wrapper>
+          </metadata>
+          <manifest>
+            <item id="cover" href="Images/primary.jpg"
+                  media-type="image/jpeg" properties="cover-image"/>
+          </manifest>
+          <ext:wrapper>
+            <manifest>
+              <item id="nested-cover" href="Images/nested.jpg"
+                    media-type="image/jpeg" properties="cover-image"/>
+            </manifest>
+          </ext:wrapper>
+          <spine/>
+        </package>
+        """.utf8).write(to: opfDirectory.appendingPathComponent("package.opf"))
+        try Data([0xFF, 0xD8, 0xFF]).write(
+            to: imageDirectory.appendingPathComponent("primary.jpg")
+        )
+
+        let metadata = try XCTUnwrap(
+            EPubParser.parseMetadataAndCover(from: packageRoot)
+        )
+        XCTAssertEqual(metadata.title, "Primary Title")
+        XCTAssertEqual(metadata.coverHref, "OPS/Images/primary.jpg")
+    }
+
+    func testEPubParserIgnoresNestedContainerRootfileLookalikes() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: opfDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let containerXML = """
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+                   xmlns:ext="urn:example:extension">
+          <ext:wrapper>
+            <rootfile full-path="OPS/package.opf"
+                      media-type="application/oebps-package+xml"/>
+          </ext:wrapper>
+        </container>
+        """
+        try Data(containerXML.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+        try Data("""
+        <package xmlns="http://www.idpf.org/2007/opf"
+                 xmlns:dc="http://purl.org/dc/elements/1.1/"
+                 version="3.0">
+          <metadata><dc:title>Nested Rootfile</dc:title></metadata>
+          <manifest>
+            <item id="cover" href="cover.jpg" properties="cover-image"
+                  media-type="image/jpeg"/>
+          </manifest>
+          <spine/>
+        </package>
+        """.utf8).write(to: opfDirectory.appendingPathComponent("package.opf"))
+
+        XCTAssertNil(try EPubParser.parseMetadataAndCover(from: packageRoot))
+    }
+
+    func testEPubParserRejectsMalformedContainerAfterTypedRootfile() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let opfDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: opfDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let malformedContainer = """
+        <container><rootfiles>
+          <rootfile full-path="OPS/package.opf"
+                    media-type="application/oebps-package+xml"/>
+        """
+        try Data(malformedContainer.utf8).write(
+            to: metadataDirectory.appendingPathComponent("container.xml")
+        )
+        try Data("""
+        <package version="3.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <metadata><dc:title>Partial Book</dc:title></metadata>
+          <manifest>
+            <item id="cover" properties="cover-image"
+                  href="cover.jpg" media-type="image/jpeg"/>
+          </manifest>
+        </package>
+        """.utf8).write(to: opfDirectory.appendingPathComponent("package.opf"))
+
+        XCTAssertNil(try EPubParser.parseMetadataAndCover(from: packageRoot))
+    }
+
+    func testReaderPackageDirectoryEnumerationIncludesDotPrefixedPackageResources() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let hiddenDirectory = packageRoot
+            .appendingPathComponent("OPS/.assets", isDirectory: true)
+        let hiddenChapterURL = hiddenDirectory
+            .appendingPathComponent(".chapter.xhtml")
+
+        try FileManager.default.createDirectory(at: hiddenDirectory, withIntermediateDirectories: true)
+        try Data("<html></html>".utf8).write(to: hiddenChapterURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        let entries = try source.enumerateEntries()
+
+        XCTAssertEqual(entries.map(\.path), ["OPS/.assets/.chapter.xhtml"])
+        XCTAssertEqual(
+            String(decoding: try source.readEntry(subpath: "OPS/.assets/.chapter.xhtml"), as: UTF8.self),
+            "<html></html>"
+        )
+    }
+
+    func testReaderPackageDirectorySourceRejectsEmbeddedNullSubpaths() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter.xhtml")
+
+        try FileManager.default.createDirectory(
+            at: contentDirectory,
+            withIntermediateDirectories: true
+        )
+        try Data("<html></html>".utf8).write(to: chapterURL)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        XCTAssertThrowsError(
+            try source.readEntry(subpath: "OPS/chapter.xhtml\0ignored")
+        ) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath for embedded NUL, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageDirectorySourceRejectsNonRegularEntriesWithoutBlocking() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot
+            .appendingPathComponent("META-INF", isDirectory: true)
+        let fifoURL = metadataDirectory
+            .appendingPathComponent("container.xml")
+
+        try FileManager.default.createDirectory(
+            at: metadataDirectory,
+            withIntermediateDirectories: true
+        )
+        XCTAssertEqual(mkfifo(fifoURL.path, mode_t(0o600)), 0)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        XCTAssertThrowsError(
+            try source.readEntry(subpath: "META-INF/container.xml")
+        ) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath for FIFO entry, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageDirectorySourceRejectsSymbolicLinkEscapes() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let linkedPackageRoot = temporaryRoot
+            .appendingPathComponent("linked-book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let chapterURL = contentDirectory
+            .appendingPathComponent("chapter.xhtml")
+        let outsideDirectory = temporaryRoot
+            .appendingPathComponent("outside", isDirectory: true)
+        let outsideChapterURL = outsideDirectory
+            .appendingPathComponent("secret.xhtml")
+        let escapedDirectoryURL = contentDirectory
+            .appendingPathComponent("escaped", isDirectory: true)
+        let escapedFileURL = contentDirectory
+            .appendingPathComponent("escaped-file.xhtml")
+
+        try FileManager.default.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
+        try Data("<html>inside</html>".utf8).write(to: chapterURL)
+        try Data("<html>outside</html>".utf8).write(to: outsideChapterURL)
+        try FileManager.default.createSymbolicLink(at: linkedPackageRoot, withDestinationURL: packageRoot)
+        try FileManager.default.createSymbolicLink(at: escapedDirectoryURL, withDestinationURL: outsideDirectory)
+        try FileManager.default.createSymbolicLink(at: escapedFileURL, withDestinationURL: outsideChapterURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryRoot)
+        }
+
+        let source = try ReaderPackageEntrySource(localURL: linkedPackageRoot)
+        XCTAssertEqual(try source.enumerateEntries().map(\.path), ["OPS/chapter.xhtml"])
+        XCTAssertEqual(
+            String(decoding: try source.readEntry(subpath: "OPS/chapter.xhtml"), as: UTF8.self),
+            "<html>inside</html>"
+        )
+        for escapedSubpath in ["OPS/escaped/secret.xhtml", "OPS/escaped-file.xhtml"] {
+            XCTAssertThrowsError(try source.readEntry(subpath: escapedSubpath)) { error in
+                guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                    XCTFail("Expected invalidSubpath for \(escapedSubpath), got \(error)")
+                    return
+                }
+            }
+        }
+    }
+
+    func testReaderPackageDirectorySourceRejectsReplacedAncestorSymlink() throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let originalParent = temporaryRoot
+            .appendingPathComponent("mounted", isDirectory: true)
+        let movedParent = temporaryRoot
+            .appendingPathComponent("mounted-original", isDirectory: true)
+        let replacementParent = temporaryRoot
+            .appendingPathComponent("replacement", isDirectory: true)
+        let originalPackageRoot = originalParent
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let replacementPackageRoot = replacementParent
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let originalChapterURL = originalPackageRoot
+            .appendingPathComponent("OPS/chapter.xhtml")
+        let replacementChapterURL = replacementPackageRoot
+            .appendingPathComponent("OPS/chapter.xhtml")
+
+        try fileManager.createDirectory(
+            at: originalChapterURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try fileManager.createDirectory(
+            at: replacementChapterURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("<html>inside</html>".utf8).write(to: originalChapterURL)
+        try Data("<html>outside</html>".utf8).write(to: replacementChapterURL)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(localURL: originalPackageRoot)
+        try fileManager.moveItem(at: originalParent, to: movedParent)
+        try fileManager.createSymbolicLink(
+            at: originalParent,
+            withDestinationURL: replacementParent
+        )
+
+        XCTAssertThrowsError(
+            try source.readEntry(subpath: "OPS/chapter.xhtml")
+        ) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath for replaced ancestor symlink, got \(error)")
+                return
+            }
+        }
+        XCTAssertThrowsError(try source.enumerateEntries()) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath while enumerating replaced directory, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testReaderPackageDirectorySourceRejectsReplacedAncestorDirectory() throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let mountedParent = temporaryRoot
+            .appendingPathComponent("mounted", isDirectory: true)
+        let movedParent = temporaryRoot
+            .appendingPathComponent("mounted-original", isDirectory: true)
+        let packageRoot = mountedParent
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let chapterURL = packageRoot
+            .appendingPathComponent("OPS/chapter.xhtml")
+
+        try fileManager.createDirectory(
+            at: chapterURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("<html>inside</html>".utf8).write(to: chapterURL)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let source = try ReaderPackageEntrySource(localURL: packageRoot)
+        try fileManager.moveItem(at: mountedParent, to: movedParent)
+
+        let replacementChapterURL = packageRoot
+            .appendingPathComponent("OPS/chapter.xhtml")
+        try fileManager.createDirectory(
+            at: replacementChapterURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("<html>replacement</html>".utf8).write(to: replacementChapterURL)
+
+        XCTAssertThrowsError(
+            try source.readEntry(subpath: "OPS/chapter.xhtml")
+        ) { error in
+            guard case ReaderPackageEntrySourceError.invalidSubpath = error else {
+                XCTFail("Expected invalidSubpath for replaced ancestor directory, got \(error)")
+                return
+            }
+        }
+    }
+
+#if DEBUG
+    func testReaderPackageEntrySourceCacheBoundsRetainedPublicationRecords() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let cache = ReaderPackageEntrySourceCache(maximumSourceCount: 2)
+        let readerFileManager = ReaderFileManager()
+
+        for index in 0..<3 {
+            let packageRoot = temporaryRoot
+                .appendingPathComponent("book-\(index).epub", isDirectory: true)
+            let chapterURL = packageRoot
+                .appendingPathComponent("OPS/chapter.xhtml")
+            try fileManager.createDirectory(
+                at: chapterURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("<html>\(index)</html>".utf8).write(to: chapterURL)
+
+            var components = URLComponents()
+            components.scheme = "ebook"
+            components.host = "ebook"
+            components.path = "/load/local/cache-limit-\(index).epub"
+            components.queryItems = [
+                URLQueryItem(name: "diagnosticLocalFilePath", value: packageRoot.path),
+            ]
+            let packageURL = try XCTUnwrap(components.url)
+            _ = try await cache.cachedSource(
+                forPackageURL: packageURL,
+                readerFileManager: readerFileManager
             )
         }
-        await Task.yield()
-        request.cancel()
-        continuation.yield(())
-        continuation.finish()
 
-        do {
-            _ = try await request.value
-            XCTFail("Expected cancellation")
-        } catch is CancellationError {
-        } catch {
-            XCTFail("Expected CancellationError, received \(error)")
-        }
-        let cachedCount = await cache.cachedSourceCountForTesting()
-        XCTAssertEqual(cachedCount, 0)
+        let cachedSourceCount = await cache.cachedSourceCount
+        XCTAssertEqual(cachedSourceCount, 2)
     }
+
+    func testReaderPackageEntrySourceCacheInvalidatesWhenOnlyAnEntryPathChanges() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let contentDirectory = packageRoot
+            .appendingPathComponent("OPS", isDirectory: true)
+        let oldChapterURL = contentDirectory
+            .appendingPathComponent("old.xhtml")
+        let newChapterURL = contentDirectory
+            .appendingPathComponent("new.xhtml")
+        let anchorURL = contentDirectory
+            .appendingPathComponent("anchor.bin")
+
+        try fileManager.createDirectory(at: contentDirectory, withIntermediateDirectories: true)
+        try Data("<html>chapter</html>".utf8).write(to: oldChapterURL)
+        try Data("anchor".utf8).write(to: anchorURL)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let newestDate = fixedDate.addingTimeInterval(3_600)
+        func restoreMetadata(chapterURL: URL) throws {
+            try fileManager.setAttributes([.modificationDate: fixedDate], ofItemAtPath: packageRoot.path)
+            try fileManager.setAttributes([.modificationDate: fixedDate], ofItemAtPath: contentDirectory.path)
+            try fileManager.setAttributes([.modificationDate: fixedDate], ofItemAtPath: chapterURL.path)
+            try fileManager.setAttributes([.modificationDate: newestDate], ofItemAtPath: anchorURL.path)
+        }
+        try restoreMetadata(chapterURL: oldChapterURL)
+
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/load/local/cache-freshness.epub"
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: packageRoot.path),
+        ]
+        let packageURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache()
+        let readerFileManager = ReaderFileManager()
+
+        let first = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(first.entries.map(\.path), ["OPS/anchor.bin", "OPS/old.xhtml"])
+
+        try fileManager.moveItem(at: oldChapterURL, to: newChapterURL)
+        try restoreMetadata(chapterURL: newChapterURL)
+
+        let second = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(second.entries.map(\.path), ["OPS/anchor.bin", "OPS/new.xhtml"])
+    }
+
+    func testReaderPackageEntrySourceCacheInvalidatesWhenDirectoryIdentityChangesWithoutMetadataChange() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let packageRoot = temporaryRoot
+            .appendingPathComponent("book.epub", isDirectory: true)
+        let displacedPackageRoot = temporaryRoot
+            .appendingPathComponent("book-original.epub", isDirectory: true)
+        let chapterSubpath = "OPS/chapter.xhtml"
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func installPackage(content: String) throws {
+            let chapterURL = packageRoot.appendingPathComponent(chapterSubpath)
+            try fileManager.createDirectory(
+                at: chapterURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(content.utf8).write(to: chapterURL)
+            try fileManager.setAttributes(
+                [.modificationDate: fixedDate],
+                ofItemAtPath: chapterURL.path
+            )
+        }
+
+        try installPackage(content: "first")
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/load/local/cache-root-identity.epub"
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: packageRoot.path),
+        ]
+        let packageURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache()
+        let readerFileManager = ReaderFileManager()
+
+        let first = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(
+            String(decoding: try first.source.readEntry(subpath: chapterSubpath), as: UTF8.self),
+            "first"
+        )
+
+        try fileManager.moveItem(at: packageRoot, to: displacedPackageRoot)
+        try installPackage(content: "other")
+
+        let second = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(second.entries.map(\.path), [chapterSubpath])
+        XCTAssertEqual(
+            String(decoding: try second.source.readEntry(subpath: chapterSubpath), as: UTF8.self),
+            "other"
+        )
+    }
+
+    func testReaderPackageEntrySourceCacheInvalidatesWhenArchiveIdentityChangesWithoutMetadataChange() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let replacementArchiveURL = temporaryRoot.appendingPathComponent("replacement.epub")
+        let displacedArchiveURL = temporaryRoot.appendingPathComponent("book-original.epub")
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func createArchive(at url: URL, entryPath: String) throws {
+            guard let archive = Archive(url: url, accessMode: .create) else {
+                XCTFail("Expected archive to be created at \(url.path)")
+                return
+            }
+            let payload = Data("chapter".utf8)
+            try archive.addEntry(
+                with: entryPath,
+                type: .file,
+                uncompressedSize: Int64(payload.count)
+            ) { position, size in
+                payload.subdata(in: Int(position)..<Int(position) + size)
+            }
+            try fileManager.setAttributes(
+                [.modificationDate: fixedDate],
+                ofItemAtPath: url.path
+            )
+        }
+
+        try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        try createArchive(at: archiveURL, entryPath: "OPS/old.xhtml")
+        try createArchive(at: replacementArchiveURL, entryPath: "OPS/new.xhtml")
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let originalSize = try XCTUnwrap(
+            fileManager.attributesOfItem(atPath: archiveURL.path)[.size] as? NSNumber
+        )
+        let replacementSize = try XCTUnwrap(
+            fileManager.attributesOfItem(atPath: replacementArchiveURL.path)[.size] as? NSNumber
+        )
+        XCTAssertEqual(originalSize, replacementSize)
+
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/load/local/cache-archive-identity.epub"
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: archiveURL.path),
+        ]
+        let packageURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache()
+        let readerFileManager = ReaderFileManager()
+
+        let first = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(first.entries.map(\.path), ["OPS/old.xhtml"])
+
+        try fileManager.moveItem(at: archiveURL, to: displacedArchiveURL)
+        try fileManager.moveItem(at: replacementArchiveURL, to: archiveURL)
+        try fileManager.setAttributes(
+            [.modificationDate: fixedDate],
+            ofItemAtPath: archiveURL.path
+        )
+
+        let second = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(second.entries.map(\.path), ["OPS/new.xhtml"])
+    }
+#endif
+
+
+#if canImport(Darwin) || canImport(Glibc)
+    func testReaderPackageArchiveSourceRejectsReplacementAfterConstruction() throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let replacementURL = temporaryRoot.appendingPathComponent("replacement.epub")
+        let displacedURL = temporaryRoot.appendingPathComponent("book-original.epub")
+
+        func createArchive(at url: URL, entryPath: String, content: String) throws {
+            guard let archive = Archive(url: url, accessMode: .create) else {
+                XCTFail("Expected archive to be created at \(url.path)")
+                return
+            }
+            let payload = Data(content.utf8)
+            try archive.addEntry(
+                with: entryPath,
+                type: .file,
+                uncompressedSize: Int64(payload.count)
+            ) { position, size in
+                payload.subdata(in: Int(position)..<Int(position) + size)
+            }
+        }
+
+        try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+        try createArchive(at: archiveURL, entryPath: "OPS/old.xhtml", content: "old")
+        try createArchive(at: replacementURL, entryPath: "OPS/new.xhtml", content: "new")
+
+        let source = try ReaderPackageEntrySource(localURL: archiveURL)
+        XCTAssertEqual(source.enumerateEntries().map(\.path), ["OPS/old.xhtml"])
+
+        try fileManager.moveItem(at: archiveURL, to: displacedURL)
+        try fileManager.moveItem(at: replacementURL, to: archiveURL)
+
+        XCTAssertThrowsError(try source.enumerateEntries())
+        XCTAssertThrowsError(try source.readEntry(subpath: "OPS/new.xhtml"))
+
+        let replacementSource = try ReaderPackageEntrySource(localURL: archiveURL)
+        XCTAssertEqual(replacementSource.enumerateEntries().map(\.path), ["OPS/new.xhtml"])
+        XCTAssertEqual(
+            String(decoding: try replacementSource.readEntry(subpath: "OPS/new.xhtml"), as: UTF8.self),
+            "new"
+        )
+    }
+
+    func testReaderPackageArchiveCacheInvalidatesSameInodeRewriteWithRestoredMTime() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+        let replacementURL = temporaryRoot.appendingPathComponent("replacement.epub")
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func createArchive(at url: URL, content: String) throws {
+            guard let archive = Archive(url: url, accessMode: .create) else {
+                XCTFail("Expected archive to be created at \(url.path)")
+                return
+            }
+            let payload = Data(content.utf8)
+            try archive.addEntry(
+                with: "OPS/chapter.xhtml",
+                type: .file,
+                uncompressedSize: Int64(payload.count)
+            ) { position, size in
+                payload.subdata(in: Int(position)..<Int(position) + size)
+            }
+            try fileManager.setAttributes([.modificationDate: fixedDate], ofItemAtPath: url.path)
+        }
+
+        func inode(at url: URL) throws -> UInt64 {
+            var info = stat()
+            guard url.path.withCString({ stat($0, &info) }) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            return UInt64(info.st_ino)
+        }
+
+        try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+        try createArchive(at: archiveURL, content: "old")
+        try createArchive(at: replacementURL, content: "new")
+        let replacementData = try Data(contentsOf: replacementURL)
+        XCTAssertEqual(
+            try fileManager.attributesOfItem(atPath: archiveURL.path)[.size] as? NSNumber,
+            try fileManager.attributesOfItem(atPath: replacementURL.path)[.size] as? NSNumber
+        )
+
+        var components = URLComponents()
+        components.scheme = "ebook"
+        components.host = "ebook"
+        components.path = "/load/local/cache-archive-state.epub"
+        components.queryItems = [
+            URLQueryItem(name: "diagnosticLocalFilePath", value: archiveURL.path),
+        ]
+        let packageURL = try XCTUnwrap(components.url)
+        let cache = ReaderPackageEntrySourceCache()
+        let readerFileManager = ReaderFileManager()
+
+        let first = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(
+            String(decoding: try first.source.readEntry(subpath: "OPS/chapter.xhtml"), as: UTF8.self),
+            "old"
+        )
+
+        let originalInode = try inode(at: archiveURL)
+        try replacementData.write(to: archiveURL, options: [])
+        try fileManager.setAttributes([.modificationDate: fixedDate], ofItemAtPath: archiveURL.path)
+        XCTAssertEqual(try inode(at: archiveURL), originalInode)
+
+        XCTAssertThrowsError(try first.source.enumerateEntries())
+        XCTAssertThrowsError(try first.source.readEntry(subpath: "OPS/chapter.xhtml"))
+
+        let second = try await cache.cachedSource(
+            forPackageURL: packageURL,
+            readerFileManager: readerFileManager
+        )
+        XCTAssertEqual(
+            String(decoding: try second.source.readEntry(subpath: "OPS/chapter.xhtml"), as: UTF8.self),
+            "new"
+        )
+    }
+#endif
 
     func testReaderPackageArchiveSourceEnumeratesAndReadsEntriesWithoutExpansion() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
@@ -1375,14 +2598,39 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         await fulfillment(of: [writerCalled], timeout: 1)
     }
 
-    func testForegroundProcessingDoesNotCacheNonAuthoritativeFallback() async throws {
+    func testEbookTextProcessorPropagatesReadabilityCancellation() async throws {
+        do {
+            _ = try await ebookTextProcessor(
+                contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+                sectionLocation: "OPS/chapter.xhtml",
+                content: "<html><body>raw</body></html>",
+                contentFingerprint: nil,
+                isCacheWarmer: false,
+                processReadabilityContent: { _, _, _, _, _, _, _ in
+                    throw CancellationError()
+                },
+                processHTMLDocument: nil,
+                processHTMLBytes: nil,
+                processHTML: nil
+            )
+            XCTFail("Cancellation must not become a successful raw-content fallback")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    func testCancelledForegroundProcessingDoesNotPublishLateProcessorResult() async throws {
+        let gate = EbookTestGate()
+        let started = expectation(description: "processor starts")
         let writerInvocationCounter = EbookTestInvocationCounter()
         let actor = EBookProcessingActor(
             ebookProcessedTextCacheWriter: { _, _, _, _ in
                 await writerInvocationCounter.increment()
             },
-            ebookTextProcessor: { _, _, text, _, _, _, _, _, _ in
-                ebookTestPayload(text, isAuthoritativelyProcessed: false)
+            ebookTextProcessor: { _, _, _, _, _, _, _, _, _ in
+                started.fulfill()
+                await gate.waitUntilReleased()
+                return ebookTestPayload("<html><body>obsolete</body></html>")
             },
             processReadabilityContent: nil,
             processHTMLDocument: nil,
@@ -1390,14 +2638,24 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
             processHTML: nil
         )
 
-        let result = try await actor.process(
-            contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
-            location: "item/xhtml/chapter.xhtml",
-            text: "<html><body>raw fallback</body></html>",
-            isCacheWarmer: false
-        )
+        let task = Task {
+            try await actor.process(
+                contentURL: URL(string: "ebook://ebook/load/local/Books/test.epub")!,
+                location: "OPS/chapter.xhtml",
+                text: "<html><body>raw</body></html>",
+                isCacheWarmer: false
+            )
+        }
+        await fulfillment(of: [started], timeout: 1)
+        task.cancel()
+        await gate.release()
 
-        XCTAssertFalse(result.isAuthoritativelyProcessed)
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled owner must not publish or return a late processor result")
+        } catch is CancellationError {
+            // Expected.
+        }
         let writerInvocationCount = await writerInvocationCounter.count
         XCTAssertEqual(writerInvocationCount, 0)
     }

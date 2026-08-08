@@ -29,28 +29,6 @@ fileprivate func appendEbookHTMLAttributeEscapedBytes(
     }
 }
 
-struct EBookProcessedSectionWritingHint {
-    let direction: String
-    let writingMode: String
-}
-
-func ebookProcessedSectionWritingHint(from url: URL) -> EBookProcessedSectionWritingHint? {
-    let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-    let direction = queryItems
-        .first(where: { $0.name == "mnbWritingDirection" })?
-        .value?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-    guard direction == "vertical" else { return nil }
-    let requestedWritingMode = queryItems
-        .first(where: { $0.name == "mnbWritingMode" })?
-        .value?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-    let writingMode = requestedWritingMode == "vertical-lr" ? "vertical-lr" : "vertical-rl"
-    return EBookProcessedSectionWritingHint(direction: "vertical", writingMode: writingMode)
-}
-
 public struct EbookSectionPresentation: Equatable, Sendable {
     public static let currentSchemaVersion = 1
 
@@ -186,7 +164,6 @@ private let ebookPaginatorLayoutBootstrapMarkup = Data(
 func ebookHTMLDataWithInjectedResponseMetadata(
     _ htmlData: Data,
     baseURL: String,
-    writingHint: EBookProcessedSectionWritingHint?,
     bodyAttributes: [String: String],
     presentation: EbookSectionPresentation? = nil,
     additionalHeadMarkup: Data? = nil,
@@ -201,12 +178,6 @@ func ebookHTMLDataWithInjectedResponseMetadata(
         encodedBodyAttributes["data-mnb-presentation-revision"] = validPresentation.revision
     }
     encodedBodyAttributes.merge(bodyAttributes) { _, responseValue in responseValue }
-    if let writingHint {
-        encodedBodyAttributes["data-mnb-writing-direction"] = writingHint.direction
-        encodedBodyAttributes["data-mnb-writing-mode"] = writingHint.writingMode
-        encodedBodyAttributes["data-mnb-foliate-writing-direction"] = writingHint.direction
-        encodedBodyAttributes["data-mnb-foliate-writing-mode"] = writingHint.writingMode
-    }
     var bodyAttributeBytes = Data()
     for (key, value) in encodedBodyAttributes.sorted(by: { $0.key < $1.key }) {
         if !bodyAttributeBytes.isEmpty {

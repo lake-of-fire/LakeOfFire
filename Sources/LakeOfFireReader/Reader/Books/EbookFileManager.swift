@@ -77,13 +77,21 @@ public struct EbookFileManager {
                             toUpdateWithPublicationDate.append((contentFile, publicationDate))
                         }
 
-                        // If we found a cover href
-                        // We'll build the URL scheme to read the cover image from the same 'reader-file' approach
-                        // e.g. "reader-file://file/load/... ?subpath=<coverHref>"
-                        let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(of: "ebook://ebook/load/", with: "reader-file://file/load/") + "?subpath="
-                        if let encodedPath = metadata.coverHref.addingPercentEncoding(withAllowedCharacters: subpathCharacterSet),
-                           let coverImageURL = URL(string: coverURLPrefix + encodedPath), contentFile.imageUrl != coverImageURL {
-                            toUpdateWithImage.append((contentFile, coverImageURL))
+                        // A coverless or unsupported cover declaration must not
+                        // erase unrelated existing artwork. Update only when the
+                        // package declares a contained cover that can be served.
+                        if let coverHref = metadata.coverHref {
+                            let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(
+                                of: "ebook://ebook/load/",
+                                with: "reader-file://file/load/"
+                            ) + "?subpath="
+                            if let encodedPath = coverHref.addingPercentEncoding(
+                                withAllowedCharacters: subpathCharacterSet
+                            ),
+                               let coverImageURL = URL(string: coverURLPrefix + encodedPath),
+                               contentFile.imageUrl != coverImageURL {
+                                toUpdateWithImage.append((contentFile, coverImageURL))
+                            }
                         }
                         
                         if !contentFile.isPhysicalMedia {

@@ -516,8 +516,13 @@ fileprivate class ReaderMessageHandlers: ObservableObject, Identifiable {
                     return
                 }
                 guard !windowURL.isNativeReaderView,
-                      let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing") else { return }
-                if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
+                      let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing"),
+                      !Task.isCancelled else { return }
+                // Document-context invalidation cancels the owning message task.
+                // Recheck after content loading and register synchronously on the
+                // main actor so a replaced document cannot repopulate the frame
+                // registry between the cancellation check and the mutation.
+                if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                     readerViewModel.refreshSettingsInWebView(content: content, reason: "readability-frame-ping")
                 }
             }),

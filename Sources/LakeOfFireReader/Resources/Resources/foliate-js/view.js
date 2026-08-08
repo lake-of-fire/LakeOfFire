@@ -6,6 +6,25 @@ import {
     rendererNavigationNotOwned,
     runCurrentRendererNavigation,
 } from './renderer-navigation.js'
+import {
+    readerNavigationResultReachedTarget,
+    readerNavigationResultWasCommitted,
+    readerRelocationDetailWithNavigationIntent,
+    snapshotReaderNavigationIntent,
+} from './ebook-restore-coordination.js'
+
+export { readerRelocationDetailWithNavigationIntent }
+
+export const destroyReaderBook = book => {
+    if (!book) return false
+    try {
+        book.destroy?.()
+        return true
+    } catch (error) {
+        console.error(error)
+        return false
+    }
+}
 
 const SEARCH_PREFIX = 'foliate-search:'
 class History extends EventTarget {
@@ -263,10 +282,7 @@ export class View extends HTMLElement {
         } catch (_error) {}
     }
     #disposeBook(book) {
-        if (!book) return
-        try {
-            book.destroy?.()
-        } catch (_error) {}
+        destroyReaderBook(book)
     }
     registerCleanup(cleanup) {
         if (typeof cleanup !== 'function') return () => {}
@@ -336,7 +352,12 @@ export class View extends HTMLElement {
             ////            document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
             //        });
 
-            await renderer.open(book)
+            const rendererOpened = await renderer.open(book)
+            if (rendererOpened === false) {
+                const error = new Error('Reader renderer rejected publication ownership')
+                error.name = 'InvalidStateError'
+                throw error
+            }
             if (openGeneration !== this.#openGeneration || this.renderer !== renderer) {
                 this.#disposeRenderer(renderer)
                 return false
@@ -394,34 +415,41 @@ export class View extends HTMLElement {
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
         if (resolved) {
-            await this.#navigateAndPush(
-                renderer => renderer.goTo(resolved),
-                lastLocation
+            const result = await this.#runRendererNavigation(
+                renderer => renderer.goTo(resolved)
             )
+            if (!readerNavigationResultWasCommitted(result)) return false
+            this.history.pushState(lastLocation)
+            return true
         }
-        else if (showTextStart) await this.goToTextStart()
-            else {
-                this.history.pushState(0)
-                await this.next()
+        if (showTextStart) return await this.goToTextStart()
+        this.history.pushState(0)
+        try {
+            const result = await this.next()
+            if (!readerNavigationResultWasCommitted(result)) {
+                this.history.clear()
+                return false
             }
+            return true
+        } catch (error) {
+            this.history.clear()
+            throw error
+        }
     }
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
-    #onRelocate({
-        reason,
-        range,
-        index,
-        fraction,
-        size,
-        pageTurnDirection,
-        relocationID,
-    }) {
+    #onRelocate(rendererDetail) {
+        const ownedRendererDetail = readerRelocationDetailWithNavigationIntent({
+            rendererDetail,
+        })
+        const { reason, range, index, fraction, size } = ownedRendererDetail
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
         this.lastLocation = {
+            ...ownedRendererDetail,
             ...progress,
             index,
             sectionIndex: index,
@@ -430,8 +458,8 @@ export class View extends HTMLElement {
             cfi,
             range,
             reason,
-            pageTurnDirection,
-            relocationID,
+            pageTurnDirection: ownedRendererDetail.pageTurnDirection,
+            relocationID: ownedRendererDetail.relocationID,
         }
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
@@ -583,15 +611,33 @@ export class View extends HTMLElement {
             console.error(`Could not resolve target ${target}`)
         }
     }
-    async goTo(target, options = {}) {
+    async goTo(target, {
+        returnMovementResult = false,
+        isCurrent = () => true,
+        navigationIntent = null,
+        ...rendererOptions
+    } = {}) {
         //        this.#emit('is-loading', true)
+        const rejectedResult = returnMovementResult ? false : null
+        if (!isCurrent()) return rejectedResult
         const resolved = this.resolveNavigation(target)
+        if (!resolved || !isCurrent()) return rejectedResult
+        const rendererNavigationIntent = snapshotReaderNavigationIntent(navigationIntent)
         try {
-            const accepted = await this.#navigateAndPush(
-                renderer => renderer.goTo(resolved, options),
-                target
+            const result = await this.#runRendererNavigation(
+                renderer => renderer.goTo(resolved, {
+                    ...rendererOptions,
+                    navigationIntent: rendererNavigationIntent,
+                    navigationIsCurrent: isCurrent,
+                })
             )
-            return accepted ? resolved : null
+            if (!readerNavigationResultReachedTarget(result) || !isCurrent()) {
+                return rejectedResult
+            }
+            if (readerNavigationResultWasCommitted(result)) {
+                this.history.pushState(target)
+            }
+            return returnMovementResult ? result : resolved
         } catch(e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
@@ -601,12 +647,27 @@ export class View extends HTMLElement {
         //        this.#emit('is-loading', false)
         //        return resolved
     }
-    async goToFraction(frac, options = {}) {
+    async goToFraction(frac, {
+        returnMovementResult = false,
+        isCurrent = () => true,
+        navigationIntent = null,
+        ...rendererOptions
+    } = {}) {
+        if (!isCurrent()) return false
         const [index, anchor] = this.#sectionProgress.getSection(frac)
-        return await this.#navigateAndPush(
-            renderer => renderer.goTo({ index, anchor }, options),
-            { fraction: frac }
+        const rendererNavigationIntent = snapshotReaderNavigationIntent(navigationIntent)
+        const result = await this.#runRendererNavigation(
+            renderer => renderer.goTo({ index, anchor }, {
+                ...rendererOptions,
+                navigationIntent: rendererNavigationIntent,
+                navigationIsCurrent: isCurrent,
+            })
         )
+        if (!readerNavigationResultReachedTarget(result) || !isCurrent()) return false
+        if (readerNavigationResultWasCommitted(result)) {
+            this.history.pushState({ fraction: frac })
+        }
+        return returnMovementResult ? result : true
     }
     async select(target, options = {}) {
         try {
