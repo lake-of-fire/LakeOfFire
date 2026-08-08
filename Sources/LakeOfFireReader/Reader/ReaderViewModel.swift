@@ -241,25 +241,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
-    @MainActor
-    public func onNavigationFinished(
-        content: any ReaderContentProtocol,
-        newState: WebViewState,
-        completion: ((WebViewState) -> Void)? = nil
-    ) async {
-        do {
+    public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
             try Task.checkCancellation()
-            try await applySettingsInWebView(
-                content: content,
-                newState: newState,
-                reason: "navigation-finished"
-            )
-            try Task.checkCancellation()
+            refreshSettingsInWebView(content: content, newState: newState, reason: "navigation-finished")
+            
             completion?(newState)
-        } catch is CancellationError {
-            return
-        } catch {
-            print("Error during ReaderViewModel navigation finish: \(error)")
         }
     }
     
@@ -338,98 +326,62 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    public func refreshSettingsInWebView(
-        content: any ReaderContentProtocol,
-        newState: WebViewState? = nil
-    ) {
-        refreshSettingsInWebView(
-            content: content,
-            newState: newState,
-            reason: "unspecified"
-        )
+    public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
+        refreshSettingsInWebView(content: content, newState: newState, reason: "unspecified")
     }
 
     @MainActor
-    public func refreshSettingsInWebView(
-        content: any ReaderContentProtocol,
-        newState: WebViewState? = nil,
-        reason: String
-    ) {
+    public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil, reason: String) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                try await self.applySettingsInWebView(
-                    content: content,
-                    newState: newState,
-                    reason: reason
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                print("Error refreshing ReaderViewModel settings: \(error)")
-            }
+            let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(readerFontSize: readerFontSize)
+            let reasonJSON = (try? JSONEncoder().encode(reason))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "\"unspecified\""
+            try await self.scriptCaller.evaluateJavaScript("""
+                (() => {
+                    const settingsTraceReason = \(reasonJSON);
+                    const traceAll = globalThis.__manabiTimelineTraceAll === true;
+                    const mark = (event, payload = '', force = false) => {
+                        if (!traceAll && !force) { return; }
+                        const label = `MANABI swiftSettings.refreshSettingsInWebView.${event}${payload ? ' ' + payload : ''}`;
+                        try { performance.mark(label); } catch (_) {}
+                    };
+                    const signature = [
+                        'light=\(lightModeTheme)',
+                        'dark=\(darkModeTheme)',
+                        'maxWidth=\(maxWidthOverride)'
+                    ].join('|');
+                    if (document.body?.dataset?.mnbReaderViewModelSettingsSignature === signature) {
+                        mark('skipSameSignature', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
+                        return;
+                    }
+                    mark('start', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
+                    let changedCount = 0;
+                    if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
+                        document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
+                        document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.style?.getPropertyValue('--mnb-reader-max-width-override') !== '\(maxWidthOverride)') {
+                        document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
+                        changedCount += 1;
+                    }
+                    if (document.body?.dataset) {
+                        document.body.dataset.mnbReaderViewModelSettingsSignature = signature;
+                    }
+                    if (changedCount > 0 || traceAll) {
+                        mark('finish', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride) changedCount=${changedCount}`, changedCount > 0);
+                    }
+                })();
+                //# sourceURL=lake-reader-view-model-settings-sync.js
+
+                """, duplicateInMultiTargetFrames: true)
+            try await self.refreshTitleInWebView(content: content, newState: newState)
         }
     }
-
-    @MainActor
-    private func applySettingsInWebView(
-        content: any ReaderContentProtocol,
-        newState: WebViewState?,
-        reason: String
-    ) async throws {
-        try Task.checkCancellation()
-        let maxWidthOverride = readerAdaptiveMaxWidthOverrideCSSValue(
-            readerFontSize: readerFontSize
-        )
-        let reasonJSON = (try? JSONEncoder().encode(reason))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "\"unspecified\""
-        try await scriptCaller.evaluateJavaScript("""
-            (() => {
-                const settingsTraceReason = \(reasonJSON);
-                const traceAll = globalThis.__manabiTimelineTraceAll === true;
-                const mark = (event, payload = '', force = false) => {
-                    if (!traceAll && !force) { return; }
-                    const label = `MANABI swiftSettings.refreshSettingsInWebView.${event}${payload ? ' ' + payload : ''}`;
-                    try { performance.mark(label); } catch (_) {}
-                };
-                const signature = [
-                    'light=\(lightModeTheme)',
-                    'dark=\(darkModeTheme)',
-                    'maxWidth=\(maxWidthOverride)'
-                ].join('|');
-                if (document.body?.dataset?.mnbReaderViewModelSettingsSignature === signature) {
-                    mark('skipSameSignature', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
-                    return;
-                }
-                mark('start', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride)`);
-                let changedCount = 0;
-                if (document.body?.getAttribute('data-mnb-light-theme') !== '\(lightModeTheme)') {
-                    document.body?.setAttribute('data-mnb-light-theme', '\(lightModeTheme)');
-                    changedCount += 1;
-                }
-                if (document.body?.getAttribute('data-mnb-dark-theme') !== '\(darkModeTheme)') {
-                    document.body?.setAttribute('data-mnb-dark-theme', '\(darkModeTheme)');
-                    changedCount += 1;
-                }
-                if (document.body?.style?.getPropertyValue('--mnb-reader-max-width-override') !== '\(maxWidthOverride)') {
-                    document.body?.style?.setProperty('--mnb-reader-max-width-override', '\(maxWidthOverride)');
-                    changedCount += 1;
-                }
-                if (document.body?.dataset) {
-                    document.body.dataset.mnbReaderViewModelSettingsSignature = signature;
-                }
-                if (changedCount > 0 || traceAll) {
-                    mark('finish', `reason=${settingsTraceReason} maxWidth=\(maxWidthOverride) changedCount=${changedCount}`, changedCount > 0);
-                }
-            })();
-            //# sourceURL=lake-reader-view-model-settings-sync.js
-
-            """, duplicateInMultiTargetFrames: true)
-        try Task.checkCancellation()
-        try await refreshTitleInWebView(content: content, newState: newState)
-        try Task.checkCancellation()
-    }
-
 }
 
 private extension String {

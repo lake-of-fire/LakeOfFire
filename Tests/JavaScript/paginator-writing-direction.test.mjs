@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-    documentHasLocalWritingDirectionSignal,
-    writingDirectionFromDocumentEvidence,
-} from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator-writing-direction.js'
+import { applyObservedWritingDirectionToDocument } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/paginator-writing-direction.js'
 
 const makeClassList = initial => {
     const values = new Set(initial)
@@ -14,141 +11,42 @@ const makeClassList = initial => {
     }
 }
 
-const makeElement = ({ classes = [], attributes = {} } = {}) => {
-    const values = new Map(Object.entries(attributes))
-    return {
-        dataset: {},
-        classList: makeClassList(classes),
-        getAttribute: name => values.get(name) ?? null,
+const makeDocument = ({ direction = null, verticalClass = false } = {}) => {
+    const attributes = new Map()
+    if (direction) attributes.set('data-mnb-writing-direction', direction)
+    const body = {
+        dataset: direction ? { mnbWritingDirection: direction } : {},
+        classList: makeClassList(verticalClass ? ['reader-vertical-writing'] : []),
+        getAttribute: name => attributes.get(name) ?? null,
     }
+    const documentElement = {
+        classList: makeClassList([]),
+        getAttribute: () => null,
+    }
+    return { body, documentElement, getElementById: () => null }
 }
 
-const makeDocument = ({
-    bodyClasses = [],
-    rootClasses = [],
-    bodyAttributes = {},
-    rootAttributes = {},
-    href = 'ebook://ebook/processed-section',
-} = {}) => ({
-    body: makeElement({ classes: bodyClasses, attributes: bodyAttributes }),
-    documentElement: makeElement({ classes: rootClasses, attributes: rootAttributes }),
-    getElementById: () => null,
-    location: { href },
+test('preserves an explicit document writing direction', () => {
+    const document = makeDocument({ direction: 'vertical', verticalClass: true })
+    const applied = applyObservedWritingDirectionToDocument(document, {
+        __manabiObservedBookWritingDirection: 'horizontal',
+    })
+
+    assert.equal(applied, false)
+    assert.equal(document.body.dataset.mnbWritingDirection, 'vertical')
+    assert.equal(document.body.classList.contains('reader-vertical-writing'), true)
 })
 
-test('mixed vertical and horizontal chapters resolve from their own computed documents', () => {
-    const vertical = makeDocument()
-    const horizontal = makeDocument()
-
-    assert.deepEqual(writingDirectionFromDocumentEvidence(vertical, {
-        computedWritingMode: 'vertical-rl',
-        computedDirection: 'rtl',
-    }), {
-        vertical: true,
-        verticalRTL: true,
-        rtl: true,
-        writingMode: 'vertical-rl',
-        direction: 'rtl',
-        source: 'computed',
-    })
-    assert.deepEqual(writingDirectionFromDocumentEvidence(horizontal, {
-        computedWritingMode: 'horizontal-tb',
-        computedDirection: 'ltr',
-    }), {
-        vertical: false,
-        verticalRTL: false,
-        rtl: false,
-        writingMode: 'horizontal-tb',
-        direction: 'ltr',
-        source: 'computed',
-    })
-})
-
-test('the computed cascade wins over contradictory raw inline declaration text', () => {
-    const document = makeDocument({
-        bodyAttributes: {
-            style: 'writing-mode: vertical-rl; direction: rtl',
-        },
+test('applies an observed vertical direction only when the document has no local signal', () => {
+    const document = makeDocument()
+    const applied = applyObservedWritingDirectionToDocument(document, {
+        __manabiObservedBookWritingDirection: 'vertical',
+        __manabiObservedBookWritingMode: 'vertical-rl',
     })
 
-    assert.deepEqual(writingDirectionFromDocumentEvidence(document, {
-        computedWritingMode: 'horizontal-tb',
-        computedDirection: 'ltr',
-    }), {
-        vertical: false,
-        verticalRTL: false,
-        rtl: false,
-        writingMode: 'horizontal-tb',
-        direction: 'ltr',
-        source: 'computed',
-    })
-})
-
-test('local writing-direction compatibility helper reports only document-owned evidence', () => {
-    const localHorizontal = makeDocument({
-        bodyAttributes: { 'data-mnb-foliate-writing-direction': 'horizontal' },
-    })
-    assert.equal(documentHasLocalWritingDirectionSignal(localHorizontal), true)
-
-    const localInline = makeDocument({
-        bodyAttributes: { style: 'writing-mode: vertical-lr' },
-    })
-    assert.equal(documentHasLocalWritingDirectionSignal(localInline), true)
-
-    const unsignalled = makeDocument()
-    assert.equal(documentHasLocalWritingDirectionSignal(unsignalled), false)
-    assert.deepEqual(unsignalled.body.dataset, {})
-})
-
-test('shared document evidence ignores blank and invalid declarations before valid evidence', () => {
-    const document = makeDocument({
-        bodyAttributes: {
-            'data-mnb-foliate-writing-mode': '',
-            style: 'writing-mode: inherit',
-        },
-        rootAttributes: {
-            'data-mnb-foliate-writing-mode': 'vertical-lr',
-            dir: 'rtl',
-        },
-    })
-
-    assert.deepEqual(writingDirectionFromDocumentEvidence(document, {
-        computedWritingMode: 'vertical-rl',
-        computedDirection: 'ltr',
-    }), {
-        vertical: true,
-        verticalRTL: false,
-        rtl: true,
-        writingMode: 'vertical-lr',
-        direction: 'ltr',
-        source: 'attribute-mode',
-    })
-})
-
-test('invalid inline writing mode falls through to computed vertical evidence', () => {
-    const document = makeDocument({
-        bodyAttributes: { style: 'writing-mode: inherit' },
-    })
-
-    assert.deepEqual(writingDirectionFromDocumentEvidence(document, {
-        computedWritingMode: 'vertical-lr',
-        computedDirection: 'rtl',
-    }), {
-        vertical: true,
-        verticalRTL: false,
-        rtl: true,
-        writingMode: 'vertical-lr',
-        direction: 'rtl',
-        source: 'computed',
-    })
-    assert.deepEqual(writingDirectionFromDocumentEvidence(document, {
-        computedWritingMode: 'horizontal-tb',
-    }), {
-        vertical: false,
-        verticalRTL: false,
-        rtl: false,
-        writingMode: 'horizontal-tb',
-        direction: null,
-        source: 'computed',
-    })
+    assert.equal(applied, true)
+    assert.equal(document.body.dataset.mnbFoliateWritingDirection, 'vertical')
+    assert.equal(document.body.dataset.mnbFoliateWritingMode, 'vertical-rl')
+    assert.equal(document.body.classList.contains('reader-vertical-writing'), true)
+    assert.equal(document.documentElement.classList.contains('vrtl'), true)
 })
