@@ -2,6 +2,7 @@ import Foundation
 import LakeOfFireContent
 import LakeOfFireCore
 import WebKit
+import ZIPFoundation
 
 fileprivate extension URL {
     var deletingQuery: URL? {
@@ -16,7 +17,7 @@ fileprivate let zipArchiveExtensions = ["zip", "epub"]
 @globalActor
 public actor ReaderFileURLSchemeActor {
     public static let shared = ReaderFileURLSchemeActor()
-
+    
     public init() { }
 }
 
@@ -93,11 +94,11 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public var sharedReaderFontAsset: SharedReaderFontAsset?
     
     private let schemeTaskCompletionOwnership = URLSchemeTaskCompletionOwnership()
-
+    
     public override init() {
         super.init()
     }
-
+    
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
     }
@@ -134,7 +135,7 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         schemeTaskCompletionOwnership.cancel(urlSchemeTask as AnyObject)
     }
-
+    
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         schemeTaskCompletionOwnership.begin(urlSchemeTask as AnyObject)
         guard let url = urlSchemeTask.request.url else {
@@ -167,7 +168,7 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }()
                 return
             }
-
+            
             do {
                 try Task.checkCancellation()
                 // Package (eg ZIP) subpath file
@@ -180,27 +181,29 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             forReaderBackingURL: readerBackingURL
                         )
                         try Task.checkCancellation()
-                        let source = try ReaderPackageEntrySource(localURL: localArchiveURL)
-                        let packageData = try source.readEntry(subpath: subpathValue)
-                        try Task.checkCancellation()
-                        let responseMetadata = try source.mimeType(
-                            subpath: subpathValue,
-                            data: packageData
-                        )
-                        let response = HTTPURLResponse(
-                            url: url,
-                            mimeType: responseMetadata.mimeType,
-                            expectedContentLength: packageData.count,
-                            textEncodingName: responseMetadata.textEncodingName
-                        )
-                        await { @MainActor in
-                            self.finishActiveTask(
-                                urlSchemeTask,
-                                response: response,
-                                data: packageData
+                        if let archive = Archive(url: localArchiveURL, accessMode: .read),
+                           let entry = archive[subpathValue],
+                           entry.type == .file {
+                            var imageData = Data()
+                            try archive.extract(entry, consumer: { imageData.append($0) })
+                            try Task.checkCancellation()
+
+                            let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
+                            let response = HTTPURLResponse(
+                                url: url,
+                                mimeType: "image/\(subpathExtension)",
+                                expectedContentLength: imageData.count,
+                                textEncodingName: nil
                             )
-                        }()
-                        return
+                            await { @MainActor in
+                                self.finishActiveTask(
+                                    urlSchemeTask,
+                                    response: response,
+                                    data: imageData
+                                )
+                            }()
+                            return
+                        }
                     }
                     await { @MainActor in
                         self.failActiveTask(
@@ -234,13 +237,14 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         textEncodingName = "UTF-8"
                         data = convertedData
                     }
-
+                    
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: mimeType,
                         expectedContentLength: data.count,
                         textEncodingName: textEncodingName
                     )
+                    
                     await { @MainActor in
                         self.finishActiveTask(
                             urlSchemeTask,

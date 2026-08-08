@@ -4,7 +4,6 @@ import {
 } from './renderer-content.js'
 
 const MAX_RELOCATE_STACK = 50;
-const MAX_CONSUMED_EXPLICIT_RELOCATE_MUTATIONS = 64;
 const FRACTION_EPSILON = 0.000001;
 const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
     'bridge.goToReaderPage',
@@ -32,12 +31,9 @@ const bookNavRect = (element) => {
     };
 };
 
-const trimASCIIURLWhitespace = value => String(value ?? '')
-    .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '')
-
-export const normalizeSpineHref = (href) => {
+const normalizeSpineHrefForPageNum = (href) => {
     if (typeof href !== 'string') return null;
-    const trimmed = trimASCIIURLWhitespace(href);
+    const trimmed = href.trim();
     if (!trimmed) return null;
     const hashIndex = trimmed.indexOf('#');
     return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
@@ -154,9 +150,6 @@ export class NavigationHUD {
         };
         this._explicitRelocateHistoryMutations = new Map();
         this._explicitRelocateHistoryMutationSequence = 0;
-        this.consumedExplicitRelocateHistoryMutationIDs = new Set();
-        this.consumedExplicitRelocateHistoryMutationOrder = [];
-        this.relocateJumpMutationGeneration = 0;
         this.relocateSequence = 0;
         this.scrubSession = null;
         this.pendingReleasedScrubDescriptor = null;
@@ -183,7 +176,6 @@ export class NavigationHUD {
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
         this.destroyed = false;
-        this.disposed = false;
         this.titleLocationFadeTimer = null;
         this.bookTitle = '';
         this.lastPagesLeftLabel = '';
@@ -201,7 +193,6 @@ export class NavigationHUD {
     destroy() {
         if (this.destroyed) return false;
         this.destroyed = true;
-        this.disposed = true;
         this.relocateSequence += 1;
         this.primaryLineRequestToken += 1;
         this.rendererSnapshotRequestToken += 1;
@@ -219,8 +210,6 @@ export class NavigationHUD {
             this.titleLocationFadeTimer = null;
         }
         this._explicitRelocateHistoryMutations.clear();
-        this.consumedExplicitRelocateHistoryMutationIDs.clear();
-        this.consumedExplicitRelocateHistoryMutationOrder.length = 0;
         this.pendingScrubCommit = null;
         this.pendingReleasedScrubDescriptor = null;
         this.pendingRelocateJump = null;
@@ -230,10 +219,6 @@ export class NavigationHUD {
         this.getRenderer = null;
         this.onHideNavigationDueToScrollChange = null;
         return true;
-    }
-
-    dispose() {
-        return this.destroy()
     }
 
     requestExplicitRelocateHistoryMutation(source = 'unknown', relocationID = null) {
@@ -264,47 +249,16 @@ export class NavigationHUD {
             && detail.relocationID.length > 0
             ? detail.relocationID
             : null;
-        const registered = relocationID
+        return relocationID
             ? (this._explicitRelocateHistoryMutations.get(relocationID) ?? null)
-            : null;
-        if (registered) {
-            return {
-                ...registered,
-                mutationID: registered.relocationID,
-                registered: true,
-            };
-        }
-        const source = typeof detail?.explicitRelocateHistorySource === 'string'
-            ? detail.explicitRelocateHistorySource
-            : null;
-        const mutationID = typeof detail?.explicitRelocateHistoryMutationID === 'string'
-            ? detail.explicitRelocateHistoryMutationID
-            : null;
-        return source && mutationID && EXPLICIT_RELOCATE_HISTORY_SOURCES.has(source)
-            ? { source, mutationID, registered: false }
             : null;
     }
 
     #consumeExplicitRelocateHistoryMutation(detail) {
         const ownership = this.#explicitRelocateOwnershipForDetail(detail);
-        if (!ownership) return { source: null, mutationID: null, shouldMutate: false };
-        if (ownership.registered) {
-            this._explicitRelocateHistoryMutations.delete(ownership.relocationID);
-        } else {
-            if (this.consumedExplicitRelocateHistoryMutationIDs.has(ownership.mutationID)) {
-                return { ...ownership, shouldMutate: false };
-            }
-            this.consumedExplicitRelocateHistoryMutationIDs.add(ownership.mutationID);
-            this.consumedExplicitRelocateHistoryMutationOrder.push(ownership.mutationID);
-            while (
-                this.consumedExplicitRelocateHistoryMutationOrder.length
-                > MAX_CONSUMED_EXPLICIT_RELOCATE_MUTATIONS
-            ) {
-                const expiredID = this.consumedExplicitRelocateHistoryMutationOrder.shift();
-                this.consumedExplicitRelocateHistoryMutationIDs.delete(expiredID);
-            }
-        }
-        return { ...ownership, shouldMutate: true };
+        if (!ownership) return null;
+        this._explicitRelocateHistoryMutations.delete(ownership.relocationID);
+        return ownership.source;
     }
 
     linearSectionCount = null;
@@ -362,7 +316,7 @@ export class NavigationHUD {
         if (Array.isArray(this.navContext?.sections)) {
             this.navContext.sections.forEach((section, idx) => {
                 if (section?.linear !== 'no') this.linearSectionIndexes.add(idx);
-                const normalizedHref = normalizeSpineHref(section?.href ?? section?.id ?? null);
+                const normalizedHref = normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null);
                 if (normalizedHref) {
                     this.sectionIndexByHref.set(normalizedHref, idx);
                 }
@@ -720,7 +674,7 @@ export class NavigationHUD {
             cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
             this.rendererSnapshotRefreshHandle = null;
         }
-        const explicitRelocateMutation =
+        const explicitRelocateSource =
             this.#consumeExplicitRelocateHistoryMutation(detail);
         // Invalidate any older section-progress calculation immediately. A newer
         // relocation can await its renderer snapshot before reaching the normal
@@ -765,9 +719,9 @@ export class NavigationHUD {
             await this._refreshRendererSnapshot();
             if (!isCurrentRelocate()) return;
         }
-        this._applyPageTurnNavigationVisibility(detail, explicitRelocateMutation.source);
+        this._applyPageTurnNavigationVisibility(detail, explicitRelocateSource);
         this.lastRelocateDetail = detail;
-        this._handleRelocateHistory(detail, explicitRelocateMutation);
+        this._handleRelocateHistory(detail, explicitRelocateSource);
         this._updatePrimaryLine(detail);
         this._toggleCompletionStack();
         await this._updateSectionProgress({ refreshSnapshot: false, source: 'relocate' });
@@ -1302,7 +1256,7 @@ export class NavigationHUD {
             { source: 'last-location.tocItem.href', value: globalThis.reader?.view?.lastLocation?.tocItem?.href },
         ];
         const hrefCandidateSummary = hrefCandidates.map((candidate) => {
-            const normalizedHref = normalizeSpineHref(candidate.value);
+            const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
             return {
                 source: candidate.source,
                 href: candidate.value ?? null,
@@ -1311,7 +1265,7 @@ export class NavigationHUD {
             };
         });
         for (const candidate of hrefCandidates) {
-            const normalizedHref = normalizeSpineHref(candidate.value);
+            const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
             const indexFromHref = normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null;
             if (typeof indexFromHref === 'number' && indexFromHref >= 0) {
                 return { index: indexFromHref, source: candidate.source, resolvedHref: normalizedHref };
@@ -1523,34 +1477,21 @@ export class NavigationHUD {
         };
     }
     
-    _handleRelocateHistory(detail, explicitMutation = undefined) {
+    _handleRelocateHistory(detail, explicitMutationSource = undefined) {
         const descriptor = this._makeLocationDescriptor(detail);
         if (!descriptor) return;
         const reason = (detail?.reason || '').toLowerCase();
-        const resolvedExplicitMutation = explicitMutation === undefined
+        const resolvedExplicitMutationSource = explicitMutationSource === undefined
             ? this.#consumeExplicitRelocateHistoryMutation(detail)
-            : explicitMutation;
-        const resolvedExplicitMutationSource = resolvedExplicitMutation?.source ?? null;
-        const explicitMutate = resolvedExplicitMutation?.shouldMutate === true
-            && EXPLICIT_RELOCATE_HISTORY_SOURCES.has(resolvedExplicitMutationSource);
-        const isPendingRelocateMutation = !!(
-            this.pendingRelocateJump
-            && explicitMutate
-            && resolvedExplicitMutationSource === 'relocate-button'
-            && resolvedExplicitMutation.mutationID === this.pendingRelocateJump.mutationID
+            : explicitMutationSource;
+        const explicitMutate = EXPLICIT_RELOCATE_HISTORY_SOURCES.has(
+            resolvedExplicitMutationSource
         );
-        const supersedesPendingRelocateJump = !!(
-            this.pendingRelocateJump
-            && explicitMutate
-            && resolvedExplicitMutationSource !== 'relocate-button'
-        );
-        if (supersedesPendingRelocateJump) {
-            this._cancelPendingRelocateJump();
-        }
         const isImplicitProgressEvent = !reason || reason === 'page' || reason === 'navigation' || reason === 'live-scroll';
         const shouldMutateRelocateHistory = !!(
-            isPendingRelocateMutation
-            || (!this.pendingRelocateJump && explicitMutate && !this.pendingScrubCommit)
+            (explicitMutate && !this.pendingScrubCommit)
+            || this.isProcessingRelocateJump
+            || this.pendingRelocateJump
         );
         readerNavLoadLog('nav.relocateHistory.input', {
             reason,
@@ -1575,10 +1516,6 @@ export class NavigationHUD {
             backStackCount: this.relocateStacks?.back?.length ?? null,
             forwardStackCount: this.relocateStacks?.forward?.length ?? null,
         });
-        if (this.pendingRelocateJump && !isPendingRelocateMutation) {
-            this.pendingRelocateJump.preJumpDescriptor = this._cloneDescriptor(descriptor)
-                ?? this.pendingRelocateJump.preJumpDescriptor;
-        }
         if (!shouldMutateRelocateHistory && isImplicitProgressEvent) {
             this.currentLocationDescriptor = descriptor;
             this.pendingReleasedScrubDescriptor = null;
@@ -1598,9 +1535,9 @@ export class NavigationHUD {
             this.currentLocationDescriptor = descriptor;
             return;
         }
-        if (isPendingRelocateMutation) {
+        if (this.isProcessingRelocateJump) {
             this.currentLocationDescriptor = descriptor;
-            this._finalizePendingRelocateJump();
+            this._finalizePendingRelocateJump(descriptor);
             if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
                 return;
             }
@@ -1619,7 +1556,7 @@ export class NavigationHUD {
         }
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
-        const isJumpReason = isLiveScrollReason || explicitMutate;
+        const isJumpReason = isLiveScrollReason || explicitMutate || this.isProcessingRelocateJump || this.pendingRelocateJump;
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this._isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;
@@ -1977,13 +1914,13 @@ export class NavigationHUD {
         const sectionIndexByHref = new Map();
         sections.forEach((section, index) => {
             if (section?.linear === 'no') return;
-            const normalizedHref = normalizeSpineHref(section?.href ?? section?.id ?? null);
+            const normalizedHref = normalizeSpineHrefForPageNum(section?.href ?? section?.id ?? null);
             if (normalizedHref) {
                 sectionIndexByHref.set(normalizedHref, index);
             }
         });
         this.pageTargets.forEach((pageTarget) => {
-            const normalizedHref = normalizeSpineHref(pageTarget?.href ?? null);
+            const normalizedHref = normalizeSpineHrefForPageNum(pageTarget?.href ?? null);
             const sectionIndex = normalizedHref != null ? sectionIndexByHref.get(normalizedHref) : null;
             if (typeof sectionIndex === 'number') {
                 this.pageTargetSectionPageCounts.set(sectionIndex, (this.pageTargetSectionPageCounts.get(sectionIndex) ?? 0) + 1);
@@ -2273,17 +2210,7 @@ export class NavigationHUD {
         return !!result?.entry;
     }
     
-    _cancelPendingRelocateJump(expectedMutationID = null) {
-        if (expectedMutationID && this.pendingRelocateJump?.mutationID !== expectedMutationID) {
-            return false;
-        }
-        this.pendingRelocateJump = null;
-        this.isProcessingRelocateJump = false;
-        this._updateRelocateButtons();
-        return true;
-    }
-
-    _finalizePendingRelocateJump() {
+    _finalizePendingRelocateJump(descriptor) {
         const pending = this.pendingRelocateJump;
         if (!pending) {
             this.isProcessingRelocateJump = false;
@@ -2295,6 +2222,7 @@ export class NavigationHUD {
             this.isProcessingRelocateJump = false;
             return;
         }
+        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
         const stack = this.relocateStacks?.[direction];
         if (stack?.length) {
             stack.pop();
@@ -2336,10 +2264,8 @@ export class NavigationHUD {
             return;
         }
 
-        const mutationID = `navigation-hud-relocate-${++this.relocateJumpMutationGeneration}`;
         const explicitRelocateOwnership = this.requestExplicitRelocateHistoryMutation?.(
-            'relocate-button',
-            mutationID
+            'relocate-button'
         );
 
         const preJumpDescriptor = this._cloneDescriptor(this.pendingReleasedScrubDescriptor)
@@ -2350,7 +2276,6 @@ export class NavigationHUD {
             direction,
             targetDescriptor: descriptor,
             preJumpDescriptor,
-            mutationID,
         };
         this.isProcessingRelocateJump = true;
         this._updateRelocateButtons();
@@ -2359,19 +2284,22 @@ export class NavigationHUD {
             const accepted = this.onJumpRequest
                 ? await this.onJumpRequest(descriptor, {
                     relocationID: explicitRelocateOwnership?.relocationID ?? null,
-                    explicitRelocateHistoryMutationID: mutationID,
                 })
                 : false;
             if (this.destroyed) return;
             if (accepted !== true) {
                 this.cancelExplicitRelocateHistoryMutation(explicitRelocateOwnership);
-                this._cancelPendingRelocateJump(mutationID);
+                this.pendingRelocateJump = null;
+                this.isProcessingRelocateJump = false;
+                this._updateRelocateButtons();
             }
         } catch (error) {
             if (this.destroyed) return;
             console.error('Failed to navigate to saved location', error);
             this.cancelExplicitRelocateHistoryMutation(explicitRelocateOwnership);
-            this._cancelPendingRelocateJump(mutationID);
+            this.pendingRelocateJump = null;
+            this.isProcessingRelocateJump = false;
+            this._updateRelocateButtons();
         }
     }
 }

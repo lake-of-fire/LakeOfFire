@@ -2908,9 +2908,7 @@ public class ReaderModeViewModel: ObservableObject {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
-        guard !Task.isCancelled else { return }
         await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
-        guard !Task.isCancelled else { return }
         if navigationFinishedDeferral(newState: newState) != nil {
             return
         }
@@ -2930,24 +2928,18 @@ public class ReaderModeViewModel: ObservableObject {
             return false
         }()
 
-        guard !Task.isCancelled else { return }
         if pendingMatchesPage, let pendingReaderModeURL {
             markReaderModeLoadComplete(for: pendingReaderModeURL)
         } else {
             readerModeLoading(false)
         }
-        guard !Task.isCancelled else { return }
         if !newState.pageURL.isReaderURLLoaderURL {
             do {
                 let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
-                guard !Task.isCancelled else { return }
                 if !isNextReaderMode {
                     readerModeLoading(false)
                 }
-            } catch is CancellationError {
-                return
             } catch {
-                guard !Task.isCancelled else { return }
                 readerModeLoading(false)
             }
         }
