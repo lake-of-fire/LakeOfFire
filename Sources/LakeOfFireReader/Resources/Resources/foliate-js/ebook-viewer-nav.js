@@ -18,18 +18,6 @@ const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
 ]);
 
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
-const bookNavRect = (element) => {
-    const rect = element?.getBoundingClientRect?.() ?? null;
-    if (!rect) return null;
-    return {
-        x: safeRound(rect.x, 1),
-        y: safeRound(rect.y, 1),
-        width: safeRound(rect.width, 1),
-        height: safeRound(rect.height, 1),
-        top: safeRound(rect.top, 1),
-        bottom: safeRound(rect.bottom, 1),
-    };
-};
 
 const normalizeSpineHrefForPageNum = (href) => {
     if (typeof href !== 'string') return null;
@@ -88,7 +76,7 @@ const ensurePageKey = (item, fallbackIndex = 0) => {
             configurable: false,
             writable: false,
         });
-    } catch (error) {
+    } catch (_error) {
         // ignore inability to define property
     }
     return key;
@@ -99,13 +87,6 @@ const safeRound = (value, digits = 1) =>
         ?? (typeof value === 'number' && Number.isFinite(value)
             ? Number(value.toFixed(digits))
             : null);
-
-const readerNavLoadLog = (stage, payload = {}) => {
-    try {
-        void stage;
-        void payload;
-    } catch (_error) {}
-};
 
 export class NavigationHUD {
     constructor({ onJumpRequest, getRenderer, formatPercent, onHideNavigationDueToScrollChange } = {}) {
@@ -168,10 +149,8 @@ export class NavigationHUD {
             forward: null,
         };
         this.lastPrimaryLabelDiagnostics = null;
-        this.lastPercentDecisionSignature = null;
         this.fallbackTotalPageCount = null;
         this.lastTotalSource = null;
-        this.lastTotalPagesSnapshot = null;
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
@@ -274,7 +253,7 @@ export class NavigationHUD {
         this._requestAuxiliaryInsetsUpdate();
     }
 
-    setSectionPageCountsFromCache(counts) {
+    setSectionPageCountsFromCache() {
         // Cache-warmer page counts are intentionally ignored. The visible label is location-driven.
         return;
     }
@@ -298,11 +277,6 @@ export class NavigationHUD {
             this.fallbackTotalPageCountSource = 'page-targets';
         }
         this._rebuildPageTargetSectionMetrics();
-        const pageKeyPreview = this.pageTargets.slice(0, 5).map((item, index) => ({
-            idx: index,
-            key: ensurePageKey(item, index),
-            label: item?.label ?? null,
-        }));
         if (this.lastRelocateDetail) {
             this._updatePrimaryLine(this.lastRelocateDetail);
         }
@@ -338,7 +312,6 @@ export class NavigationHUD {
     
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         if (this.destroyed) return this.hideNavigationDueToScroll;
-        const sequence = (globalThis.__manabiNavVisibilitySequence = Number(globalThis.__manabiNavVisibilitySequence || 0) + 1);
         const previous = this.hideNavigationDueToScroll;
         const next = !!shouldHide;
         const previousClass = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
@@ -396,25 +369,9 @@ export class NavigationHUD {
         this._requestAuxiliaryInsetsUpdate();
     }
 
-    _captureHideNavState() {
-        return {
-            bodyNavHiddenClass: document.body?.classList?.contains?.('nav-hidden') ?? null,
-            bodyNavHiddenScrollClass: document.body?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            navHidden: this.navHidden,
-            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
-            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-            hudHideNavigationDueToScroll: this.hideNavigationDueToScroll,
-            labelVariant: this.navPrimaryText?.dataset?.labelVariant ?? null,
-            preserveHiddenThroughNextDisplay: globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true,
-            ignoreRevealCount: Number(globalThis.__manabiIgnoreNextIncomingRevealNavigationCount || 0),
-            ignoreHideCount: Number(globalThis.__manabiIgnoreNextIncomingHideNavigationCount || 0),
-        };
-    }
-
     // External toggle for full nav hide (not the scroll HUD hide).
     setNavHiddenState(shouldHide) {
         if (this.destroyed) return;
-        const previous = this.navHidden;
         this.navHidden = !!shouldHide;
         this._applyLabelVariant();
         const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
@@ -576,13 +533,10 @@ export class NavigationHUD {
         if (this.pendingScrubCommit) {
             const fallbackDescriptor = this._cloneDescriptor(this.currentLocationDescriptor);
             if (fallbackDescriptor) {
-                const flushed = this._maybeCommitPendingScrub({
+                this._maybeCommitPendingScrub({
                     reason: 'scrub-begin-flush',
                     liveScrollPhase: 'settled',
                 }, fallbackDescriptor);
-                if (!flushed && this.pendingScrubCommit) {
-                }
-            } else if (this.pendingScrubCommit) {
             }
         }
         const baselineDescriptor = this._cloneDescriptor(originDescriptor)
@@ -599,7 +553,6 @@ export class NavigationHUD {
             active: true,
             originDescriptor: baselineDescriptor,
             originFraction,
-            hasMoved: false,
             frozenLabel,
         };
         if (frozenLabel && this.navPrimaryText) {
@@ -615,9 +568,6 @@ export class NavigationHUD {
         if (!this.scrubSession) return;
         const session = this.scrubSession;
         const comparisonDescriptor = this._cloneDescriptor(finalDescriptor ?? this.currentLocationDescriptor);
-        let committed = false;
-        let returnedToOrigin = false;
-        let deferredCommit = false;
         const releaseValue = typeof releaseFraction === 'number' ? releaseFraction : (comparisonDescriptor?.fraction ?? null);
         const releaseMoved = typeof releaseValue === 'number'
             && typeof session.originFraction === 'number'
@@ -625,17 +575,11 @@ export class NavigationHUD {
         if (!cancel && session.originDescriptor && releaseMoved) {
             this.pendingScrubCommit = {
                 origin: this._cloneDescriptor(session.originDescriptor),
-                reason: 'scrub-release',
                 releaseFraction: releaseValue,
-                scheduledAt: Date.now(),
                 releaseDescriptor: comparisonDescriptor,
             };
-            deferredCommit = true;
         } else {
             this.pendingScrubCommit = null;
-            if (!cancel) {
-                returnedToOrigin = !session.hasMoved || !releaseMoved;
-            }
         }
         const releaseDescriptor = this._descriptorFromFraction(releaseValue) || comparisonDescriptor;
         if (this.pendingScrubCommit && releaseDescriptor) {
@@ -644,14 +588,8 @@ export class NavigationHUD {
                 liveScrollPhase: 'settled',
             }, releaseDescriptor, { updateButtons: false });
             if (pushedNow) {
-                committed = true;
-                deferredCommit = false;
                 this._updateRelocateButtons();
-            } else {
-                deferredCommit = !!this.pendingScrubCommit;
             }
-        } else {
-            deferredCommit = !!this.pendingScrubCommit;
         }
         this.pendingReleasedScrubDescriptor = releaseDescriptor
             ? this._cloneDescriptor(releaseDescriptor)
@@ -681,10 +619,6 @@ export class NavigationHUD {
         // progress refresh, which must not leave the older request able to commit.
         this.sectionProgressRequestToken += 1;
         const isCurrentRelocate = () => !this.destroyed && relocateSequence === this.relocateSequence;
-        const previousSectionIndex = typeof this.lastRelocateDetail?.sectionIndex === 'number'
-            ? this.lastRelocateDetail.sectionIndex
-            : (typeof this.lastRelocateDetail?.index === 'number' ? this.lastRelocateDetail.index : null);
-        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locTotal != null && locTotal > 0) {
             this.lastKnownLocationTotal = locTotal;
@@ -944,7 +878,7 @@ export class NavigationHUD {
 
     _updateCompactPercent(detail) {
         const overlay = this.navHiddenOverlay?.percent;
-        const fraction = this._fractionForPercent(detail, 'compact-percent');
+        const fraction = this._fractionForPercent(detail);
         const hasValue = typeof fraction === 'number' && Number.isFinite(fraction);
         const percentText = hasValue ? this.formatPercent(Math.max(0, Math.min(1, fraction))) : '';
         if (overlay) {
@@ -956,53 +890,7 @@ export class NavigationHUD {
         this._postNativeOverlayState('compact-percent');
     }
 
-    _logPercentDecision(context, diagnostics) {
-        const signature = JSON.stringify({
-            context,
-            selectedSource: diagnostics.selectedSource,
-            selectedFraction: diagnostics.selectedFraction,
-            detailFraction: diagnostics.detailFraction,
-            lastRelocateFraction: diagnostics.lastRelocateFraction,
-            currentLocationFraction: diagnostics.currentLocationFraction,
-            lastLocationFraction: diagnostics.lastLocationFraction,
-            requestedRestoreFraction: diagnostics.requestedRestoreFraction,
-            lastScrubberFraction: diagnostics.lastScrubberFraction,
-            snapshotCurrent: diagnostics.snapshotCurrent,
-            snapshotTotal: diagnostics.snapshotTotal,
-            snapshotScrolled: diagnostics.snapshotScrolled,
-            snapshotFraction: diagnostics.snapshotFraction,
-            descriptorCurrent: diagnostics.descriptorCurrent,
-            descriptorTotal: diagnostics.descriptorTotal,
-            derivedFraction: diagnostics.derivedFraction,
-        });
-        if (signature === this.lastPercentDecisionSignature) {
-            return;
-        }
-        this.lastPercentDecisionSignature = signature;
-        readerNavLoadLog('viewer.percent.decision', {
-            context,
-            selectedSource: diagnostics.selectedSource,
-            selectedFraction: diagnostics.selectedFraction,
-            detailFraction: diagnostics.detailFraction,
-            lastRelocateFraction: diagnostics.lastRelocateFraction,
-            currentLocationFraction: diagnostics.currentLocationFraction,
-            lastLocationFraction: diagnostics.lastLocationFraction,
-            requestedRestoreFraction: diagnostics.requestedRestoreFraction,
-            lastScrubberFraction: diagnostics.lastScrubberFraction,
-            snapshotCurrent: diagnostics.snapshotCurrent,
-            snapshotTotal: diagnostics.snapshotTotal,
-            snapshotScrolled: diagnostics.snapshotScrolled,
-            snapshotFraction: diagnostics.snapshotFraction,
-            descriptorCurrent: diagnostics.descriptorCurrent,
-            descriptorTotal: diagnostics.descriptorTotal,
-            derivedFraction: diagnostics.derivedFraction,
-            oldSnapshotWouldWin: diagnostics.selectedSource !== 'rendererPageSnapshot'
-                && typeof diagnostics.snapshotFraction === 'number',
-        });
-    }
-
-    _fractionForPercent(detail, context = 'unknown') {
-        const snapshot = this.rendererPageSnapshot;
+    _fractionForPercent(detail) {
         const snapshotFraction = this._fractionFromRendererSnapshot();
         const descriptor = this._makeLocationDescriptor(detail)
             ?? this._cloneDescriptor(this.currentLocationDescriptor)
@@ -1017,42 +905,20 @@ export class NavigationHUD {
             fallbackFraction: null,
         });
         const candidates = [
-            { source: 'locationMetrics', value: derived },
-            { source: 'lastScrubberFraction', value: this.lastScrubberFraction },
-            { source: 'currentLocationDescriptor.fraction', value: this.currentLocationDescriptor?.fraction },
-            { source: 'reader.view.lastLocation.fraction', value: globalThis.reader?.view?.lastLocation?.fraction },
-            { source: 'detail.fraction', value: detail?.fraction },
-            { source: 'lastRelocateDetail.fraction', value: this.lastRelocateDetail?.fraction },
-            { source: '__manabiRequestedRestoreFraction', value: globalThis.__manabiRequestedRestoreFraction },
-            { source: 'rendererPageSnapshot', value: snapshotFraction },
+            derived,
+            this.lastScrubberFraction,
+            this.currentLocationDescriptor?.fraction,
+            globalThis.reader?.view?.lastLocation?.fraction,
+            detail?.fraction,
+            this.lastRelocateDetail?.fraction,
+            globalThis.__manabiRequestedRestoreFraction,
+            snapshotFraction,
         ];
-        const diagnostics = {
-            selectedSource: 'none',
-            selectedFraction: null,
-            detailFraction: typeof detail?.fraction === 'number' ? safeRound(detail.fraction, 6) : null,
-            lastRelocateFraction: typeof this.lastRelocateDetail?.fraction === 'number' ? safeRound(this.lastRelocateDetail.fraction, 6) : null,
-            currentLocationFraction: typeof this.currentLocationDescriptor?.fraction === 'number' ? safeRound(this.currentLocationDescriptor.fraction, 6) : null,
-            lastLocationFraction: typeof globalThis.reader?.view?.lastLocation?.fraction === 'number' ? safeRound(globalThis.reader.view.lastLocation.fraction, 6) : null,
-            requestedRestoreFraction: typeof globalThis.__manabiRequestedRestoreFraction === 'number' ? safeRound(globalThis.__manabiRequestedRestoreFraction, 6) : null,
-            lastScrubberFraction: typeof this.lastScrubberFraction === 'number' ? safeRound(this.lastScrubberFraction, 6) : null,
-            snapshotCurrent: typeof snapshot?.current === 'number' ? snapshot.current : null,
-            snapshotTotal: typeof snapshot?.total === 'number' ? snapshot.total : null,
-            snapshotScrolled: typeof snapshot?.scrolled === 'boolean' ? snapshot.scrolled : null,
-            snapshotFraction: typeof snapshotFraction === 'number' ? safeRound(snapshotFraction, 6) : null,
-            descriptorCurrent: typeof descriptor?.location?.current === 'number' ? descriptor.location.current : null,
-            descriptorTotal: typeof descriptor?.location?.total === 'number' ? descriptor.location.total : null,
-            derivedFraction: typeof derived === 'number' ? safeRound(derived, 6) : null,
-        };
         for (const candidate of candidates) {
-            if (typeof candidate.value === 'number' && isFinite(candidate.value)) {
-                const selected = Math.max(0, Math.min(1, candidate.value));
-                diagnostics.selectedSource = candidate.source;
-                diagnostics.selectedFraction = safeRound(selected, 6);
-                this._logPercentDecision(context, diagnostics);
-                return selected;
+            if (typeof candidate === 'number' && isFinite(candidate)) {
+                return Math.max(0, Math.min(1, candidate));
             }
         }
-        this._logPercentDecision(context, diagnostics);
         return null;
     }
 
@@ -1077,15 +943,8 @@ export class NavigationHUD {
     }
 
     _updateAuxiliaryInsets() {
-        const startedAt = performance.now();
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
-        const lookupPopoverPresented = document.body?.dataset?.mnbLookupPopoverPresented === 'true';
-        const navRect = this.navBar?.getBoundingClientRect?.() ?? null;
-        const pageReadButton = this.pageTrackingButtons?.querySelector?.('.page-read-button:not([hidden])')
-            ?? this.pageTrackingButtons?.querySelector?.('.page-read-button')
-            ?? null;
-        const pageReadRect = pageReadButton?.getBoundingClientRect?.() ?? null;
         const leftInset = 0;
         const rightInset = 0;
         const nextState = {
@@ -1102,18 +961,7 @@ export class NavigationHUD {
         styleTarget.style.setProperty('--nav-right-aux-inset', `${rightInset}px`);
     }
 
-    _descriptorForRelocateLabel(direction) {
-        const stack = this.relocateStacks?.[direction];
-        if (stack?.length) {
-            return stack[stack.length - 1];
-        }
-        if (direction === 'back' && this.scrubSession?.active && this.scrubSession.originDescriptor) {
-            return this.scrubSession.originDescriptor;
-        }
-        return null;
-    }
-
-    formatPrimaryLabel(detail, { allowRendererFallback = false, condensedOnly = false } = {}) {
+    formatPrimaryLabel(detail, { condensedOnly = false } = {}) {
         const derived = this._derivePrimaryLabel(detail);
         if (derived) {
             const label = condensedOnly ? this._condensePrimaryLabel(derived) : derived;
@@ -1196,7 +1044,7 @@ export class NavigationHUD {
             source: sectionIndexSource,
             resolvedHref: resolvedSectionHref,
         } = this._resolveSectionIndex(detail);
-        const fraction = this._fractionForPercent(detail, 'primary-label');
+        const fraction = this._fractionForPercent(detail);
         if (typeof fraction === 'number' && Number.isFinite(fraction)) {
             const clampedFraction = Math.max(0, Math.min(1, fraction));
             const currentPercent = safeRound(clampedFraction * 100, 1);
@@ -1255,15 +1103,6 @@ export class NavigationHUD {
             { source: 'renderer.tocItem.href', value: renderer?.tocItem?.href },
             { source: 'last-location.tocItem.href', value: globalThis.reader?.view?.lastLocation?.tocItem?.href },
         ];
-        const hrefCandidateSummary = hrefCandidates.map((candidate) => {
-            const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
-            return {
-                source: candidate.source,
-                href: candidate.value ?? null,
-                normalizedHref,
-                mappedIndex: normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null,
-            };
-        });
         for (const candidate of hrefCandidates) {
             const normalizedHref = normalizeSpineHrefForPageNum(candidate.value);
             const indexFromHref = normalizedHref != null ? (this.sectionIndexByHref?.get(normalizedHref) ?? null) : null;
@@ -1325,7 +1164,6 @@ export class NavigationHUD {
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
         if (this.destroyed) return;
-        const startedAt = performance.now();
         const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
@@ -1333,7 +1171,7 @@ export class NavigationHUD {
         if (trailing) trailing.hidden = true;
         try {
             const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
-            const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
+            const result = await this._calculatePagesLeftInSection({ refreshSnapshot });
             const pagesLeft = result?.pagesLeft ?? null;
             if (this.destroyed || requestToken !== this.sectionProgressRequestToken) {
                 return;
@@ -1421,7 +1259,7 @@ export class NavigationHUD {
     }
 
     
-    async _calculatePagesLeftInSection({ refreshSnapshot = true, requestToken = null, source = 'unknown' } = {}) {
+    async _calculatePagesLeftInSection({ refreshSnapshot = true } = {}) {
         const detail = this.lastRelocateDetail;
         const sectionResolution = this._resolveSectionIndex(detail ?? this.currentLocationDescriptor ?? null);
         if (sectionResolution.index == null) {
@@ -1493,39 +1331,10 @@ export class NavigationHUD {
             || this.isProcessingRelocateJump
             || this.pendingRelocateJump
         );
-        readerNavLoadLog('nav.relocateHistory.input', {
-            reason,
-            pageTurnDirection: detail?.pageTurnDirection ?? null,
-            sectionIndex: descriptor.sectionIndex ?? null,
-            localSectionIndex: descriptor.localSectionIndex ?? null,
-            rendererTotal: descriptor.rendererTotal ?? null,
-            fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
-            locationCurrent: descriptor.location?.current ?? null,
-            locationTotal: descriptor.location?.total ?? null,
-            cfiLength: typeof descriptor.cfi === 'string' ? descriptor.cfi.length : 0,
-            currentSectionIndex: this.currentLocationDescriptor?.sectionIndex ?? null,
-            currentLocalSectionIndex: this.currentLocationDescriptor?.localSectionIndex ?? null,
-            currentFraction: typeof this.currentLocationDescriptor?.fraction === 'number'
-                ? safeRound(this.currentLocationDescriptor.fraction, 6)
-                : null,
-            explicitMutationSource: resolvedExplicitMutationSource,
-            explicitMutate,
-            shouldMutateRelocateHistory,
-            isProcessingRelocateJump: !!this.isProcessingRelocateJump,
-            hasPendingRelocateJump: !!this.pendingRelocateJump,
-            backStackCount: this.relocateStacks?.back?.length ?? null,
-            forwardStackCount: this.relocateStacks?.forward?.length ?? null,
-        });
         if (!shouldMutateRelocateHistory && isImplicitProgressEvent) {
             this.currentLocationDescriptor = descriptor;
             this.pendingReleasedScrubDescriptor = null;
             this._maybeCommitPendingScrub(detail, descriptor);
-            readerNavLoadLog('nav.relocateHistory.skipImplicit', {
-                reason,
-                sectionIndex: descriptor.sectionIndex ?? null,
-                localSectionIndex: descriptor.localSectionIndex ?? null,
-                fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
-            });
             return;
         }
         const lastOrigin = this.scrubSession?.originDescriptor;
@@ -1554,7 +1363,6 @@ export class NavigationHUD {
             this._updateRelocateButtons();
             return;
         }
-        const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
         const isJumpReason = isLiveScrollReason || explicitMutate || this.isProcessingRelocateJump || this.pendingRelocateJump;
         const previousDescriptor = this.currentLocationDescriptor;
@@ -1570,7 +1378,7 @@ export class NavigationHUD {
             descriptorChanged = true;
         }
         if (isScrubbing) {
-            this._trackScrubMovement({ descriptor, movedFromOrigin, detailFraction });
+            this._captureScrubOrigin(descriptor);
         }
         if (shouldMutateRelocateHistory && isJumpReason && descriptorChanged && !isLiveScrollReason) {
             if (!isScrubbing && previousDescriptor) {
@@ -1582,20 +1390,9 @@ export class NavigationHUD {
         this.currentLocationDescriptor = descriptor;
         this.pendingReleasedScrubDescriptor = null;
         this._maybeCommitPendingScrub(detail, descriptor);
-        readerNavLoadLog('nav.relocateHistory.applied', {
-            reason,
-            sectionIndex: descriptor.sectionIndex ?? null,
-            localSectionIndex: descriptor.localSectionIndex ?? null,
-            fraction: typeof descriptor.fraction === 'number' ? safeRound(descriptor.fraction, 6) : null,
-            descriptorChanged,
-            isJumpReason,
-            isScrubbing,
-            backStackCount: this.relocateStacks?.back?.length ?? null,
-            forwardStackCount: this.relocateStacks?.forward?.length ?? null,
-        });
     }
 
-    _trackScrubMovement({ descriptor, movedFromOrigin, detailFraction }) {
+    _captureScrubOrigin(descriptor) {
         const session = this.scrubSession;
         if (!session || !session.active) return;
         if (!session.originDescriptor && descriptor) {
@@ -1603,11 +1400,6 @@ export class NavigationHUD {
             if (session.originFraction == null && typeof descriptor?.fraction === 'number') {
                 session.originFraction = descriptor.fraction;
             }
-        }
-        const fractionFromDescriptor = typeof descriptor?.fraction === 'number' ? descriptor.fraction : null;
-        const previewFraction = fractionFromDescriptor ?? detailFraction ?? null;
-        if (movedFromOrigin) {
-            session.hasMoved = true;
         }
     }
 
@@ -1742,16 +1534,11 @@ export class NavigationHUD {
         };
     }
     
-    _requestRendererPrimaryLine() {
-        // No-op: we no longer backfill the primary label with renderer page numbers.
-        return;
-    }
-    
     _normalizeRendererPageInfo(rawPage, rawTotal, renderer) {
         if (rawPage == null && rawTotal == null) return null;
         const numericPage = Number(rawPage);
         const numericTotal = Number(rawTotal);
-        let total = Number.isFinite(numericTotal) ? Math.max(1, Math.round(numericTotal)) : null;
+        const total = Number.isFinite(numericTotal) ? Math.max(1, Math.round(numericTotal)) : null;
         const currentBase = Number.isFinite(numericPage) ? Math.max(1, Math.round(numericPage)) : 1;
         const current = total ? Math.max(1, Math.min(total, currentBase)) : currentBase;
         if (!Number.isFinite(current)) return null;
@@ -1759,17 +1546,6 @@ export class NavigationHUD {
         const scrolled = renderer?.scrolled ?? null;
         const isPaginated = renderer && scrolled === false;
         const usesRightToLeftPageOrder = isPaginated && this._rendererUsesRightToLeftPageOrder(renderer);
-        const snapshotBeforeAdjust = {
-            rawPage,
-            rawTotal,
-            numericPage,
-            numericTotal,
-            totalBase: total,
-            currentBase,
-            clampedCurrent: current,
-            scrolled,
-            rtl: usesRightToLeftPageOrder,
-        };
         const shouldAdjustForSentinels = MANABI_NAV_SENTINEL_ADJUST_ENABLED && isPaginated && total && total > 2;
         if (shouldAdjustForSentinels) {
             const textTotal = Math.max(1, total - 2); // strip lead/trail sentinels
@@ -2011,20 +1787,7 @@ export class NavigationHUD {
         return filled === this.linearSectionCount;
     }
 
-    _sectionCountsState() {
-        const linearIndexes = Array.from(this.linearSectionIndexes ?? []);
-        const filledLinearIndexes = linearIndexes.filter(idx => this.sectionPageCounts.has(idx));
-        const missingLinearIndexes = linearIndexes.filter(idx => !this.sectionPageCounts.has(idx));
-        return {
-            complete: this._hasCompleteSectionCounts(),
-            linearCount: this.linearSectionCount ?? 0,
-            filledLinear: filledLinearIndexes.length,
-            missingLinearSectionIndexesPreview: missingLinearIndexes.slice(0, 8),
-            sectionPageCountsSize: this.sectionPageCounts.size,
-        };
-    }
-
-    _currentTotalPages({ detail, detailPageCount, sectionIndex }) {
+    _currentTotalPages({ detail }) {
         const candidates = [];
         if (this.totalPageCount > 0) {
             candidates.push({ source: 'page-targets', total: this.totalPageCount });
@@ -2068,19 +1831,6 @@ export class NavigationHUD {
 
         const best = bestPageBased ?? locationCandidate;
         this.lastTotalSource = best?.source ?? null;
-        const summary = candidates.map(({ source, total }) => ({ source, total }));
-        const changed = !this.lastTotalPagesSnapshot
-            || this.lastTotalPagesSnapshot.source !== (best?.source ?? null)
-            || this.lastTotalPagesSnapshot.total !== (best?.total ?? null)
-            || this.lastTotalPagesSnapshot.candidateCount !== summary.length;
-        if (changed) {
-            const sectionCountsState = this._sectionCountsState();
-            this.lastTotalPagesSnapshot = {
-                source: best?.source ?? null,
-                total: best?.total ?? null,
-                candidateCount: summary.length,
-            };
-        }
         return best?.total ?? null;
     }
 
@@ -2120,19 +1870,10 @@ export class NavigationHUD {
 
     _updateRelocateButtons(source = 'unknown') {
         if (this.destroyed) return;
-        const startedAt = performance.now();
         const backStack = this.relocateStacks.back;
         const forwardStack = this.relocateStacks.forward;
-        const scrubbing = !!this.scrubSession?.active;
-        const busy = !!this.isProcessingRelocateJump;
         const showBack = !this.hideNavigationDueToScroll && backStack.length > 0;
         const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
-        const disableBack = busy || !showBack;
-        const disableForward = busy || !showForward;
-        const backLabelDescriptor = this._descriptorForRelocateLabel('back');
-        const forwardLabelDescriptor = this._descriptorForRelocateLabel('forward');
-        const backLabel = showBack ? this._labelForDescriptor(backLabelDescriptor) : '';
-        const forwardLabel = showForward ? this._labelForDescriptor(forwardLabelDescriptor) : '';
         this._postNativeOverlayState(`relocate-buttons:${source}`);
         if (!this.hideNavigationDueToScroll) {
             this._updateSectionProgress({ source: 'relocate-buttons' });
@@ -2146,23 +1887,6 @@ export class NavigationHUD {
         this._requestAuxiliaryInsetsUpdate();
     }
     
-    _serializeStack(stack) {
-        if (!Array.isArray(stack) || !stack.length) {
-            return [];
-        }
-        const LIMIT = 5;
-        const total = stack.length;
-        const tail = stack.slice(-LIMIT);
-        return tail.map(function(entry, offset) {
-            const index = total - tail.length + offset;
-            return {
-                index,
-                fraction: typeof entry?.fraction === 'number' ? Number(entry.fraction.toFixed(6)) : null,
-                pageKey: entry?.pageItemKey ?? null,
-            };
-        });
-    }
-
     _pruneBackStackIfReturnedToOrigin(detail) {
         if (!detail) return;
         const descriptor = this._makeLocationDescriptor(detail);
@@ -2185,11 +1909,11 @@ export class NavigationHUD {
 
     _maybeCommitPendingScrub(detail, descriptor, { updateButtons = true } = {}) {
         if (!this.pendingScrubCommit) return false;
-        const { origin, reason, scheduledAt, releaseDescriptor, releaseFraction } = this.pendingScrubCommit;
+        const { origin, releaseDescriptor, releaseFraction } = this.pendingScrubCommit;
         const phase = detail?.liveScrollPhase ?? null;
         const canCommit = !detail || detail.reason !== 'live-scroll' || phase === 'settled';
         if (!canCommit) return false;
-        let effectiveDescriptor = descriptor || releaseDescriptor || null;
+        const effectiveDescriptor = descriptor || releaseDescriptor || null;
         if (!origin || !effectiveDescriptor) {
             this.pendingScrubCommit = null;
             return false;
@@ -2201,8 +1925,6 @@ export class NavigationHUD {
             return false;
         }
         const result = this._pushBackStack(origin, { stripCFI: true });
-        if (result?.entry) {
-        }
         this.pendingScrubCommit = null;
         if (updateButtons) {
             this._updateRelocateButtons();
@@ -2210,7 +1932,7 @@ export class NavigationHUD {
         return !!result?.entry;
     }
     
-    _finalizePendingRelocateJump(descriptor) {
+    _finalizePendingRelocateJump() {
         const pending = this.pendingRelocateJump;
         if (!pending) {
             this.isProcessingRelocateJump = false;
@@ -2222,7 +1944,6 @@ export class NavigationHUD {
             this.isProcessingRelocateJump = false;
             return;
         }
-        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
         const stack = this.relocateStacks?.[direction];
         if (stack?.length) {
             stack.pop();
