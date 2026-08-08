@@ -310,6 +310,7 @@
 		E1BAA2F14CD392B8E3945BFF /* EbookURLSchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5010620C692CE87ACA4385 /* EbookURLSchemeHandlerTests.swift */; };
 		E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */; };
+		E4681B7FEB1F1731FCCC33A7 /* URLSchemeTaskCompletionOwnershipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C4ED9AFE35027B412C2D88 /* URLSchemeTaskCompletionOwnershipTests.swift */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
 		E78789EC91BC5C2BFD33C9F1 /* _NumericsShims.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5A2F616729F8747DDA047EE /* _NumericsShims.framework */; };
 		E7BD89E0A12B34503C356CF8 /* libRealmSwiftGaps.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */; };
@@ -338,6 +339,7 @@
 		F1BBAFDB543A38281E29070E /* StructuredQueriesSQLite.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7DAC05CC0493FA585B5C9A21 /* StructuredQueriesSQLite.framework */; };
 		F20D070F298129461504D5FD /* InternalURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C45893AA23B27EB6A020D51 /* InternalURLSchemeHandler.swift */; };
 		F245C5F10C4366CEA3907AFF /* libLakeOfFireOPDS.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D959412BE09A5318A0A52E2D /* libLakeOfFireOPDS.a */; };
+		F36EEDB7C4893D8E8E94FB13 /* URLInternalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */; };
 		F4F9B4AF34EE7401B91A9B47 /* ReaderMessageHandlersViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */; };
 		F510C5073A7A0E5E2E59EA32 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
 		F54C714585C5748DE8D123B9 /* libLakeOfFireFiles.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 7DAF9C794487B658DA5B47EE /* libLakeOfFireFiles.a */; };
@@ -1087,6 +1089,7 @@
 		8016AAC472FE654B02DB6492 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
 		84EE5AD646FA4689A146F785 /* Color+Presets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Presets.swift"; sourceTree = "<group>"; };
 		86AF5234553A5B749FF416FC /* mozilla-wikipedia-minerva.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = "mozilla-wikipedia-minerva.html"; sourceTree = "<group>"; };
+		86C4ED9AFE35027B412C2D88 /* URLSchemeTaskCompletionOwnershipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLSchemeTaskCompletionOwnershipTests.swift; sourceTree = "<group>"; };
 		8730C0A30790A4E6F2424949 /* CloudKitSyncMonitor_CloudKitSyncMonitor.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudKitSyncMonitor_CloudKitSyncMonitor.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		878E05D9D239C170DFDE2C3A /* NavigationTaskManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTaskManager.swift; sourceTree = "<group>"; };
 		89514077A2D3DFC4E370326C /* ParseData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParseData.swift; sourceTree = "<group>"; };
@@ -1111,6 +1114,7 @@
 		9B74BFFCABE24CA657A9DCF8 /* ReaderFileManagerNormalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileManagerNormalizationTests.swift; sourceTree = "<group>"; };
 		9C70D45904D4F0928CCAC4EE /* FilePicker.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FilePicker.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9D7E2BCFE0E7C895584491C2 /* SwiftReadability_SwiftReadability.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwiftReadability_SwiftReadability.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = URLInternalTests.swift; sourceTree = "<group>"; };
 		9E4915E5B7CBEBF5D41FB73D /* Dependencies.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Dependencies.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDataManager.swift; sourceTree = "<group>"; };
 		A0E0729E124F758E59DB56B4 /* UserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserScript.swift; sourceTree = "<group>"; };
@@ -1792,6 +1796,8 @@
 				E50198207B2DB46B0C2121F3 /* ReaderSnippetTitleTests.swift */,
 				35C21FF5D9C7157D6432E6C7 /* SharedReaderFontTests.swift */,
 				CF6C7F7E410A6F9161416C1D /* SyncMutationBoundaryTests.swift */,
+				9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */,
+				86C4ED9AFE35027B412C2D88 /* URLSchemeTaskCompletionOwnershipTests.swift */,
 				B287731F0C7959837AAF0105 /* WikipediaReadabilityRegressionTests.swift */,
 			);
 			path = LakeOfFireTests;
@@ -2703,6 +2709,8 @@
 				21C23126157B77D43BACF325 /* ReaderSnippetTitleTests.swift in Sources */,
 				24D66F4E164B8839FA0F2658 /* SharedReaderFontTests.swift in Sources */,
 				9C2E3BDB1A903E042E27D473 /* SyncMutationBoundaryTests.swift in Sources */,
+				F36EEDB7C4893D8E8E94FB13 /* URLInternalTests.swift in Sources */,
+				E4681B7FEB1F1731FCCC33A7 /* URLSchemeTaskCompletionOwnershipTests.swift in Sources */,
 				066F72220EF8642D5522FBDC /* WikipediaReadabilityRegressionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
