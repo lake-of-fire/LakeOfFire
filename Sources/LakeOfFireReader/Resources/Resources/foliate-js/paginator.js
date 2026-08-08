@@ -1139,6 +1139,8 @@ class View {
                 ancestor = ancestor.parentElement;
             }
         }
+        if (globalThis.manabiVerboseImageLayout === true) {
+        }
     }
     #makeExpandSignature() {
         const doc = this.document
