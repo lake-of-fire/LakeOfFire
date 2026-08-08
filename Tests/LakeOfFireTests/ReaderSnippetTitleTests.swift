@@ -18,6 +18,7 @@ final class ReaderSnippetTitleTests: XCTestCase {
         }
         var configuration = Realm.Configuration(fileURL: realmURL)
         configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 

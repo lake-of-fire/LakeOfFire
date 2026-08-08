@@ -5,6 +5,21 @@ import XCTest
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
+func configureLakeOfFireMutationTrackingForTesting(
+    _ configuration: inout Realm.Configuration
+) {
+    let objectTypes = configuration.objectTypes ?? []
+    if !objectTypes.contains(where: {
+        $0.className() == BigSyncPendingMutation.className()
+    }) {
+        configuration.objectTypes = objectTypes + [BigSyncPendingMutation.self]
+    }
+    BigSyncMutationTracking.install(
+        configurations: [configuration],
+        excludedClassNames: []
+    )
+}
+
 final class SyncMutationBoundaryTests: XCTestCase {
     func testFollowingFeedGroupUsesOneTimestampAndJournalsEveryFeed() throws {
         let configuration = makeConfiguration()
@@ -235,11 +250,8 @@ final class SyncMutationBoundaryTests: XCTestCase {
         var configuration = Realm.Configuration(
             inMemoryIdentifier: UUID().uuidString
         )
-        configuration.objectTypes = objectTypes + [BigSyncPendingMutation.self]
-        BigSyncMutationTracking.install(
-            configurations: [configuration],
-            excludedClassNames: []
-        )
+        configuration.objectTypes = objectTypes
+        configureLakeOfFireMutationTrackingForTesting(&configuration)
         return configuration
     }
 

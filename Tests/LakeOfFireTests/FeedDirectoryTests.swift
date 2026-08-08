@@ -10,6 +10,7 @@ final class FeedDirectoryTests: XCTestCase {
     func testCategoryExposesRootDirectoriesAndRootFeedsSeparately() throws {
         var config = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         config.objectTypes = [FeedCategory.self, FeedDirectory.self, Feed.self]
+        configureLakeOfFireMutationTrackingForTesting(&config)
         let realm = try Realm(configuration: config)
 
         let categoryID = UUID()
@@ -78,6 +79,7 @@ final class FeedDirectoryTests: XCTestCase {
         var config = DefaultRealmConfiguration.configuration
         config.inMemoryIdentifier = nil
         config.fileURL = realmURL
+        configureLakeOfFireMutationTrackingForTesting(&config)
         XCTAssertNotNil(config.fileURL)
         LibraryDataManager.realmConfiguration = config
 
@@ -169,6 +171,7 @@ final class FeedDirectoryTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: realmURL) }
         config.inMemoryIdentifier = nil
         config.fileURL = realmURL
+        configureLakeOfFireMutationTrackingForTesting(&config)
         XCTAssertNotNil(config.fileURL)
         LibraryDataManager.realmConfiguration = config
 
