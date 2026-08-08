@@ -25,7 +25,7 @@ public struct EbookProcessedSectionPayload: Sendable {
     }
 }
 
-func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
+public func ebookProcessedSectionPayloadHasDurableSegmentIdentities(
     _ payload: EbookProcessedSectionPayload
 ) -> Bool {
     guard payload.isAuthoritativelyProcessed else { return false }
