@@ -287,6 +287,7 @@ let package = Package(
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 "LakeOfFireContent",
+                "LakeOfFireContentUI",
                 "LakeOfFireCore",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",

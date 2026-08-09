@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import CoreText
 import ImageIO
 import RealmSwift
 import RealmSwiftGaps
@@ -1326,12 +1327,100 @@ public struct BookCoverImageView: View {
     }
 }
 
+/// Rasterizes fallback initials once per visible text and pixel size. Keeping this
+/// outside the SwiftUI tile makes the fallback decorative content rather than a
+/// `Text` view, so it cannot participate in the surrounding cell's text layout.
+@MainActor
+enum ReaderContentInitialImageRenderer {
+    static let cacheCountLimit = 128
+    static let cacheTotalCostLimit = 4 * 1_024 * 1_024
+    private static let maximumPixelDimension = 4_096
+
+    private static let imageCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = cacheCountLimit
+        cache.totalCostLimit = cacheTotalCostLimit
+        return cache
+    }()
+
+    static func render(
+        initial: String,
+        dimension: CGFloat,
+        displayScale: CGFloat
+    ) -> CGImage? {
+        guard !initial.isEmpty, dimension.isFinite, dimension > 0 else { return nil }
+        let scale = displayScale.isFinite ? max(displayScale, 1) : 1
+        let scaledDimension = dimension * scale
+        guard scaledDimension.isFinite else { return nil }
+        let boundedPixelDimension = min(CGFloat(maximumPixelDimension), max(1, scaledDimension.rounded(.up)))
+        let pixelDimension = Int(boundedPixelDimension)
+        let cacheKey = "\(initial)|\(pixelDimension)" as NSString
+        if let cachedImage = imageCache.object(forKey: cacheKey) {
+            return cachedImage
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: pixelDimension,
+            height: pixelDimension,
+            bitsPerComponent: 8,
+            bytesPerRow: pixelDimension * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        let fontSize = CGFloat(pixelDimension) * 0.42
+        guard let baseFont = CTFontCreateUIFontForLanguage(.system, fontSize, nil) else {
+            return nil
+        }
+        let font = CTFontCreateCopyWithSymbolicTraits(
+            baseFont,
+            fontSize,
+            nil,
+            .boldTrait,
+            .boldTrait
+        ) ?? baseFont
+        let attributedInitial = NSAttributedString(
+            string: initial,
+            attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String):
+                    CGColor(gray: 1, alpha: 1),
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attributedInitial)
+        let glyphBounds = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+        context.textPosition = CGPoint(
+            x: (CGFloat(pixelDimension) - glyphBounds.width) / 2 - glyphBounds.minX,
+            y: (CGFloat(pixelDimension) - glyphBounds.height) / 2 - glyphBounds.minY
+        )
+        CTLineDraw(line, context)
+
+        guard let image = context.makeImage() else { return nil }
+        imageCache.setObject(
+            image,
+            forKey: cacheKey,
+            cost: pixelDimension * pixelDimension * 4
+        )
+        return image
+    }
+
+    static func resetCacheForTesting() {
+        imageCache.removeAllObjects()
+    }
+}
+
 private struct ReaderContentThumbnailTile: View {
     enum Content {
         case icon(URL, placeholder: String)
         case initial(String)
         case symbol(String)
     }
+
+    @Environment(\.displayScale) private var displayScale
 
     let content: Content
     let width: CGFloat
@@ -1365,12 +1454,26 @@ private struct ReaderContentThumbnailTile: View {
             .fill(placeholderBackground)
             .overlay {
                 if let letter = placeholderLetter {
-                    Text(letter)
-                        .font(.system(size: min(width, height) * 0.45, weight: .semibold, design: .rounded))
-                        .minimumScaleFactor(0.4)
-                        .foregroundStyle(placeholderForeground)
+                    initialImage(letter)
                 }
             }
+    }
+
+    @ViewBuilder
+    private func initialImage(_ initial: String) -> some View {
+        if let image = ReaderContentInitialImageRenderer.render(
+            initial: initial,
+            dimension: min(width, height),
+            displayScale: displayScale
+        ) {
+            Image(decorative: image, scale: displayScale)
+                .renderingMode(.template)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: min(width, height), height: min(width, height))
+                .foregroundStyle(placeholderForeground)
+        }
     }
 
     private var placeholderLetter: String? {
