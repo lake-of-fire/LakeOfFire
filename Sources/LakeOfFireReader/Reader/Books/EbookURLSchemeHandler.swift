@@ -651,25 +651,34 @@ actor EBookProcessTextRequestDeduper {
     }
 }
 
+public enum EBookNativeSectionPageStatsOutcome: Equatable, Sendable {
+    case produced
+    case unsupported
+}
+
 public struct EBookNativeSectionPrewarmResult: Equatable, Sendable {
     public let sectionHref: String
     public let requestBytes: Int
     public let responseBytes: Int
     public let pageStatsRequested: Bool
-    public let pageStatsProduced: Bool
+    public let pageStatsOutcome: EBookNativeSectionPageStatsOutcome
+
+    public var pageStatsProduced: Bool {
+        pageStatsOutcome == .produced
+    }
 
     public init(
         sectionHref: String,
         requestBytes: Int,
         responseBytes: Int,
         pageStatsRequested: Bool = true,
-        pageStatsProduced: Bool = false
+        pageStatsOutcome: EBookNativeSectionPageStatsOutcome = .unsupported
     ) {
         self.sectionHref = sectionHref
         self.requestBytes = requestBytes
         self.responseBytes = responseBytes
         self.pageStatsRequested = pageStatsRequested
-        self.pageStatsProduced = pageStatsProduced
+        self.pageStatsOutcome = pageStatsOutcome
     }
 }
 
