@@ -37,6 +37,7 @@ import {
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
+import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import {
     activeRendererContentsForLookup,
     getCurrentRendererDocument,
@@ -7925,16 +7926,21 @@ class Reader {
     async #onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
+        const renderer = this.view?.renderer;
+        if (!renderer) return;
         markRestorePositionSaveUserInput(`nav-button.${type ?? 'unknown'}`);
+        finishOwnedElementOperation(btn);
         // For spinner placement
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
+        const originalIcon = icon?.cloneNode(true) ?? null;
+        const previousLabelVisibility = label?.style?.visibility ?? '';
+        let spinner = null;
         // Hide the label while loading
         if (label) label.style.visibility = 'hidden';
         // Replace SVG icon with spinner, respecting spinner placement
         if (icon) {
-            btn._originalIcon = icon.cloneNode(true);
-            const spinner = document.createElement('div');
+            spinner = document.createElement('div');
             spinner.className = 'ispinner nav-spinner';
             spinner.innerHTML = '<div class="ispinner-blade"></div>'.repeat(8);
 
@@ -7959,33 +7965,50 @@ class Reader {
                 icon.replaceWith(spinner);
             }
         }
-        const restoreIcon = () => {
-            const spinner = btn.querySelector('.ispinner.nav-spinner');
-            if (spinner && btn._originalIcon) {
-                spinner.replaceWith(btn._originalIcon);
-                delete btn._originalIcon;
+        let fallbackTimer = null;
+        let operation = null;
+        const refreshAfterFinish = () => {
+            const didFinish = operation?.finish?.() === true;
+            if (didFinish) {
+                void this.updateNavButtons().catch(error => console.error(error));
             }
-            if (label) label.style.visibility = '';
+            return didFinish;
         };
-        const navSpinnerFallbackTimer = setTimeout(restoreIcon, navSpinnerMaximumMs);
-        let nav;
-        switch (type) {
+        operation = beginOwnedElementOperation(btn, () => {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+            if (spinner?.isConnected) {
+                if (originalIcon) {
+                    spinner.replaceWith(originalIcon);
+                } else {
+                    spinner.remove();
+                }
+            }
+            if (label) label.style.visibility = previousLabelVisibility;
+        });
+        fallbackTimer = setTimeout(refreshAfterFinish, navSpinnerMaximumMs);
+
+        try {
+            switch (type) {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'prev':
                 // Go to previous section, then jump to its end
-                nav = this.view.renderer.prevSection().then(() => {
+                await renderer.prevSection().then(() => {
                     // TODO: Add this here...
                     //this.view.fraction = 1;
                 });
                 break;
             case 'next':
-                nav = this.view.renderer.nextSection();
+                await renderer.nextSection();
                 break;
+            default:
+                break;
+            }
+        } catch (error) {
+            console.error(error);
+        } finally {
+            refreshAfterFinish();
         }
-        Promise.resolve(nav).finally(() => {
-            clearTimeout(navSpinnerFallbackTimer);
-            restoreIcon();
-        });
     }
 }
 
