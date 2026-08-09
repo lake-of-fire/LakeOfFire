@@ -1,5 +1,10 @@
 import XCTest
 import ZIPFoundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import LakeOfFireContent
 
 final class ReaderPackageEntrySourceTests: XCTestCase {
@@ -209,6 +214,153 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
         }
     }
 
+#if canImport(Darwin) || canImport(Glibc)
+    func testDirectoryReadRejectsFIFOWithoutBlocking() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let packageRoot = temporaryRoot.appendingPathComponent("book", isDirectory: true)
+            let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
+            let fifoURL = metadataDirectory.appendingPathComponent("container.xml")
+            try FileManager.default.createDirectory(
+                at: metadataDirectory,
+                withIntermediateDirectories: true
+            )
+            XCTAssertEqual(mkfifo(fifoURL.path, mode_t(0o600)), 0)
+            let source = try ReaderPackageEntrySource(localURL: packageRoot)
+
+            XCTAssertThrowsError(try source.readEntry(subpath: "META-INF/container.xml")) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .invalidSubpath)
+            }
+        }
+    }
+
+    func testDirectorySourceRejectsReplacedAncestorSymlink() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let originalParent = temporaryRoot.appendingPathComponent("mounted", isDirectory: true)
+            let movedParent = temporaryRoot.appendingPathComponent("mounted-original", isDirectory: true)
+            let replacementParent = temporaryRoot.appendingPathComponent("replacement", isDirectory: true)
+            let originalPackageRoot = originalParent.appendingPathComponent("book", isDirectory: true)
+            let replacementPackageRoot = replacementParent.appendingPathComponent("book", isDirectory: true)
+            let subpath = "OPS/chapter.xhtml"
+            let originalChapterURL = originalPackageRoot.appendingPathComponent(subpath)
+            let replacementChapterURL = replacementPackageRoot.appendingPathComponent(subpath)
+            try FileManager.default.createDirectory(
+                at: originalChapterURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: replacementChapterURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("inside".utf8).write(to: originalChapterURL)
+            try Data("outside".utf8).write(to: replacementChapterURL)
+            let source = try ReaderPackageEntrySource(localURL: originalPackageRoot)
+
+            try FileManager.default.moveItem(at: originalParent, to: movedParent)
+            try FileManager.default.createSymbolicLink(
+                at: originalParent,
+                withDestinationURL: replacementParent
+            )
+
+            XCTAssertThrowsError(try source.readEntry(subpath: subpath)) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .invalidSubpath)
+            }
+            XCTAssertThrowsError(try source.enumerateEntries()) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .invalidSubpath)
+            }
+        }
+    }
+
+    func testDirectorySourceRejectsSamePathRootReplacement() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let mountedParent = temporaryRoot.appendingPathComponent("mounted", isDirectory: true)
+            let movedParent = temporaryRoot.appendingPathComponent("mounted-original", isDirectory: true)
+            let packageRoot = mountedParent.appendingPathComponent("book", isDirectory: true)
+            let subpath = "OPS/chapter.xhtml"
+            let chapterURL = packageRoot.appendingPathComponent(subpath)
+            try FileManager.default.createDirectory(
+                at: chapterURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("inside".utf8).write(to: chapterURL)
+            let source = try ReaderPackageEntrySource(localURL: packageRoot)
+
+            try FileManager.default.moveItem(at: mountedParent, to: movedParent)
+            let replacementChapterURL = packageRoot.appendingPathComponent(subpath)
+            try FileManager.default.createDirectory(
+                at: replacementChapterURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("replacement".utf8).write(to: replacementChapterURL)
+
+            XCTAssertThrowsError(try source.readEntry(subpath: subpath)) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .invalidSubpath)
+            }
+        }
+    }
+
+    func testArchiveSourceRejectsPathReplacementAfterConstruction() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+            let replacementURL = temporaryRoot.appendingPathComponent("replacement.epub")
+            let displacedURL = temporaryRoot.appendingPathComponent("book-original.epub")
+            try makeArchive(
+                at: archiveURL,
+                entries: [("OPS/old.xhtml", Data("old".utf8))]
+            )
+            try makeArchive(
+                at: replacementURL,
+                entries: [("OPS/new.xhtml", Data("new".utf8))]
+            )
+            let source = try ReaderPackageEntrySource(localURL: archiveURL)
+            XCTAssertEqual(try source.enumerateEntries().map(\.path), ["OPS/old.xhtml"])
+
+            try FileManager.default.moveItem(at: archiveURL, to: displacedURL)
+            try FileManager.default.moveItem(at: replacementURL, to: archiveURL)
+
+            XCTAssertThrowsError(try source.enumerateEntries()) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .unsupportedSource)
+            }
+            XCTAssertThrowsError(try source.readEntry(subpath: "OPS/new.xhtml"))
+        }
+    }
+
+    func testArchiveSourceRejectsSameInodeRewriteWithRestoredMetadata() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let archiveURL = temporaryRoot.appendingPathComponent("book.epub")
+            let replacementURL = temporaryRoot.appendingPathComponent("replacement.epub")
+            let subpath = "OPS/chapter.xhtml"
+            let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+            try makeArchive(at: archiveURL, entries: [(subpath, Data("old".utf8))])
+            try makeArchive(at: replacementURL, entries: [(subpath, Data("new".utf8))])
+            try FileManager.default.setAttributes(
+                [.modificationDate: fixedDate],
+                ofItemAtPath: archiveURL.path
+            )
+            let replacementData = try Data(contentsOf: replacementURL)
+            XCTAssertEqual(
+                try FileManager.default.attributesOfItem(atPath: archiveURL.path)[.size] as? NSNumber,
+                try FileManager.default.attributesOfItem(atPath: replacementURL.path)[.size] as? NSNumber
+            )
+            let source = try ReaderPackageEntrySource(localURL: archiveURL)
+            let originalInode = try inode(at: archiveURL)
+
+            try replacementData.write(to: archiveURL, options: [])
+            try FileManager.default.setAttributes(
+                [.modificationDate: fixedDate],
+                ofItemAtPath: archiveURL.path
+            )
+            XCTAssertEqual(try inode(at: archiveURL), originalInode)
+
+            XCTAssertThrowsError(try source.enumerateEntries()) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .unsupportedSource)
+            }
+            XCTAssertThrowsError(try source.readEntry(subpath: subpath)) { error in
+                XCTAssertEqual(error as? ReaderPackageEntrySourceError, .unsupportedSource)
+            }
+        }
+    }
+#endif
+
     func testPackageEntrySourceCacheEvictsLeastRecentlyUsedSources() async throws {
         try await withTemporaryDirectory { temporaryRoot in
             let packages = try (1...4).map { index in
@@ -394,6 +546,16 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
             try operation(ReaderPackageEntrySource(localURL: directoryURL))
         }
     }
+
+#if canImport(Darwin) || canImport(Glibc)
+    private func inode(at url: URL) throws -> UInt64 {
+        var information = stat()
+        guard url.path.withCString({ stat($0, &information) }) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return UInt64(information.st_ino)
+    }
+#endif
 
     private func withTemporaryDirectory(
         _ operation: (URL) throws -> Void

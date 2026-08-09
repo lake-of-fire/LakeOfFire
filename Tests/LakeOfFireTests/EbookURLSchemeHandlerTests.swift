@@ -1504,7 +1504,15 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
 
         let readyState = try await callEbookJavaScriptProbe(
             in: webView,
-            script: "return document.readyState;",
+            script:
+            """
+            if (document.readyState !== "complete") {
+                await new Promise(resolve => {
+                    addEventListener("load", resolve, { once: true });
+                });
+            }
+            return document.readyState;
+            """,
             timeout: 5
         )
         XCTAssertEqual(readyState as? String, "complete")

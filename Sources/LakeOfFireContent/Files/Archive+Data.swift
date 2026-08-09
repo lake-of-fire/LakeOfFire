@@ -1,5 +1,10 @@
 import Foundation
 import CryptoKit
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import UniformTypeIdentifiers
 import ZIPFoundation
 import LakeOfFireCore
@@ -59,17 +64,49 @@ public struct ReaderPackageEntrySource: Sendable {
         let validationError: ReaderPackageEntrySourceError?
     }
 
+    private struct DirectoryIdentity: Equatable, Sendable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    private struct ArchiveState: Equatable, Sendable {
+        let device: UInt64
+        let inode: UInt64
+        let size: UInt64
+        let modificationSeconds: Int64
+        let modificationNanoseconds: Int64
+        let statusChangeSeconds: Int64
+        let statusChangeNanoseconds: Int64
+
+        var fingerprint: String {
+            [
+                device,
+                inode,
+                size,
+                UInt64(bitPattern: modificationSeconds),
+                UInt64(bitPattern: modificationNanoseconds),
+                UInt64(bitPattern: statusChangeSeconds),
+                UInt64(bitPattern: statusChangeNanoseconds),
+            ]
+            .map(String.init)
+            .joined(separator: ":")
+        }
+    }
+
     private let kind: Kind
     private let archiveCatalog: ArchiveCatalog?
+    private let directoryIdentity: DirectoryIdentity?
+    private let archiveState: ArchiveState?
 
     public init(localURL: URL) throws {
         var isDirectory = ObjCBool(false)
         if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
            isDirectory.boolValue {
-            kind = .directory(
-                rootURL: localURL.standardizedFileURL.resolvingSymlinksInPath()
-            )
+            let rootURL = try Self.canonicalDirectoryRootURL(localURL)
+            kind = .directory(rootURL: rootURL)
             archiveCatalog = nil
+            directoryIdentity = try Self.currentDirectoryIdentity(at: rootURL)
+            archiveState = nil
             return
         }
 
@@ -77,20 +114,36 @@ public struct ReaderPackageEntrySource: Sendable {
             throw ReaderPackageEntrySourceError.unsupportedSource
         }
 
-        let fileURL = localURL.standardizedFileURL.resolvingSymlinksInPath()
-        guard let archive = try? Archive(url: fileURL, accessMode: .read) else {
-            throw ReaderPackageEntrySourceError.unsupportedSource
-        }
+        let fileURL = localURL.standardizedFileURL
+        let archiveState = try Self.currentArchiveState(at: fileURL)
         kind = .archive(fileURL: fileURL)
-        archiveCatalog = Self.makeArchiveCatalog(from: archive, fileURL: fileURL)
+        directoryIdentity = nil
+        self.archiveState = archiveState
+        archiveCatalog = try Self.withVerifiedArchive(
+            at: fileURL,
+            expectedState: archiveState
+        ) { archive in
+            Self.makeArchiveCatalog(from: archive, fileURL: fileURL)
+        }
     }
 
     public func enumerateEntries() throws -> [ReaderPackageEntryMetadata] {
         switch kind {
         case .directory(let rootURL):
-            return try enumerateDirectoryEntries(rootURL: rootURL)
-        case .archive:
-            return try enumerateArchiveEntries()
+            return try enumerateDirectoryEntries(
+                rootURL: rootURL,
+                expectedRootIdentity: directoryIdentity
+            )
+        case .archive(let fileURL):
+            guard let archiveState else {
+                throw ReaderPackageEntrySourceError.unsupportedSource
+            }
+            return try Self.withVerifiedArchive(
+                at: fileURL,
+                expectedState: archiveState
+            ) { _ in
+                try enumerateArchiveEntries()
+            }
         }
     }
 
@@ -101,18 +154,14 @@ public struct ReaderPackageEntrySource: Sendable {
         let subpath = try Self.sanitizeSubpath(rawSubpath)
         switch kind {
         case .directory(let rootURL):
-            let fileURL = try Self.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
-            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values?.isRegularFile == true else {
-                throw ReaderPackageEntrySourceError.entryNotFound
-            }
             return try Self.readDirectoryEntry(
-                at: fileURL,
-                size: values?.fileSize,
+                rootURL: rootURL,
+                expectedRootIdentity: directoryIdentity,
+                subpath: subpath,
                 progress: progress
             )
         case .archive(let fileURL):
-            guard let archiveCatalog else {
+            guard let archiveCatalog, let archiveState else {
                 throw ReaderPackageEntrySourceError.unsupportedSource
             }
             if let validationError = archiveCatalog.validationError {
@@ -121,20 +170,23 @@ public struct ReaderPackageEntrySource: Sendable {
             guard archiveCatalog.paths.contains(subpath) else {
                 throw ReaderPackageEntrySourceError.entryNotFound
             }
-            guard let archive = try? Archive(url: fileURL, accessMode: .read),
-                  let entry = archive[subpath],
-                  entry.type == .file else {
-                throw ReaderPackageEntrySourceError.entryNotFound
+            return try Self.withVerifiedArchive(
+                at: fileURL,
+                expectedState: archiveState
+            ) { archive in
+                guard let entry = archive[subpath], entry.type == .file else {
+                    throw ReaderPackageEntrySourceError.entryNotFound
+                }
+                var data = Data()
+                do {
+                    _ = try archive.extract(entry, progress: progress) { data.append($0) }
+                } catch Archive.ArchiveError.cancelledOperation {
+                    throw ReaderPackageEntrySourceError.cancelled
+                } catch Archive.ArchiveError.invalidCompressionMethod {
+                    throw ReaderPackageEntrySourceError.unsupportedSource
+                }
+                return data
             }
-            var data = Data()
-            do {
-                try archive.extract(entry, progress: progress) { data.append($0) }
-            } catch Archive.ArchiveError.cancelledOperation {
-                throw ReaderPackageEntrySourceError.cancelled
-            } catch Archive.ArchiveError.invalidCompressionMethod {
-                throw ReaderPackageEntrySourceError.unsupportedSource
-            }
-            return data
         }
     }
 
@@ -286,41 +338,95 @@ public struct ReaderPackageEntrySource: Sendable {
 
     public static func resolveDirectoryURL(rootURL: URL, subpath rawSubpath: String) throws -> URL {
         let subpath = try sanitizeSubpath(rawSubpath)
-        let resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
-        let resolvedURL = resolvedRootURL
-            .appendingPathComponent(subpath)
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-        let rootComponents = resolvedRootURL.pathComponents
-        let resolvedComponents = resolvedURL.pathComponents
-        guard resolvedComponents.count > rootComponents.count,
-              Array(resolvedComponents.prefix(rootComponents.count)) == rootComponents else {
+        let canonicalRootURL = try canonicalDirectoryRootURL(rootURL)
+        let candidateURL = canonicalRootURL.appendingPathComponent(subpath)
+        let rootPath = canonicalRootURL.path.hasSuffix("/")
+            ? canonicalRootURL.path
+            : canonicalRootURL.path + "/"
+        guard candidateURL.path.hasPrefix(rootPath) else {
             throw ReaderPackageEntrySourceError.invalidSubpath
         }
-        return resolvedURL
+
+        var existingPrefixURL = canonicalRootURL
+        for component in subpath.split(separator: "/") {
+            existingPrefixURL.appendPathComponent(String(component))
+            do {
+                let values = try existingPrefixURL.resourceValues(forKeys: [.isSymbolicLinkKey])
+                guard values.isSymbolicLink != true else {
+                    throw ReaderPackageEntrySourceError.invalidSubpath
+                }
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                break
+            }
+        }
+        return candidateURL
     }
 
-    private func enumerateDirectoryEntries(rootURL: URL) throws -> [ReaderPackageEntryMetadata] {
-        let standardizedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+    fileprivate static func canonicalDirectoryRootURL(_ rootURL: URL) throws -> URL {
+        var resolvedPath = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let result = rootURL.path.withCString { path in
+            realpath(path, &resolvedPath)
+        }
+        guard result != nil else {
+            throw directoryReadError(errorNumber: errno, path: rootURL.path)
+        }
+        let terminatorIndex = resolvedPath.firstIndex(of: 0) ?? resolvedPath.endIndex
+        let path = String(
+            decoding: resolvedPath[..<terminatorIndex].map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private func enumerateDirectoryEntries(
+        rootURL: URL,
+        expectedRootIdentity: DirectoryIdentity?
+    ) throws -> [ReaderPackageEntryMetadata] {
+        guard let expectedRootIdentity else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+        let rootDescriptor = try Self.openDirectoryDescriptor(at: rootURL)
+        defer { close(rootDescriptor) }
+        guard try Self.directoryIdentity(
+            forDescriptor: rootDescriptor,
+            path: rootURL.path
+        ) == expectedRootIdentity else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        let standardizedRootURL = rootURL
+        let resourceKeys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey,
+        ]
         let enumerator = FileManager.default.enumerator(
             at: standardizedRootURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]
         )
 
         var entries = [ReaderPackageEntryMetadata]()
         while let fileURL = enumerator?.nextObject() as? URL {
-            let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
-            let subpath = try Self.sanitizeSubpath(relativePath)
-            guard (try? Self.resolveDirectoryURL(
-                rootURL: standardizedRootURL,
-                subpath: subpath
-            )) != nil else {
+            let values = try fileURL.resourceValues(forKeys: resourceKeys)
+            if values.isSymbolicLink == true {
+                enumerator?.skipDescendants()
                 continue
             }
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true else { continue }
+            let relativePath = try Self.relativeSubpath(fileURL: fileURL, rootURL: standardizedRootURL)
+            let subpath = try Self.sanitizeSubpath(relativePath)
+            _ = try Self.resolveDirectoryURL(rootURL: standardizedRootURL, subpath: subpath)
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
+        }
+
+        let currentRootDescriptor = try Self.openDirectoryDescriptor(at: rootURL)
+        defer { close(currentRootDescriptor) }
+        guard try Self.directoryIdentity(
+            forDescriptor: currentRootDescriptor,
+            path: rootURL.path
+        ) == expectedRootIdentity else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
         }
         return entries.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
@@ -483,19 +589,88 @@ public struct ReaderPackageEntrySource: Sendable {
     }
 
     private static func readDirectoryEntry(
-        at fileURL: URL,
-        size: Int?,
+        rootURL: URL,
+        expectedRootIdentity: DirectoryIdentity?,
+        subpath: String,
         progress: Progress?
     ) throws -> Data {
         if progress?.isCancelled == true {
             throw ReaderPackageEntrySourceError.cancelled
         }
-        progress?.totalUnitCount = Int64(size ?? 0)
-        let handle = try FileHandle(forReadingFrom: fileURL)
+
+        let components = subpath.split(separator: "/").map(String.init)
+        guard let finalComponent = components.last else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+        let rootDescriptor = try openDirectoryDescriptor(at: rootURL)
+        defer { close(rootDescriptor) }
+        guard let expectedRootIdentity,
+              try directoryIdentity(forDescriptor: rootDescriptor, path: rootURL.path) == expectedRootIdentity else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        var directoryDescriptor = rootDescriptor
+        var ownsDirectoryDescriptor = false
+        defer {
+            if ownsDirectoryDescriptor {
+                close(directoryDescriptor)
+            }
+        }
+        for component in components.dropLast() {
+            let nextDescriptor = component.withCString {
+                openat(
+                    directoryDescriptor,
+                    $0,
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+                )
+            }
+            guard nextDescriptor >= 0 else {
+                throw directoryReadError(
+                    errorNumber: errno,
+                    path: rootURL.appendingPathComponent(subpath).path
+                )
+            }
+            if ownsDirectoryDescriptor {
+                close(directoryDescriptor)
+            }
+            directoryDescriptor = nextDescriptor
+            ownsDirectoryDescriptor = true
+        }
+
+        let fileDescriptor = finalComponent.withCString {
+            openat(
+                directoryDescriptor,
+                $0,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+            )
+        }
+        guard fileDescriptor >= 0 else {
+            throw directoryReadError(
+                errorNumber: errno,
+                path: rootURL.appendingPathComponent(subpath).path
+            )
+        }
+        var fileInfo = stat()
+        guard fstat(fileDescriptor, &fileInfo) == 0 else {
+            let errorNumber = errno
+            close(fileDescriptor)
+            throw directoryReadError(
+                errorNumber: errorNumber,
+                path: rootURL.appendingPathComponent(subpath).path
+            )
+        }
+        guard (fileInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              fileInfo.st_size >= 0 else {
+            close(fileDescriptor)
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        progress?.totalUnitCount = Int64(fileInfo.st_size)
+        let handle = FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         var data = Data()
-        if let size {
-            data.reserveCapacity(size)
+        if fileInfo.st_size <= Int.max {
+            data.reserveCapacity(Int(fileInfo.st_size))
         }
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
             if progress?.isCancelled == true {
@@ -508,6 +683,147 @@ public struct ReaderPackageEntrySource: Sendable {
             throw ReaderPackageEntrySourceError.cancelled
         }
         return data
+    }
+
+    private static func openDirectoryDescriptor(at rootURL: URL) throws -> Int32 {
+        let pathComponents = rootURL.pathComponents
+        guard pathComponents.first == "/" else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+
+        let flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        let initialDescriptor = "/".withCString { open($0, flags) }
+        guard initialDescriptor >= 0 else {
+            throw directoryReadError(errorNumber: errno, path: "/")
+        }
+
+        var directoryDescriptor = initialDescriptor
+        var currentURL = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in pathComponents.dropFirst() where component != "/" {
+            let nextDescriptor = component.withCString {
+                openat(directoryDescriptor, $0, flags)
+            }
+            guard nextDescriptor >= 0 else {
+                let errorNumber = errno
+                close(directoryDescriptor)
+                currentURL.appendPathComponent(component, isDirectory: true)
+                throw directoryReadError(errorNumber: errorNumber, path: currentURL.path)
+            }
+            close(directoryDescriptor)
+            directoryDescriptor = nextDescriptor
+            currentURL.appendPathComponent(component, isDirectory: true)
+        }
+        return directoryDescriptor
+    }
+
+    private static func currentDirectoryIdentity(at rootURL: URL) throws -> DirectoryIdentity {
+        let descriptor = try openDirectoryDescriptor(at: rootURL)
+        defer { close(descriptor) }
+        return try directoryIdentity(forDescriptor: descriptor, path: rootURL.path)
+    }
+
+    fileprivate static func directoryIdentityFingerprint(at rootURL: URL) throws -> String {
+        let identity = try currentDirectoryIdentity(at: rootURL)
+        return "\(identity.device):\(identity.inode)"
+    }
+
+    fileprivate static func archiveStateFingerprint(at fileURL: URL) throws -> String {
+        try currentArchiveState(at: fileURL).fingerprint
+    }
+
+    private static func currentArchiveState(at fileURL: URL) throws -> ArchiveState {
+        var fileInfo = stat()
+        let result = fileURL.path.withCString { stat($0, &fileInfo) }
+        guard result == 0 else {
+            throw directoryReadError(errorNumber: errno, path: fileURL.path)
+        }
+        guard (fileInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              fileInfo.st_size >= 0 else {
+            throw ReaderPackageEntrySourceError.unsupportedSource
+        }
+#if canImport(Darwin)
+        let modificationSeconds = Int64(fileInfo.st_mtimespec.tv_sec)
+        let modificationNanoseconds = Int64(fileInfo.st_mtimespec.tv_nsec)
+        let statusChangeSeconds = Int64(fileInfo.st_ctimespec.tv_sec)
+        let statusChangeNanoseconds = Int64(fileInfo.st_ctimespec.tv_nsec)
+#else
+        let modificationSeconds = Int64(fileInfo.st_mtim.tv_sec)
+        let modificationNanoseconds = Int64(fileInfo.st_mtim.tv_nsec)
+        let statusChangeSeconds = Int64(fileInfo.st_ctim.tv_sec)
+        let statusChangeNanoseconds = Int64(fileInfo.st_ctim.tv_nsec)
+#endif
+        return ArchiveState(
+            device: UInt64(fileInfo.st_dev),
+            inode: UInt64(fileInfo.st_ino),
+            size: UInt64(fileInfo.st_size),
+            modificationSeconds: modificationSeconds,
+            modificationNanoseconds: modificationNanoseconds,
+            statusChangeSeconds: statusChangeSeconds,
+            statusChangeNanoseconds: statusChangeNanoseconds
+        )
+    }
+
+    private static func withVerifiedArchive<Result>(
+        at fileURL: URL,
+        expectedState: ArchiveState,
+        operation: (Archive) throws -> Result
+    ) throws -> Result {
+        guard try currentArchiveState(at: fileURL) == expectedState else {
+            throw ReaderPackageEntrySourceError.unsupportedSource
+        }
+        let archive: Archive
+        do {
+            archive = try Archive(url: fileURL, accessMode: .read)
+        } catch {
+            throw ReaderPackageEntrySourceError.unsupportedSource
+        }
+        guard try currentArchiveState(at: fileURL) == expectedState else {
+            throw ReaderPackageEntrySourceError.unsupportedSource
+        }
+        do {
+            let result = try operation(archive)
+            guard try currentArchiveState(at: fileURL) == expectedState else {
+                throw ReaderPackageEntrySourceError.unsupportedSource
+            }
+            return result
+        } catch {
+            if (try? currentArchiveState(at: fileURL)) != expectedState {
+                throw ReaderPackageEntrySourceError.unsupportedSource
+            }
+            throw error
+        }
+    }
+
+    private static func directoryIdentity(
+        forDescriptor descriptor: Int32,
+        path: String
+    ) throws -> DirectoryIdentity {
+        var directoryInfo = stat()
+        guard fstat(descriptor, &directoryInfo) == 0 else {
+            throw directoryReadError(errorNumber: errno, path: path)
+        }
+        guard (directoryInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
+        }
+        return DirectoryIdentity(
+            device: UInt64(directoryInfo.st_dev),
+            inode: UInt64(directoryInfo.st_ino)
+        )
+    }
+
+    private static func directoryReadError(errorNumber: Int32, path: String) -> Error {
+        switch errorNumber {
+        case ENOENT:
+            return ReaderPackageEntrySourceError.entryNotFound
+        case ELOOP, ENOTDIR:
+            return ReaderPackageEntrySourceError.invalidSubpath
+        default:
+            return NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errorNumber),
+                userInfo: [NSFilePathErrorKey: path]
+            )
+        }
     }
 
     private static func isUTF8TextType(utType: UTType?, mimeType: String) -> Bool {
@@ -722,19 +1038,21 @@ public actor ReaderPackageEntrySourceCache {
         guard isDirectory else {
             return [
                 standardizedURL.path,
-                String(modificationDate.bitPattern),
-                String(fileSize),
+                try ReaderPackageEntrySource.archiveStateFingerprint(at: standardizedURL),
                 "false",
             ].joined(separator: "|")
         }
 
+        let canonicalRootURL = try ReaderPackageEntrySource.canonicalDirectoryRootURL(standardizedURL)
+        let initialIdentity = try ReaderPackageEntrySource.directoryIdentityFingerprint(at: canonicalRootURL)
         let resourceKeys: Set<URLResourceKey> = [
             .contentModificationDateKey,
             .fileSizeKey,
-            .isDirectoryKey
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
         ]
         let enumerator = FileManager.default.enumerator(
-            at: standardizedURL,
+            at: canonicalRootURL,
             includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsHiddenFiles]
         )
@@ -743,13 +1061,26 @@ public actor ReaderPackageEntrySourceCache {
 
         while let childURL = enumerator?.nextObject() as? URL {
             let childValues = try childURL.resourceValues(forKeys: resourceKeys)
+            if childValues.isSymbolicLink == true {
+                enumerator?.skipDescendants()
+                continue
+            }
             let childModificationDate = childValues.contentModificationDate?.timeIntervalSince1970 ?? 0
+            let relativePath = try ReaderPackageEntrySource.relativeSubpath(
+                fileURL: childURL,
+                rootURL: canonicalRootURL
+            )
             descendantMetadata.append([
-                childURL.standardizedFileURL.path,
+                relativePath,
                 String(childModificationDate.bitPattern),
                 String(childValues.fileSize ?? 0),
                 childValues.isDirectory == true ? "directory" : "file",
             ].joined(separator: "\u{0}"))
+        }
+
+        let finalIdentity = try ReaderPackageEntrySource.directoryIdentityFingerprint(at: canonicalRootURL)
+        guard finalIdentity == initialIdentity else {
+            throw ReaderPackageEntrySourceError.invalidSubpath
         }
 
         var metadataHasher = SHA256()
@@ -761,7 +1092,8 @@ public actor ReaderPackageEntrySourceCache {
             String(format: "%02x", $0)
         }.joined()
         return [
-            standardizedURL.path,
+            canonicalRootURL.path,
+            initialIdentity,
             String(modificationDate.bitPattern),
             String(fileSize),
             "true",
