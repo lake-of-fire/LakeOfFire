@@ -1,3 +1,5 @@
+import { createOwnedAsyncCache } from './owned-async-cache.js'
+
 const WRITING_MODE_PROPERTIES = new Set([
     'writing-mode',
     '-webkit-writing-mode',
@@ -462,13 +464,12 @@ export const rawSectionWritingDirection = async ({ href, html, loadText = null }
 }
 
 export const makeRawSectionWritingDirectionResolver = ({ loadText }) => {
-    const cache = new Map()
+    const cache = createOwnedAsyncCache()
     return async href => {
         if (typeof href !== 'string' || href.length === 0 || typeof loadText !== 'function') return null
-        if (!cache.has(href)) {
-            cache.set(href, Promise.resolve(loadText(href)).then(html =>
-                rawSectionWritingDirection({ href, html, loadText })))
-        }
-        return cache.get(href)
+        return cache.getOrCreate(href, async () => {
+            const html = await loadText(href)
+            return rawSectionWritingDirection({ href, html, loadText })
+        })
     }
 }

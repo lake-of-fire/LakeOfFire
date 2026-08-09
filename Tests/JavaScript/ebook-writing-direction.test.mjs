@@ -153,6 +153,25 @@ test('caches direction only within one loader generation and coalesces requests'
     assert.equal(loadCount, 2)
 })
 
+test('a transient source failure remains retryable within the loader generation', async () => {
+    let loadCount = 0
+    const resolveWritingDirection = makeRawSectionWritingDirectionResolver({
+        loadText: async href => {
+            loadCount += 1
+            assert.equal(href, 'OPS/chapter.xhtml')
+            if (loadCount === 1) throw new Error('transient archive read')
+            return '<html><body style="writing-mode: vertical-rl"></body></html>'
+        },
+    })
+
+    await assert.rejects(resolveWritingDirection('OPS/chapter.xhtml'), /transient archive read/)
+    assert.deepEqual(
+        await resolveWritingDirection('OPS/chapter.xhtml'),
+        { direction: 'vertical', writingMode: 'vertical-rl' },
+    )
+    assert.equal(loadCount, 2)
+})
+
 test('does not publish a suspended stylesheet result into a replacement loader generation', async () => {
     let releaseOriginalStylesheet
     const originalStylesheet = new Promise(resolve => {
