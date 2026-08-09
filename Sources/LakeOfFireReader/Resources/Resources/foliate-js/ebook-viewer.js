@@ -999,34 +999,6 @@ const makeReplaceText = ({
     return replaceText;
 };
 
-const observedBookWritingDirectionFallback = () => {
-    const direction = globalThis.__manabiObservedBookWritingDirection;
-    const writingMode = globalThis.__manabiObservedBookWritingMode;
-    if (direction !== 'vertical') return null;
-    return {
-        direction: 'vertical',
-        writingMode: writingMode === 'vertical-lr' ? 'vertical-lr' : 'vertical-rl',
-        source: 'observed-book',
-    };
-};
-
-const seedObservedBookWritingDirection = (direction, writingMode = null, source = 'unknown') => {
-    if (direction !== 'vertical') return false;
-    const normalizedWritingMode = writingMode === 'vertical-lr' ? 'vertical-lr' : 'vertical-rl';
-    if (globalThis.__manabiObservedBookWritingDirection === 'vertical'
-        && globalThis.__manabiObservedBookWritingMode === normalizedWritingMode) {
-        return false;
-    }
-    globalThis.__manabiObservedBookWritingDirection = 'vertical';
-    globalThis.__manabiObservedBookWritingMode = normalizedWritingMode;
-    manabiTimelineMark('processText.directionFallback.seedObservedBook', {
-        source,
-        writingDirection: 'vertical',
-        writingMode: normalizedWritingMode,
-    });
-    return true;
-};
-
 const resolveEpubRelativePath = (url, relativeTo) => {
     try {
         if (String(relativeTo || '').includes(':')) return new URL(url, relativeTo).href;
@@ -1052,6 +1024,12 @@ const computeRawSectionWritingDirectionFromText = async (
     const cloneDoc = document.implementation.createHTMLDocument();
     const clonedHead = doc.head?.cloneNode?.(true) ?? cloneDoc.createElement('head');
     clonedHead.querySelectorAll?.('script')?.forEach?.(el => el.remove());
+    const inlineWritingMode = [
+        doc.body?.getAttribute?.('style') ?? '',
+        doc.documentElement?.getAttribute?.('style') ?? '',
+    ].map(style => style.match(/(?:^|;)\s*(?:-webkit-)?writing-mode\s*:\s*([^;]+)/i)?.[1]
+        ?.trim?.().toLowerCase?.()
+    ).find(mode => mode === 'vertical-rl' || mode === 'vertical-lr' || mode === 'horizontal-tb') ?? null;
 
     const blobURLs = [];
     let iframe = null;
@@ -1114,8 +1092,8 @@ const computeRawSectionWritingDirectionFromText = async (
         const bodyStyle = iframe.contentWindow?.getComputedStyle?.(probeDoc?.body);
         const rootStyle = iframe.contentWindow?.getComputedStyle?.(probeDoc?.documentElement);
         const writingMode = (
-            bodyStyle?.writingMode?.trim?.().toLowerCase?.()
-            || rootStyle?.writingMode?.trim?.().toLowerCase?.()
+            normalizedComputedWritingMode(bodyStyle)
+            || normalizedComputedWritingMode(rootStyle)
             || ''
         );
         const hasVerticalWritingClass =
@@ -1134,6 +1112,12 @@ const computeRawSectionWritingDirectionFromText = async (
                 rootClass.split(/\s+/).includes('hltr')
                 || bodyClass.length > 0
             )) {
+            return { direction: 'horizontal', writingMode: 'horizontal-tb' };
+        }
+        if (inlineWritingMode === 'vertical-rl' || inlineWritingMode === 'vertical-lr') {
+            return { direction: 'vertical', writingMode: inlineWritingMode };
+        }
+        if (inlineWritingMode === 'horizontal-tb') {
             return { direction: 'horizontal', writingMode: 'horizontal-tb' };
         }
         return null;
@@ -1224,8 +1208,8 @@ const computeRawSectionWritingDirection = async (
                     const bodyStyle = iframe.contentWindow?.getComputedStyle?.(body);
                     const rootStyle = iframe.contentWindow?.getComputedStyle?.(root);
                     const writingMode = (
-                        bodyStyle?.writingMode?.trim?.().toLowerCase?.()
-                        || rootStyle?.writingMode?.trim?.().toLowerCase?.()
+                        normalizedComputedWritingMode(bodyStyle)
+                        || normalizedComputedWritingMode(rootStyle)
                         || ''
                     );
                     if (writingMode === 'vertical-rl' || writingMode === 'vertical-lr') {
@@ -1272,7 +1256,7 @@ function makeReplaceURL(sourceURL, loadText = null, { isCurrent = () => true } =
                 rawSectionWritingDirectionCache,
                 isActive
             )
-            ?? observedBookWritingDirectionFallback();
+            ?? null;
         if (!isActive()) return null;
         const directURL = processedSectionURLForHref(sourceURL, href, writingDirection);
         if (!directURL || !isActive()) return null;
@@ -4396,6 +4380,30 @@ const buildVisiblePageLookupIndex = (doc, visibleSegmentsResult, reason = 'unspe
     return index;
 };
 
+const normalizedComputedWritingMode = (style) => {
+    const candidates = [
+        style?.writingMode,
+        style?.webkitWritingMode,
+        style?.getPropertyValue?.('writing-mode'),
+        style?.getPropertyValue?.('-webkit-writing-mode'),
+    ];
+    return candidates
+        .map(value => String(value ?? '').trim().toLowerCase())
+        .find(value => value.length > 0)
+        ?? null;
+};
+
+const normalizedComputedDirection = (style) => {
+    const candidates = [
+        style?.direction,
+        style?.getPropertyValue?.('direction'),
+    ];
+    return candidates
+        .map(value => String(value ?? '').trim().toLowerCase())
+        .find(value => value.length > 0)
+        ?? null;
+};
+
 const nativeLookupSharedStylePayloadForDocument = (doc) => {
     const view = doc?.defaultView ?? null;
     const body = doc?.body ?? null;
@@ -4409,18 +4417,43 @@ const nativeLookupSharedStylePayloadForDocument = (doc) => {
             const bodyDirection = body?.dataset?.mnbFoliateWritingDirection
                 || body?.dataset?.mnbWritingDirection
                 || null;
+            // EPUB sections can express writing mode through their author CSS
+            // without carrying Foliate's post-layout marker classes. Read the
+            // mounted document's computed cascade here, at the same boundary
+            // used by paginator direction resolution, instead of treating the
+            // absence of a marker as horizontal.
+            const targetStyle = view.getComputedStyle?.(target) ?? null;
+            const bodyStyle = body ? view.getComputedStyle?.(body) : targetStyle;
+            const rootStyle = root ? view.getComputedStyle?.(root) : targetStyle;
+            const computedStyles = [targetStyle, bodyStyle, rootStyle];
+            const computedStyleValues = computedStyles.map(style => ({
+                style,
+                writingMode: normalizedComputedWritingMode(style),
+                direction: normalizedComputedDirection(style),
+            }));
+            const computedVerticalStyle = computedStyleValues.find(({ writingMode }) =>
+                writingMode?.startsWith('vertical') === true
+            );
+            const computedHorizontalStyle = computedStyleValues.find(({ writingMode }) =>
+                writingMode === 'horizontal-tb'
+            );
             const isVerticalWriting = body?.classList?.contains?.('reader-vertical-writing') === true
                 || bodyDirection === 'vertical'
-                || root?.classList?.contains?.('vrtl') === true;
+                || root?.classList?.contains?.('vrtl') === true
+                || computedVerticalStyle != null;
             const isHorizontalWriting = bodyDirection === 'horizontal'
-                || (!isVerticalWriting && root?.classList?.contains?.('hltr') === true);
+                || (!isVerticalWriting && root?.classList?.contains?.('hltr') === true)
+                || (!isVerticalWriting && computedHorizontalStyle != null);
+            const resolvedWritingMode = isVerticalWriting
+                ? (computedVerticalStyle?.writingMode || 'vertical-rl')
+                : (isHorizontalWriting ? 'horizontal-tb' : null);
             return {
-                targetWritingMode: isVerticalWriting ? 'vertical-rl' : (isHorizontalWriting ? 'horizontal-tb' : null),
-                targetDirection: null,
-                bodyWritingMode: isVerticalWriting ? 'vertical-rl' : (isHorizontalWriting ? 'horizontal-tb' : null),
-                bodyDirection: null,
-                rootWritingMode: isVerticalWriting ? 'vertical-rl' : (isHorizontalWriting ? 'horizontal-tb' : null),
-                rootDirection: null,
+                targetWritingMode: normalizedComputedWritingMode(targetStyle) ?? resolvedWritingMode,
+                targetDirection: normalizedComputedDirection(targetStyle),
+                bodyWritingMode: normalizedComputedWritingMode(bodyStyle) ?? resolvedWritingMode,
+                bodyDirection: normalizedComputedDirection(bodyStyle),
+                rootWritingMode: normalizedComputedWritingMode(rootStyle) ?? resolvedWritingMode,
+                rootDirection: normalizedComputedDirection(rootStyle),
                 isVerticalWriting,
                 source: 'ebook-document-direction',
             };
@@ -4440,18 +4473,18 @@ const nativeLookupSharedStylePayloadForDocument = (doc) => {
         const bodyStyle = body ? view.getComputedStyle?.(body) : targetStyle;
         const rootStyle = root ? view.getComputedStyle?.(root) : targetStyle;
         const payload = {
-            targetWritingMode: targetStyle?.writingMode ?? null,
-            targetDirection: targetStyle?.direction ?? null,
-            bodyWritingMode: bodyStyle?.writingMode ?? null,
-            bodyDirection: bodyStyle?.direction ?? null,
-            rootWritingMode: rootStyle?.writingMode ?? null,
-            rootDirection: rootStyle?.direction ?? null,
+            targetWritingMode: normalizedComputedWritingMode(targetStyle),
+            targetDirection: normalizedComputedDirection(targetStyle),
+            bodyWritingMode: normalizedComputedWritingMode(bodyStyle),
+            bodyDirection: normalizedComputedDirection(bodyStyle),
+            rootWritingMode: normalizedComputedWritingMode(rootStyle),
+            rootDirection: normalizedComputedDirection(rootStyle),
             isVerticalWriting: (
                 body?.classList?.contains?.('reader-vertical-writing') === true
                 || body?.dataset?.mnbFoliateWritingDirection === 'vertical'
                 || root?.classList?.contains?.('vrtl') === true
-                || targetStyle?.writingMode?.startsWith?.('vertical') === true
-                || bodyStyle?.writingMode?.startsWith?.('vertical') === true
+                || normalizedComputedWritingMode(targetStyle)?.startsWith('vertical') === true
+                || normalizedComputedWritingMode(bodyStyle)?.startsWith('vertical') === true
             ),
         };
         doc.__manabiNativeLookupSharedStylePayloadCache = { signature, payload };
@@ -4500,10 +4533,45 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
         stylePayload: nativeLookupSharedStylePayloadForDocument(doc),
     };
     const messageHandlers = view?.webkit?.messageHandlers ?? window.webkit?.messageHandlers ?? null;
+    const nativeLookupTargetsHandler = messageHandlers?.nativeLookupHitTargetsUpdated ?? null;
     if (typeof builder !== 'function') {
+        // A committed document can legitimately have no lookup builder (for
+        // example while a child frame is being replaced). The native side still
+        // needs an authoritative empty set so targets from the previous frame
+        // cannot survive under the new frame identity.
+        if (typeof nativeLookupTargetsHandler?.postMessage === 'function') {
+            nativeLookupTargetsHandler.postMessage({
+                targets: [],
+                reason,
+                nativeLookupFrameKey,
+                nativeLookupDocumentURL: publicationIdentity.documentURL,
+                isExplicitReset: false,
+                isAuthoritativeTargetSet: true,
+                visualViewportScale,
+                viewportWidth,
+                viewportHeight,
+                viewportLeft,
+                viewportTop,
+            });
+        }
         manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
             reason,
             builder: false,
+            visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
+            targetCount: 0,
+            segmentSource: visibleSegmentsResult?.segmentCandidateSource ?? null,
+            frameLeft: visibleSegmentsResult?.frameLeft ?? null,
+            frameTop: visibleSegmentsResult?.frameTop ?? null,
+            viewportWidth,
+            viewportHeight,
+        }, 100);
+        return 0;
+    }
+    if (typeof nativeLookupTargetsHandler?.postMessage !== 'function') {
+        manabiTimelineMeasure('nativeLookup.targets.post', startedAt, {
+            reason,
+            builder: true,
+            messageHandler: false,
             visibleSegmentCount: visibleSegmentsResult?.visibleSegments?.length ?? 0,
             targetCount: 0,
             segmentSource: visibleSegmentsResult?.segmentCandidateSource ?? null,
@@ -4570,12 +4638,13 @@ const postNativeLookupHitTargetsForVisibleSegments = (doc, visibleSegmentsResult
             messageTargets.push(messageTarget);
         }
     }
-    messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+    nativeLookupTargetsHandler.postMessage({
         targets: messageTargets,
         reason,
         nativeLookupFrameKey,
         nativeLookupDocumentURL: publicationIdentity.documentURL,
         isExplicitReset: false,
+        isAuthoritativeTargetSet: true,
         visualViewportScale,
         viewportWidth,
         viewportHeight,
@@ -5657,6 +5726,8 @@ class Reader {
         ]) {
             cancelFrameField(field);
         }
+        clearTimeout(this.nativeLookupHitTargetRefreshFallbackHandle);
+        this.nativeLookupHitTargetRefreshFallbackHandle = null;
         this.pageTrackingDeferredReadyCleanup?.();
         this.pageTrackingDeferredReadyCleanup = null;
         for (const key of ['l', 'r']) {
@@ -5857,6 +5928,7 @@ class Reader {
     visiblePageSegmentSnapshot = null;
     lastInvalidatedVisiblePageSegmentSnapshot = null;
     nativeLookupHitTargetRefreshHandle = null;
+    nativeLookupHitTargetRefreshFallbackHandle = null;
     nativeLookupHitTargetRefreshGeneration = 0;
     pendingNativeLookupHitTargetRefresh = null;
     pendingBookContentHideNavigationDueToScroll = null;
@@ -6581,6 +6653,8 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
+        clearTimeout(this.nativeLookupHitTargetRefreshFallbackHandle);
+        this.nativeLookupHitTargetRefreshFallbackHandle = null;
         this.nativeLookupHitTargetRefreshGeneration += 1;
         if (!shouldResetNativeLookupTargets && this.hasCompletedLastPositionLoadAttempt === true) {
             this.#scheduleNativeLookupHitTargetRefreshSettle(`invalidation:${sourceReason}`);
@@ -7997,6 +8071,8 @@ class Reader {
             cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
             this.nativeLookupHitTargetRefreshHandle = null;
         }
+        clearTimeout(this.nativeLookupHitTargetRefreshFallbackHandle);
+        this.nativeLookupHitTargetRefreshFallbackHandle = null;
         const generation = (this.nativeLookupHitTargetRefreshGeneration || 0) + 1;
         this.nativeLookupHitTargetRefreshGeneration = generation;
         const finishInitialForegroundCriticalSection =
@@ -8070,10 +8146,29 @@ class Reader {
                 }
             }
         };
-        this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
-            this.nativeLookupHitTargetRefreshHandle = null;
+        let didRun = false;
+        let fallbackHandle = null;
+        const runOnce = () => {
+            if (didRun) return;
+            didRun = true;
+            if (this.nativeLookupHitTargetRefreshHandle != null) {
+                cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
+                this.nativeLookupHitTargetRefreshHandle = null;
+            }
+            if (fallbackHandle != null) {
+                clearTimeout(fallbackHandle);
+                if (this.nativeLookupHitTargetRefreshFallbackHandle === fallbackHandle) {
+                    this.nativeLookupHitTargetRefreshFallbackHandle = null;
+                }
+                fallbackHandle = null;
+            }
             void runRefresh();
-        });
+        };
+        fallbackHandle = setTimeout(runOnce, 250);
+        this.nativeLookupHitTargetRefreshFallbackHandle = fallbackHandle;
+        this.nativeLookupHitTargetRefreshHandle = typeof requestAnimationFrame === 'function'
+            ? requestAnimationFrame(runOnce)
+            : null;
     }
     #shouldDeferNativeLookupHitTargetRefresh(reason = 'unspecified') {
         if (reason === 'manual') {
@@ -8506,9 +8601,6 @@ class Reader {
             book
         } = this.view
         this.bookDir = book.dir || 'ltr';
-        if (this.bookDir === 'rtl') {
-            seedObservedBookWritingDirection('vertical', 'vertical-rl', 'book.pageProgressionDirection');
-        }
         this.isRTL = this.bookDir === 'rtl';
         document.body.dir = this.bookDir;
         document.body?.setAttribute?.('data-book-dir', this.bookDir);

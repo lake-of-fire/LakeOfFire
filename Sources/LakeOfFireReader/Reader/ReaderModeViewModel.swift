@@ -765,6 +765,19 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
     hasReadabilityModeBodyClassMarkup(in: html) && hasReaderContentNodeMarkup(in: html)
 }
 
+internal func hasPublishedReaderSegmentMetadataMarkup(in html: String) -> Bool {
+    guard hasCanonicalReadabilityMarkup(in: html) else { return false }
+    let hasSegments = html.range(
+        of: #"<m-m(?:\s|>)"#,
+        options: [.regularExpression, .caseInsensitive]
+    ) != nil
+    let hasSidecar = html.range(
+        of: #"(?:id|data-mnb-seg-meta)=['\"][^'\"]*mnb-segment-metadata[^'\"]*['\"]"#,
+        options: [.regularExpression, .caseInsensitive]
+    ) != nil
+    return hasSegments && hasSidecar
+}
+
 private func stripRuntimeReadabilityAssets(from html: String) -> String {
     guard hasCanonicalReadabilityMarkup(in: html),
           let doc = try? SwiftSoup.parse(html) else {
@@ -2407,7 +2420,8 @@ public class ReaderModeViewModel: ObservableObject {
         let processReadabilityContent = processReadabilityContent
         let processHTMLBytes = processHTMLBytes
         let processHTML = processHTML
-        let prefersDirectSnippetReadabilityParse = url.isSnippetURL && hasCanonicalReadabilityMarkup(in: readabilityContent)
+        let prefersDirectSnippetReadabilityParse = url.isSnippetURL
+            && hasPublishedReaderSegmentMetadataMarkup(in: readabilityContent)
         let snippetRawTitle = content.title
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
@@ -3115,6 +3129,17 @@ nonisolated public func processForReaderMode(
        let oldElement = try doc.getElementsByClass("reader-content").first() {
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")
+    }
+
+    // Pasted/snippet content is persisted inside the loader's mnb-snippet
+    // wrapper rather than a readability reader-content wrapper. Promote that
+    // wrapper before the native processor partitions text so snippets follow
+    // the same segment/sidecar path as web reader content.
+    if !isEBook,
+       try doc.getElementById("reader-content") == nil,
+       let snippetElement = try doc.getElementsByClass("mnb-snippet").first() {
+        try snippetElement.attr("id", "reader-content")
+        try snippetElement.removeClass("mnb-snippet")
     }
     
     if isEBook {

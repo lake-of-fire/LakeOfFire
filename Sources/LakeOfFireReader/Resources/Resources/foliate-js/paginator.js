@@ -496,14 +496,22 @@ function getDirectionFromDocument(doc) {
     if (!writingMode) {
         try {
             const computedStyle = doc.defaultView?.getComputedStyle?.(body);
-            const computedWritingMode = computedStyle?.writingMode?.trim?.().toLowerCase?.() ?? null;
+            const computedWritingMode = (
+                computedStyle?.writingMode
+                || computedStyle?.webkitWritingMode
+                || computedStyle?.getPropertyValue?.('writing-mode')
+                || computedStyle?.getPropertyValue?.('-webkit-writing-mode')
+            )?.trim?.().toLowerCase?.() ?? null;
             const isProcessedEBook =
                 body.dataset?.isEbook === 'true'
                 || body.classList?.contains?.('readability-mode') === true
                 || doc.location?.href?.startsWith?.('ebook://ebook/processed-section') === true;
             if (computedWritingMode && !(isProcessedEBook && computedWritingMode === 'horizontal-tb')) {
                 writingMode = computedWritingMode;
-                direction = computedStyle?.direction?.trim?.().toLowerCase?.() ?? direction;
+                direction = (
+                    computedStyle?.direction
+                    || computedStyle?.getPropertyValue?.('direction')
+                )?.trim?.().toLowerCase?.() ?? direction;
                 source = 'computed';
             }
         } catch (_error) {}

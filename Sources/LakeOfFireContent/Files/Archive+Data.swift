@@ -193,7 +193,32 @@ public struct ReaderPackageEntrySource: Sendable {
             guard (try? Self.resolveDirectoryURL(rootURL: standardizedRootURL, subpath: subpath)) != nil else {
                 continue
             }
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            let values = try fileURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+            if values.isSymbolicLink == true {
+                // A symlink is a valid package entry only when its resolved
+                // target remains inside this package.  Keep safe internal
+                // aliases addressable, while the same containment check
+                // excludes links that escape the package root.
+                guard let resolvedURL = try? Self.resolveDirectoryURL(
+                    rootURL: standardizedRootURL,
+                    subpath: subpath
+                ),
+                let resolvedValues = try? resolvedURL.resourceValues(
+                    forKeys: [.isRegularFileKey, .fileSizeKey]
+                ),
+                resolvedValues.isRegularFile == true else {
+                    continue
+                }
+                entries.append(
+                    ReaderPackageEntryMetadata(
+                        path: subpath,
+                        size: resolvedValues.fileSize ?? 0
+                    )
+                )
+                continue
+            }
             guard values.isRegularFile == true else { continue }
             entries.append(ReaderPackageEntryMetadata(path: subpath, size: values.fileSize ?? 0))
         }
