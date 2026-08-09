@@ -1,3 +1,8 @@
+import {
+    getPrimaryRendererContent,
+    getPrimaryRendererContentIndex,
+} from './renderer-content.js';
+
 const MAX_RELOCATE_STACK = 50;
 const FRACTION_EPSILON = 0.000001;
 const EXPLICIT_RELOCATE_HISTORY_SOURCES = new Set([
@@ -32,20 +37,6 @@ const normalizeSpineHrefForPageNum = (href) => {
     if (!trimmed) return null;
     const hashIndex = trimmed.indexOf('#');
     return hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
-};
-
-const getPrimaryRendererContent = (renderer) => {
-    try {
-        const contents = renderer?.getContents?.();
-        return Array.isArray(contents) && contents.length > 0 ? contents[0] ?? null : null;
-    } catch (_error) {
-        return null;
-    }
-};
-
-const getPrimaryRendererContentIndex = (renderer) => {
-    const content = getPrimaryRendererContent(renderer);
-    return typeof content?.index === 'number' ? content.index : null;
 };
 
 const getRendererContentHref = (renderer) => {

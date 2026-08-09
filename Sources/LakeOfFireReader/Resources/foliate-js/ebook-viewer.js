@@ -38,6 +38,12 @@ import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import {
+    activeRendererContentsForLookup,
+    getCurrentRendererDocument,
+    getPrimaryRendererContent,
+    getPrimaryRendererContentIndex,
+} from './renderer-content.js'
+import {
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
 } from './ebook-native-lookup-publication.js'
@@ -146,16 +152,6 @@ const describeMarkReadNode = (node) => {
         segmentIdentifier: segmentIdentifierForNode(element),
         sentenceIdentifier: sentenceIdentifierForNode(element.closest?.('m-s') || null),
     };
-};
-
-const getPrimaryRendererContentIndex = (renderer) => {
-    try {
-        const contents = renderer?.getContents?.();
-        const primaryContent = Array.isArray(contents) && contents.length > 0 ? contents[0] ?? null : null;
-        return typeof primaryContent?.index === 'number' ? primaryContent.index : null;
-    } catch (_error) {
-        return null;
-    }
 };
 
 const captureNavVisibilityState = () => {
@@ -427,11 +423,7 @@ const getVisibleJapaneseTextStateForRenderer = (renderer, visibleRange = null, v
     if (visibleSegmentsResult) {
         return visibleJapaneseTextStateForVisibleSegmentsResult(visibleSegmentsResult);
     }
-    const contents = renderer?.getContents?.() || [];
-    const currentIndex = getPrimaryRendererContentIndex(renderer);
-    const activeContents = typeof currentIndex === 'number'
-        ? contents.filter((content) => typeof content?.index !== 'number' || content.index === currentIndex)
-        : contents;
+    const activeContents = activeRendererContentsForLookup(renderer);
     let observedSegmentCount = 0;
     let visibleSegmentCount = 0;
 
@@ -4923,8 +4915,15 @@ class Reader {
             this.#queuePageTrackingRetry(reason, explicitDoc, retryCount);
             return;
         }
-        const contents = this.view?.renderer?.getContents?.() || [];
-        const doc = isDocumentLike(explicitDoc) ? explicitDoc : contents[0]?.doc;
+        const renderer = this.view?.renderer;
+        const contents = renderer?.getContents?.() || [];
+        const doc = getCurrentRendererDocument(
+            renderer,
+            isDocumentLike(explicitDoc) ? explicitDoc : null
+        );
+        if (isDocumentLike(explicitDoc) && !doc) {
+            return;
+        }
         if (!isDocumentLike(doc)) {
             if (retryCount > 0) {
                 const diagnosticsKey = `no-document-retry:${reason}:${contents.length}:${retryCount}`;
@@ -5113,8 +5112,7 @@ class Reader {
         const pagesLeft = typeof currentPageNumber === 'number' && typeof totalPages === 'number'
             ? Math.max(0, totalPages - currentPageNumber)
             : null;
-        const contents = this.view?.renderer?.getContents?.() || [];
-        const doc = contents[0]?.doc;
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc;
         if (!isDocumentLike(doc)) {
             return {
                 allSectionsRead: true,
@@ -5185,8 +5183,7 @@ class Reader {
         };
     }
     buildMarkAllSectionsAsReadPayload() {
-        const contents = this.view?.renderer?.getContents?.() || [];
-        const doc = contents[0]?.doc;
+        const doc = getPrimaryRendererContent(this.view?.renderer)?.doc;
         if (!isDocumentLike(doc)) {
             return null;
         }
@@ -5544,9 +5541,10 @@ class Reader {
         } else if (this.pageReadMarkerAwaitingPageState && isRead) {
             isRead = false;
         }
-        const doc = isDocumentLike(explicitDoc)
-            ? explicitDoc
-            : (this.view?.renderer?.getContents?.()?.[0]?.doc ?? null);
+        const doc = getCurrentRendererDocument(
+            this.view?.renderer,
+            isDocumentLike(explicitDoc) ? explicitDoc : null
+        );
         const isVertical = !!doc?.body?.classList?.contains?.('reader-vertical-writing');
         const readerStage = document.getElementById('reader-stage');
         const preferredFoliateView = this.view?.isConnected ? this.view : null;
@@ -6736,7 +6734,7 @@ class Reader {
         return true;
     }
     #lookupContentWindows() {
-        const contents = this.view?.renderer?.getContents?.() || [];
+        const contents = activeRendererContentsForLookup(this.view?.renderer);
         return contents
             .map((content) => content?.doc?.defaultView || content?.document?.defaultView || null)
             .filter((view) => view && !isCacheWarmerDocument(view.document));
@@ -7408,11 +7406,7 @@ class Reader {
         const initialRenderableProbe = (() => {
             try {
                 const renderer = this.view?.renderer ?? null;
-                const contents = renderer?.getContents?.() ?? [];
-                const currentIndex = getPrimaryRendererContentIndex(renderer);
-                const content = typeof currentIndex === 'number'
-                    ? contents.find(item => item?.index === currentIndex) ?? contents[0]
-                    : contents[0];
+                const content = getPrimaryRendererContent(renderer);
                 const doc = content?.doc ?? content?.document ?? null;
                 if (!isDocumentLike(doc)) return null;
                 const visibleSegmentsResult = collectVisibleSegmentNodesFromRange(doc, this.#visibleRangeForDocument(doc), {
@@ -7713,8 +7707,8 @@ class Reader {
         sectionIndex,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-        const contents = this.view?.renderer?.getContents?.() || [];
-        const doc = contents[0]?.doc || contents[0]?.document || null;
+        const content = getPrimaryRendererContent(this.view?.renderer);
+        const doc = content?.doc || content?.document || null;
         const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;
         const visibleSegmentsResult = isDocumentLike(doc)
             ? this.#visiblePageSegmentResult(doc, visibleRange, 'reading-progress')
