@@ -811,6 +811,19 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
         && hasReaderContentNodeMarkup(in: html)
 }
 
+internal func hasPublishedReaderSegmentMetadataMarkup(in html: String) -> Bool {
+    guard hasCanonicalReadabilityMarkup(in: html) else { return false }
+    let hasSegments = html.range(
+        of: #"<m-m(?:\s|>)"#,
+        options: [.regularExpression, .caseInsensitive]
+    ) != nil
+    let hasSidecar = html.range(
+        of: #"(?:id|data-mnb-seg-meta)=['\"][^'\"]*mnb-segment-metadata[^'\"]*['\"]"#,
+        options: [.regularExpression, .caseInsensitive]
+    ) != nil
+    return hasSegments && hasSidecar
+}
+
 private func stripRuntimeReadabilityAssets(from html: String) -> String {
     guard hasCanonicalReadabilityMarkup(in: html),
           let doc = try? SwiftSoup.parse(html) else {
@@ -3270,7 +3283,8 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
         let processReadabilityContent = processReadabilityContent
         let processHTMLBytes = processHTMLBytes
         let processHTML = processHTML
-        let prefersDirectSnippetReadabilityParse = url.isSnippetURL && hasCanonicalReadabilityMarkup(in: readabilityContent)
+        let prefersDirectSnippetReadabilityParse = url.isSnippetURL
+            && hasPublishedReaderSegmentMetadataMarkup(in: readabilityContent)
         let snippetRawTitle = content.title
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
@@ -4291,6 +4305,13 @@ nonisolated public func processForReaderMode(
     if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")
+    }
+
+    if !isEBook,
+       try doc.getElementById("reader-content") == nil,
+       let snippetElement = try doc.getElementsByClass("mnb-snippet").first() {
+        try snippetElement.attr("id", "reader-content")
+        try snippetElement.removeClass("mnb-snippet")
     }
 
     if isEBook {
