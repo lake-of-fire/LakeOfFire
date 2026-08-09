@@ -36,6 +36,7 @@ import {
 } from './ebook-restore-coordination.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
+import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import {
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
@@ -4273,7 +4274,7 @@ class Reader {
     unstableCFIs = new Set();
     visiblePageCollectionGeneration = 0;
     visiblePageSegmentSnapshot = null;
-    nativeLookupHitTargetRefreshHandle = null;
+    nativeLookupHitTargetRefreshTask = null;
     nativeLookupHitTargetSettleHandle = null;
     nativeLookupHitTargetRefreshGeneration = 0;
     displaySettledSequence = 0;
@@ -4897,10 +4898,8 @@ class Reader {
             cancelAnimationFrame(this.pageTrackingRetryHandle);
             this.pageTrackingRetryHandle = null;
         }
-        if (this.nativeLookupHitTargetRefreshHandle) {
-            cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
-            this.nativeLookupHitTargetRefreshHandle = null;
-        }
+        this.nativeLookupHitTargetRefreshTask?.cancel();
+        this.nativeLookupHitTargetRefreshTask = null;
         if (this.nativeLookupHitTargetSettleHandle) {
             clearTimeout(this.nativeLookupHitTargetSettleHandle);
             this.nativeLookupHitTargetSettleHandle = null;
@@ -5693,29 +5692,28 @@ class Reader {
     }
     #scheduleNativeLookupHitTargetRefreshSettle(reason = 'unspecified', explicitDoc = null) {
         const refreshGeneration = ++this.nativeLookupHitTargetRefreshGeneration;
-        if (this.nativeLookupHitTargetRefreshHandle) {
-            cancelAnimationFrame(this.nativeLookupHitTargetRefreshHandle);
-            this.nativeLookupHitTargetRefreshHandle = null;
-        }
-        this.nativeLookupHitTargetRefreshHandle = requestAnimationFrame(() => {
-            this.nativeLookupHitTargetRefreshHandle = null;
-            const currentDocs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
-            if (!shouldRunNativeLookupRefresh({
-                scheduledGeneration: refreshGeneration,
-                currentGeneration: this.nativeLookupHitTargetRefreshGeneration,
-                explicitDocument: isDocumentLike(explicitDoc) ? explicitDoc : null,
-                currentDocuments: currentDocs,
-            })) {
-                return;
-            }
-            const docs = isDocumentLike(explicitDoc) ? [explicitDoc] : currentDocs;
-            for (const doc of docs) {
-                const visibleRange = this.#visibleRangeForDocument(doc);
-                this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
-            }
-            globalThis.__manabiFinishInitialForegroundCriticalSection?.(
-                `nativeLookupRefresh.completed:${reason}`
-            );
+        this.nativeLookupHitTargetRefreshTask?.cancel();
+        this.nativeLookupHitTargetRefreshTask = scheduleFrameWithTimeoutFallback({
+            callback: () => {
+                this.nativeLookupHitTargetRefreshTask = null;
+                const currentDocs = this.#lookupContentWindows().map((view) => view.document).filter(isDocumentLike);
+                if (!shouldRunNativeLookupRefresh({
+                    scheduledGeneration: refreshGeneration,
+                    currentGeneration: this.nativeLookupHitTargetRefreshGeneration,
+                    explicitDocument: isDocumentLike(explicitDoc) ? explicitDoc : null,
+                    currentDocuments: currentDocs,
+                })) {
+                    return;
+                }
+                const docs = isDocumentLike(explicitDoc) ? [explicitDoc] : currentDocs;
+                for (const doc of docs) {
+                    const visibleRange = this.#visibleRangeForDocument(doc);
+                    this.#visiblePageSegmentResult(doc, visibleRange, `scheduled:${reason}`, { postIfCached: true });
+                }
+                globalThis.__manabiFinishInitialForegroundCriticalSection?.(
+                    `nativeLookupRefresh.completed:${reason}`
+                );
+            },
         });
     }
     refreshNativeLookupHitTargets(reason = 'manual') {
