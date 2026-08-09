@@ -38,6 +38,7 @@ fileprivate class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
+    var onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     var onURLChanged: ((WebViewState) async throws -> Void)?
 
     var readerContent: ReaderContent
@@ -46,13 +47,18 @@ fileprivate class ReaderWebViewHandler {
     var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     var scriptCaller: WebViewScriptCaller
 
-    private let navigationTaskManager = NavigationTaskManager()
+    private let navigationTaskManager: NavigationTaskManager
     private var activeMainFrameNavigationTokens: [String: UUID] = [:]
 
     init(
+        navigationTaskManager: NavigationTaskManager,
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onDocumentContextInvalidated: (@MainActor (
+            WebViewState,
+            WebViewDocumentContextInvalidationReason
+        ) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         readerContent: ReaderContent,
         readerViewModel: ReaderViewModel,
@@ -60,9 +66,11 @@ fileprivate class ReaderWebViewHandler {
         readerMediaPlayerViewModel: ReaderMediaPlayerViewModel,
         scriptCaller: WebViewScriptCaller
     ) {
+        self.navigationTaskManager = navigationTaskManager
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         self.readerContent = readerContent
         self.readerViewModel = readerViewModel
@@ -71,7 +79,7 @@ fileprivate class ReaderWebViewHandler {
         self.scriptCaller = scriptCaller
     }
 
-    func handleNewURL(state: WebViewState) async throws {
+    func handleNavigationCommitted(state: WebViewState) async throws {
 //        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
 
         try Task.checkCancellation()
@@ -89,39 +97,69 @@ fileprivate class ReaderWebViewHandler {
             scriptCaller: scriptCaller
         )
         try Task.checkCancellation()
-        guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
+        guard let content = readerContent.content,
+              content.url.matchesReaderURL(state.pageURL) else {
+            throw CancellationError()
+        }
         try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
         try Task.checkCancellation()
+    }
 
-        await self.readerModeViewModel.onNavigationFinished(
+    func handleNavigationFinished(state: WebViewState) async {
+        guard !Task.isCancelled else { return }
+        await readerModeViewModel.onNavigationFinished(
             newState: state,
             scriptCaller: scriptCaller
         )
-        try Task.checkCancellation()
-        self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
+        guard !Task.isCancelled,
+              let content = readerContent.content,
+              content.url.matchesReaderURL(state.pageURL) else { return }
+        readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
             // no external callback here
         }
     }
 
+    func handleURLChanged(state: WebViewState) async throws {
+        try await handleNavigationCommitted(state: state)
+        try Task.checkCancellation()
+        await handleNavigationFinished(state: state)
+        try Task.checkCancellation()
+    }
+
+    private func endAllMainFrameNavigationTasks() {
+        let tokens = Array(activeMainFrameNavigationTokens.values)
+        activeMainFrameNavigationTokens.removeAll()
+        for token in tokens {
+            readerContent.endMainFrameNavigationTask(token)
+        }
+    }
+
     func onNavigationCommitted(state: WebViewState) {
+        endAllMainFrameNavigationTasks()
         let navigationKey = state.pageURL.absoluteString
         let navigationToken = readerContent.beginMainFrameNavigationTask(to: state.pageURL)
         activeMainFrameNavigationTokens[navigationKey] = navigationToken
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try await self.handleNewURL(state: state)
+                try await self.handleNavigationCommitted(state: state)
+                try Task.checkCancellation()
             } catch {
-                if error is CancellationError {
-                    print("onNavigationCommitted task was cancelled.")
-                } else {
-                    print("Error during onNavigationCommitted: \(error)")
-                }
-            }
-            await MainActor.run {
                 if self.activeMainFrameNavigationTokens[navigationKey] == navigationToken {
                     self.activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
+                    self.readerContent.endMainFrameNavigationTask(navigationToken)
                 }
-                self.readerContent.endMainFrameNavigationTask(navigationToken)
+                throw error
+            }
+            do {
+                try await self.onNavigationCommitted?(state)
+            } catch is CancellationError {
+                if self.activeMainFrameNavigationTokens[navigationKey] == navigationToken {
+                    self.activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
+                    self.readerContent.endMainFrameNavigationTask(navigationToken)
+                }
+                throw CancellationError()
+            } catch {
+                print("Error during public onNavigationCommitted: \(error)")
             }
         }
     }
@@ -131,40 +169,57 @@ fileprivate class ReaderWebViewHandler {
         let navigationToken = activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
+            await self.handleNavigationFinished(state: state)
             if let navigationToken {
                 self.readerContent.endMainFrameNavigationTask(navigationToken)
             }
-            await self.readerModeViewModel.onNavigationFinished(
-                newState: state,
-                scriptCaller: scriptCaller
-            )
-            guard let content = self.readerContent.content else { return }
-            self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
-                // no external callback here
-            }
+            guard !Task.isCancelled else { return }
+            self.onNavigationFinished?(state)
         }
     }
 
-    func onNavigationFailed(state: WebViewState) {
+    func onNavigationFailed(
+        state: WebViewState,
+        disposition: WebViewNavigationFailureDisposition
+    ) {
         let navigationKey = state.pageURL.absoluteString
         let navigationToken = activeMainFrameNavigationTokens.removeValue(forKey: navigationKey)
-        navigationTaskManager.startOnNavigationFailed { @MainActor in
+        let preservesCommittedDocument = disposition == .preservedCommittedDocument
+        navigationTaskManager.startOnNavigationFailed(
+            preservingCommittedDocument: preservesCommittedDocument
+        ) { @MainActor in
             if let navigationToken {
                 self.readerContent.endMainFrameNavigationTask(navigationToken)
             }
-            self.readerModeViewModel.onNavigationFailed(newState: state)
-            // no external callback here
+            if !preservesCommittedDocument {
+                self.readerModeViewModel.onNavigationFailed(newState: state)
+            }
+            self.onNavigationFailed?(state)
         }
+    }
+
+    func onDocumentContextInvalidated(
+        state: WebViewState,
+        reason: WebViewDocumentContextInvalidationReason
+    ) {
+        navigationTaskManager.cancelNavigationWork()
+        endAllMainFrameNavigationTasks()
+        if reason == .webContentProcessTerminated {
+            readerModeViewModel.onNavigationFailed(newState: state)
+            onNavigationFailed?(state)
+        }
+        onDocumentContextInvalidated?(state, reason)
     }
 
     func onURLChanged(state: WebViewState) {
         navigationTaskManager.startOnURLChanged { @MainActor in
+            try await self.handleURLChanged(state: state)
             do {
-                try await self.handleNewURL(state: state)
+                try await self.onURLChanged?(state)
             } catch is CancellationError {
-//                print("onURLChanged task was cancelled.")
+                throw CancellationError()
             } catch {
-                print("Error during onURLChanged: \(error)")
+                print("Error during public onURLChanged: \(error)")
             }
         }
     }
@@ -184,6 +239,7 @@ public struct ReaderWebView: View {
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
     let onNavigationFailed: ((WebViewState) -> Void)?
+    let onDocumentContextInvalidated: (@MainActor (WebViewState, WebViewDocumentContextInvalidationReason) -> Void)?
     let onURLChanged: ((WebViewState) async throws -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
@@ -193,6 +249,7 @@ public struct ReaderWebView: View {
 
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
+    @State private var navigationTaskManager = NavigationTaskManager()
 
     @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
@@ -232,6 +289,10 @@ public struct ReaderWebView: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onDocumentContextInvalidated: (@MainActor (
+            WebViewState,
+            WebViewDocumentContextInvalidationReason
+        ) -> Void)? = nil,
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
@@ -252,6 +313,7 @@ public struct ReaderWebView: View {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onDocumentContextInvalidated = onDocumentContextInvalidated
         self.onURLChanged = onURLChanged
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
@@ -262,9 +324,11 @@ public struct ReaderWebView: View {
 
     public var body: some View {
         let handler = ReaderWebViewHandler(
+            navigationTaskManager: navigationTaskManager,
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
+            onDocumentContextInvalidated: onDocumentContextInvalidated,
             onURLChanged: onURLChanged,
             readerContent: readerContent,
             readerViewModel: readerViewModel,
@@ -318,6 +382,9 @@ public struct ReaderWebView: View {
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
             ebookURLSchemeHandler.readerFileManager = readerFileManager
+        }
+        .onDisappear {
+            navigationTaskManager.cancelNavigationWork()
         }
     }
 }
@@ -469,8 +536,11 @@ fileprivate struct ReaderWebViewInternal: View {
             onNavigationFinished: { state in
                 handler.onNavigationFinished(state: state)
             },
-            onNavigationFailed: { state in
-                handler.onNavigationFailed(state: state)
+            onNavigationFailedWithDisposition: { state, disposition in
+                handler.onNavigationFailed(state: state, disposition: disposition)
+            },
+            onDocumentContextInvalidated: { state, reason in
+                handler.onDocumentContextInvalidated(state: state, reason: reason)
             },
             onURLChanged: { state in
                 handler.onURLChanged(state: state)
