@@ -93,6 +93,34 @@ public struct ReaderPackageEntrySource: Sendable {
         }
     }
 
+    private static let urlInputEdgeWhitespace = CharacterSet(
+        charactersIn: "\t\n\u{000C}\r "
+    )
+
+    private enum ASCII {
+        static let zero = Unicode.Scalar("0").value
+        static let nine = Unicode.Scalar("9").value
+        static let uppercaseA = Unicode.Scalar("A").value
+        static let uppercaseF = Unicode.Scalar("F").value
+        static let uppercaseZ = Unicode.Scalar("Z").value
+        static let lowercaseA = Unicode.Scalar("a").value
+        static let lowercaseF = Unicode.Scalar("f").value
+        static let lowercaseZ = Unicode.Scalar("z").value
+        static let colon = Unicode.Scalar(":").value
+        static let plus = Unicode.Scalar("+").value
+        static let hyphen = Unicode.Scalar("-").value
+        static let period = Unicode.Scalar(".").value
+        static let hexadecimalLetterValueOffset: UInt32 = 10
+
+        static let digitRange = zero...nine
+        static let uppercaseRange = uppercaseA...uppercaseZ
+        static let lowercaseRange = lowercaseA...lowercaseZ
+        static let uppercaseHexRange = uppercaseA...uppercaseF
+        static let lowercaseHexRange = lowercaseA...lowercaseF
+    }
+
+    private static let decodeURIReservedBytes = Set("#$&+,/:;=?@".utf8)
+
     private let kind: Kind
     private let archiveCatalog: ArchiveCatalog?
     private let directoryIdentity: DirectoryIdentity?
@@ -336,6 +364,124 @@ public struct ReaderPackageEntrySource: Sendable {
         return normalized
     }
 
+    public static func resolveSubpath(
+        _ href: String,
+        relativeTo baseDirectory: String
+    ) -> String? {
+        let normalizedHref = href.trimmingCharacters(in: urlInputEdgeWhitespace)
+        guard !hasURIScheme(normalizedHref) else { return nil }
+        let hrefWithoutFragment = normalizedHref.split(
+            separator: "#",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        ).first.map(String.init) ?? normalizedHref
+        let hrefWithoutQuery = hrefWithoutFragment.split(
+            separator: "?",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        ).first.map(String.init) ?? hrefWithoutFragment
+        guard let decodedHref = decodePackageURI(hrefWithoutQuery) else {
+            return nil
+        }
+        let hrefComponents = decodedHref.split(separator: "/", omittingEmptySubsequences: false)
+        guard !decodedHref.isEmpty,
+              !decodedHref.hasPrefix("/"),
+              !decodedHref.contains("\\"),
+              !decodedHref.contains("\0"),
+              !hrefComponents.contains(where: \.isEmpty) else {
+            return nil
+        }
+
+        let combined = baseDirectory.isEmpty
+            ? decodedHref
+            : (baseDirectory as NSString).appendingPathComponent(decodedHref)
+        var components: [String] = []
+        for component in combined.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        ).map(String.init) {
+            guard !component.isEmpty, component != "." else { continue }
+            if component == ".." {
+                guard !components.isEmpty else { return nil }
+                components.removeLast()
+            } else {
+                components.append(component)
+            }
+        }
+        let normalized = components.joined(separator: "/")
+        guard !normalized.isEmpty,
+              (try? sanitizeSubpath(normalized)) != nil else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func hasURIScheme(_ value: String) -> Bool {
+        let scalars = value.unicodeScalars
+        guard let first = scalars.first,
+              ASCII.uppercaseRange.contains(first.value)
+                || ASCII.lowercaseRange.contains(first.value) else {
+            return false
+        }
+        for scalar in scalars.dropFirst() {
+            switch scalar.value {
+            case ASCII.colon:
+                return true
+            case ASCII.plus, ASCII.hyphen, ASCII.period:
+                continue
+            default:
+                guard ASCII.digitRange.contains(scalar.value)
+                        || ASCII.uppercaseRange.contains(scalar.value)
+                        || ASCII.lowercaseRange.contains(scalar.value) else {
+                    return false
+                }
+            }
+        }
+        return false
+    }
+
+    private static func decodePackageURI(_ value: String) -> String? {
+        let scalars = Array(value.unicodeScalars)
+        var protectedValue = ""
+        protectedValue.reserveCapacity(value.utf8.count)
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            guard scalar == "%",
+                  index + 2 < scalars.count,
+                  let high = hexadecimalValue(of: scalars[index + 1]),
+                  let low = hexadecimalValue(of: scalars[index + 2]) else {
+                protectedValue.unicodeScalars.append(scalar)
+                index += 1
+                continue
+            }
+            protectedValue.append(
+                decodeURIReservedBytes.contains((high << 4) | low) ? "%25" : "%"
+            )
+            protectedValue.unicodeScalars.append(scalars[index + 1])
+            protectedValue.unicodeScalars.append(scalars[index + 2])
+            index += 3
+        }
+        return protectedValue.removingPercentEncoding
+    }
+
+    private static func hexadecimalValue(of scalar: Unicode.Scalar) -> UInt8? {
+        switch scalar.value {
+        case ASCII.digitRange:
+            UInt8(scalar.value - ASCII.zero)
+        case ASCII.uppercaseHexRange:
+            UInt8(
+                scalar.value - ASCII.uppercaseA + ASCII.hexadecimalLetterValueOffset
+            )
+        case ASCII.lowercaseHexRange:
+            UInt8(
+                scalar.value - ASCII.lowercaseA + ASCII.hexadecimalLetterValueOffset
+            )
+        default:
+            nil
+        }
+    }
+
     public static func resolveDirectoryURL(rootURL: URL, subpath rawSubpath: String) throws -> URL {
         let subpath = try sanitizeSubpath(rawSubpath)
         let canonicalRootURL = try canonicalDirectoryRootURL(rootURL)
@@ -403,7 +549,7 @@ public struct ReaderPackageEntrySource: Sendable {
         let enumerator = FileManager.default.enumerator(
             at: standardizedRootURL,
             includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsHiddenFiles]
+            options: []
         )
 
         var entries = [ReaderPackageEntryMetadata]()
@@ -1054,7 +1200,7 @@ public actor ReaderPackageEntrySourceCache {
         let enumerator = FileManager.default.enumerator(
             at: canonicalRootURL,
             includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsHiddenFiles]
+            options: []
         )
 
         var descendantMetadata = [String]()

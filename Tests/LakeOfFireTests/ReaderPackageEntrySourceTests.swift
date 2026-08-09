@@ -147,6 +147,47 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
         )
     }
 
+    func testRelativeHrefResolutionMatchesRendererPackageSemantics() {
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "../Images/cover%20art.jpg#thumbnail",
+                relativeTo: "OPS/Text"
+            ),
+            "OPS/Images/cover art.jpg"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "package%252Fname%20x.opf",
+                relativeTo: "OPS"
+            ),
+            "OPS/package%2Fname x.opf"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "chapter%2Fpart.xhtml",
+                relativeTo: "OPS"
+            ),
+            "OPS/chapter%2Fpart.xhtml"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(" chapter.xhtml ", relativeTo: "OPS"),
+            "OPS/chapter.xhtml"
+        )
+        XCTAssertEqual(
+            ReaderPackageEntrySource.resolveSubpath(
+                "\u{00A0}chapter.xhtml\u{00A0}",
+                relativeTo: "OPS"
+            ),
+            "OPS/\u{00A0}chapter.xhtml\u{00A0}"
+        )
+        XCTAssertNil(
+            ReaderPackageEntrySource.resolveSubpath("web+epub:external.opf", relativeTo: "OPS")
+        )
+        XCTAssertNil(
+            ReaderPackageEntrySource.resolveSubpath("../../../outside.jpg", relativeTo: "OPS/Text")
+        )
+    }
+
     func testArchiveEntryPathsRemainCaseSensitive() throws {
         try withTemporaryDirectory { temporaryRoot in
             let archiveURL = temporaryRoot.appendingPathComponent("case-sensitive.epub")
@@ -211,6 +252,26 @@ final class ReaderPackageEntrySourceTests: XCTestCase {
             let source = try ReaderPackageEntrySource(localURL: packageRoot)
 
             XCTAssertEqual(try source.enumerateEntries().map(\.path), ["chapter.xhtml"])
+        }
+    }
+
+    func testDirectoryEnumerationIncludesDotPrefixedPackageResources() throws {
+        try withTemporaryDirectory { temporaryRoot in
+            let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
+            let hiddenDirectory = packageRoot.appendingPathComponent("OPS/.assets", isDirectory: true)
+            let hiddenChapterURL = hiddenDirectory.appendingPathComponent(".chapter.xhtml")
+            try FileManager.default.createDirectory(at: hiddenDirectory, withIntermediateDirectories: true)
+            try Data("<html></html>".utf8).write(to: hiddenChapterURL)
+
+            let source = try ReaderPackageEntrySource(localURL: packageRoot)
+            XCTAssertEqual(try source.enumerateEntries().map(\.path), ["OPS/.assets/.chapter.xhtml"])
+            XCTAssertEqual(
+                String(
+                    decoding: try source.readEntry(subpath: "OPS/.assets/.chapter.xhtml"),
+                    as: UTF8.self
+                ),
+                "<html></html>"
+            )
         }
     }
 

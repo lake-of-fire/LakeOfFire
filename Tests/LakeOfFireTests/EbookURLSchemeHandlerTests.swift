@@ -794,6 +794,188 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertNil(normalizedEbookEntrySubpath("OPS\\chapter.xhtml"))
     }
 
+    func testEPubParserUsesTypedContainedPackageAndPrimaryNamespacedMetadata() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("epub-metadata-\(UUID().uuidString)", isDirectory: true)
+        let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
+        let packageDirectory = packageRoot.appendingPathComponent("OPS/Text", isDirectory: true)
+        let outsidePackageURL = temporaryRoot.appendingPathComponent("outside.opf")
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try Data("""
+        <c:container xmlns:c="urn:oasis:names:tc:opendocument:xmlns:container">
+          <c:rootfiles>
+            <c:rootfile full-path="../outside.opf" media-type="application/x-other"/>
+            <c:rootfile full-path="OPS/Text/package.opf"
+                        media-type="application/oebps-package+xml"/>
+          </c:rootfiles>
+        </c:container>
+        """.utf8).write(to: metadataDirectory.appendingPathComponent("container.xml"))
+        try Data("""
+        <pkg:package xmlns:pkg="http://www.idpf.org/2007/opf"
+                     xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
+          <pkg:metadata>
+            <dc:title>Primary
+              Title</dc:title>
+            <dc:title>Secondary Title</dc:title>
+            <dc:creator>Primary
+              Author</dc:creator>
+          </pkg:metadata>
+          <pkg:manifest>
+            <pkg:item id="cover" href="../Images/cover%20art.jpg"
+                      media-type="image/jpeg" properties="other cover-image"/>
+          </pkg:manifest>
+        </pkg:package>
+        """.utf8).write(to: packageDirectory.appendingPathComponent("package.opf"))
+        try Data("""
+        <package xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <metadata><dc:title>Outside Book</dc:title></metadata>
+          <manifest><item id="cover" href="outside.jpg" properties="cover-image"/></manifest>
+        </package>
+        """.utf8).write(to: outsidePackageURL)
+
+        let metadata = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: packageRoot))
+        XCTAssertEqual(metadata.title, "Primary Title")
+        XCTAssertEqual(metadata.author, "Primary Author")
+        XCTAssertEqual(metadata.coverHref, "OPS/Images/cover art.jpg")
+    }
+
+    func testEPubParserKeepsCoverlessMetadataAndParsesReducedPublicationDates() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("epub-coverless-\(UUID().uuidString)", isDirectory: true)
+        let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
+        let packageDirectory = packageRoot.appendingPathComponent("OPS", isDirectory: true)
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try Data("""
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles><rootfile full-path="OPS/package.opf"
+            media-type="application/oebps-package+xml"/></rootfiles>
+        </container>
+        """.utf8).write(to: metadataDirectory.appendingPathComponent("container.xml"))
+
+        let cases = [
+            ("2024", 2024, 1, 1),
+            ("2024-05", 2024, 5, 1),
+            ("2024-05-12", 2024, 5, 12),
+        ]
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        for testCase in cases {
+            try Data("""
+            <package xmlns="http://www.idpf.org/2007/opf"
+                     xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
+              <metadata>
+                <dc:title>Coverless Book</dc:title>
+                <dc:creator>Metadata Author</dc:creator>
+                <dc:date>\(testCase.0)</dc:date>
+              </metadata>
+              <manifest/>
+            </package>
+            """.utf8).write(to: packageDirectory.appendingPathComponent("package.opf"))
+
+            let metadata = try XCTUnwrap(
+                EPubParser.parseMetadataAndCover(from: packageRoot),
+                "Failed to retain coverless metadata for \(testCase.0)"
+            )
+            XCTAssertEqual(metadata.title, "Coverless Book")
+            XCTAssertEqual(metadata.author, "Metadata Author")
+            XCTAssertNil(metadata.coverHref)
+            let date = try XCTUnwrap(metadata.publicationDate)
+            let components = calendar.dateComponents([.year, .month, .day], from: date)
+            XCTAssertEqual(components.year, testCase.1)
+            XCTAssertEqual(components.month, testCase.2)
+            XCTAssertEqual(components.day, testCase.3)
+        }
+    }
+
+    func testEPubParserRejectsNestedRootfileAndMalformedContainerGraphs() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("epub-invalid-\(UUID().uuidString)", isDirectory: true)
+        let packageRoot = temporaryRoot.appendingPathComponent("book.epub", isDirectory: true)
+        let metadataDirectory = packageRoot.appendingPathComponent("META-INF", isDirectory: true)
+        let packageDirectory = packageRoot.appendingPathComponent("OPS", isDirectory: true)
+        try FileManager.default.createDirectory(at: metadataDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        let containerURL = metadataDirectory.appendingPathComponent("container.xml")
+
+        try Data("""
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:x="urn:extension">
+          <x:wrapper><rootfile full-path="OPS/package.opf"
+            media-type="application/oebps-package+xml"/></x:wrapper>
+        </container>
+        """.utf8).write(to: containerURL)
+        try Data("""
+        <package xmlns="http://www.idpf.org/2007/opf"
+                 xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
+          <metadata><dc:title>Nested Rootfile</dc:title></metadata>
+          <manifest><item id="cover" href="cover.jpg" properties="cover-image"/></manifest>
+        </package>
+        """.utf8).write(to: packageDirectory.appendingPathComponent("package.opf"))
+        XCTAssertNil(
+            try EPubParser.parseMetadataAndCover(from: packageRoot),
+            "A nested rootfile must not become the package document"
+        )
+
+        try Data("""
+        <container><rootfiles><rootfile full-path="OPS/package.opf"
+          media-type="application/oebps-package+xml"/>
+        """.utf8).write(to: containerURL)
+        XCTAssertNil(
+            try EPubParser.parseMetadataAndCover(from: packageRoot),
+            "A rootfile discovered before malformed XML terminates must not be accepted"
+        )
+    }
+
+    func testEPubParserReadsMetadataThroughArchiveEntrySource() throws {
+        let archiveURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("epub-metadata-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: archiveURL) }
+        let entries = [
+            (
+                "META-INF/container.xml",
+                Data("""
+                <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+                  <rootfiles><rootfile full-path="OPS/package.opf"
+                    media-type="application/oebps-package+xml"/></rootfiles>
+                </container>
+                """.utf8)
+            ),
+            (
+                "OPS/package.opf",
+                Data("""
+                <package xmlns="http://www.idpf.org/2007/opf"
+                         xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0">
+                  <metadata><dc:title>Archived Book</dc:title></metadata>
+                  <manifest/>
+                </package>
+                """.utf8)
+            ),
+        ]
+        let archive = try Archive(url: archiveURL, accessMode: .create)
+        for (path, data) in entries {
+            try archive.addEntry(
+                with: path,
+                type: .file,
+                uncompressedSize: Int64(data.count),
+                compressionMethod: .deflate
+            ) { position, size in
+                data.subdata(in: Int(position)..<(Int(position) + size))
+            }
+        }
+
+        let metadata = try XCTUnwrap(EPubParser.parseMetadataAndCover(from: archiveURL))
+        XCTAssertEqual(metadata.title, "Archived Book")
+        XCTAssertNil(metadata.coverHref)
+    }
+
     func testPathBackedEntryRequiresOwningProcessedDocumentSource() throws {
         let sourceURL = try XCTUnwrap(URL(string: "ebook://ebook/load/local/Books/test.epub"))
         let token = ebookBase64URLToken(for: sourceURL.absoluteString)
