@@ -233,12 +233,24 @@ export class View extends HTMLElement {
             })
         }
     }
-    async addAnnotation(annotation, remove) {
+    #isOpenGenerationCurrent(openGeneration, renderer, book) {
+        return this.#openGeneration === openGeneration
+            && this.renderer === renderer
+            && this.book === book
+    }
+    async addAnnotation(annotation, remove, expectedOpenGeneration = this.#openGeneration) {
+        const renderer = this.renderer
+        const book = this.book
+        const isCurrent = () =>
+            this.#isOpenGenerationCurrent(expectedOpenGeneration, renderer, book)
+        if (!renderer || !book || !isCurrent()) return
         const { value } = annotation
         if (value.startsWith(SEARCH_PREFIX)) {
             const cfi = value.replace(SEARCH_PREFIX, '')
-            const { index, anchor } = await this.resolveNavigation(cfi)
-            const obj = this.#getOverlayer(index)
+            const resolved = await this.resolveNavigation(cfi)
+            if (!isCurrent() || !resolved) return
+            const { index, anchor } = resolved
+            const obj = this.#getOverlayer(index, renderer)
             if (obj) {
                 const { overlayer, doc } = obj
                 if (remove) {
@@ -250,8 +262,10 @@ export class View extends HTMLElement {
             }
             return
         }
-        const { index, anchor } = await this.resolveNavigation(value)
-        const obj = this.#getOverlayer(index)
+        const resolved = await this.resolveNavigation(value)
+        if (!isCurrent() || !resolved) return
+        const { index, anchor } = resolved
+        const obj = this.#getOverlayer(index, renderer)
         if (obj) {
             const { overlayer, doc } = obj
             overlayer.remove(value)
@@ -261,15 +275,16 @@ export class View extends HTMLElement {
                 this.#emit('draw-annotation', { draw, annotation, doc, range })
             }
         }
-        const label = this.#tocProgress.getProgress(index)?.label ?? ''
+        if (!isCurrent()) return
+        const label = this.#tocProgress?.getProgress(index)?.label ?? ''
         return { index, label }
     }
     deleteAnnotation(annotation) {
         return this.addAnnotation(annotation, true)
     }
-    #getOverlayer(index) {
-        return this.renderer.getContents()
-        .find(x => x.index === index && x.overlayer)
+    #getOverlayer(index, renderer = this.renderer) {
+        return renderer?.getContents?.()
+            .find(x => x.index === index && x.overlayer)
     }
     #createOverlayer({ doc, index }) {
         const overlayer = new Overlayer()
@@ -452,57 +467,71 @@ export class View extends HTMLElement {
     async goRight() {
         return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
-    async * #searchSection(matcher, query, index) {
-        const doc = await this.book.sections[index].createDocument()
-        for (const { range, excerpt } of matcher(doc, query))
+    async * #searchSection(matcher, query, index, renderer, book, openGeneration) {
+        const doc = await book.sections[index].createDocument()
+        if (!this.#isOpenGenerationCurrent(openGeneration, renderer, book)) return
+        for (const { range, excerpt } of matcher(doc, query)) {
             yield { cfi: this.getCFI(index, range), excerpt }
+        }
     }
-    async * #searchBook(matcher, query) {
-        const { sections } = this.book
+    async * #searchBook(matcher, query, renderer, book, openGeneration) {
+        const { sections } = book
         for (const [index, { createDocument }] of sections.entries()) {
             if (!createDocument) continue
-                const doc = await createDocument()
-                const subitems = Array.from(matcher(doc, query), ({ range, excerpt }) =>
-                                            ({ cfi: this.getCFI(index, range), excerpt }))
-                const progress = (index + 1) / sections.length
-                yield { progress }
+            const doc = await createDocument()
+            if (!this.#isOpenGenerationCurrent(openGeneration, renderer, book)) return
+            const subitems = Array.from(matcher(doc, query), ({ range, excerpt }) =>
+                ({ cfi: this.getCFI(index, range), excerpt }))
+            const progress = (index + 1) / sections.length
+            yield { progress }
             if (subitems.length) yield { index, subitems }
         }
     }
     async * search(opts) {
+        const openGeneration = this.#openGeneration
+        const renderer = this.renderer
+        const book = this.book
+        const isCurrent = () =>
+            this.#isOpenGenerationCurrent(openGeneration, renderer, book)
+        if (!isCurrent()) return
         this.clearSearch()
         const { searchMatcher } = await import('./search.js')
+        if (!isCurrent()) return
         const { query, index } = opts
-        const matcher = searchMatcher(textWalker,
-                                      { defaultLocale: this.language, ...opts })
+        const matcher = searchMatcher(textWalker, {
+            defaultLocale: this.language,
+            ...opts,
+        })
         const iter = index != null
-        ? this.#searchSection(matcher, query, index)
-        : this.#searchBook(matcher, query)
+            ? this.#searchSection(matcher, query, index, renderer, book, openGeneration)
+            : this.#searchBook(matcher, query, renderer, book, openGeneration)
 
         const list = []
         this.#searchResults.set(index, list)
 
         for await (const result of iter) {
-            if (result.subitems){
+            if (!isCurrent()) return
+            if (result.subitems) {
                 const list = result.subitems
                 .map(({ cfi }) => ({ value: SEARCH_PREFIX + cfi }))
                 this.#searchResults.set(result.index, list)
-                for (const item of list) this.addAnnotation(item)
-                    yield {
-                        label: this.#tocProgress.getProgress(result.index)?.label ?? '',
-                        subitems: result.subitems,
-                    }
-            }
-            else {
+                for (const item of list) {
+                    void this.addAnnotation(item, false, openGeneration)
+                }
+                yield {
+                    label: this.#tocProgress?.getProgress(result.index)?.label ?? '',
+                    subitems: result.subitems,
+                }
+            } else {
                 if (result.cfi) {
                     const item = { value: SEARCH_PREFIX + result.cfi }
                     list.push(item)
-                    this.addAnnotation(item)
+                    void this.addAnnotation(item, false, openGeneration)
                 }
                 yield result
             }
         }
-        yield 'done'
+        if (isCurrent()) yield 'done'
     }
     clearSearch() {
         for (const list of this.#searchResults.values())
