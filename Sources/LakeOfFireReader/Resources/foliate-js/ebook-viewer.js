@@ -41,6 +41,7 @@ import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import { OwnedAsyncResource, OwnedScheduledTask } from './owned-async-resource.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
+import { OwnedObjectURL } from './owned-object-url.js'
 import {
     activeRendererContentsForLookup,
     getCurrentRendererDocument,
@@ -4180,6 +4181,10 @@ class Reader {
     #ownedEventBindings = new OwnedEventBindings()
     #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
+    #sidebarCloseHandle = null
+    #sidebarCoverURL = new OwnedObjectURL()
+    #sidebarCoverLoadPromise = null
+    #bookForSidebarCover = null
 
     get isClosed() {
         return this.#closed
@@ -4250,6 +4255,15 @@ class Reader {
         this.#documentEventBindings.clear()
         this.#ownedEventBindings.clear()
         this.navHUD?.destroy?.()
+        this.#resolveDisplaySettledWaiters(`reader-closed:${_reason}`)
+        clearTimeout(this.#sidebarCloseHandle)
+        this.#sidebarCloseHandle = null
+        this.#tocView?.element?.remove?.()
+        this.#tocView = null
+        this.#bookForSidebarCover = null
+        this.#sidebarCoverLoadPromise = null
+        this.#sidebarCoverURL.clear()
+        $('#side-bar-cover')?.removeAttribute?.('src')
 
         const view = this.view
         this.view = null
@@ -4363,23 +4377,47 @@ class Reader {
     annotations = new Map()
     annotationsByValue = new Map()
     openSideBar() {
+        if (this.#closed) return false
+        clearTimeout(this.#sidebarCloseHandle)
+        this.#sidebarCloseHandle = null
         $('#dimming-overlay').removeAttribute('hidden')
         $('#side-bar').removeAttribute('hidden')
         $('#dimming-overlay').classList.add('show')
         $('#side-bar').classList.add('show')
+        void this.#ensureSidebarCoverLoaded()
         if (this.#tocView?.setCurrentHref && this.view?.renderer?.tocItem?.href) {
             this.#tocView.setCurrentHref(this.view.renderer.tocItem.href)
         }
+        return true
+    }
+    #ensureSidebarCoverLoaded() {
+        if (this.#closed) return Promise.resolve()
+        if (this.#sidebarCoverLoadPromise) return this.#sidebarCoverLoadPromise
+        const coverElement = $('#side-bar-cover')
+        const book = this.#bookForSidebarCover
+        if (!coverElement || typeof book?.getCover !== 'function') return Promise.resolve()
+        this.#sidebarCoverLoadPromise = Promise.resolve(book.getCover())
+            .then(blob => {
+                if (!blob || this.#closed || this.#bookForSidebarCover !== book) return
+                coverElement.src = this.#sidebarCoverURL.replace(blob)
+            })
+            .catch(() => {})
+        return this.#sidebarCoverLoadPromise
     }
     closeSideBar() {
+        if (this.#closed) return false
+        clearTimeout(this.#sidebarCloseHandle)
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
-        setTimeout(() => {
+        this.#sidebarCloseHandle = setTimeout(() => {
+            this.#sidebarCloseHandle = null
+            if (this.#closed) return
             if (!$('#side-bar').classList.contains('show')) {
                 $('#dimming-overlay').setAttribute('hidden', '')
                 $('#side-bar').setAttribute('hidden', '')
             }
         }, 360)
+        return true
     }
     toggleTableOfContents() {
         if ($('#side-bar').classList.contains('show')) {
@@ -6592,9 +6630,10 @@ class Reader {
             'url': window.top.location.href
         })
 
-        Promise.resolve(book.getCover?.())?.then(blob => {
-            blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
-        })
+        this.#bookForSidebarCover = book
+        this.#sidebarCoverLoadPromise = null
+        this.#sidebarCoverURL.clear()
+        $('#side-bar-cover')?.removeAttribute?.('src')
 
         this.#schedulePostInitialOpenWork(book, openGeneration)
     }
