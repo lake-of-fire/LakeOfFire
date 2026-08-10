@@ -3,6 +3,7 @@ import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 import { buildRelocateLocation } from './relocate-location.js'
 import { OwnedEventBindings } from './owned-event-bindings.js'
+import { runCurrentRendererOperation } from './renderer-operation-ownership.js'
 import { ViewHistory } from './view-history.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
@@ -54,6 +55,7 @@ export class View extends HTMLElement {
     #searchResults = new Map()
     #rendererBindings = null
     #documentBindings = new Map()
+    #openGeneration = 0
     isFixedLayout = false
     lastLocation
     history = new ViewHistory()
@@ -65,6 +67,7 @@ export class View extends HTMLElement {
         })
     }
     async open(book, isCacheWarmer) {
+        this.#openGeneration += 1
         this.book = book
         this.language = languageInfo(book.metadata?.language)
         this.#isCacheWarmer = isCacheWarmer
@@ -115,6 +118,7 @@ export class View extends HTMLElement {
         this.#root.append(this.renderer)
     }
     close() {
+        this.#openGeneration += 1
         const renderer = this.renderer
         const book = this.book
         this.renderer = null
@@ -331,10 +335,17 @@ export class View extends HTMLElement {
         }
     }
     async goTo(target) {
-        //        this.#emit('is-loading', true)
         const resolved = this.resolveNavigation(target)
+        const renderer = this.renderer
+        const openGeneration = this.#openGeneration
+        if (!renderer || !resolved) return null
         try {
-            await this.renderer.goTo(resolved)
+            const result = await runCurrentRendererOperation({
+                operation: () => renderer.goTo(resolved),
+                isCurrent: () =>
+                    this.renderer === renderer && this.#openGeneration === openGeneration,
+            })
+            if (result.ignored) return null
             this.history.pushState(target)
             return resolved
         } catch(e) {
@@ -352,13 +363,24 @@ export class View extends HTMLElement {
         this.history.pushState({ fraction: frac })
     }
     async select(target) {
+        const renderer = this.renderer
+        const openGeneration = this.#openGeneration
+        if (!renderer) return false
         try {
-            const obj = await this.resolveNavigation(target)
-            await this.renderer.goTo({ ...obj, select: true })
+            const obj = this.resolveNavigation(target)
+            if (!obj) return false
+            const result = await runCurrentRendererOperation({
+                operation: () => renderer.goTo({ ...obj, select: true }),
+                isCurrent: () =>
+                    this.renderer === renderer && this.#openGeneration === openGeneration,
+            })
+            if (result.ignored) return false
             this.history.pushState(target)
+            return true
         } catch(e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
+            return false
         }
     }
     deselect() {
