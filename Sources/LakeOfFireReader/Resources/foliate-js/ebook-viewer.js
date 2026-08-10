@@ -38,7 +38,7 @@ import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { EbookLoadResources } from './ebook-load-resources.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
-import { OwnedAsyncResource } from './owned-async-resource.js'
+import { OwnedAsyncResource, OwnedScheduledTask } from './owned-async-resource.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import {
@@ -1049,10 +1049,6 @@ window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc
     };
 };
 
-const cacheWarmerSourceForCurrentBook = () => {
-    return window.cacheWarmer?.makeReusableSource?.() ?? null;
-};
-
 const liveProcessedSectionHrefSet = () => {
     if (!(globalThis.__manabiLiveProcessedSectionHrefs instanceof Set)) {
         globalThis.__manabiLiveProcessedSectionHrefs = new Set();
@@ -1334,9 +1330,9 @@ const nextUsefulCacheWarmerSectionIndex = () => {
 };
 
 const maybeOpenDeferredCacheWarmer = async () => {
-    if (globalThis.__manabiCacheWarmerOpenPromise) {
-        return await globalThis.__manabiCacheWarmerOpenPromise;
-    }
+    const cacheWarmer = window.cacheWarmer ?? null;
+    if (!cacheWarmer) return;
+    if (cacheWarmer.openPromise) return await cacheWarmer.openPromise;
     if (!isForegroundReaderIdle()) {
         const firstLiveHref = firstLiveSectionHref();
         const firstLiveSettled = !!firstLiveHref && liveSettledSectionHrefSet().has(firstLiveHref);
@@ -1356,17 +1352,17 @@ const maybeOpenDeferredCacheWarmer = async () => {
         globalThis.__manabiCacheWarmerReady = true;
         return;
     }
-    const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
+    const cacheWarmerSource = cacheWarmer.makeReusableSource();
     globalThis.__manabiCacheWarmerOpenRequested = false;
     if (!cacheWarmerSource) return;
     const openPromise = (async () => {
-        await window.cacheWarmer.open(cacheWarmerSource);
+        await cacheWarmer.open(cacheWarmerSource);
     })();
-    globalThis.__manabiCacheWarmerOpenPromise = openPromise;
+    cacheWarmer.openPromise = openPromise;
     try {
         await openPromise;
     } finally {
-        globalThis.__manabiCacheWarmerOpenPromise = null;
+        if (cacheWarmer.openPromise === openPromise) cacheWarmer.openPromise = null;
     }
 };
 
@@ -1379,10 +1375,10 @@ const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 0) => {
         globalThis.__manabiInitialForegroundNextSectionPending = true;
     }
     globalThis.__manabiDeferredCacheWarmerLogged = false;
-    clearTimeout(globalThis.__manabiCacheWarmerOpenTimer);
     const normalizedDelay = Math.max(0, Number(delayMs) || 0);
-    globalThis.__manabiCacheWarmerOpenTimer = setTimeout(() => {
-        globalThis.__manabiCacheWarmerOpenTimer = null;
+    const cacheWarmer = window.cacheWarmer ?? null;
+    cacheWarmer?.scheduleDeferredOpen(() => {
+        if (window.cacheWarmer !== cacheWarmer) return;
         const busyState = cacheWarmerForegroundBusyState();
         if (busyState.busy) {
             scheduleDeferredCacheWarmerOpen(`${reason}.retry`, busyState.retryMs);
@@ -8121,6 +8117,7 @@ const canUseNativeCacheWarmerPrewarm = () => {
 
 class CacheWarmer {
     #closed = false
+    #deferredOpenTask = new OwnedScheduledTask()
     #eventBindings = null
     #viewOwner = new OwnedAsyncResource(view => {
         try {
@@ -8131,6 +8128,7 @@ class CacheWarmer {
 
     constructor({ loadResources = null } = {}) {
         this.loadResources = loadResources
+        this.openPromise = null
         this.view
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
@@ -8143,6 +8141,9 @@ class CacheWarmer {
             makeFile: (blob, path) => new File([blob], path),
             makeFileSource,
         }) ?? null
+    }
+    scheduleDeferredOpen(callback, delayMs = 0) {
+        return this.#deferredOpenTask.schedule(callback, delayMs)
     }
     #isCurrentGeneration(generation) {
         return !this.#closed
@@ -8296,8 +8297,10 @@ class CacheWarmer {
         invalidateCacheWarmerWork()
         this.#eventBindings?.clear()
         this.#eventBindings = null
+        this.#deferredOpenTask.close()
         this.#viewOwner.close()
         this.view = null
+        this.openPromise = null
         this.loadResources?.close?.()
         this.loadResources = null
         this.uniqueSentenceIdentifiers.clear()

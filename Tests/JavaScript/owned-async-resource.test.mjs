@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { OwnedAsyncResource } from '../../Sources/LakeOfFireReader/Resources/foliate-js/owned-async-resource.js'
+import {
+    OwnedAsyncResource,
+    OwnedScheduledTask,
+} from '../../Sources/LakeOfFireReader/Resources/foliate-js/owned-async-resource.js'
 
 test('a resource acquired after close is disposed instead of published', () => {
     const disposed = []
@@ -34,4 +37,45 @@ test('close is idempotent and prevents another acquisition', () => {
     assert.equal(owner.close(), true)
     assert.equal(owner.close(), false)
     assert.equal(owner.begin(), null)
+})
+
+test('scheduling replacement work cancels the prior handle', () => {
+    const callbacks = new Map()
+    const cancelled = []
+    let nextHandle = 0
+    const task = new OwnedScheduledTask({
+        schedule: callback => {
+            const handle = ++nextHandle
+            callbacks.set(handle, callback)
+            return handle
+        },
+        cancel: handle => {
+            cancelled.push(handle)
+            callbacks.delete(handle)
+        },
+    })
+    let calls = 0
+
+    task.schedule(() => calls += 1)
+    task.schedule(() => calls += 10)
+    assert.deepEqual(cancelled, [1])
+    callbacks.get(2)()
+    assert.equal(calls, 10)
+})
+
+test('closing scheduled work prevents a captured stale callback', () => {
+    let capturedCallback = null
+    const task = new OwnedScheduledTask({
+        schedule: callback => {
+            capturedCallback = callback
+            return 1
+        },
+        cancel: () => {},
+    })
+    let calls = 0
+
+    task.schedule(() => calls += 1)
+    task.close()
+    capturedCallback()
+    assert.equal(calls, 0)
 })

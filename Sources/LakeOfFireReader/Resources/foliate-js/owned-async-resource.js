@@ -59,3 +59,46 @@ export class OwnedAsyncResource {
         } catch (_error) {}
     }
 }
+
+export class OwnedScheduledTask {
+    #scheduleTask
+    #cancelTask
+    #handle = null
+    #generation = 0
+    #closed = false
+
+    constructor({
+        schedule = (callback, delay) => setTimeout(callback, delay),
+        cancel = handle => clearTimeout(handle),
+    } = {}) {
+        this.#scheduleTask = schedule
+        this.#cancelTask = cancel
+    }
+
+    schedule(callback, delay = 0) {
+        if (this.#closed || typeof callback !== 'function') return false
+        this.cancel()
+        const generation = ++this.#generation
+        this.#handle = this.#scheduleTask(() => {
+            if (this.#closed || generation !== this.#generation) return
+            this.#handle = null
+            callback()
+        }, delay)
+        return true
+    }
+
+    cancel() {
+        this.#generation += 1
+        if (this.#handle == null) return false
+        this.#cancelTask(this.#handle)
+        this.#handle = null
+        return true
+    }
+
+    close() {
+        if (this.#closed) return false
+        this.#closed = true
+        this.cancel()
+        return true
+    }
+}
