@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
     OwnedAsyncResource,
+    OwnedPromiseSlot,
     OwnedScheduledTask,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/owned-async-resource.js'
 
@@ -78,4 +79,27 @@ test('closing scheduled work prevents a captured stale callback', () => {
     task.close()
     capturedCallback()
     assert.equal(calls, 0)
+})
+
+test('a stale promise cannot clear a replacement promise', () => {
+    const slot = new OwnedPromiseSlot()
+    const first = Promise.resolve('first')
+    const second = Promise.resolve('second')
+
+    assert.equal(slot.publish(first), true)
+    assert.equal(slot.publish(second), true)
+    assert.equal(slot.clear(first), false)
+    assert.equal(slot.current, second)
+    assert.equal(slot.clear(second), true)
+    assert.equal(slot.current, null)
+})
+
+test('closing a promise slot rejects later publication', () => {
+    const slot = new OwnedPromiseSlot()
+    slot.publish(Promise.resolve())
+
+    assert.equal(slot.close(), true)
+    assert.equal(slot.close(), false)
+    assert.equal(slot.publish(Promise.resolve()), false)
+    assert.equal(slot.current, null)
 })

@@ -102,3 +102,31 @@ export class OwnedScheduledTask {
         return true
     }
 }
+
+export class OwnedPromiseSlot {
+    #current = null
+    #closed = false
+
+    get current() {
+        return this.#current
+    }
+
+    publish(promise) {
+        if (this.#closed || typeof promise?.then !== 'function') return false
+        this.#current = promise
+        return true
+    }
+
+    clear(promise) {
+        if (this.#current !== promise) return false
+        this.#current = null
+        return true
+    }
+
+    close() {
+        if (this.#closed) return false
+        this.#closed = true
+        this.#current = null
+        return true
+    }
+}

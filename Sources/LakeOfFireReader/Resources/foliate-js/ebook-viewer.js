@@ -38,7 +38,7 @@ import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { EbookLoadResources } from './ebook-load-resources.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
-import { OwnedAsyncResource, OwnedScheduledTask } from './owned-async-resource.js'
+import { OwnedAsyncResource, OwnedPromiseSlot, OwnedScheduledTask } from './owned-async-resource.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import { OwnedObjectURL } from './owned-object-url.js'
@@ -770,10 +770,11 @@ const cacheWarmerForegroundBusyState = () => {
 };
 
 const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = 'unspecified', options = {}) => {
-    if (typeof window.cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
+    const cacheWarmer = window.cacheWarmer ?? null;
+    if (typeof cacheWarmer?.loadNextSectionSkippingSettled !== 'function') {
         return;
     }
-    if (globalThis.__manabiCacheWarmerAdvanceInFlight) {
+    if (cacheWarmer.advancePromise) {
         return;
     }
     const force = options?.force === true;
@@ -795,20 +796,18 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
     };
     const busyState = cacheWarmerForegroundBusyState();
     if (busyState.busy && !(force && busyState.reason === 'foreground-cooldown')) {
-        clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
-        globalThis.__manabiCacheWarmerLoadNextTimer = setTimeout(() => {
-            globalThis.__manabiCacheWarmerLoadNextTimer = null;
+        cacheWarmer.scheduleAdvance(() => {
+            if (window.cacheWarmer !== cacheWarmer) return;
             scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.retry`, options);
         }, busyState.retryMs);
         return;
     }
     const now = performanceNowMs();
-    const lastAdvanceStartedAt = Number(globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs || 0);
+    const lastAdvanceStartedAt = Number(cacheWarmer.lastAdvanceStartedAtMs || 0);
     const spacingRemainingMs = Math.max(0, lastAdvanceStartedAt + CACHE_WARMER_ADVANCE_SPACING_MS - now);
     if (!force && spacingRemainingMs > 0) {
-        clearTimeout(globalThis.__manabiCacheWarmerLoadNextTimer);
-        globalThis.__manabiCacheWarmerLoadNextTimer = setTimeout(() => {
-            globalThis.__manabiCacheWarmerLoadNextTimer = null;
+        cacheWarmer.scheduleAdvance(() => {
+            if (window.cacheWarmer !== cacheWarmer) return;
             scheduleLoadNextCacheWarmerSection(settledSectionHrefs, `${reason}.spacing`, options);
         }, spacingRemainingMs);
         return;
@@ -816,18 +815,24 @@ const scheduleLoadNextCacheWarmerSection = (settledSectionHrefs = [], reason = '
     const activeIndex = activeForegroundSectionIndex();
     const precedingTargetIndex = cacheWarmerPrecedingTargetIndex();
     const minimumIndex = Number.isInteger(precedingTargetIndex) ? 0 : activeIndex;
-    const targetIndex = window.cacheWarmer?.nextUnsettledSectionIndexSkippingSettled?.(settledSectionHrefs, minimumIndex);
+    const targetIndex = cacheWarmer.nextUnsettledSectionIndexSkippingSettled(settledSectionHrefs, minimumIndex);
     const windowLimitState = cacheWarmerWindowLimitState(targetIndex);
     if (!Number.isInteger(precedingTargetIndex) && !windowLimitState.isWithinWindow) {
         return;
     }
-    globalThis.__manabiCacheWarmerLastAdvanceStartedAtMs = performanceNowMs();
+    cacheWarmer.lastAdvanceStartedAtMs = performanceNowMs();
     globalThis.__manabiCacheWarmerAdvanceInFlight = true;
-    window.cacheWarmer?.loadNextSectionSkippingSettled?.(settledSectionHrefs, minimumIndex)
-        ?.finally?.(() => {
+    const advancePromise = Promise.resolve(
+        cacheWarmer.loadNextSectionSkippingSettled(settledSectionHrefs, minimumIndex)
+    );
+    if (!cacheWarmer.publishAdvancePromise(advancePromise)) return;
+    advancePromise
+        .finally(() => {
+            cacheWarmer.clearAdvancePromise(advancePromise);
+            if (window.cacheWarmer !== cacheWarmer) return;
             globalThis.__manabiCacheWarmerAdvanceInFlight = false;
         })
-        ?.catch?.((error) => console.error(error));
+        .catch((error) => console.error(error));
 };
 
 const summarizeDocumentFontState = (doc) => ({
@@ -1359,11 +1364,11 @@ const maybeOpenDeferredCacheWarmer = async () => {
     const openPromise = (async () => {
         await cacheWarmer.open(cacheWarmerSource);
     })();
-    cacheWarmer.openPromise = openPromise;
+    if (!cacheWarmer.publishOpenPromise(openPromise)) return;
     try {
         await openPromise;
     } finally {
-        if (cacheWarmer.openPromise === openPromise) cacheWarmer.openPromise = null;
+        cacheWarmer.clearOpenPromise(openPromise);
     }
 };
 
@@ -8156,8 +8161,11 @@ const canUseNativeCacheWarmerPrewarm = () => {
 
 class CacheWarmer {
     #closed = false
+    #advancePromiseSlot = new OwnedPromiseSlot()
+    #advanceTask = new OwnedScheduledTask()
     #deferredOpenTask = new OwnedScheduledTask()
     #eventBindings = null
+    #openPromiseSlot = new OwnedPromiseSlot()
     #viewOwner = new OwnedAsyncResource(view => {
         try {
             view?.close?.()
@@ -8167,13 +8175,31 @@ class CacheWarmer {
 
     constructor({ loadResources = null } = {}) {
         this.loadResources = loadResources
-        this.openPromise = null
+        this.lastAdvanceStartedAtMs = 0
         this.view
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
         this.lastLoadedSectionIndex = null
         this.lastLoadedSectionHref = null
         this.settledSectionHrefs = new Set()
+    }
+    get advancePromise() {
+        return this.#advancePromiseSlot.current
+    }
+    get openPromise() {
+        return this.#openPromiseSlot.current
+    }
+    publishAdvancePromise(promise) {
+        return this.#advancePromiseSlot.publish(promise)
+    }
+    clearAdvancePromise(promise) {
+        return this.#advancePromiseSlot.clear(promise)
+    }
+    publishOpenPromise(promise) {
+        return this.#openPromiseSlot.publish(promise)
+    }
+    clearOpenPromise(promise) {
+        return this.#openPromiseSlot.clear(promise)
     }
     makeReusableSource() {
         return this.loadResources?.makeReusableSource({
@@ -8183,6 +8209,9 @@ class CacheWarmer {
     }
     scheduleDeferredOpen(callback, delayMs = 0) {
         return this.#deferredOpenTask.schedule(callback, delayMs)
+    }
+    scheduleAdvance(callback, delayMs = 0) {
+        return this.#advanceTask.schedule(callback, delayMs)
     }
     #isCurrentGeneration(generation) {
         return !this.#closed
@@ -8336,12 +8365,15 @@ class CacheWarmer {
         invalidateCacheWarmerWork()
         this.#eventBindings?.clear()
         this.#eventBindings = null
+        this.#advancePromiseSlot.close()
+        this.#advanceTask.close()
         this.#deferredOpenTask.close()
+        this.#openPromiseSlot.close()
         this.#viewOwner.close()
         this.view = null
-        this.openPromise = null
         this.loadResources?.close?.()
         this.loadResources = null
+        this.lastAdvanceStartedAtMs = 0
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
         this.lastLoadedSectionIndex = null
