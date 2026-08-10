@@ -41,6 +41,7 @@ import { EbookLoadResources } from './ebook-load-resources.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import { OwnedAsyncResource, OwnedPromiseSlot, OwnedScheduledTask } from './owned-async-resource.js'
+import { createOwnedAsyncCache } from './owned-async-cache.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import { OwnedObjectURL } from './owned-object-url.js'
@@ -206,8 +207,22 @@ const CACHE_WARMER_FOREGROUND_PAGE_TURN_COOLDOWN_MS = 1800;
 const CACHE_WARMER_IDLE_RETRY_MS = 250;
 const CACHE_WARMER_ADVANCE_SPACING_MS = 350;
 const CACHE_WARMER_MAX_SECTIONS_AHEAD = 2;
-const replaceTextResultCache = new Map();
-const replaceTextInFlightCache = new Map();
+
+const makeReplaceTextCacheOwner = () => ({
+    active: true,
+    cache: createOwnedAsyncCache({
+        limit: REPLACE_TEXT_RESULT_CACHE_LIMIT,
+        shouldRemember: result => result?.shouldRemember === true,
+    }),
+});
+
+let replaceTextCacheOwner = makeReplaceTextCacheOwner();
+
+const beginReplaceTextCacheGeneration = () => {
+    replaceTextCacheOwner.active = false;
+    replaceTextCacheOwner.cache.clear();
+    replaceTextCacheOwner = makeReplaceTextCacheOwner();
+};
 
 const fingerprintReplaceTextInput = (text) => {
     if (typeof text !== 'string') return 'invalid';
@@ -223,159 +238,117 @@ const makeReplaceTextCacheKey = ({ href, text, isCacheWarmer }) => {
     return `${isCacheWarmer ? 'cache' : 'live'}|${href || 'nil'}|${fingerprintReplaceTextInput(text)}`;
 };
 
-const rememberReplaceTextResult = (key, value) => {
-    replaceTextResultCache.delete(key);
-    replaceTextResultCache.set(key, value);
-    while (replaceTextResultCache.size > REPLACE_TEXT_RESULT_CACHE_LIMIT) {
-        const oldestKey = replaceTextResultCache.keys().next().value;
-        replaceTextResultCache.delete(oldestKey);
-    }
-};
-
-const adaptReplaceTextHTMLForMode = (html, { href, isCacheWarmer }) => {
-    if (!isCacheWarmer) return html;
-    return injectBodyDatasetAttributes(html, {
-        'data-is-cache-warmer': 'true',
-        'data-mnb-source-href': href,
-    });
-};
-
 // Factory for replaceText with isCacheWarmer support
-const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
-    if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
-        return text;
-    }
-    if (!isCacheWarmer) {
-        await ensureCacheWarmerPrecedingSectionsForHref(href);
-    }
-    const cacheKey = makeReplaceTextCacheKey({
-        href,
-        text,
-        isCacheWarmer: !!isCacheWarmer,
-    });
-    const liveEquivalentCacheKey = isCacheWarmer
-        ? makeReplaceTextCacheKey({ href, text, isCacheWarmer: false })
-        : null;
-    const resultCacheKey = replaceTextResultCache.has(cacheKey)
-        ? cacheKey
-        : liveEquivalentCacheKey && replaceTextResultCache.has(liveEquivalentCacheKey)
-            ? liveEquivalentCacheKey
-            : null;
-    if (resultCacheKey) {
-        const cachedSourceHTML = replaceTextResultCache.get(resultCacheKey);
-        const cachedHTML = resultCacheKey === cacheKey
-            ? cachedSourceHTML
-            : adaptReplaceTextHTMLForMode(cachedSourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
-        replaceTextResultCache.delete(resultCacheKey);
-        replaceTextResultCache.set(resultCacheKey, cachedSourceHTML);
+const makeReplaceText = (isCacheWarmer) => {
+    const owner = replaceTextCacheOwner;
+    return async (href, text, mediaType) => {
+        if (!owner.active) return text;
+        if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html') {
+            return text;
+        }
         if (!isCacheWarmer) {
-            window.manabi_recordLiveProcessedSection?.(href);
+            await ensureCacheWarmerPrecedingSectionsForHref(href);
         }
-        return cachedHTML;
-    }
-    const inFlightCacheKey = replaceTextInFlightCache.has(cacheKey)
-        ? cacheKey
-        : liveEquivalentCacheKey && replaceTextInFlightCache.has(liveEquivalentCacheKey)
-            ? liveEquivalentCacheKey
-            : null;
-    if (inFlightCacheKey) {
-        const cacheWaitStartedAt = performanceNowMs();
-        const sourceHTML = await replaceTextInFlightCache.get(inFlightCacheKey);
-        const html = inFlightCacheKey === cacheKey
-            ? sourceHTML
-            : adaptReplaceTextHTMLForMode(sourceHTML, { href, isCacheWarmer: !!isCacheWarmer });
-        if (!isCacheWarmer) {
-            window.manabi_recordLiveProcessedSection?.(href);
-        }
-        return html;
-    }
-    const run = async () => {
-    const replaceTextStartedAt = performanceNowMs();
-    globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
-    if (!isCacheWarmer) {
-        globalThis.__manabiInflightLiveReplaceTextCount = (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
-        const normalizedHref = normalizeSpineHref(href);
-        if (normalizedHref && !firstLiveSectionHref()) {
-            globalThis.__manabiFirstLiveSectionHref = normalizedHref;
-        }
-    }
-    if (isCacheWarmer) {
-        globalThis.__manabiInflightCacheWarmerReplaceTextCount = (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
-    }
-    const headers = {
-        "Content-Type": mediaType,
-        "X-Replaced-Text-Location": href,
-        "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
-    };
-    if (isCacheWarmer) {
-        headers['X-Is-Cache-Warmer'] = 'true';
-    }
-    const response = await fetch('ebook://ebook/process-text', {
-        method: "POST",
-        mode: "cors",
-        cache: "no-cache",
-        headers: headers,
-        body: text
-    })
-    try {
-        if (!response.ok) {
-            throw new Error(`HTTP error, status = ${response.status}`)
-        }
-        const bodyReadStartedAt = performanceNowMs();
-        let html = await response.text()
-        const bodyReadElapsedMs = safeRound(performanceNowMs() - bodyReadStartedAt, 1);
-        if (isCacheWarmer && html.length === 0) {
-            const escapedHref = String(href || '').replace(/[&<>"']/g, (character) => ({
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#39;',
-            })[character]);
-            return `<html><body data-is-cache-warmer="true" data-mnb-source-href="${escapedHref}"></body></html>`;
-        }
-        const responseTextLength = html.length;
-        const transformStartedAt = performanceNowMs();
-        const sentenceCount = (html.match(/<m-s\b/g) || []).length;
-        const segmentCount = (html.match(/<m-m\b/g) || []).length;
-        html = injectBodyDatasetAttributes(html, {
-            'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
-            'data-mnb-source-href': href,
-            'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
-            'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
+        const cacheKey = makeReplaceTextCacheKey({
+            href,
+            text,
+            isCacheWarmer: !!isCacheWarmer,
         });
-        const transformElapsedMs = safeRound(performanceNowMs() - transformStartedAt, 1);
+        const run = async (signal) => {
+            globalThis.__manabiInflightReplaceTextCount = (globalThis.__manabiInflightReplaceTextCount ?? 0) + 1;
+            if (!isCacheWarmer) {
+                globalThis.__manabiInflightLiveReplaceTextCount =
+                    (globalThis.__manabiInflightLiveReplaceTextCount ?? 0) + 1;
+                const normalizedHref = normalizeSpineHref(href);
+                if (normalizedHref && !firstLiveSectionHref()) {
+                    globalThis.__manabiFirstLiveSectionHref = normalizedHref;
+                }
+            } else {
+                globalThis.__manabiInflightCacheWarmerReplaceTextCount =
+                    (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 0) + 1;
+            }
+            try {
+                const sourceURL = globalThis.reader?.view?.ownerDocument?.defaultView?.top?.location?.href
+                    ?? window.top.location.href;
+                const headers = {
+                    "Content-Type": mediaType,
+                    "X-Replaced-Text-Location": href,
+                    "X-Content-Location": sourceURL,
+                };
+                if (isCacheWarmer) headers['X-Is-Cache-Warmer'] = 'true';
+                const response = await fetch('ebook://ebook/process-text', {
+                    method: "POST",
+                    mode: "cors",
+                    cache: "no-cache",
+                    headers,
+                    body: text,
+                    signal: signal ?? undefined,
+                });
+                if (!owner.active || signal?.aborted) {
+                    return { html: text, shouldRemember: false };
+                }
+                if (!response.ok) {
+                    throw new Error(`HTTP error, status = ${response.status}`)
+                }
+                let html = await response.text()
+                if (isCacheWarmer && html.length === 0) {
+                    const escapedHref = String(href || '').replace(/[&<>"']/g, (character) => ({
+                        '&': '&amp;',
+                        '<': '&lt;',
+                        '>': '&gt;',
+                        '"': '&quot;',
+                        "'": '&#39;',
+                    })[character]);
+                    return {
+                        html: `<html><body data-is-cache-warmer="true" data-mnb-source-href="${escapedHref}"></body></html>`,
+                        shouldRemember: false,
+                    };
+                }
+                const sentenceCount = (html.match(/<m-s\b/g) || []).length;
+                const segmentCount = (html.match(/<m-m\b/g) || []).length;
+                html = injectBodyDatasetAttributes(html, {
+                    'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
+                    'data-mnb-source-href': href,
+                    'data-mnb-has-sentences': sentenceCount > 0 ? 'true' : null,
+                    'data-mnb-has-segments': segmentCount > 0 ? 'true' : null,
+                });
+                const isAuthoritative =
+                    response.headers?.get?.('x-manabi-processing-authoritative') !== 'false';
+                return { html, shouldRemember: isAuthoritative }
+            } catch (error) {
+                if (error?.name !== 'AbortError') console.error("Error replacing text:", error)
+                return { html: text, shouldRemember: false }
+            } finally {
+                globalThis.__manabiInflightReplaceTextCount = Math.max(
+                    0,
+                    (globalThis.__manabiInflightReplaceTextCount ?? 1) - 1,
+                );
+                if (!isCacheWarmer) {
+                    globalThis.__manabiInflightLiveReplaceTextCount = Math.max(
+                        0,
+                        (globalThis.__manabiInflightLiveReplaceTextCount ?? 1) - 1,
+                    );
+                } else {
+                    globalThis.__manabiInflightCacheWarmerReplaceTextCount = Math.max(
+                        0,
+                        (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 1) - 1,
+                    );
+                }
+                if (
+                    !isCacheWarmer
+                    && window.cacheWarmer?.openRequested === true
+                    && globalThis.__manabiInflightReplaceTextCount === 0
+                ) {
+                    void maybeOpenDeferredCacheWarmer();
+                }
+            }
+        };
+        const result = await owner.cache.getOrCreate(cacheKey, run);
+        if (!owner.active) return text;
         if (!isCacheWarmer) {
             window.manabi_recordLiveProcessedSection?.(href);
         }
-        rememberReplaceTextResult(cacheKey, html);
-        return html
-    } catch (error) {
-        console.error("Error replacing text:", error)
-        return text
-    } finally {
-        globalThis.__manabiInflightReplaceTextCount = Math.max(0, (globalThis.__manabiInflightReplaceTextCount ?? 1) - 1);
-        if (!isCacheWarmer) {
-            globalThis.__manabiInflightLiveReplaceTextCount = Math.max(0, (globalThis.__manabiInflightLiveReplaceTextCount ?? 1) - 1);
-        }
-        if (isCacheWarmer) {
-            globalThis.__manabiInflightCacheWarmerReplaceTextCount = Math.max(0, (globalThis.__manabiInflightCacheWarmerReplaceTextCount ?? 1) - 1);
-        }
-        if (
-            !isCacheWarmer
-            && window.cacheWarmer?.openRequested === true
-            && globalThis.__manabiInflightReplaceTextCount === 0
-        ) {
-            void maybeOpenDeferredCacheWarmer();
-        }
-    }
-    };
-    const promise = run();
-    replaceTextInFlightCache.set(cacheKey, promise);
-    try {
-        return await promise;
-    } finally {
-        replaceTextInFlightCache.delete(cacheKey);
+        return result?.html ?? text;
     }
 }
 
@@ -8591,6 +8564,7 @@ window.loadEBook = ({
     globalThis.manabiLoadEBookStartedAt = Date.now();
     globalThis.manabiLoadEBookReady = false;
     globalThis.manabiLoadEBookLastState = 'start';
+    beginReplaceTextCacheGeneration();
     globalThis.manabiInitialRestoreResult = null;
     globalThis.manabiPendingLoadEBookArgs = {
         hasURL: typeof url === 'string' && url.length > 0,

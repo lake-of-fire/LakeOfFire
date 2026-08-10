@@ -110,3 +110,18 @@ test('clearing an owner aborts its exact in-flight producer once', async () => {
     assert.equal(abortCount, 1)
     assert.equal(await cache.getOrCreate('chapter.xhtml', async () => 'replacement'), 'replacement')
 })
+
+test('a stale producer cannot evict or repopulate a same-key replacement', async () => {
+    const cache = createOwnedAsyncCache()
+    let releaseStale
+    const stale = cache.getOrCreate('chapter.xhtml', () => new Promise(resolve => {
+        releaseStale = () => resolve('stale')
+    }))
+    await Promise.resolve()
+
+    cache.clear()
+    assert.equal(await cache.getOrCreate('chapter.xhtml', async () => 'replacement'), 'replacement')
+    releaseStale()
+    assert.equal(await stale, 'stale')
+    assert.equal(await cache.getOrCreate('chapter.xhtml', async () => 'wrong'), 'replacement')
+})
