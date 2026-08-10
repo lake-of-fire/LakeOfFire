@@ -37,6 +37,7 @@ import {
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
+import { OwnedAsyncResource } from './owned-async-resource.js'
 import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import {
@@ -8117,6 +8118,15 @@ const canUseNativeCacheWarmerPrewarm = () => {
 };
 
 class CacheWarmer {
+    #closed = false
+    #eventBindings = null
+    #viewOwner = new OwnedAsyncResource(view => {
+        try {
+            view?.close?.()
+        } catch (_error) {}
+        view?.remove?.()
+    })
+
     constructor() {
         this.view
         this.uniqueSentenceIdentifiers = new Set()
@@ -8126,7 +8136,9 @@ class CacheWarmer {
         this.settledSectionHrefs = new Set()
     }
     #isCurrentGeneration(generation) {
-        return generation === cacheWarmerWorkGeneration()
+        return !this.#closed
+            && window.cacheWarmer === this
+            && generation === cacheWarmerWorkGeneration()
     }
     #normalizeSectionHref(href) {
         return normalizeSpineHref(href)
@@ -8270,47 +8282,65 @@ class CacheWarmer {
         if (!this.#isCurrentGeneration(generation)) return
     }
     destroy() {
+        if (this.#closed) return false
+        this.#closed = true
         invalidateCacheWarmerWork()
-        if (this.view) {
-            try {
-                this.view.close?.()
-            } catch (_error) {}
-            this.view.remove?.()
-            this.view = null
-        }
+        this.#eventBindings?.clear()
+        this.#eventBindings = null
+        this.#viewOwner.close()
+        this.view = null
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
         this.lastLoadedSectionIndex = null
         this.lastLoadedSectionHref = null
-        globalThis.__manabiCacheWarmerReady = false;
-        globalThis.__manabiCacheWarmerFinished = false;
-        globalThis.__manabiCacheWarmerHighestSectionIndex = null;
-        globalThis.__manabiCacheWarmerAdvanceInFlight = false;
+        if (window.cacheWarmer === this) {
+            globalThis.__manabiCacheWarmerOpenInFlight = false;
+            globalThis.__manabiCacheWarmerReady = false;
+            globalThis.__manabiCacheWarmerFinished = false;
+            globalThis.__manabiCacheWarmerHighestSectionIndex = null;
+            globalThis.__manabiCacheWarmerAdvanceInFlight = false;
+        }
+        return true
     }
     async open(file) {
-        this.destroy()
+        if (this.#closed) return false
+        this.#eventBindings?.clear()
+        this.#eventBindings = new OwnedEventBindings()
+        const openToken = this.#viewOwner.begin()
+        this.view = null
         const generation = invalidateCacheWarmerWork()
+        const isCurrentOwner = () => this.#viewOwner.isCurrent(openToken)
+            && !this.#closed
+            && window.cacheWarmer === this
+        const isCurrentOpen = () => isCurrentOwner() && this.#isCurrentGeneration(generation)
         globalThis.__manabiCacheWarmerOpenInFlight = true;
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
         globalThis.__manabiDeferredCacheWarmerLogged = false;
         try {
-            this.view = await getView(file, true)
-            this.view.addEventListener('load', this.#onLoad.bind(this))
+            const view = await getView(file, true)
+            if (!this.#viewOwner.publish(openToken, view)) return false
+            if (!isCurrentOpen()) return false
+            this.view = view
+            this.#eventBindings.listen(this.view, 'load', this.#onLoad.bind(this))
 
             const {
                 book
             } = this.view
             this.view.renderer.setAttribute('flow', 'paginated')
             await this.#openFirstUnsettledSection()
-            if (!this.#isCurrentGeneration(generation)) return
+            if (!isCurrentOpen()) return false
             globalThis.__manabiCacheWarmerOpenInFlight = false;
             globalThis.__manabiCacheWarmerReady = true;
+            return true
         } catch (error) {
+            if (!isCurrentOwner() || !this.#isCurrentGeneration(generation)) return false
             throw error;
         } finally {
-            globalThis.__manabiCacheWarmerOpenInFlight = false;
+            if (isCurrentOwner()) {
+                globalThis.__manabiCacheWarmerOpenInFlight = false;
+            }
         }
     }
 
