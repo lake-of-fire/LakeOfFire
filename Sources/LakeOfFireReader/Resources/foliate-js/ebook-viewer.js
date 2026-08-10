@@ -7574,9 +7574,6 @@ class Reader {
                 postFrameSettleResult,
             });
         }, 250);
-        try {
-            globalThis.__manabiFinishEPUBLoadWatchdogs?.('didDisplay.loading-cleared');
-        } catch (_error) {}
         markReaderRenderReady('didDisplay.loading-cleared');
         this.#resolveDisplaySettledWaiters('didDisplay.loading-cleared');
         if (globalThis.__manabiPreserveHiddenNavigationThroughNextDisplay === true) {
@@ -8605,23 +8602,10 @@ window.loadEBook = ({
         }
     };
     globalThis.__manabiFinishInitialForegroundCriticalSection = finishInitialForegroundCriticalSection;
-    try {
-        globalThis.__manabiFinishEPUBLoadWatchdogs?.('new-load');
-    } catch (_error) {}
     globalThis.__manabiLiveProcessedSectionHrefs = new Set();
     globalThis.__manabiLiveSettledSectionHrefs = new Set();
     globalThis.__manabiFirstLiveSectionHref = null;
-    let loadSettled = false;
-    const loadWatchdogTimers = [1000, 3000, 8000, 20000, 45000].map(delayMs =>
-        setTimeout(() => {
-            if (loadSettled) return;
-        }, delayMs)
-    );
-    const finishLoadWatchdogs = () => {
-        loadSettled = true;
-        for (const timer of loadWatchdogTimers) clearTimeout(timer);
-    };
-    globalThis.__manabiFinishEPUBLoadWatchdogs = finishLoadWatchdogs;
+    globalThis.__manabiFinishEPUBLoadWatchdogs = null;
     const replacedReader = globalThis.reader ?? null;
     try {
         if (typeof replacedReader?.close === 'function') {
@@ -8715,7 +8699,6 @@ window.loadEBook = ({
         .then(async () => {
             if (!isCurrentLoad()) return;
             globalThis.reader = reader;
-            finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = true;
             globalThis.manabiLoadEBookLastState = 'reader-open-resolved';
             const probe = globalThis.reader?.collectLayoutGapProbe?.('ebookViewerLoaded', {
@@ -8733,7 +8716,6 @@ window.loadEBook = ({
                 return;
             }
             finishInitialForegroundCriticalSection('loadEBook.error');
-            finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = false;
             globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
             try {
@@ -8754,7 +8736,6 @@ window.loadEBook = ({
         return openPromise;
     } else {
         finishInitialForegroundCriticalSection('loadEBook.no-url');
-        finishLoadWatchdogs();
         globalThis.manabiLoadEBookReady = false;
         globalThis.manabiLoadEBookLastState = 'no-url';
         globalThis.manabiPendingLoadEBookArgs = null;
