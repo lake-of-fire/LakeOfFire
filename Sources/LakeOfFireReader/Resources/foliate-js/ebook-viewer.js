@@ -37,6 +37,7 @@ import {
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
+import { OwnedEventBindings } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import {
     activeRendererContentsForLookup,
@@ -4176,6 +4177,73 @@ const loadingVisualMaximumMs = 3500;
 const navSpinnerMaximumMs = 1200;
 
 class Reader {
+    #closed = false
+    #ownedEventBindings = new OwnedEventBindings()
+    #navButtonOperations = new Set()
+
+    get isClosed() {
+        return this.#closed
+    }
+
+    #listen(target, type, listener, options) {
+        return this.#ownedEventBindings.listen(target, type, listener, options)
+    }
+
+    #bindGlobal(target, key, value) {
+        return this.#ownedEventBindings.bind(target, key, value)
+    }
+
+    close(_reason = 'unspecified') {
+        if (this.#closed) return false
+        if (globalThis.reader === this) this.setLoadingIndicator(false)
+        this.#closed = true
+        this.visiblePageCollectionGeneration += 1
+        this.nativeLookupHitTargetRefreshGeneration += 1
+        this.#deferredOpenWork.cancel()
+        this.#renderReadiness.begin()
+        this.scheduleGoToPageNumber?.cancel?.()
+        this.scheduleGoToFraction?.cancel?.()
+
+        clearTimeout(this.loadingVisualTimer)
+        clearTimeout(this.loadingVisualMaximumTimer)
+        this.loadingVisualTimer = null
+        this.loadingVisualMaximumTimer = null
+        if (this.pageTrackingRetryHandle != null) {
+            cancelAnimationFrame(this.pageTrackingRetryHandle)
+            this.pageTrackingRetryHandle = null
+        }
+        clearTimeout(this.pageTrackingDeferredHandle)
+        this.pageTrackingDeferredHandle = null
+        if (this.pageTrackingDeferredFrameHandle != null) {
+            cancelAnimationFrame(this.pageTrackingDeferredFrameHandle)
+            this.pageTrackingDeferredFrameHandle = null
+        }
+        clearTimeout(this.pageReadMarkerDeferredHandle)
+        this.pageReadMarkerDeferredHandle = null
+        if (this.initialPaginatorSettleHandle != null) {
+            cancelAnimationFrame(this.initialPaginatorSettleHandle)
+            this.initialPaginatorSettleHandle = null
+        }
+        this.nativeLookupHitTargetRefreshTask?.cancel?.()
+        this.nativeLookupHitTargetRefreshTask = null
+        clearTimeout(this.nativeLookupHitTargetSettleHandle)
+        this.nativeLookupHitTargetSettleHandle = null
+        for (const key of ['l', 'r']) {
+            clearTimeout(this.#chevronFadeTimers[key])
+            this.#chevronFadeTimers[key] = null
+        }
+        for (const operation of [...this.#navButtonOperations]) operation.finish?.()
+        this.#navButtonOperations.clear()
+        this.#ownedEventBindings.clear()
+        this.navHUD?.destroy?.()
+
+        const view = this.view
+        this.view = null
+        view?.close?.()
+        view?.remove?.()
+        return true
+    }
+
     #show(btn, show = true) {
         if (show) {
             if (btn.hidden) {
@@ -4625,7 +4693,7 @@ class Reader {
                     console.error(error);
                 });
         }, 250);
-        document.getElementById('nav-primary-text')?.addEventListener('click', (event) => {
+        this.#listen(document.getElementById('nav-primary-text'), 'click', (event) => {
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
             event.stopPropagation?.();
@@ -4648,7 +4716,7 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
-        document.getElementById('nav-hidden-primary-text')?.addEventListener('click', (event) => {
+        this.#listen(document.getElementById('nav-hidden-primary-text'), 'click', (event) => {
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
             event.stopPropagation?.();
@@ -4671,7 +4739,7 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
-        document.getElementById('nav-section-progress-center')?.addEventListener('click', (event) => {
+        this.#listen(document.getElementById('nav-section-progress-center'), 'click', (event) => {
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
             event.stopPropagation?.();
@@ -4694,7 +4762,7 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
-        document.getElementById('nav-title-location-label')?.addEventListener('click', (event) => {
+        this.#listen(document.getElementById('nav-title-location-label'), 'click', (event) => {
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
             event.preventDefault?.();
             event.stopPropagation?.();
@@ -4717,7 +4785,7 @@ class Reader {
                 preserveVisibleNavigation: !wasHidden,
             });
         });
-        document.getElementById('nav-bar')?.addEventListener('click', (event) => {
+        this.#listen(document.getElementById('nav-bar'), 'click', (event) => {
             const target = event.target;
             const excludedTarget = target?.closest?.('button, a, input, textarea, select, [role="button"], [contenteditable="true"], #progress-wrapper, .nav-section-progress') || null;
             const wasHidden = !!this.navHUD?.hideNavigationDueToScroll;
@@ -4743,10 +4811,10 @@ class Reader {
                 }
             );
         });
-        $('#side-bar-close-button').addEventListener('click', () => {
+        this.#listen($('#side-bar-close-button'), 'click', () => {
             this.closeSideBar()
         })
-        $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
+        this.#listen($('#dimming-overlay'), 'click', () => this.closeSideBar())
         const pageTrackingButtonSelector = 'button[data-page-tracking-id], button[data-completion-action]';
         const pageTrackingButtonAcceptsEvent = (event, button) => {
             if (!(button instanceof HTMLElement)) {
@@ -4806,19 +4874,19 @@ class Reader {
             return true;
         };
         const pageTrackingButtons = document.getElementById('page-tracking-buttons');
-        pageTrackingButtons?.addEventListener('touchstart', (event) => {
+        this.#listen(pageTrackingButtons, 'touchstart', (event) => {
             if (absorbPageTrackingButtonEvent(event)) {
                 return;
             }
             revealNavigationFromPageTracking(event, 'page-tracking-buttons.touchstart.reveal');
         }, { capture: true, passive: false });
-        pageTrackingButtons?.addEventListener('pointerdown', (event) => {
+        this.#listen(pageTrackingButtons, 'pointerdown', (event) => {
             if (absorbPageTrackingButtonEvent(event)) {
                 return;
             }
             revealNavigationFromPageTracking(event, 'page-tracking-buttons.pointerdown.reveal');
         }, { capture: true });
-        pageTrackingButtons?.addEventListener('click', (event) => {
+        this.#listen(pageTrackingButtons, 'click', (event) => {
             const button = event.target?.closest?.(pageTrackingButtonSelector);
             if (!button) {
                 return;
@@ -4857,19 +4925,19 @@ class Reader {
             }
             this.#markPageClusterAsRead(stateID).catch((error) => console.error(error));
         });
-        window.manabi_markVisiblePageAsRead = async (source = 'native') => {
+        this.#bindGlobal(window, 'manabi_markVisiblePageAsRead', async (source = 'native') => {
             return await this.markVisiblePageAsRead(source);
-        };
-        window.addEventListener('resize', () => {
+        });
+        this.#listen(window, 'resize', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
         });
-        window.visualViewport?.addEventListener?.('resize', () => {
+        this.#listen(window.visualViewport, 'resize', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
         });
-        window.manabiInvalidateVisiblePageSegmentSnapshot = (reason = 'manual') => {
+        this.#bindGlobal(window, 'manabiInvalidateVisiblePageSegmentSnapshot', (reason = 'manual') => {
             this.#invalidateVisiblePageSegmentSnapshot(reason);
-        };
-        screen.orientation?.addEventListener?.('change', () => {
+        });
+        this.#listen(screen.orientation, 'change', () => {
             this.#invalidateVisiblePageSegmentSnapshot();
         });
     }
@@ -5943,6 +6011,7 @@ class Reader {
         this.#mainDocumentSwipeState = null;
     }
     async open(file) {
+        if (this.#closed) throw new Error('reader-open-superseded')
         const openGeneration = this.#deferredOpenWork.beginGeneration()
         this.renderReadinessGeneration = this.#renderReadiness.begin();
         this.setLoadingIndicator(true);
@@ -5959,17 +6028,23 @@ class Reader {
             this.initialPaginatorSettleHandle = null;
         }
         this.hasSettledInitialPaginatorLayout = false;
-        this.view = await getView(file, false)
+        const view = await getView(file, false)
+        if (this.#closed) {
+            view?.close?.()
+            view?.remove?.()
+            throw new Error('reader-open-superseded')
+        }
+        this.view = view
         postReaderVisibilityProbe('reader.open:view-assigned', this.view, null);
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
         this.#installVisibleRendererGoToGuard();
-        this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
-        this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
-        this.view.addEventListener('load', this.#onLoad.bind(this))
-        this.view.addEventListener('relocate', this.#onRelocate.bind(this))
+        this.#listen(this.view.renderer, 'goTo', this.#onGoTo.bind(this))
+        this.#listen(this.view.renderer, 'didDisplay', this.#onDidDisplay.bind(this))
+        this.#listen(this.view, 'load', this.#onLoad.bind(this))
+        this.#listen(this.view, 'relocate', this.#onRelocate.bind(this))
 
         const {
             book
@@ -6050,8 +6125,8 @@ class Reader {
             }
         }
         Object.values(this.buttons).forEach(btn =>
-                                            btn.addEventListener('click', this.#onNavButtonClick.bind(this))
-                                            );
+            this.#listen(btn, 'click', this.#onNavButtonClick.bind(this))
+        );
         // Side-nav scroll handlers
         const runSideButtonPageTurn = async (side, method, button, eventType) => {
             if (button?.disabled || isCompactNavigationSheetSidePaginationDisabled()) {
@@ -6070,7 +6145,7 @@ class Reader {
             }
         };
         const leftSideBtn = document.getElementById('btn-scroll-left');
-        if (leftSideBtn) leftSideBtn.addEventListener('click', async () => {
+        this.#listen(leftSideBtn, 'click', async () => {
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'left'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
@@ -6079,7 +6154,7 @@ class Reader {
             await runSideButtonPageTurn('left', 'goLeft', leftSideBtn, 'click');
         });
         const rightSideBtn = document.getElementById('btn-scroll-right');
-        if (rightSideBtn) rightSideBtn.addEventListener('click', async () => {
+        this.#listen(rightSideBtn, 'click', async () => {
             const now = Date.now();
             if (globalThis.__manabiLastSideButtonTouchActivation?.side === 'right'
                 && now - globalThis.__manabiLastSideButtonTouchActivation.timestamp < 700) {
@@ -6090,13 +6165,13 @@ class Reader {
 
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
-            nav.addEventListener('touchstart', (event) => {
+            this.#listen(nav, 'touchstart', (event) => {
                 if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 nav.classList.add('pressed');
             }, {
                 passive: true
             });
-            nav.addEventListener('touchend', (event) => {
+            this.#listen(nav, 'touchend', (event) => {
                 nav.classList.remove('pressed');
                 if (nav.disabled || isCompactNavigationSheetSidePaginationDisabled()) return;
                 const side = nav.id === 'btn-scroll-left' ? 'left' : (nav.id === 'btn-scroll-right' ? 'right' : null);
@@ -6110,13 +6185,13 @@ class Reader {
                     runSideButtonPageTurn(side, method, nav, 'touchend').catch((error) => console.error(error));
                 }
             });
-            nav.addEventListener('touchcancel', () => {
+            this.#listen(nav, 'touchcancel', () => {
                 nav.classList.remove('pressed');
             });
         });
 
         // Side-nav opacity wiring
-        this.view.addEventListener('sideNavChevronOpacity', e => {
+        this.#listen(this.view, 'sideNavChevronOpacity', e => {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
 
@@ -6164,13 +6239,13 @@ class Reader {
             fadeWithHold(l, e.detail.leftOpacity, 'l');
             fadeWithHold(r, e.detail.rightOpacity, 'r');
         });
-        this.view.addEventListener('foregroundPageTurnActivity', e => {
+        this.#listen(this.view, 'foregroundPageTurnActivity', e => {
             const detail = e?.detail ?? {};
             const source = detail.source || 'paginator';
             markCacheWarmerForegroundActivity(source);
         });
         // Listen for resetSideNavChevrons custom event to reset chevrons
-        document.addEventListener('resetSideNavChevrons', e => {
+        this.#listen(document, 'resetSideNavChevrons', e => {
             this.#resetSideNavChevrons();
         });
 
@@ -6233,13 +6308,13 @@ class Reader {
         const percentInput = document.getElementById('percent-jump-input');
         const percentButton = document.getElementById('percent-jump-button');
 
-        percentInput.addEventListener('input', () => {
+        this.#listen(percentInput, 'input', () => {
             const value = parseFloat(percentInput.value);
             const valid = !isNaN(value) && value >= 0 && value <= 100 && value !== this.lastPercentValue;
             percentButton.disabled = !valid;
         });
 
-        percentButton.addEventListener('click', () => {
+        this.#listen(percentButton, 'click', () => {
             const value = parseFloat(percentInput.value);
             if (!isNaN(value) && value >= 0 && value <= 100) {
                 this.lastPercentValue = value;
@@ -6248,7 +6323,7 @@ class Reader {
             }
         });
 
-        document.addEventListener('keydown', this.#handleKeydown.bind(this))
+        this.#listen(document, 'keydown', this.#handleKeydown.bind(this))
 
         let pendingMainDocumentBlankNavigationTouch = null;
         let lastPostedMainDocumentBlankTouchTap = null;
@@ -6436,52 +6511,52 @@ class Reader {
             }
             beginChromeBlankNavigationTouch(event, 'page-tracking.chrome');
         }
-        document.addEventListener('touchstart', processNavChromeTouchStart, {
+        this.#listen(document, 'touchstart', processNavChromeTouchStart, {
             passive: true
         })
-        document.addEventListener('mousedown', processNavChromeTouchStart, {
+        this.#listen(document, 'mousedown', processNavChromeTouchStart, {
             passive: true
         })
-        document.addEventListener('touchstart', processPageTrackingChromeTouchStart, {
+        this.#listen(document, 'touchstart', processPageTrackingChromeTouchStart, {
             passive: true
         })
-        document.addEventListener('mousedown', processPageTrackingChromeTouchStart, {
+        this.#listen(document, 'mousedown', processPageTrackingChromeTouchStart, {
             passive: true
         })
-        document.addEventListener('touchmove', processChromeBlankNavigationTouchMove, {
+        this.#listen(document, 'touchmove', processChromeBlankNavigationTouchMove, {
             passive: true
         })
-        document.addEventListener('touchend', processChromeBlankNavigationTouchEnd, {
+        this.#listen(document, 'touchend', processChromeBlankNavigationTouchEnd, {
             passive: true
         })
-        document.addEventListener('touchcancel', processChromeBlankNavigationTouchEnd, {
+        this.#listen(document, 'touchcancel', processChromeBlankNavigationTouchEnd, {
             passive: true
         })
-        document.addEventListener('touchstart', processTouchStart, {
+        this.#listen(document, 'touchstart', processTouchStart, {
             passive: true
         })
-        document.addEventListener('touchmove', processMainDocumentBlankNavigationTouchMove, {
+        this.#listen(document, 'touchmove', processMainDocumentBlankNavigationTouchMove, {
             passive: true
         })
-        document.addEventListener('touchend', processMainDocumentBlankNavigationTouchEnd, {
+        this.#listen(document, 'touchend', processMainDocumentBlankNavigationTouchEnd, {
             passive: true
         })
-        document.addEventListener('touchcancel', processMainDocumentBlankNavigationTouchEnd, {
+        this.#listen(document, 'touchcancel', processMainDocumentBlankNavigationTouchEnd, {
             passive: true
         })
-        document.addEventListener('mousedown', processTouchStart, {
+        this.#listen(document, 'mousedown', processTouchStart, {
             passive: true
         })
-        document.addEventListener('touchstart', this.#onMainDocumentTouchStart.bind(this), {
+        this.#listen(document, 'touchstart', this.#onMainDocumentTouchStart.bind(this), {
             passive: true,
         });
-        document.addEventListener('touchmove', this.#onMainDocumentTouchMove.bind(this), {
+        this.#listen(document, 'touchmove', this.#onMainDocumentTouchMove.bind(this), {
             passive: false,
         });
-        document.addEventListener('touchend', this.#onMainDocumentTouchEnd.bind(this), {
+        this.#listen(document, 'touchend', this.#onMainDocumentTouchEnd.bind(this), {
             passive: true,
         });
-        document.addEventListener('touchcancel', this.#onMainDocumentTouchEnd.bind(this), {
+        this.#listen(document, 'touchcancel', this.#onMainDocumentTouchEnd.bind(this), {
             passive: true,
         });
 
@@ -6552,18 +6627,18 @@ class Reader {
                         this.annotationsByValue.set(value, annotation)
                     }
                     if (!isCurrent()) return
-                    this.view.addEventListener('create-overlay', e => {
+                    this.#listen(this.view, 'create-overlay', e => {
                         if (!isCurrent()) return
                         const list = this.annotations.get(e.detail.index)
                         if (list) {
                             for (const annotation of list) this.view.addAnnotation(annotation)
                         }
                     })
-                    this.view.addEventListener('draw-annotation', e => {
+                    this.#listen(this.view, 'draw-annotation', e => {
                         if (!isCurrent()) return
                         e.detail.draw(Overlayer.highlight, { color: e.detail.annotation.color })
                     })
-                    this.view.addEventListener('show-annotation', e => {
+                    this.#listen(this.view, 'show-annotation', e => {
                         if (!isCurrent()) return
                         const annotation = this.annotationsByValue.get(e.detail.value)
                         if (annotation?.note) alert(annotation.note)
@@ -7546,9 +7621,9 @@ class Reader {
                 window.manabi_recordLiveSettledSection?.(sourceHref);
             }
         });
-        doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        this.#listen(doc, 'keydown', this.#handleKeydown.bind(this))
         if (doc && doc.__manabiMay20BlankTapLoggingInstalled !== true) {
-            doc.__manabiMay20BlankTapLoggingInstalled = true;
+            this.#bindGlobal(doc, '__manabiMay20BlankTapLoggingInstalled', true)
             const blankPointerMoveThreshold = 12;
             let pendingBlankPointerTap = null;
             let lastPostedBlankTouchTap = null;
@@ -7662,13 +7737,15 @@ class Reader {
             const handleBlankPointerMouseDown = (event) => {
                 postContentDocumentBlankPointerTap(event, 'content-document.blank.mouse');
             };
-            doc.addEventListener('touchstart', handleBlankPointerTouchStart, { passive: true, capture: true });
-            doc.addEventListener('touchmove', handleBlankPointerTouchMove, { passive: true, capture: true });
-            doc.addEventListener('touchend', handleBlankPointerTouchEnd, { passive: true, capture: true });
-            doc.addEventListener('touchcancel', handleBlankPointerTouchEnd, { passive: true, capture: true });
-            doc.addEventListener('mousedown', handleBlankPointerMouseDown, { passive: true, capture: true });
+            this.#listen(doc, 'touchstart', handleBlankPointerTouchStart, { passive: true, capture: true });
+            this.#listen(doc, 'touchmove', handleBlankPointerTouchMove, { passive: true, capture: true });
+            this.#listen(doc, 'touchend', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            this.#listen(doc, 'touchcancel', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            this.#listen(doc, 'mousedown', handleBlankPointerMouseDown, { passive: true, capture: true });
         }
-        installRestorePositionSaveUserInputTracking(doc, 'reader-document');
+        this.#ownedEventBindings.addCleanup(
+            installRestorePositionSaveUserInputTracking(doc, 'reader-document')
+        );
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
@@ -7924,6 +8001,7 @@ class Reader {
     }
 
     async #onNavButtonClick(e) {
+        if (this.#closed) return
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
         const renderer = this.view?.renderer;
@@ -7975,6 +8053,7 @@ class Reader {
             return didFinish;
         };
         operation = beginOwnedElementOperation(btn, () => {
+            this.#navButtonOperations.delete(operation)
             clearTimeout(fallbackTimer);
             fallbackTimer = null;
             if (spinner?.isConnected) {
@@ -7986,6 +8065,7 @@ class Reader {
             }
             if (label) label.style.visibility = previousLabelVisibility;
         });
+        this.#navButtonOperations.add(operation)
         fallbackTimer = setTimeout(refreshAfterFinish, navSpinnerMaximumMs);
 
         try {
@@ -8429,18 +8509,23 @@ window.loadEBook = ({
         for (const timer of loadWatchdogTimers) clearTimeout(timer);
     };
     globalThis.__manabiFinishEPUBLoadWatchdogs = finishLoadWatchdogs;
-    const previousReader = globalThis.reader?.view?.renderer ? globalThis.reader : null;
+    const replacedReader = globalThis.reader ?? null;
     try {
-        globalThis.reader?.view?.close?.()
-    } catch (_error) {}
-    try {
-        globalThis.reader?.view?.remove?.()
+        if (typeof replacedReader?.close === 'function') {
+            replacedReader.close('loadEBook.replace')
+        } else {
+            replacedReader?.view?.close?.()
+            replacedReader?.view?.remove?.()
+        }
     } catch (_error) {}
     try {
         window.cacheWarmer?.destroy?.()
     } catch (_error) {}
     let reader = new Reader()
     globalThis.reader = reader
+    const isCurrentLoad = () => globalThis.manabiLoadEBookToken === loadToken
+        && globalThis.reader === reader
+        && reader.isClosed !== true
 
     window.cacheWarmer = new CacheWarmer()
     window.ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
@@ -8464,7 +8549,10 @@ window.loadEBook = ({
 
         const openPromise = sourcePromise
         .then(async (source) => {
-            if (globalThis.manabiLoadEBookToken !== loadToken) return;
+            if (!isCurrentLoad()) {
+                reader.close('loadEBook.superseded-before-open')
+                return;
+            }
             globalThis.manabiLoadEBookLastState = 'source-ready';
             globalThis.manabiPendingLoadEBookArgs = null;
             if (source?.kind === 'native') {
@@ -8474,7 +8562,10 @@ window.loadEBook = ({
             }
             globalThis.manabiLoadEBookLastState = 'reader-open-dispatch';
             await reader.open(source)
-            if (globalThis.manabiLoadEBookToken !== loadToken) return;
+            if (!isCurrentLoad()) {
+                reader.close('loadEBook.superseded-after-open')
+                return;
+            }
             if (!reader?.view?.renderer) {
                 throw new Error('reader-open-missing-renderer');
             }
@@ -8497,7 +8588,7 @@ window.loadEBook = ({
             });
         })
         .then(async () => {
-            if (globalThis.manabiLoadEBookToken !== loadToken) return;
+            if (!isCurrentLoad()) return;
             globalThis.reader = reader;
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = true;
@@ -8512,19 +8603,19 @@ window.loadEBook = ({
             })
         })
         .catch((error) => {
-            if (globalThis.manabiLoadEBookToken !== loadToken) {
+            if (!isCurrentLoad()) {
+                reader.close('loadEBook.superseded-error')
                 return;
             }
             finishInitialForegroundCriticalSection('loadEBook.error');
             finishLoadWatchdogs();
             globalThis.manabiLoadEBookReady = false;
             globalThis.manabiLoadEBookLastState = `open-error:${error?.message || String(error)}`;
-            if (globalThis.reader === reader || !globalThis.reader?.view?.renderer) {
-                globalThis.reader = previousReader ?? null;
-            }
             try {
                 reader?.setLoadingIndicator?.(false);
             } catch (_error) {}
+            reader.close('loadEBook.error')
+            if (globalThis.reader === reader) globalThis.reader = null
             throw error;
         })
         .finally(() => {
@@ -8542,6 +8633,8 @@ window.loadEBook = ({
         globalThis.manabiPendingLoadEBookArgs = null;
         globalThis.manabiLoadEBookInFlight = false;
         globalThis.manabiLoadEBookPromise = null;
+        reader.close('loadEBook.no-url')
+        if (globalThis.reader === reader) globalThis.reader = null
     }
     //.catch(e => console.error(e))
 }
@@ -8569,16 +8662,25 @@ const ensureRestorePositionSaveUserInputTracking = () => {
 
 const installRestorePositionSaveUserInputTracking = (target, source) => {
     if (!target?.addEventListener) {
-        return;
+        return () => {};
     }
+    const registrations = [];
     for (const eventName of ['pointerdown', 'touchstart', 'wheel', 'keydown', 'click']) {
-        target.addEventListener(eventName, (event) => {
+        const listener = (event) => {
             markRestorePositionSaveUserInput(`${source}.${event?.type ?? eventName}`);
-        }, {
+        };
+        const options = {
             capture: true,
             passive: true,
-        });
+        };
+        target.addEventListener(eventName, listener, options);
+        registrations.push([eventName, listener, options]);
     }
+    return () => {
+        for (const [eventName, listener, options] of registrations) {
+            target.removeEventListener?.(eventName, listener, options);
+        }
+    };
 };
 
 window.loadLastPosition = async ({
