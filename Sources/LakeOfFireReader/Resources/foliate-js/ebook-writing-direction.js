@@ -465,11 +465,29 @@ export const rawSectionWritingDirection = async ({ href, html, loadText = null }
 
 export const makeRawSectionWritingDirectionResolver = ({ loadText }) => {
     const cache = createOwnedAsyncCache()
-    return async href => {
+    let destroyed = false
+    const resolver = async href => {
+        if (destroyed) return null
         if (typeof href !== 'string' || href.length === 0 || typeof loadText !== 'function') return null
-        return cache.getOrCreate(href, async () => {
-            const html = await loadText(href)
-            return rawSectionWritingDirection({ href, html, loadText })
+        return cache.getOrCreate(href, async signal => {
+            const html = await loadText(href, { signal })
+            if (destroyed || signal?.aborted) return null
+            return rawSectionWritingDirection({
+                href,
+                html,
+                loadText: async (...loadArguments) => {
+                    if (destroyed || signal?.aborted) return null
+                    const value = await loadText(...loadArguments)
+                    return destroyed || signal?.aborted ? null : value
+                },
+            })
         })
     }
+    resolver.destroy = () => {
+        if (destroyed) return false
+        destroyed = true
+        cache.clear()
+        return true
+    }
+    return resolver
 }

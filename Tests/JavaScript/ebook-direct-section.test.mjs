@@ -58,3 +58,27 @@ test('enables direct transport only for foreground native sections', async () =>
     assert.equal(await foregroundResolver('OPS/image.svg', 'image/svg+xml'), null)
     assert.equal(makeDirectSectionURLResolver(sourceURL, true), null)
 })
+
+test('destroy releases pending direct-section direction work', async () => {
+    let observedSignal
+    const resolver = makeDirectSectionURLResolver(
+        'ebook://ebook/load/local/book.epub',
+        false,
+        (_href, { signal } = {}) => new Promise((resolve, reject) => {
+            observedSignal = signal
+            signal?.addEventListener('abort', () => {
+                const error = new Error('source destroyed')
+                error.name = 'AbortError'
+                reject(error)
+            }, { once: true })
+        }),
+    )
+    const pending = resolver('OPS/chapter.xhtml', 'application/xhtml+xml')
+    await Promise.resolve()
+
+    assert.equal(resolver.destroy(), true)
+    assert.equal(resolver.destroy(), false)
+    assert.equal(observedSignal?.aborted, true)
+    await assert.rejects(pending, error => error?.name === 'AbortError')
+    assert.equal(await resolver('OPS/chapter.xhtml', 'application/xhtml+xml'), null)
+})

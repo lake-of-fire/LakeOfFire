@@ -110,8 +110,17 @@ export class View extends HTMLElement {
         this.#root.append(this.renderer)
     }
     close() {
-        this.renderer?.destroy()
-        this.renderer?.remove()
+        const renderer = this.renderer
+        const book = this.book
+        this.renderer = null
+        this.book = null
+        renderer?.destroy()
+        renderer?.remove()
+        try {
+            book?.destroy?.()
+        } catch (_error) {}
+        this.language = null
+        this.isFixedLayout = false
         this.#sectionProgress = null
         this.#tocProgress = null
         this.#pageProgress = null

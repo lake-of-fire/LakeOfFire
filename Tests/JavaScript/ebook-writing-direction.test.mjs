@@ -212,3 +212,25 @@ test('does not publish a suspended stylesheet result into a replacement loader g
         { direction: 'horizontal', writingMode: 'horizontal-tb' },
     )
 })
+
+test('destroy aborts pending direction work and rejects later resolution', async () => {
+    let observedSignal
+    const resolver = makeRawSectionWritingDirectionResolver({
+        loadText: (_href, { signal } = {}) => new Promise((resolve, reject) => {
+            observedSignal = signal
+            signal?.addEventListener('abort', () => {
+                const error = new Error('loader destroyed')
+                error.name = 'AbortError'
+                reject(error)
+            }, { once: true })
+        }),
+    })
+    const pending = resolver('OPS/chapter.xhtml')
+    await Promise.resolve()
+
+    assert.equal(resolver.destroy(), true)
+    assert.equal(resolver.destroy(), false)
+    assert.equal(observedSignal?.aborted, true)
+    await assert.rejects(pending, error => error?.name === 'AbortError')
+    assert.equal(await resolver('OPS/chapter.xhtml'), null)
+})

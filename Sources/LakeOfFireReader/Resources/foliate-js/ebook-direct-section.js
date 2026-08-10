@@ -21,9 +21,19 @@ export const processedSectionURLForHref = (sourceURL, href, writingDirection = n
 export const makeDirectSectionURLResolver = (sourceURL, isCacheWarmer, loadText = null) => {
     if (isCacheWarmer) return null
     const resolveWritingDirection = makeRawSectionWritingDirectionResolver({ loadText })
-    return async (href, mediaType) => {
+    let destroyed = false
+    const resolver = async (href, mediaType) => {
+        if (destroyed) return null
         if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html') return null
         const writingDirection = await resolveWritingDirection(href)
+        if (destroyed) return null
         return processedSectionURLForHref(sourceURL, href, writingDirection)
     }
+    resolver.destroy = () => {
+        if (destroyed) return false
+        destroyed = true
+        resolveWritingDirection.destroy?.()
+        return true
+    }
+    return resolver
 }

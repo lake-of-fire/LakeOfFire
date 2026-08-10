@@ -814,6 +814,8 @@ const getPageSpread = properties => {
 export class EPUB {
     parser = new DOMParser()
     #loader
+    #sourceDestroy
+    #destroyed = false
     #encryption
     constructor({
         loadText,
@@ -821,13 +823,15 @@ export class EPUB {
         getSize,
         replaceText,
         replaceURL,
-        sha1
+        sha1,
+        destroy: destroySource,
     }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.getSize = getSize
         this.replaceText = replaceText
         this.replaceURL = replaceURL
+        this.#sourceDestroy = typeof destroySource === 'function' ? destroySource : null
         this.#encryption = new Encryption(deobfuscators(sha1))
     }
     async #loadXML(uri) {
@@ -1041,6 +1045,19 @@ ${doc.querySelector('parsererror').innerText}`)
         }
     }
     destroy() {
-        this.#loader?.destroy()
+        if (this.#destroyed) return false
+        this.#destroyed = true
+        const loader = this.#loader
+        this.#loader = null
+        try {
+            loader?.destroy?.()
+        } catch (_error) {}
+        const destroySource = this.#sourceDestroy
+        this.#sourceDestroy = null
+        try {
+            const result = destroySource?.()
+            Promise.resolve(result).catch(() => {})
+        } catch (_error) {}
+        return true
     }
 }

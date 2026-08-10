@@ -3483,30 +3483,52 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
     })
     const sizeMap = new Map(entries.map(function(entry) { return [entry.filename, entry.uncompressedSize]; }))
     const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
+    let destroyed = false
+    const isActive = () => !destroyed
     const replaceText = makeReplaceText(isCacheWarmer)
     const loadText = async (name) => {
-        if (!entryNames.has(name)) {
+        if (!isActive() || !entryNames.has(name)) {
             return null
         }
         const response = await fetchNativeEntryResponse(url, name)
-        return readNativeEntryText(response)
+        if (!isActive()) return null
+        const text = await readNativeEntryText(response)
+        return isActive() ? text : null
     }
     const replaceURL = makeDirectSectionURLResolver(url, isCacheWarmer, loadText)
     return {
         entries,
         loadText,
         loadBlob: async (name) => {
-            if (!entryNames.has(name)) {
+            if (!isActive() || !entryNames.has(name)) {
                 return null
             }
             const response = await fetchNativeEntryResponse(url, name)
-            return readNativeEntryBlob(response)
+            if (!isActive()) return null
+            const blob = await readNativeEntryBlob(response)
+            return isActive() ? blob : null
         },
-        getSize: name => sizeMap.get(name) ?? 0,
+        getSize: name => isActive() ? (sizeMap.get(name) ?? 0) : 0,
         replaceText,
         replaceURL,
         sourceURL: url,
+        destroy: () => {
+            if (destroyed) return false
+            destroyed = true
+            replaceURL?.destroy?.()
+            entryNames.clear()
+            sizeMap.clear()
+            entries.length = 0
+            return true
+        },
     }
+}
+
+const closeZipReader = reader => {
+    try {
+        const result = reader?.close?.()
+        Promise.resolve(result).catch(() => {})
+    } catch (_error) {}
 }
 
 const makeZipLoader = async (file, isCacheWarmer) => {
@@ -3523,13 +3545,24 @@ const makeZipLoader = async (file, isCacheWarmer) => {
         useWebWorkers: false
     })
     const reader = new ZipReader(new BlobReader(file))
-    const entries = await reader.getEntries()
+    let entries
+    try {
+        entries = await reader.getEntries()
+    } catch (error) {
+        closeZipReader(reader)
+        throw error
+    }
     const map = new Map(entries.map(function(entry) { return [entry.filename, entry]; }))
-    const load = f => (name, ...args) =>
-    map.has(name) ? f(map.get(name), ...args) : null
+    let destroyed = false
+    const isActive = () => !destroyed
+    const load = f => async (name, ...args) => {
+        if (!isActive() || !map.has(name)) return null
+        const value = await f(map.get(name), ...args)
+        return isActive() ? value : null
+    }
     const loadText = load(function(entry) { return entry.getData(new TextWriter()); })
     const loadBlob = load(function(entry, type) { return entry.getData(new BlobWriter(type)); })
-    const getSize = name => map.get(name)?.uncompressedSize ?? 0
+    const getSize = name => isActive() ? (map.get(name)?.uncompressedSize ?? 0) : 0
     //    const wrappedReplaceText = ((href, text, mediaType) => {
     //        replaceText(href, text, mediaType, isCacheWarmer)
     //    })
@@ -3539,7 +3572,15 @@ const makeZipLoader = async (file, isCacheWarmer) => {
         loadText,
         loadBlob,
         getSize,
-        replaceText
+        replaceText,
+        destroy: () => {
+            if (destroyed) return false
+            destroyed = true
+            map.clear()
+            entries.length = 0
+            closeZipReader(reader)
+            return true
+        },
     }
 }
 
@@ -3570,6 +3611,16 @@ const isFBZ = ({
 type === 'application/x-zip-compressed-fb2' ||
 name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
+const initializeEPUBBook = async (EPUB, loader) => {
+    const book = new EPUB(loader)
+    try {
+        return await book.init()
+    } catch (error) {
+        book.destroy()
+        throw error
+    }
+}
+
 const getView = async (source, isCacheWarmer) => {
     let book
     if (source?.kind === 'native' && source.url) {
@@ -3577,27 +3628,32 @@ const getView = async (source, isCacheWarmer) => {
             EPUB
         } = await import('./epub.js')
         const loader = await makeNativeEpubLoader(source.url, isCacheWarmer)
-        book = await new EPUB(loader).init()
+        book = await initializeEPUBBook(EPUB, loader)
     } else if (source?.kind === 'file' && source.file?.size) {
         const file = source.file
         if (await isZip(file)) {
             const loader = await makeZipLoader(file, isCacheWarmer)
-            if (isCBZ(file)) {
-                throw new Error('File format not yet supported')
-                //            const { makeComicBook } = await import('./comic-book.js')
-                //            book = makeComicBook(loader, file)
-            } else if (isFBZ(file)) {
-                throw new Error('File format not yet supported')
-                //            const { makeFB2 } = await import('./fb2.js')
-                //            const { entries } = loader
-                //            const entry = entries.find(function(entry) { return entry.filename.endsWith('.fb2'); })
-                //            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
-                //            book = await makeFB2(blob)
-            } else {
-                const {
-                    EPUB
-                } = await import('./epub.js')
-                book = await new EPUB(loader).init()
+            try {
+                if (isCBZ(file)) {
+                    throw new Error('File format not yet supported')
+                    //            const { makeComicBook } = await import('./comic-book.js')
+                    //            book = makeComicBook(loader, file)
+                } else if (isFBZ(file)) {
+                    throw new Error('File format not yet supported')
+                    //            const { makeFB2 } = await import('./fb2.js')
+                    //            const { entries } = loader
+                    //            const entry = entries.find(function(entry) { return entry.filename.endsWith('.fb2'); })
+                    //            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
+                    //            book = await makeFB2(blob)
+                } else {
+                    const {
+                        EPUB
+                    } = await import('./epub.js')
+                    book = await initializeEPUBBook(EPUB, loader)
+                }
+            } catch (error) {
+                loader.destroy()
+                throw error
             }
         } else {
             throw new Error('File format not yet supported')
@@ -3639,7 +3695,13 @@ const getView = async (source, isCacheWarmer) => {
         view.style.height = 0
         view.style.pointerEvents = 'none'
     }
-    await view.open(book, isCacheWarmer)
+    try {
+        await view.open(book, isCacheWarmer)
+    } catch (error) {
+        view.close?.()
+        view.remove?.()
+        throw error
+    }
     if (!isCacheWarmer) {
         await view.renderer?.setWritingDirectionOverride?.(
             globalThis.manabiEbookViewerWritingDirection ?? 'original',
