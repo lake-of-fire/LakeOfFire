@@ -165,6 +165,7 @@ export class NavigationHUD {
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
         this.navHidden = false;
+        this.destroyed = false;
         this.bookTitle = '';
         this.lastPagesLeftLabel = '';
         this.auxiliaryInsetsFrame = 0;
@@ -176,6 +177,40 @@ export class NavigationHUD {
 
         this._updateRelocateButtons();
         this._applyRelocateButtonEdges();
+    }
+
+    destroy() {
+        if (this.destroyed) return false;
+        this.destroyed = true;
+        this.primaryLineRequestToken += 1;
+        this.sectionProgressRequestToken += 1;
+        if (this.rendererSnapshotRefreshHandle) {
+            cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
+            this.rendererSnapshotRefreshHandle = null;
+        }
+        if (this.auxiliaryInsetsFrame) {
+            cancelAnimationFrame(this.auxiliaryInsetsFrame);
+            this.auxiliaryInsetsFrame = 0;
+        }
+        const titleLocationFadeTimer = this.navTitleLocationLabel?.__titleLocationFadeTimer;
+        if (titleLocationFadeTimer) {
+            clearTimeout(titleLocationFadeTimer);
+            this.navTitleLocationLabel.__titleLocationFadeTimer = null;
+        }
+        const pagesLeftCenter = this.navSectionProgress?.center;
+        if (pagesLeftCenter?.__pagesLeftFadeTimer) {
+            clearTimeout(pagesLeftCenter.__pagesLeftFadeTimer);
+            pagesLeftCenter.__pagesLeftFadeTimer = null;
+        }
+        this.pendingScrubCommit = null;
+        this.pendingReleasedScrubDescriptor = null;
+        this.pendingRelocateJump = null;
+        this.scrubSession = null;
+        this.isProcessingRelocateJump = false;
+        this.onJumpRequest = null;
+        this.getRenderer = null;
+        this.onHideNavigationDueToScrollChange = null;
+        return true;
     }
 
     requestExplicitRelocateHistoryMutation(source = 'unknown') {
@@ -414,6 +449,7 @@ export class NavigationHUD {
     }
 
     _setTitleLocationLabel(visible, label = '') {
+        if (this.destroyed) return;
         const target = this.navTitleLocationLabel;
         if (!target) return;
         this._applyTitleLocationUIFont();
@@ -462,6 +498,7 @@ export class NavigationHUD {
     }
 
     _updateTitleLocationLabel({ pagesLeftLabel = null, pagesLeftVisible = null, source = 'refresh' } = {}) {
+        if (this.destroyed) return;
         if (typeof pagesLeftLabel === 'string') {
             this.lastPagesLeftLabel = pagesLeftLabel;
         }
@@ -891,16 +928,19 @@ export class NavigationHUD {
     }
 
     _requestAuxiliaryInsetsUpdate() {
+        if (this.destroyed) return;
         if (this.auxiliaryInsetsFrame) {
             return;
         }
         this.auxiliaryInsetsFrame = requestAnimationFrame(() => {
             this.auxiliaryInsetsFrame = 0;
+            if (this.destroyed) return;
             this._updateAuxiliaryInsets();
         });
     }
 
     _updateAuxiliaryInsets() {
+        if (this.destroyed) return;
         const startedAt = performance.now();
         const styleTarget = document.body ?? document.documentElement;
         if (!styleTarget?.style) return;
@@ -1149,6 +1189,7 @@ export class NavigationHUD {
     }
 
     async _updateSectionProgress({ refreshSnapshot = true, source = 'refresh' } = {}) {
+        if (this.destroyed) return;
         const startedAt = performance.now();
         const requestToken = ++this.sectionProgressRequestToken;
         const leading = this.navSectionProgress?.leading;
@@ -1167,7 +1208,9 @@ export class NavigationHUD {
                     center.dataset.pagesLeftVisible = 'false';
                     void center.offsetWidth;
                     requestAnimationFrame(() => {
+                        if (this.destroyed) return;
                         requestAnimationFrame(() => {
+                            if (this.destroyed) return;
                             if (center.textContent === label) {
                                 center.dataset.pagesLeftVisible = 'true';
                             }
@@ -1178,6 +1221,7 @@ export class NavigationHUD {
             }
             center.dataset.pagesLeftVisible = 'false';
             center.__pagesLeftFadeTimer = setTimeout(() => {
+                if (this.destroyed) return;
                 if (center.dataset.pagesLeftVisible === 'false') {
                     center.textContent = '';
                     center.hidden = true;
@@ -1191,7 +1235,7 @@ export class NavigationHUD {
             const sectionResolution = this._resolveSectionIndex(this.lastRelocateDetail ?? this.currentLocationDescriptor ?? null);
             const result = await this._calculatePagesLeftInSection({ refreshSnapshot, requestToken, source });
             const pagesLeft = result?.pagesLeft ?? null;
-            if (requestToken !== this.sectionProgressRequestToken) {
+            if (this.destroyed || requestToken !== this.sectionProgressRequestToken) {
                 return;
             }
             if (
@@ -1627,12 +1671,14 @@ export class NavigationHUD {
     }
 
     async _refreshRendererSnapshot() {
+        if (this.destroyed) return null;
         const renderer = this.getRenderer?.();
         if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
             return null;
         }
         try {
             const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
+            if (this.destroyed) return null;
             if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
                 return null;
             }
@@ -1652,14 +1698,17 @@ export class NavigationHUD {
     }
 
     _scheduleRendererSnapshotRefresh(source = 'scheduled') {
+        if (this.destroyed) return;
         if (this.rendererSnapshotRefreshHandle) {
             cancelAnimationFrame(this.rendererSnapshotRefreshHandle);
             this.rendererSnapshotRefreshHandle = null;
         }
         this.rendererSnapshotRefreshHandle = requestAnimationFrame(async () => {
             this.rendererSnapshotRefreshHandle = null;
+            if (this.destroyed) return;
             try {
                 await this._refreshRendererSnapshot();
+                if (this.destroyed) return;
                 if (this.lastRelocateDetail) {
                     this._updatePrimaryLine(this.lastRelocateDetail);
                     await this._updateSectionProgress({ refreshSnapshot: false, source: `snapshot-refresh:${source}` });
