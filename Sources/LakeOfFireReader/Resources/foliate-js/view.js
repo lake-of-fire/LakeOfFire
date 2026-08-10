@@ -2,6 +2,7 @@ import * as CFI from './epubcfi.js'
 import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 import { buildRelocateLocation } from './relocate-location.js'
+import { OwnedEventBindings } from './owned-event-bindings.js'
 import { ViewHistory } from './view-history.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
@@ -51,6 +52,8 @@ export class View extends HTMLElement {
     #pageProgress
     #isCacheWarmer
     #searchResults = new Map()
+    #rendererBindings = null
+    #documentBindings = new Map()
     isFixedLayout = false
     lastLocation
     history = new ViewHistory()
@@ -86,11 +89,13 @@ export class View extends HTMLElement {
             this.renderer = document.createElement('foliate-paginator')
         }
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
-        this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
-        this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
+        this.#rendererBindings?.clear()
+        this.#rendererBindings = new OwnedEventBindings()
+        this.#rendererBindings.listen(this.renderer, 'load', e => this.#onLoad(e.detail))
+        this.#rendererBindings.listen(this.renderer, 'relocate', e => this.#onRelocate(e.detail))
         if (!this.#isCacheWarmer) {
-            this.renderer.addEventListener('create-overlayer', e =>
-                                           e.detail.attach(this.#createOverlayer(e.detail)))
+            this.#rendererBindings.listen(this.renderer, 'create-overlayer', e =>
+                e.detail.attach(this.#createOverlayer(e.detail)))
             //            this.renderer.addEventListener('setViewTransition', e => {
             //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
             //                this.style.setProperty('display', 'block');
@@ -114,6 +119,10 @@ export class View extends HTMLElement {
         const book = this.book
         this.renderer = null
         this.book = null
+        this.#rendererBindings?.clear()
+        this.#rendererBindings = null
+        for (const bindings of this.#documentBindings.values()) bindings.clear()
+        this.#documentBindings.clear()
         renderer?.destroy()
         renderer?.remove()
         try {
@@ -168,33 +177,58 @@ export class View extends HTMLElement {
             this.#emit('relocate', this.lastLocation)
             }
     #onLoad({ doc, location, index }) {
+        const bindings = this.#bindingsForDocument(doc)
         if (!this.#isCacheWarmer) {
             // set language and dir if not already set
             doc.documentElement.lang ||= this.language.canonical ?? ''
-            if (!this.language.isCJK)
+            if (!this.language.isCJK) {
                 doc.documentElement.dir ||= this.language.direction ?? ''
-
-                this.#handleLinks(doc, index)
-                }
+            }
+            this.#handleLinks(doc, index, bindings)
+        }
         this.#emit('load', { doc, location, index })
     }
-    #handleLinks(doc, index) {
+    #bindingsForDocument(doc) {
+        if (!doc?.addEventListener) return null
+        const existing = this.#documentBindings.get(doc)
+        if (existing) return existing
+        const bindings = new OwnedEventBindings()
+        this.#documentBindings.set(doc, bindings)
+        bindings.listen(doc, 'pagehide', () => {
+            if (this.#documentBindings.get(doc) !== bindings) return
+            this.#documentBindings.delete(doc)
+            bindings.clear()
+        }, { once: true })
+        return bindings
+    }
+    #isCurrentDocument(doc, bindings, book) {
+        return this.book === book && this.#documentBindings.get(doc) === bindings
+    }
+    #handleLinks(doc, index, bindings) {
         const { book } = this
         const section = book.sections[index]
-        for (const a of doc.querySelectorAll('a[href]'))
-            a.addEventListener('click', e => {
+        for (const a of doc.querySelectorAll('a[href]')) {
+            bindings?.listen(a, 'click', e => {
+                if (!this.#isCurrentDocument(doc, bindings, book)) return
                 e.preventDefault()
                 const href_ = a.getAttribute('href')
                 const href = section?.resolveHref?.(href_) ?? href_
-                if (book?.isExternal?.(href))
+                if (book?.isExternal?.(href)) {
                     Promise.resolve(this.#emit('external-link', { a, href }, true))
-                    .then(x => x ? globalThis.open(href, '_blank') : null)
-                    .catch(e => console.error(e))
-                    else Promise.resolve(this.#emit('link', { a, href }, true))
-                        .then(async (x) => x ? await this.goTo(href) : null)
+                        .then(x => this.#isCurrentDocument(doc, bindings, book) && x
+                            ? globalThis.open(href, '_blank')
+                            : null)
                         .catch(e => console.error(e))
-                        })
-            }
+                } else {
+                    Promise.resolve(this.#emit('link', { a, href }, true))
+                        .then(async x => this.#isCurrentDocument(doc, bindings, book) && x
+                            ? await this.goTo(href)
+                            : null)
+                        .catch(e => console.error(e))
+                }
+            })
+        }
+    }
     async addAnnotation(annotation, remove) {
         const { value } = annotation
         if (value.startsWith(SEARCH_PREFIX)) {
@@ -235,7 +269,10 @@ export class View extends HTMLElement {
     }
     #createOverlayer({ doc, index }) {
         const overlayer = new Overlayer()
-        doc.addEventListener('click', e => {
+        const bindings = this.#bindingsForDocument(doc)
+        const book = this.book
+        bindings?.listen(doc, 'click', e => {
+            if (!this.#isCurrentDocument(doc, bindings, book)) return
             const [value, range] = overlayer.hitTest(e)
             if (value && !value.startsWith(SEARCH_PREFIX)) {
                 this.#emit('show-annotation', { value, range })
@@ -243,11 +280,13 @@ export class View extends HTMLElement {
         }, false)
 
         const list = this.#searchResults.get(index)
-        if (list) for (const item of list) this.addAnnotation(item)
+        if (list) {
+            for (const item of list) this.addAnnotation(item)
+        }
 
-            this.#emit('create-overlay', { index })
-            return overlayer
-            }
+        this.#emit('create-overlay', { index })
+        return overlayer
+    }
     async showAnnotation(annotation) {
         const { value } = annotation
         const resolved = await this.goTo(value)
