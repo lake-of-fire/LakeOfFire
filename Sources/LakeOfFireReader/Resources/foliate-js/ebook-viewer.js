@@ -34,6 +34,7 @@ import {
     runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
+import { CacheWarmerOpenIntent } from './cache-warmer-open-intent.js'
 import { CacheWarmerPrecedingSections } from './cache-warmer-preceding-sections.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { EbookLoadResources } from './ebook-load-resources.js'
@@ -362,7 +363,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         }
         if (
             !isCacheWarmer
-            && globalThis.__manabiCacheWarmerOpenRequested
+            && window.cacheWarmer?.openRequested === true
             && globalThis.__manabiInflightReplaceTextCount === 0
         ) {
             void maybeOpenDeferredCacheWarmer();
@@ -1127,11 +1128,11 @@ const ensureCacheWarmerPrecedingSectionsForHref = async (href) => {
     if (
         !globalThis.__manabiCacheWarmerReady
         && !globalThis.__manabiCacheWarmerOpenInFlight
-        && !globalThis.__manabiCacheWarmerOpenRequested
+        && !cacheWarmer.openRequested
     ) {
         scheduleDeferredCacheWarmerOpen('preceding-sections-required', 0);
     }
-    if (globalThis.__manabiCacheWarmerOpenRequested) {
+    if (window.cacheWarmer?.openRequested === true) {
         void maybeOpenDeferredCacheWarmer();
     }
     scheduleLoadNextCacheWarmerSection([], 'preceding-sections-required', { force: true });
@@ -1166,7 +1167,7 @@ window.manabi_recordLiveProcessedSection = (href) => {
     if (globalThis.__manabiInitialForegroundNextSectionPending && processedSet.size >= 2) {
         globalThis.__manabiInitialForegroundNextSectionPending = false;
     }
-    if (globalThis.__manabiCacheWarmerOpenRequested) {
+    if (window.cacheWarmer?.openRequested === true) {
         void maybeOpenDeferredCacheWarmer();
     }
 };
@@ -1184,7 +1185,7 @@ window.manabi_recordLiveSettledSection = (href) => {
     }
     if (normalizedHref === firstLiveHref) {
     }
-    if (globalThis.__manabiCacheWarmerOpenRequested) {
+    if (window.cacheWarmer?.openRequested === true) {
         void maybeOpenDeferredCacheWarmer();
     }
 };
@@ -1209,7 +1210,7 @@ window.manabi_syncLiveSettledSections = (payload = {}) => {
         || previousSettledSectionHrefs.length !== nextSettledSectionHrefs.length
         || previousSettledSectionHrefs.some((href, index) => href !== nextSettledSectionHrefs[index]);
     if (!didChange) return;
-    if (globalThis.__manabiCacheWarmerOpenRequested) {
+    if (window.cacheWarmer?.openRequested === true) {
         void maybeOpenDeferredCacheWarmer();
     }
 };
@@ -1301,11 +1302,6 @@ const maybeOpenDeferredCacheWarmer = async () => {
     if (!cacheWarmer) return;
     if (cacheWarmer.openPromise) return await cacheWarmer.openPromise;
     if (!isForegroundReaderIdle()) {
-        const firstLiveHref = firstLiveSectionHref();
-        const firstLiveSettled = !!firstLiveHref && liveSettledSectionHrefSet().has(firstLiveHref);
-        if (!globalThis.__manabiDeferredCacheWarmerLogged) {
-            globalThis.__manabiDeferredCacheWarmerLogged = true;
-        }
         return;
     }
     const preflightScan = cacheWarmerSectionScan();
@@ -1314,13 +1310,13 @@ const maybeOpenDeferredCacheWarmer = async () => {
         return;
     }
     if (!Number.isInteger(nextUsefulIndex)) {
-        globalThis.__manabiCacheWarmerOpenRequested = false;
+        cacheWarmer.consumeOpenRequest();
         cacheWarmer.finishPrecedingSections();
         globalThis.__manabiCacheWarmerReady = true;
         return;
     }
     const cacheWarmerSource = cacheWarmer.makeReusableSource();
-    globalThis.__manabiCacheWarmerOpenRequested = false;
+    cacheWarmer.consumeOpenRequest();
     if (!cacheWarmerSource) return;
     const openPromise = (async () => {
         await cacheWarmer.open(cacheWarmerSource);
@@ -1334,17 +1330,17 @@ const maybeOpenDeferredCacheWarmer = async () => {
 };
 
 const scheduleDeferredCacheWarmerOpen = (reason, delayMs = 0) => {
+    const cacheWarmer = window.cacheWarmer ?? null;
+    if (!cacheWarmer) return;
     if (globalThis.__manabiCacheWarmerReady || globalThis.__manabiCacheWarmerOpenInFlight) {
         return;
     }
-    globalThis.__manabiCacheWarmerOpenRequested = true;
+    cacheWarmer.requestOpen();
     if (reason === 'load-last-position-done' && liveProcessedSectionHrefSet().size < 2) {
         globalThis.__manabiInitialForegroundNextSectionPending = true;
     }
-    globalThis.__manabiDeferredCacheWarmerLogged = false;
     const normalizedDelay = Math.max(0, Number(delayMs) || 0);
-    const cacheWarmer = window.cacheWarmer ?? null;
-    cacheWarmer?.scheduleDeferredOpen(() => {
+    cacheWarmer.scheduleDeferredOpen(() => {
         if (window.cacheWarmer !== cacheWarmer) return;
         const busyState = cacheWarmerForegroundBusyState();
         if (busyState.busy) {
@@ -8123,6 +8119,7 @@ class CacheWarmer {
     #advanceTask = new OwnedScheduledTask()
     #deferredOpenTask = new OwnedScheduledTask()
     #eventBindings = null
+    #openIntent = new CacheWarmerOpenIntent()
     #openPromiseSlot = new OwnedPromiseSlot()
     #precedingSections = new CacheWarmerPrecedingSections()
     #viewOwner = new OwnedAsyncResource(view => {
@@ -8148,6 +8145,9 @@ class CacheWarmer {
     get openPromise() {
         return this.#openPromiseSlot.current
     }
+    get openRequested() {
+        return this.#openIntent.requested
+    }
     get requiredPrecedingTargetIndex() {
         return this.#precedingSections.requiredTargetIndex
     }
@@ -8162,6 +8162,12 @@ class CacheWarmer {
     }
     clearOpenPromise(promise) {
         return this.#openPromiseSlot.clear(promise)
+    }
+    requestOpen() {
+        return this.#openIntent.request()
+    }
+    consumeOpenRequest() {
+        return this.#openIntent.consume()
     }
     arePrecedingSectionsComplete(targetIndex) {
         return this.#precedingSections.isComplete(targetIndex)
@@ -8346,6 +8352,7 @@ class CacheWarmer {
         this.#advancePromiseSlot.close()
         this.#advanceTask.close()
         this.#deferredOpenTask.close()
+        this.#openIntent.close()
         this.#openPromiseSlot.close()
         this.#precedingSections.close()
         this.#viewOwner.close()
@@ -8382,7 +8389,6 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerReady = false;
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
-        globalThis.__manabiDeferredCacheWarmerLogged = false;
         try {
             const view = await getView(file, true)
             if (!this.#viewOwner.publish(openToken, view)) return false
