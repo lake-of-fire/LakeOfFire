@@ -3472,9 +3472,17 @@ const readNativeEntryBlob = async (response) => {
     return new Blob([arrayBuffer], mimeType ? { type: mimeType } : undefined)
 }
 
-const makeNativeEpubLoader = async (url, isCacheWarmer) => {
+const readerOpenSupersededError = () => {
+    const error = new Error('Reader open was superseded')
+    error.code = 'reader-open-superseded'
+    return error
+}
+
+const makeNativeEpubLoader = async (url, isCacheWarmer, { isCurrent = () => true } = {}) => {
+    if (!isCurrent()) throw readerOpenSupersededError()
     const loaderStartedAt = performanceNowMs();
     const { entries: rawEntries = [] } = await fetchNativeEntries(url)
+    if (!isCurrent()) throw readerOpenSupersededError()
     const entries = rawEntries.map(function(entry) {
         return {
             filename: entry.path,
@@ -3484,7 +3492,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
     const sizeMap = new Map(entries.map(function(entry) { return [entry.filename, entry.uncompressedSize]; }))
     const entryNames = new Set(entries.map(function(entry) { return entry.filename; }))
     let destroyed = false
-    const isActive = () => !destroyed
+    const isActive = () => !destroyed && isCurrent()
     const replaceText = makeReplaceText(isCacheWarmer)
     const loadText = async (name) => {
         if (!isActive() || !entryNames.has(name)) {
@@ -3531,7 +3539,8 @@ const closeZipReader = reader => {
     } catch (_error) {}
 }
 
-const makeZipLoader = async (file, isCacheWarmer) => {
+const makeZipLoader = async (file, isCacheWarmer, { isCurrent = () => true } = {}) => {
+    if (!isCurrent()) throw readerOpenSupersededError()
     const loaderStartedAt = performanceNowMs();
     const {
         configure,
@@ -3541,6 +3550,7 @@ const makeZipLoader = async (file, isCacheWarmer) => {
         BlobWriter
     } =
     await import('./vendor/zip.js')
+    if (!isCurrent()) throw readerOpenSupersededError()
     configure({
         useWebWorkers: false
     })
@@ -3548,13 +3558,14 @@ const makeZipLoader = async (file, isCacheWarmer) => {
     let entries
     try {
         entries = await reader.getEntries()
+        if (!isCurrent()) throw readerOpenSupersededError()
     } catch (error) {
         closeZipReader(reader)
         throw error
     }
     const map = new Map(entries.map(function(entry) { return [entry.filename, entry]; }))
     let destroyed = false
-    const isActive = () => !destroyed
+    const isActive = () => !destroyed && isCurrent()
     const load = f => async (name, ...args) => {
         if (!isActive() || !map.has(name)) return null
         const value = await f(map.get(name), ...args)
@@ -3621,18 +3632,19 @@ const initializeEPUBBook = async (EPUB, loader) => {
     }
 }
 
-const getView = async (source, isCacheWarmer) => {
+const getView = async (source, isCacheWarmer, { isCurrent = () => true } = {}) => {
+    if (!isCurrent()) throw readerOpenSupersededError()
     let book
     if (source?.kind === 'native' && source.url) {
         const {
             EPUB
         } = await import('./epub.js')
-        const loader = await makeNativeEpubLoader(source.url, isCacheWarmer)
+        const loader = await makeNativeEpubLoader(source.url, isCacheWarmer, { isCurrent })
         book = await initializeEPUBBook(EPUB, loader)
     } else if (source?.kind === 'file' && source.file?.size) {
         const file = source.file
         if (await isZip(file)) {
-            const loader = await makeZipLoader(file, isCacheWarmer)
+            const loader = await makeZipLoader(file, isCacheWarmer, { isCurrent })
             try {
                 if (isCBZ(file)) {
                     throw new Error('File format not yet supported')
@@ -3670,7 +3682,15 @@ const getView = async (source, isCacheWarmer) => {
         throw new Error('File not found')
     }
     if (!book) throw new Error('File type not supported')
+    if (!isCurrent()) {
+        book.destroy?.()
+        throw readerOpenSupersededError()
+    }
     const view = document.createElement('foliate-view')
+    if (!isCurrent()) {
+        book.destroy?.()
+        throw readerOpenSupersededError()
+    }
     view.dataset.isCache = isCacheWarmer;
     view.style.display = isCacheWarmer ? 'none' : 'block';
     view.style.width = isCacheWarmer ? '0px' : '100%';
@@ -3697,6 +3717,7 @@ const getView = async (source, isCacheWarmer) => {
     }
     try {
         await view.open(book, isCacheWarmer)
+        if (!isCurrent()) throw readerOpenSupersededError()
     } catch (error) {
         view.close?.()
         view.remove?.()
@@ -6077,7 +6098,9 @@ class Reader {
             this.initialPaginatorSettleHandle = null;
         }
         this.hasSettledInitialPaginatorLayout = false;
-        const view = await getView(file, false)
+        const view = await getView(file, false, {
+            isCurrent: () => !this.#closed && this.#deferredOpenWork.isCurrent(openGeneration),
+        })
         if (this.#closed) {
             view?.close?.()
             view?.remove?.()
@@ -8425,7 +8448,7 @@ class CacheWarmer {
         globalThis.__manabiCacheWarmerFinished = false;
         globalThis.__manabiCacheWarmerHighestSectionIndex = null;
         try {
-            const view = await getView(file, true)
+            const view = await getView(file, true, { isCurrent: isCurrentOwner })
             if (!this.#viewOwner.publish(openToken, view)) return false
             if (!isCurrentOpen()) return false
             this.view = view
