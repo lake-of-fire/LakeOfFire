@@ -35,6 +35,7 @@ import {
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
+import { EbookLoadResources } from './ebook-load-resources.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
 import { OwnedAsyncResource } from './owned-async-resource.js'
@@ -659,6 +660,7 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
     const readerBodyStyle = readerDoc?.defaultView && readerBody
         ? readerDoc.defaultView.getComputedStyle(readerBody)
         : null;
+    const loadResourceDiagnostics = window.cacheWarmer?.loadResources?.diagnostics ?? null;
     return {
         reason,
         href: location.href,
@@ -676,8 +678,8 @@ const collectEPUBLoadDiagnostics = (reason, extra = {}) => {
         windowInnerHeight: window.innerHeight,
         visualViewportWidth: window.visualViewport?.width ?? null,
         visualViewportHeight: window.visualViewport?.height ?? null,
-        sourceKind: globalThis.ebookSource?.kind || null,
-        sourceURL: globalThis.ebookSource?.url || null,
+        sourceKind: loadResourceDiagnostics?.sourceKind ?? null,
+        sourceURL: loadResourceDiagnostics?.sourceURL ?? null,
         firstLiveSectionHref: globalThis.__manabiFirstLiveSectionHref || null,
         liveProcessedSectionCount: globalThis.__manabiLiveProcessedSectionHrefs?.size ?? null,
         liveSettledSectionCount: globalThis.__manabiLiveSettledSectionHrefs?.size ?? null,
@@ -1048,8 +1050,7 @@ window.manabiForwardReaderFontToEbookDocuments = (reason = 'manual', explicitDoc
 };
 
 const cacheWarmerSourceForCurrentBook = () => {
-    return window.ebookSource
-        || makeFileSource(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname));
+    return window.cacheWarmer?.makeReusableSource?.() ?? null;
 };
 
 const liveProcessedSectionHrefSet = () => {
@@ -1357,6 +1358,7 @@ const maybeOpenDeferredCacheWarmer = async () => {
     }
     const cacheWarmerSource = cacheWarmerSourceForCurrentBook();
     globalThis.__manabiCacheWarmerOpenRequested = false;
+    if (!cacheWarmerSource) return;
     const openPromise = (async () => {
         await window.cacheWarmer.open(cacheWarmerSource);
     })();
@@ -8127,13 +8129,20 @@ class CacheWarmer {
         view?.remove?.()
     })
 
-    constructor() {
+    constructor({ loadResources = null } = {}) {
+        this.loadResources = loadResources
         this.view
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
         this.lastLoadedSectionIndex = null
         this.lastLoadedSectionHref = null
         this.settledSectionHrefs = new Set()
+    }
+    makeReusableSource() {
+        return this.loadResources?.makeReusableSource({
+            makeFile: (blob, path) => new File([blob], path),
+            makeFileSource,
+        }) ?? null
     }
     #isCurrentGeneration(generation) {
         return !this.#closed
@@ -8289,6 +8298,8 @@ class CacheWarmer {
         this.#eventBindings = null
         this.#viewOwner.close()
         this.view = null
+        this.loadResources?.close?.()
+        this.loadResources = null
         this.uniqueSentenceIdentifiers.clear()
         this.lastPostedSentenceCount = null
         this.lastLoadedSectionIndex = null
@@ -8577,23 +8588,35 @@ window.loadEBook = ({
         && globalThis.reader === reader
         && reader.isClosed !== true
 
-    window.cacheWarmer = new CacheWarmer()
-    window.ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
+    const ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
         ? makeNativeSource(url)
         : null
+    const sourcePath = (() => {
+        try {
+            return new URL(url, window.location.href).pathname
+        } catch (_error) {
+            return 'book.epub'
+        }
+    })()
+    const loadResources = new EbookLoadResources({
+        nativeSource: ebookSource,
+        sourcePath,
+    })
+    const cacheWarmer = new CacheWarmer({ loadResources })
+    window.cacheWarmer = cacheWarmer
 
     if (url) {
         globalThis.manabiLoadEBookLastState = 'source-start';
-        const sourcePromise = window.ebookSource
-            ? Promise.resolve(window.ebookSource)
+        const sourcePromise = ebookSource
+            ? Promise.resolve(ebookSource)
             : fetch(url, {
                 headers: {
                     "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
                 },
-            })
+                })
                 .then(res => res.blob())
                 .then((blob) => {
-                    window.blob = blob
+                    loadResources.setRemoteBlob(blob)
                     return makeFileSource(new File([blob], new URL(url).pathname))
                 })
 
@@ -8666,6 +8689,8 @@ window.loadEBook = ({
             } catch (_error) {}
             reader.close('loadEBook.error')
             if (globalThis.reader === reader) globalThis.reader = null
+            cacheWarmer.destroy()
+            if (window.cacheWarmer === cacheWarmer) window.cacheWarmer = null
             throw error;
         })
         .finally(() => {
@@ -8685,6 +8710,8 @@ window.loadEBook = ({
         globalThis.manabiLoadEBookPromise = null;
         reader.close('loadEBook.no-url')
         if (globalThis.reader === reader) globalThis.reader = null
+        cacheWarmer.destroy()
+        if (window.cacheWarmer === cacheWarmer) window.cacheWarmer = null
     }
     //.catch(e => console.error(e))
 }
