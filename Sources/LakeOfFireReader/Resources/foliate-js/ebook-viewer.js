@@ -34,6 +34,7 @@ import {
     runRequiredRestoreNavigation,
     shouldSkipScheduledReaderFractionGoTo,
 } from './ebook-restore-coordination.js'
+import { CacheWarmerPrecedingSections } from './cache-warmer-preceding-sections.js'
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { EbookLoadResources } from './ebook-load-resources.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
@@ -1113,45 +1114,16 @@ const activeForegroundSectionHref = () => {
 const activeForegroundSectionIndex = () => sectionIndexForHref(activeForegroundSectionHref());
 
 const cacheWarmerPrecedingTargetIndex = () => {
-    const targetIndex = Number(globalThis.__manabiCacheWarmerRequiredPrecedingTargetIndex);
-    return Number.isInteger(targetIndex) && targetIndex > 0 ? targetIndex : null;
-};
-
-const isCacheWarmerPrecedingSectionsComplete = (targetIndex) => {
-    if (!Number.isInteger(targetIndex) || targetIndex <= 0) return true;
-    const highestSectionIndex = Number(globalThis.__manabiCacheWarmerHighestSectionIndex);
-    if (Number.isInteger(highestSectionIndex) && highestSectionIndex >= targetIndex - 1) return true;
-    if (globalThis.__manabiCacheWarmerFinished) return true;
-    return false;
-};
-
-const resolveCacheWarmerPrecedingSectionWaiters = () => {
-    const waiters = Array.isArray(globalThis.__manabiCacheWarmerPrecedingSectionWaiters)
-        ? globalThis.__manabiCacheWarmerPrecedingSectionWaiters
-        : [];
-    if (waiters.length === 0) return;
-    globalThis.__manabiCacheWarmerPrecedingSectionWaiters = waiters.filter((waiter) => {
-        if (!isCacheWarmerPrecedingSectionsComplete(waiter?.targetIndex)) return true;
-        clearTimeout(waiter.timer);
-        waiter.resolve?.();
-        return false;
-    });
-    const requiredTarget = cacheWarmerPrecedingTargetIndex();
-    if (Number.isInteger(requiredTarget) && isCacheWarmerPrecedingSectionsComplete(requiredTarget)) {
-        globalThis.__manabiCacheWarmerRequiredPrecedingTargetIndex = null;
-    }
+    return window.cacheWarmer?.requiredPrecedingTargetIndex ?? null;
 };
 
 const ensureCacheWarmerPrecedingSectionsForHref = async (href) => {
+    const cacheWarmer = window.cacheWarmer ?? null;
+    if (!cacheWarmer) return;
     const targetIndex = sectionIndexForHref(href);
     if (!Number.isInteger(targetIndex) || targetIndex <= 0) return;
-    if (isCacheWarmerPrecedingSectionsComplete(targetIndex)) return;
-    const existingTarget = cacheWarmerPrecedingTargetIndex();
-    const nextTarget = Math.max(existingTarget ?? 0, targetIndex);
-    globalThis.__manabiCacheWarmerRequiredPrecedingTargetIndex = nextTarget;
-    if (!globalThis.__manabiCacheWarmerPrecedingSectionWaiters) {
-        globalThis.__manabiCacheWarmerPrecedingSectionWaiters = [];
-    }
+    if (cacheWarmer.arePrecedingSectionsComplete(targetIndex)) return;
+    const waiter = cacheWarmer.waitForPrecedingSections(targetIndex);
     if (
         !globalThis.__manabiCacheWarmerReady
         && !globalThis.__manabiCacheWarmerOpenInFlight
@@ -1163,18 +1135,7 @@ const ensureCacheWarmerPrecedingSectionsForHref = async (href) => {
         void maybeOpenDeferredCacheWarmer();
     }
     scheduleLoadNextCacheWarmerSection([], 'preceding-sections-required', { force: true });
-    await new Promise((resolve) => {
-        const waiter = { targetIndex, resolve };
-        globalThis.__manabiCacheWarmerPrecedingSectionWaiters.push(waiter);
-        const poll = () => {
-            if (isCacheWarmerPrecedingSectionsComplete(targetIndex)) {
-                resolve();
-                return;
-            }
-            waiter.timer = setTimeout(poll, 50);
-        };
-        poll();
-    });
+    await waiter;
 };
 
 const activeForegroundSectionHrefSet = () => {
@@ -1354,7 +1315,7 @@ const maybeOpenDeferredCacheWarmer = async () => {
     }
     if (!Number.isInteger(nextUsefulIndex)) {
         globalThis.__manabiCacheWarmerOpenRequested = false;
-        globalThis.__manabiCacheWarmerFinished = true;
+        cacheWarmer.finishPrecedingSections();
         globalThis.__manabiCacheWarmerReady = true;
         return;
     }
@@ -8166,6 +8127,7 @@ class CacheWarmer {
     #deferredOpenTask = new OwnedScheduledTask()
     #eventBindings = null
     #openPromiseSlot = new OwnedPromiseSlot()
+    #precedingSections = new CacheWarmerPrecedingSections()
     #viewOwner = new OwnedAsyncResource(view => {
         try {
             view?.close?.()
@@ -8189,6 +8151,9 @@ class CacheWarmer {
     get openPromise() {
         return this.#openPromiseSlot.current
     }
+    get requiredPrecedingTargetIndex() {
+        return this.#precedingSections.requiredTargetIndex
+    }
     publishAdvancePromise(promise) {
         return this.#advancePromiseSlot.publish(promise)
     }
@@ -8200,6 +8165,25 @@ class CacheWarmer {
     }
     clearOpenPromise(promise) {
         return this.#openPromiseSlot.clear(promise)
+    }
+    arePrecedingSectionsComplete(targetIndex) {
+        return this.#precedingSections.isComplete(targetIndex)
+    }
+    waitForPrecedingSections(targetIndex) {
+        return this.#precedingSections.waitFor(targetIndex)
+    }
+    recordLoadedSection(sectionIndex) {
+        if (!this.#precedingSections.recordLoadedSection(sectionIndex)) return false
+        if (window.cacheWarmer === this) {
+            globalThis.__manabiCacheWarmerHighestSectionIndex = this.#precedingSections.highestSectionIndex
+        }
+        return true
+    }
+    finishPrecedingSections() {
+        if (this.#precedingSections.closed) return false
+        const didFinish = this.#precedingSections.finish()
+        if (window.cacheWarmer === this) globalThis.__manabiCacheWarmerFinished = true
+        return didFinish
     }
     makeReusableSource() {
         return this.loadResources?.makeReusableSource({
@@ -8270,8 +8254,7 @@ class CacheWarmer {
         const section = Number.isInteger(targetIndex) ? sections[targetIndex] : null;
         const sectionHref = this.#normalizeSectionHref(section?.href ?? section?.id ?? null);
         if (!sectionHref) {
-            globalThis.__manabiCacheWarmerFinished = true;
-            resolveCacheWarmerPrecedingSectionWaiters();
+            this.finishPrecedingSections()
             return;
         }
         this.lastLoadedSectionIndex = targetIndex;
@@ -8310,8 +8293,7 @@ class CacheWarmer {
             }
         })
         if (!Number.isInteger(firstUnsettledIndex)) {
-            globalThis.__manabiCacheWarmerFinished = true
-            resolveCacheWarmerPrecedingSectionWaiters()
+            this.finishPrecedingSections()
             return
         }
         const skippedSettledSectionHrefs = this.view?.book?.sections
@@ -8336,8 +8318,7 @@ class CacheWarmer {
         settledSectionHrefs = this.#mergeSettledSectionHrefs(settledSectionHrefs)
         const targetIndex = this.#nextUnsettledSectionIndex(settledSectionHrefs, minimumIndex)
         if (!Number.isInteger(targetIndex)) {
-            globalThis.__manabiCacheWarmerFinished = true
-            resolveCacheWarmerPrecedingSectionWaiters()
+            this.finishPrecedingSections()
             return
         }
         if (canUseNativeCacheWarmerPrewarm()) {
@@ -8369,6 +8350,7 @@ class CacheWarmer {
         this.#advanceTask.close()
         this.#deferredOpenTask.close()
         this.#openPromiseSlot.close()
+        this.#precedingSections.close()
         this.#viewOwner.close()
         this.view = null
         this.loadResources?.close?.()
@@ -8389,6 +8371,7 @@ class CacheWarmer {
     }
     async open(file) {
         if (this.#closed) return false
+        this.#precedingSections.resetProgress()
         this.#eventBindings?.clear()
         this.#eventBindings = new OwnedEventBindings()
         const openToken = this.#viewOwner.begin()
@@ -8443,8 +8426,7 @@ class CacheWarmer {
             })
             return;
         }
-        globalThis.__manabiCacheWarmerFinished = true;
-        resolveCacheWarmerPrecedingSectionWaiters()
+        this.finishPrecedingSections()
     }
 
     async #onLoad({
@@ -8470,11 +8452,7 @@ class CacheWarmer {
         }
         const isLikelyTitlePage = typeof sourceHref === 'string' && /(?:^|\/)(title|cover)\.xhtml$/i.test(sourceHref);
         if (Number.isInteger(index)) {
-            globalThis.__manabiCacheWarmerHighestSectionIndex = Math.max(
-                globalThis.__manabiCacheWarmerHighestSectionIndex ?? -1,
-                index,
-            );
-            resolveCacheWarmerPrecedingSectionWaiters();
+            this.recordLoadedSection(index)
         }
         for (const sentenceNode of sentenceNodes) {
             const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
