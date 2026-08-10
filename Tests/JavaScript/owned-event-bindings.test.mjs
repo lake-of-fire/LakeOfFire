@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { OwnedEventBindings } from '../../Sources/LakeOfFireReader/Resources/foliate-js/owned-event-bindings.js'
+import {
+    OwnedEventBindings,
+    OwnedEventBindingScopes,
+} from '../../Sources/LakeOfFireReader/Resources/foliate-js/owned-event-bindings.js'
 
 test('clear removes every owned listener exactly once', () => {
     const bindings = new OwnedEventBindings()
@@ -88,4 +91,39 @@ test('an external overwrite retires stale ownership metadata', () => {
     secondBindings.bind(target, 'callback', 'replacement-reader')
     secondBindings.clear()
     assert.equal(target.callback, 'external')
+})
+
+test('starting a replacement scope clears the prior owner', () => {
+    const scopes = new OwnedEventBindingScopes()
+    const owner = {}
+    const target = new EventTarget()
+    let firstCalls = 0
+    let secondCalls = 0
+
+    const first = scopes.begin(owner)
+    first.listen(target, 'change', () => firstCalls += 1)
+    const second = scopes.begin(owner)
+    second.listen(target, 'change', () => secondCalls += 1)
+    target.dispatchEvent(new Event('change'))
+
+    assert.equal(scopes.isCurrent(owner, first), false)
+    assert.equal(scopes.isCurrent(owner, second), true)
+    assert.equal(firstCalls, 0)
+    assert.equal(secondCalls, 1)
+})
+
+test('scope release and clear remove only live owners', () => {
+    const scopes = new OwnedEventBindingScopes()
+    const firstOwner = {}
+    const secondOwner = {}
+    const first = scopes.begin(firstOwner)
+    const second = scopes.begin(secondOwner)
+
+    assert.equal(scopes.release(firstOwner), true)
+    assert.equal(scopes.release(firstOwner), false)
+    assert.equal(scopes.isCurrent(firstOwner, first), false)
+    assert.equal(scopes.isCurrent(secondOwner, second), true)
+    assert.equal(scopes.clear(), true)
+    assert.equal(scopes.clear(), false)
+    assert.equal(scopes.isCurrent(secondOwner, second), false)
 })

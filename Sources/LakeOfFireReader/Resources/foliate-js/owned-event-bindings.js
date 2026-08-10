@@ -130,3 +130,36 @@ export class OwnedEventBindings {
         return true
     }
 }
+
+export class OwnedEventBindingScopes {
+    #bindingsByOwner = new Map()
+    #active = true
+
+    begin(owner) {
+        if (!this.#active || owner == null) return null
+        this.release(owner)
+        const bindings = new OwnedEventBindings()
+        this.#bindingsByOwner.set(owner, bindings)
+        return bindings
+    }
+
+    isCurrent(owner, bindings) {
+        return this.#active && this.#bindingsByOwner.get(owner) === bindings
+    }
+
+    release(owner) {
+        const bindings = this.#bindingsByOwner.get(owner)
+        if (!bindings) return false
+        this.#bindingsByOwner.delete(owner)
+        bindings.clear()
+        return true
+    }
+
+    clear() {
+        if (!this.#active) return false
+        this.#active = false
+        for (const bindings of this.#bindingsByOwner.values()) bindings.clear()
+        this.#bindingsByOwner.clear()
+        return true
+    }
+}

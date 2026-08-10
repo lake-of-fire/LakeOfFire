@@ -37,7 +37,7 @@ import {
 import { DeferredOpenWorkCoordinator } from './deferred-open-work.js'
 import { ForegroundCriticalSectionCoordinator } from './foreground-critical-section.js'
 import { scheduleFrameWithTimeoutFallback } from './frame-timeout-scheduler.js'
-import { OwnedEventBindings } from './owned-event-bindings.js'
+import { OwnedEventBindings, OwnedEventBindingScopes } from './owned-event-bindings.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import {
     activeRendererContentsForLookup,
@@ -4179,6 +4179,7 @@ const navSpinnerMaximumMs = 1200;
 class Reader {
     #closed = false
     #ownedEventBindings = new OwnedEventBindings()
+    #documentEventBindings = new OwnedEventBindingScopes()
     #navButtonOperations = new Set()
 
     get isClosed() {
@@ -4191,6 +4192,19 @@ class Reader {
 
     #bindGlobal(target, key, value) {
         return this.#ownedEventBindings.bind(target, key, value)
+    }
+
+    #beginDocumentEventBindings(doc) {
+        if (!doc) return null
+        const bindings = this.#documentEventBindings.begin(doc)
+        bindings.listen(doc.defaultView, 'pagehide', () => {
+            this.#releaseDocumentEventBindings(doc)
+        }, { once: true })
+        return bindings
+    }
+
+    #releaseDocumentEventBindings(doc) {
+        return doc ? this.#documentEventBindings.release(doc) : false
     }
 
     close(_reason = 'unspecified') {
@@ -4234,6 +4248,7 @@ class Reader {
         }
         for (const operation of [...this.#navButtonOperations]) operation.finish?.()
         this.#navButtonOperations.clear()
+        this.#documentEventBindings.clear()
         this.#ownedEventBindings.clear()
         this.navHUD?.destroy?.()
 
@@ -7582,6 +7597,9 @@ class Reader {
             doc
         }
     }) {
+        if (this.#closed) return
+        const documentBindings = this.#beginDocumentEventBindings(doc)
+        if (!documentBindings) return
         applyStoredChromeInsets('reader.documentLoad');
         applyLayoutSettingsToEbookDocument(document, doc);
         applyReaderPresentationStateToDocument(
@@ -7609,21 +7627,23 @@ class Reader {
         if (doc?.fonts?.ready?.then) {
             const fontsReadyStartedAt = performanceNowMs();
             doc.fonts.ready.then(() => {
-
+                if (this.#closed || !this.#documentEventBindings.isCurrent(doc, documentBindings)) return
                 if (!isCacheWarmerDocument(doc)) {
                 }
             }).catch((error) => {
             });
         }
-        requestAnimationFrame(() => {
+        const settledSectionFrame = requestAnimationFrame(() => {
+            if (this.#closed || !this.#documentEventBindings.isCurrent(doc, documentBindings)) return
             const sourceHref = doc?.body?.dataset?.mnbSourceHref || null;
             if (!isCacheWarmerDocument(doc)) {
                 window.manabi_recordLiveSettledSection?.(sourceHref);
             }
         });
-        this.#listen(doc, 'keydown', this.#handleKeydown.bind(this))
+        documentBindings.addCleanup(() => cancelAnimationFrame(settledSectionFrame))
+        documentBindings.listen(doc, 'keydown', this.#handleKeydown.bind(this))
         if (doc && doc.__manabiMay20BlankTapLoggingInstalled !== true) {
-            this.#bindGlobal(doc, '__manabiMay20BlankTapLoggingInstalled', true)
+            documentBindings.bind(doc, '__manabiMay20BlankTapLoggingInstalled', true)
             const blankPointerMoveThreshold = 12;
             let pendingBlankPointerTap = null;
             let lastPostedBlankTouchTap = null;
@@ -7737,13 +7757,13 @@ class Reader {
             const handleBlankPointerMouseDown = (event) => {
                 postContentDocumentBlankPointerTap(event, 'content-document.blank.mouse');
             };
-            this.#listen(doc, 'touchstart', handleBlankPointerTouchStart, { passive: true, capture: true });
-            this.#listen(doc, 'touchmove', handleBlankPointerTouchMove, { passive: true, capture: true });
-            this.#listen(doc, 'touchend', handleBlankPointerTouchEnd, { passive: true, capture: true });
-            this.#listen(doc, 'touchcancel', handleBlankPointerTouchEnd, { passive: true, capture: true });
-            this.#listen(doc, 'mousedown', handleBlankPointerMouseDown, { passive: true, capture: true });
+            documentBindings.listen(doc, 'touchstart', handleBlankPointerTouchStart, { passive: true, capture: true });
+            documentBindings.listen(doc, 'touchmove', handleBlankPointerTouchMove, { passive: true, capture: true });
+            documentBindings.listen(doc, 'touchend', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            documentBindings.listen(doc, 'touchcancel', handleBlankPointerTouchEnd, { passive: true, capture: true });
+            documentBindings.listen(doc, 'mousedown', handleBlankPointerMouseDown, { passive: true, capture: true });
         }
-        this.#ownedEventBindings.addCleanup(
+        documentBindings.addCleanup(
             installRestorePositionSaveUserInputTracking(doc, 'reader-document')
         );
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
