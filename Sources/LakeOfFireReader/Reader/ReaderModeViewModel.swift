@@ -691,9 +691,15 @@ internal func buildCanonicalReadabilityHTML(
     let bylineLine = resolvedByline.isEmpty
         ? ""
         : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
-    let publicationDateText = publishedTime.map(escapeReadabilityText)
+    let publicationDateItem = publishedTime.map { publishedTime in
+        let text = escapeReadabilityText(publishedTime)
+        let accessibilityLabel = escapeReadabilityHTMLAttribute(
+            "Reader metadata date: \(publishedTime)"
+        )
+        return "<span id=\"reader-publication-date\" aria-label=\"\(accessibilityLabel)\">\(text)</span>"
+    }
     let metaItems = [
-        publicationDateText.map { "<span id=\"reader-publication-date\">\($0)</span>" },
+        publicationDateItem,
         viewOriginal,
     ]
         .compactMap { $0 }

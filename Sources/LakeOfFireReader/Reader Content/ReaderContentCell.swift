@@ -72,7 +72,7 @@ fileprivate struct ReaderContentCellDisplayState: Equatable {
     var hasLoadedDisplayState = false
 }
 
-enum ReaderContentCellHistoryState: Equatable {
+enum ReaderContentCellHistoryState: Equatable, Sendable {
     case loading
     case unread
     case read
@@ -134,7 +134,27 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             }
             .removeDuplicates()
 
-        for try await nextState in historyStatePublisher.values {
+        let historyStates = AsyncThrowingStream<ReaderContentCellHistoryState, Error> {
+            continuation in
+            let cancellable = historyStatePublisher.sink(
+                receiveCompletion: { completion in
+                    switch completion {
+                    case .finished:
+                        continuation.finish()
+                    case let .failure(error):
+                        continuation.finish(throwing: error)
+                    }
+                },
+                receiveValue: { state in
+                    continuation.yield(state)
+                }
+            )
+            continuation.onTermination = { _ in
+                cancellable.cancel()
+            }
+        }
+
+        for try await nextState in historyStates {
             try Task.checkCancellation()
             guard historyState != nextState else { continue }
             historyState = nextState

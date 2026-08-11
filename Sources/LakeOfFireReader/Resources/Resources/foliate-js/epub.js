@@ -557,7 +557,7 @@ class Resources {
         // mainly because Epub.js used to generate wrong ID assertions
         // https://github.com/futurepress/epub.js/issues/1236
         if ($itemref && $itemref.nodeName !== 'idref') {
-            top.at(-1).id = null
+            top[top.length - 1].id = null
             $itemref = CFI.toElement(this.opf, top)
         }
         const idref = $itemref?.getAttribute('idref')
@@ -689,7 +689,7 @@ export class Loader {
     async loadItem(item, parents = []) {
         if (this.#destroyed || !item) return null
         const { href } = item
-        const parent = parents.at(-1)
+        const parent = parents[parents.length - 1]
         if (this.#cache.has(href)) return this.ref(href, parent)
 
         // Concurrent section, prefetch, and replacement requests must share the
@@ -737,7 +737,7 @@ export class Loader {
         } = item
         const isScript = MIME.JS.test(mediaType)
         if (isScript && !this.allowScript) return null
-        const parent = parents.at(-1)
+        const parent = parents[parents.length - 1]
         if (this.#cache.has(href)) return this.ref(href, parent)
 
         const isRecursiveReference = parents.some(candidate => candidate === href)
@@ -776,10 +776,10 @@ export class Loader {
         manabiEpubReaderLoadLog('epub.loadReplaced.start', {
             href,
             mediaType,
-            parent: parents.at(-1) ?? null,
+            parent: parents[parents.length - 1] ?? null,
             parentCount: parents.length,
         })
-        const parent = parents.at(-1)
+        const parent = parents[parents.length - 1]
         if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
             const directURL = await this.replaceURL(href, mediaType)
             if (this.#destroyed) return null

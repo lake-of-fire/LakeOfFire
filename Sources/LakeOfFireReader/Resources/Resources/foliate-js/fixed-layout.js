@@ -89,15 +89,15 @@ export class FixedLayout extends HTMLElement {
     constructor() {
         super()
 
-        const sheet = new CSSStyleSheet()
-        this.#root.adoptedStyleSheets = [sheet]
-        sheet.replaceSync(`:host {
+        const style = document.createElement('style')
+        style.textContent = `:host {
             width: 100%;
             height: 100%;
             display: flex;
             justify-content: center;
             align-items: center;
-        }`)
+        }`
+        this.#root.append(style)
 
         this.#resizeObserver.observe(this)
     }

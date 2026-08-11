@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import LakeOfFireReader
 
 private actor ReaderCallbackGate {
@@ -27,6 +28,39 @@ private enum ReaderCallbackTestError: Error {
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testIPadReaderModeDoesNotUseSplitViewLeadingSafeAreaAsWebKitInset() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: false,
+            preservesLeadingSafeAreaInset: false
+        )
+
+        XCTAssertEqual(resolved.leading, 0)
+    }
+
+    func testPhoneReaderModeRetainsPhysicalLeadingSafeAreaInset() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 44, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: false,
+            preservesLeadingSafeAreaInset: true
+        )
+
+        XCTAssertEqual(resolved.leading, 44)
+    }
+
+    func testIPadEBookDoesNotUseSplitViewLeadingSafeAreaAsWebKitInset() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: true,
+            preservesLeadingSafeAreaInset: false
+        )
+
+        XCTAssertEqual(resolved.leading, 0)
+    }
+
     func testCommitFailureSuppressesFinishAndPendingURLChange() async {
         let manager = NavigationTaskManager()
         var finishCount = 0
@@ -301,4 +335,3 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertEqual(order, ["commit", "finish", "recoverable-failure", "url"])
     }
 }
-

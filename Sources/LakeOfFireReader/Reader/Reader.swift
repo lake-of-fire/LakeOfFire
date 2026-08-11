@@ -113,6 +113,15 @@ private extension View {
         }
     }
 
+    @ViewBuilder
+    func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            ignoresSafeArea(.all, edges: .all)
+        } else {
+            self
+        }
+    }
+
 #endif
 }
 
@@ -1204,7 +1213,7 @@ public struct Reader: View {
             top: effectiveSampledTopInset,//    + 8 + 2)
             backgroundColor: statusBarFadeBackgroundColor
         )
-        .ignoresSafeArea(.all, edges: .all)
+        .readerWebViewSafeAreaExpansionForCurrentDevice()
 #endif
         .background {
             GeometryReader { geometry in

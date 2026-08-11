@@ -11,6 +11,9 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
+#if os(iOS)
+import UIKit
+#endif
 
 fileprivate let blockedHosts = Set([
     "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
@@ -20,6 +23,44 @@ fileprivate let blockedHosts = Set([
     "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
 ])
+
+struct ReaderWebViewObscuredInsetResolver {
+    static func resolve(
+        obscuredInsets: EdgeInsets?,
+        additionalInsets: EdgeInsets,
+        usesEBookChromeInsets: Bool,
+        preservesLeadingSafeAreaInset: Bool
+    ) -> EdgeInsets {
+#if os(iOS)
+        let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
+            ? 0
+            : (obscuredInsets?.top ?? 0)
+        let sampledBottom = obscuredInsets?.bottom ?? 0
+        let sampledLeading = additionalInsets.leading > 0
+            ? 0
+            : (obscuredInsets?.leading ?? 0)
+        let resolvedBottom = usesEBookChromeInsets
+            ? max(sampledBottom, additionalInsets.bottom)
+            : sampledBottom + additionalInsets.bottom
+        let resolvedLeading = preservesLeadingSafeAreaInset
+            ? max(0, sampledLeading + additionalInsets.leading)
+            : 0
+        return EdgeInsets(
+            top: max(0, sampledTop + additionalInsets.top),
+            leading: resolvedLeading,
+            bottom: max(0, resolvedBottom),
+            trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
+        )
+#else
+        EdgeInsets(
+            top: max(0, additionalInsets.top),
+            leading: preservesLeadingSafeAreaInset ? max(0, additionalInsets.leading) : 0,
+            bottom: max(0, additionalInsets.bottom),
+            trailing: max(0, additionalInsets.trailing)
+        )
+#endif
+    }
+}
 
 
 
@@ -410,31 +451,18 @@ fileprivate struct ReaderWebViewInternal: View {
     }
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
+        let preservesLeadingSafeAreaInset: Bool
 #if os(iOS)
-        let sampledTop = additionalInsets.top > 0 || usesEBookChromeInsets
-            ? 0
-            : (obscuredInsets?.top ?? 0)
-        let sampledBottom = obscuredInsets?.bottom ?? 0
-        let sampledLeading = additionalInsets.leading > 0
-            ? 0
-            : (obscuredInsets?.leading ?? 0)
-        let resolvedBottom = usesEBookChromeInsets
-            ? max(sampledBottom, additionalInsets.bottom)
-            : sampledBottom + additionalInsets.bottom
-        return EdgeInsets(
-            top: max(0, sampledTop + additionalInsets.top),
-            leading: max(0, sampledLeading + additionalInsets.leading),
-            bottom: max(0, resolvedBottom),
-            trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
-        )
+        preservesLeadingSafeAreaInset = UIDevice.current.userInterfaceIdiom == .phone
 #else
-        EdgeInsets(
-            top: max(0, additionalInsets.top),
-            leading: max(0, additionalInsets.leading),
-            bottom: max(0, additionalInsets.bottom),
-            trailing: max(0, additionalInsets.trailing)
-        )
+        preservesLeadingSafeAreaInset = true
 #endif
+        return ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: obscuredInsets,
+            additionalInsets: additionalInsets,
+            usesEBookChromeInsets: usesEBookChromeInsets,
+            preservesLeadingSafeAreaInset: preservesLeadingSafeAreaInset
+        )
     }
     
     public var body: some View {
