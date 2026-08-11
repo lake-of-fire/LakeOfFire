@@ -2211,9 +2211,7 @@ const segmentMetadataPayloadsForSnapshot = (doc, snapshot) => {
 
 const resetSegmentMetadataCachesForSnapshot = (doc, snapshot) => {
     doc.manabiSegmentMetadataByID = new Map();
-    doc.manabiSegmentIDsByEntryID = new Map();
     doc.manabiSegmentMetadataSidecarPayloads = null;
-    doc.manabiSegmentMetadataFullyBootstrapped = false;
     cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
 };
 
@@ -2274,16 +2272,6 @@ const segmentMetadataFromCompactTuple = (segment, tables) => {
         l: segment?.[7],
         x: segmentMetadataTableValue(tables.x, segment?.[8], null),
     };
-};
-
-const expandSegmentMetadataPayload = (payload) => {
-    if (payload?.v !== segmentMetadataParserVersion || !payload?.t || !Array.isArray(payload?.s)) return [];
-    const tables = compactSegmentMetadataTables(payload.t);
-    if (
-        !compactEbookSegmentRuntimeIDsAreUnique(payload.s)
-        || !payload.s.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))
-    ) return [];
-    return payload.s.map((segment) => segmentMetadataFromCompactTuple(segment, tables));
 };
 
 const segmentMetadataPayloadLookupState = (payload) => {
@@ -2360,52 +2348,6 @@ const lazySegmentMetadataByID = (doc, snapshot) => {
     return doc.manabiSegmentMetadataByID;
 };
 
-const segmentMetadataBootstrap = (doc) => {
-    if (!doc) {
-        return { byID: new Map(), idsByEntryID: new Map() };
-    }
-    const snapshot = segmentMetadataSidecarSnapshot(doc);
-    if (
-        doc.manabiSegmentMetadataFullyBootstrapped === true
-        && doc.manabiSegmentMetadataByID
-        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot)
-    ) {
-        return {
-            byID: doc.manabiSegmentMetadataByID,
-            idsByEntryID: doc.manabiSegmentIDsByEntryID || new Map(),
-        };
-    }
-    const byID = new Map();
-    const idsByEntryID = new Map();
-    const indexEntryIDs = (segmentID, entryIDs) => {
-        for (const entryID of entryIDs || []) {
-            if (typeof entryID !== 'number' || !Number.isFinite(entryID)) continue;
-            const key = String(entryID);
-            if (!idsByEntryID.has(key)) idsByEntryID.set(key, new Set());
-            idsByEntryID.get(key).add(segmentID);
-        }
-    };
-    for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
-        for (const segment of expandSegmentMetadataPayload(payload)) {
-            if (!segment?.i) continue;
-            byID.set(segment.i, segment);
-            if (typeof segment.sid === 'string' && segment.sid.length > 0) {
-                byID.set(segment.sid, segment);
-            }
-            indexEntryIDs(segment.i, segment.j);
-            indexEntryIDs(segment.i, segment.n);
-            indexEntryIDs(segment.sid, segment.j);
-            indexEntryIDs(segment.sid, segment.n);
-        }
-    }
-    doc.manabiSegmentMetadataByID = byID;
-    doc.manabiSegmentIDsByEntryID = idsByEntryID;
-    doc.manabiSegmentMetadataFullyBootstrapped = true;
-    cacheSegmentMetadataSidecarSnapshot(doc, snapshot);
-    return { byID, idsByEntryID };
-};
-
 const segmentMetadataForNode = (segmentNode) => {
     if (!segmentNode) return null;
     const doc = segmentNode.ownerDocument || document;
@@ -2415,13 +2357,6 @@ const segmentMetadataForNode = (segmentNode) => {
     const byID = lazySegmentMetadataByID(doc, snapshot);
     if (byID.has(segmentID)) {
         return byID.get(segmentID) || null;
-    }
-    if (
-        doc.manabiSegmentMetadataFullyBootstrapped === true
-        && doc.manabiSegmentMetadataSidecarSignature === snapshot.sidecarSignature
-        && segmentMetadataSidecarsMatchCache(doc, snapshot)
-    ) {
-        return null;
     }
     for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
         const metadata = findSegmentMetadataInPayload(payload, segmentID);
