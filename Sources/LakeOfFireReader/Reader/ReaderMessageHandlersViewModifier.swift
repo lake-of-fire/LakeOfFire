@@ -694,8 +694,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
 
                     try await { @RealmBackgroundActor in
-                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                        if let historyRecord = HistoryRecord.get(forURL: url, realm: realm) {
+                        if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
                             try await historyRecord.refreshDemotedStatus()
                         }
                     }()
@@ -829,8 +828,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
 
                     try await { @RealmBackgroundActor in
-                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                        if let historyRecord = HistoryRecord.get(forURL: url, realm: realm) {
+                        if let historyRecord = try await HistoryRecord.getOpenedRecord(forURL: url) {
                             try await historyRecord.refreshDemotedStatus()
                         }
                     }()

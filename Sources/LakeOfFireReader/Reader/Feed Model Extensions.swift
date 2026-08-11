@@ -61,7 +61,11 @@ public extension Feed {
         guard let historyRealm = try? Realm(configuration: ReaderContentLoader.historyRealmConfiguration) else {
             return nil
         }
-        let entryURLStrings = Set(entries.map { $0.url.absoluteString })
+        let entryURLStrings = Set(
+            entries.flatMap {
+                HistoryRecord.historyIdentityURLStrings(for: $0.url)
+            }
+        )
         guard !entryURLStrings.isEmpty else { return nil }
         return historyRealm.objects(HistoryRecord.self)
             .where { !$0.isDeleted }

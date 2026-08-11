@@ -1,12 +1,19 @@
 import XCTest
 import RealmSwift
+import RealmSwiftGaps
 @testable import LakeOfFireContent
 @testable import LakeOfFireReader
 
 final class FeedStateIndicatorTests: XCTestCase {
     private func makeConfiguration(identifier: String = UUID().uuidString) -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: identifier)
-        configuration.objectTypes = [Feed.self, FeedEntry.self, Bookmark.self, HistoryRecord.self]
+        configuration.objectTypes = [
+            Feed.self,
+            FeedEntry.self,
+            Bookmark.self,
+            HistoryRecord.self,
+            ContentFile.self,
+        ]
         return configuration
     }
 
@@ -583,5 +590,114 @@ final class FeedStateIndicatorTests: XCTestCase {
             liveRecord.isDeleted = true
         }
         XCTAssertNil(HistoryRecord.latestLastVisitedAt(for: targetURL, in: realm))
+    }
+
+    func testHistoryRecordQueriesTreatReaderLoaderURLAsCanonicalIdentity() throws {
+        let realm = try Realm(configuration: makeConfiguration())
+        let targetURL = try XCTUnwrap(URL(string: "https://example.com/articles/canonical-history"))
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: targetURL))
+        let visitedAt = Date(timeIntervalSince1970: 1_700_000_300)
+
+        try realm.write {
+            let record = HistoryRecord()
+            record.url = loaderURL
+            record.updateCompoundKey()
+            record.lastVisitedAt = visitedAt
+            realm.add(record)
+        }
+
+        XCTAssertTrue(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
+        XCTAssertEqual(HistoryRecord.latestLastVisitedAt(for: targetURL, in: realm), visitedAt)
+        XCTAssertEqual(
+            Feed.openedFollowingEntryURLKeys(for: [targetURL], in: realm),
+            [Feed.canonicalFollowingEntryURLKey(for: targetURL)]
+        )
+    }
+
+    @MainActor
+    func testConcurrentHistoryVisitsConvergeOnOneCanonicalRecord() async throws {
+        let configuration = makeConfiguration()
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+        }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let targetURL = try XCTUnwrap(URL(string: "https://example.com/articles/concurrent-history"))
+        let realm = try await Realm(configuration: configuration)
+        let entry = FeedEntry()
+        entry.url = targetURL
+        entry.title = "Concurrent history"
+        entry.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(entry)
+        }
+
+        async let firstVisit: Void = ReaderContentLoader.recordHistoryVisit(for: entry)
+        async let secondVisit: Void = ReaderContentLoader.recordHistoryVisit(for: entry)
+        _ = try await (firstVisit, secondVisit)
+        await realm.asyncRefresh()
+
+        let matchingRecords = HistoryRecord.records(matching: targetURL, in: realm)
+        XCTAssertEqual(matchingRecords.count, 1)
+        XCTAssertEqual(matchingRecords.first?.url, targetURL)
+        XCTAssertFalse(try XCTUnwrap(matchingRecords.first).isDeleted)
+    }
+
+    @MainActor
+    func testGetContentSeparatesHistoryVisitIntentAndInvalidatesCachedCandidates() async throws {
+        let configuration = makeConfiguration()
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+        }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let targetURL = try XCTUnwrap(URL(string: "https://example.com/articles/history-intent"))
+        let realm = try await Realm(configuration: configuration)
+        let entry = FeedEntry()
+        entry.url = targetURL
+        entry.title = "History intent"
+        entry.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(entry)
+        }
+
+        let nonVisitingContent = try await ReaderContentLoader.getContent(
+            forURL: targetURL,
+            countsAsHistoryVisit: false
+        )
+        await realm.asyncRefresh()
+        XCTAssertTrue(nonVisitingContent is FeedEntry)
+        XCTAssertFalse(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
+
+        let visitingContent = try await ReaderContentLoader.getContent(
+            forURL: targetURL,
+            countsAsHistoryVisit: true
+        )
+        await realm.asyncRefresh()
+        XCTAssertTrue(visitingContent is HistoryRecord)
+        XCTAssertTrue(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
+
+        let cachedCandidatesIncludeHistory = try await Self.cachedCandidatesIncludeHistory(
+            for: targetURL
+        )
+        XCTAssertTrue(cachedCandidatesIncludeHistory)
+    }
+
+    @RealmBackgroundActor
+    private static func cachedCandidatesIncludeHistory(for url: URL) async throws -> Bool {
+        try await ReaderContentLoader.loadAll(url: url).contains { $0 is HistoryRecord }
     }
 }

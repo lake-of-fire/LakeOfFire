@@ -76,6 +76,8 @@ public struct ReaderContentLoader {
     private static var inFlightLoadAllTasks: [String: Task<[ContentReference], Error>] = [:]
     @RealmBackgroundActor
     private static var recentLoadAllCache: [String: (timestamp: Date, references: [ContentReference])] = [:]
+    @RealmBackgroundActor
+    private static var loadAllCacheRevisions: [String: UInt64] = [:]
     private static let loadAllCacheTTL: TimeInterval = 5
 
     public struct ContentReference: @unchecked Sendable {
@@ -129,6 +131,7 @@ public struct ReaderContentLoader {
         await { @RealmBackgroundActor in
             inFlightLoadAllTasks.removeAll()
             recentLoadAllCache.removeAll()
+            loadAllCacheRevisions.removeAll()
         }()
     }
 
@@ -174,8 +177,28 @@ public struct ReaderContentLoader {
         return pageURL.readerLoaderContentURL
     }
 
-    private static func loadAllTaskKey(url: URL, skipContentFiles: Bool, skipFeedEntries: Bool) -> String {
-        "\(url.absoluteString)|contentFiles:\(!skipContentFiles)|feedEntries:\(!skipFeedEntries)"
+    private static func loadAllTaskKey(
+        url: URL,
+        skipContentFiles: Bool,
+        skipFeedEntries: Bool,
+        revision: UInt64
+    ) -> String {
+        "\(url.absoluteString)|contentFiles:\(!skipContentFiles)|feedEntries:\(!skipFeedEntries)|revision:\(revision)"
+    }
+
+    @RealmBackgroundActor
+    static func invalidateCachedContent(for url: URL) {
+        let canonicalURL = HistoryRecord.canonicalHistoryURL(for: url)
+        let revisionKey = canonicalURL.absoluteString
+        loadAllCacheRevisions[revisionKey, default: 0] &+= 1
+
+        let identityPrefixes = HistoryRecord.historyIdentityURLStrings(for: url).map { "\($0)|" }
+        let staleCacheKeys = recentLoadAllCache.keys.filter { cacheKey in
+            identityPrefixes.contains { cacheKey.hasPrefix($0) }
+        }
+        for cacheKey in staleCacheKeys {
+            recentLoadAllCache[cacheKey] = nil
+        }
     }
 
     @RealmBackgroundActor
@@ -194,7 +217,13 @@ public struct ReaderContentLoader {
 
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
-        let taskKey = loadAllTaskKey(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+        let revisionKey = HistoryRecord.canonicalHistoryURL(for: url).absoluteString
+        let taskKey = loadAllTaskKey(
+            url: url,
+            skipContentFiles: skipContentFiles,
+            skipFeedEntries: skipFeedEntries,
+            revision: loadAllCacheRevisions[revisionKey, default: 0]
+        )
         if let cached = recentLoadAllCache[taskKey],
            Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
             return try await resolveContentReferences(cached.references)
@@ -231,7 +260,7 @@ public struct ReaderContentLoader {
                 }
             }
             let historyStartedAt = Date()
-            let history = try await HistoryRecord.get(forURL: url, realm: realm)
+            let history = HistoryRecord.getOpenedRecord(forURL: url, in: realm)
             let historyElapsed = Date().timeIntervalSince(historyStartedAt)
             if shouldLogLoadAllStep(found: history != nil, elapsed: historyElapsed) {
                 logReaderLoad(
@@ -392,6 +421,36 @@ public struct ReaderContentLoader {
     }
 
     @MainActor
+    public static func recordHistoryVisit(
+        for content: any ReaderContentProtocol,
+        source: String = "ReaderContentLoader.recordHistoryVisit"
+    ) async throws {
+        let pageURL = content.url
+        let targetHistoryRealmConfiguration = historyRealmConfiguration
+        if let contentReference = ContentReference(content: content) {
+            let didRecordVisit = try await { @RealmBackgroundActor in
+                guard let resolvedContent = try await contentReference.resolveOnBackgroundActor() else {
+                    return false
+                }
+                _ = try await resolvedContent.addHistoryRecord(
+                    realmConfiguration: targetHistoryRealmConfiguration,
+                    pageURL: pageURL
+                )
+                return true
+            }()
+            if didRecordVisit {
+                return
+            }
+        }
+
+        _ = try await load(
+            url: pageURL,
+            countsAsHistoryVisit: true,
+            source: source
+        )
+    }
+
+    @MainActor
     public static func getContent(
         forURL pageURL: URL,
         countsAsHistoryVisit: Bool = false,
@@ -405,36 +464,6 @@ public struct ReaderContentLoader {
             )
             return try await existingTask.value
         }
-        if countsAsHistoryVisit {
-            let nonHistoryTaskKey = "\(resolvedURL.absoluteString)|history:false"
-            if let existingTask = inFlightGetContentTasks[nonHistoryTaskKey] {
-                logReaderLoad(
-                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(nonHistoryTaskKey) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
-                )
-                let existingContent = try await existingTask.value
-                if existingContent == nil || existingContent is HistoryRecord {
-                    logReaderLoad(
-                        "stage=contentLoader.getContent.reuseNonHistoryTask.accepted pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) contentURL=\(existingContent?.url.absoluteString ?? "nil") contentType=\(existingContent.map { String(describing: type(of: $0)) } ?? "nil") source=\(source)"
-                    )
-                    return existingContent
-                }
-                guard let existingContent else {
-                    return nil
-                }
-                logReaderLoad(
-                    "stage=contentLoader.getContent.reuseNonHistoryTask.rejected pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) contentURL=\(existingContent.url.absoluteString) contentType=\(String(describing: type(of: existingContent))) source=\(source)"
-                )
-            }
-        } else {
-            let historyTaskKey = "\(resolvedURL.absoluteString)|history:true"
-            if let existingTask = inFlightGetContentTasks[historyTaskKey] {
-                logReaderLoad(
-                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(historyTaskKey) source=\(source)"
-                )
-                return try await existingTask.value
-            }
-        }
-
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
             let startedAt = Date()
             logReaderLoad(
@@ -454,7 +483,7 @@ public struct ReaderContentLoader {
             } else if let content = try await ReaderContentLoader.load(
                 url: pageURL,
                 persist: !pageURL.isNativeReaderView,
-                countsAsHistoryVisit: true,
+                countsAsHistoryVisit: countsAsHistoryVisit,
                 source: "\(source).directLoad"
             ) {
                 try Task.checkCancellation()
@@ -539,9 +568,19 @@ public struct ReaderContentLoader {
                     "stage=contentLoader.load.addHistoryVisit url=\(url.absoluteString) contentType=\(String(describing: type(of: nonHistoryMatch))) key=\(nonHistoryMatch.compoundKey)"
                 )
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
+            } else if let historyMatch = match as? HistoryRecord,
+                      countsAsHistoryVisit,
+                      persist,
+                      let historyRealm = historyMatch.realm {
+                try await historyRealm.asyncWrite {
+                    historyMatch.lastVisitedAt = Date()
+                    historyMatch.isDeleted = false
+                    historyMatch.refreshChangeMetadata(explicitlyModified: true)
+                }
+                invalidateCachedContent(for: url)
             } else if match == nil, !url.isEBookURL {
                 let historyRecord = HistoryRecord()
-                historyRecord.url = url
+                historyRecord.url = HistoryRecord.canonicalHistoryURL(for: url)
                 //        historyRecord.isReaderModeByDefault
                 historyRecord.updateCompoundKey()
                 if persist {
@@ -549,7 +588,10 @@ public struct ReaderContentLoader {
 //                    await historyRealm.asyncRefresh()
                     try await historyRealm.asyncWrite {
                         historyRealm.add(historyRecord, update: .modified)
+                        historyRecord.isDeleted = false
+                        historyRecord.refreshChangeMetadata(explicitlyModified: true)
                     }
+                    invalidateCachedContent(for: url)
                 }
                 match = historyRecord
                 logReaderLoad(
