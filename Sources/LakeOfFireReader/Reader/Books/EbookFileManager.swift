@@ -94,27 +94,79 @@ public struct EbookFileManager {
                 }
             }
 
-            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateWithAuthor.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-//                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    for (contentFile, imageURL) in toUpdateWithImage {
-                        contentFile.imageUrl = imageURL
-                    }
-                    for (contentFile, title) in toUpdateWithTitle {
-                        contentFile.title = title
-                    }
-                    for (contentFile, author) in toUpdateWithAuthor {
-                        contentFile.author = author ?? ""
-                    }
-                    for (contentFile, publicationDate) in toUpdateWithPublicationDate {
-                        contentFile.publicationDate = publicationDate
-                    }
-                    for contentFile in toUpdateAsPhysicalMedia {
-                        contentFile.isPhysicalMedia = true
-                    }
-                }
+            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty
+                || !toUpdateWithAuthor.isEmpty
+                || !toUpdateWithPublicationDate.isEmpty
+                || !toUpdateAsPhysicalMedia.isEmpty {
+                try await applyMetadataUpdates(
+                    images: toUpdateWithImage,
+                    titles: toUpdateWithTitle,
+                    authors: toUpdateWithAuthor,
+                    publicationDates: toUpdateWithPublicationDate,
+                    physicalMedia: toUpdateAsPhysicalMedia
+                )
             }
         })
+    }
+
+    @RealmBackgroundActor
+    static func applyMetadataUpdates(
+        images: [(ContentFile, URL)],
+        titles: [(ContentFile, String)],
+        authors: [(ContentFile, String?)],
+        publicationDates: [(ContentFile, Date)],
+        physicalMedia: [ContentFile],
+        at date: Date = Date()
+    ) async throws {
+        guard !images.isEmpty || !titles.isEmpty || !authors.isEmpty
+            || !publicationDates.isEmpty || !physicalMedia.isEmpty else {
+            return
+        }
+        guard let realm = images.first?.0.realm
+            ?? titles.first?.0.realm
+            ?? authors.first?.0.realm
+            ?? publicationDates.first?.0.realm
+            ?? physicalMedia.first?.realm else {
+            return
+        }
+
+        try await realm.asyncWrite {
+            var changedFiles = [String: ContentFile]()
+            for (contentFile, imageURL) in images {
+                if contentFile.imageUrl != imageURL {
+                    contentFile.imageUrl = imageURL
+                    changedFiles[contentFile.compoundKey] = contentFile
+                }
+            }
+            for (contentFile, title) in titles {
+                if contentFile.title != title {
+                    contentFile.title = title
+                    changedFiles[contentFile.compoundKey] = contentFile
+                }
+            }
+            for (contentFile, author) in authors {
+                let resolvedAuthor = author ?? ""
+                if contentFile.author != resolvedAuthor {
+                    contentFile.author = resolvedAuthor
+                    changedFiles[contentFile.compoundKey] = contentFile
+                }
+            }
+            for (contentFile, publicationDate) in publicationDates {
+                if contentFile.publicationDate != publicationDate {
+                    contentFile.publicationDate = publicationDate
+                    changedFiles[contentFile.compoundKey] = contentFile
+                }
+            }
+            for contentFile in physicalMedia where !contentFile.isPhysicalMedia {
+                contentFile.isPhysicalMedia = true
+                changedFiles[contentFile.compoundKey] = contentFile
+            }
+            for contentFile in changedFiles.values {
+                contentFile.refreshChangeMetadata(
+                    explicitlyModified: true,
+                    at: date
+                )
+            }
+        }
     }
 }

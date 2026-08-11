@@ -99,6 +99,52 @@ final class SyncMutationBoundaryTests: XCTestCase {
         XCTAssertEqual(pendingMutation(for: catalog, in: realm)?.generation, deletedGeneration)
     }
 
+    @RealmBackgroundActor
+    func testEbookMetadataJournalsPublicationOnlyUpdateOnce() async throws {
+        let configuration = makeConfiguration(objectTypes: [ContentFile.self])
+        let realm = try await Realm(
+            configuration: configuration,
+            actor: RealmBackgroundActor.shared
+        )
+        let file = ContentFile()
+        file.url = URL(string: "ebook://ebook/load/test.epub")!
+        file.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(file)
+        }
+        let publicationDate = Date(timeIntervalSinceReferenceDate: 56_000)
+        let mutationDate = Date(timeIntervalSinceReferenceDate: 57_000)
+
+        try await EbookFileManager.applyMetadataUpdates(
+            images: [],
+            titles: [],
+            authors: [],
+            publicationDates: [(file, publicationDate)],
+            physicalMedia: [],
+            at: mutationDate
+        )
+
+        XCTAssertEqual(file.publicationDate, publicationDate)
+        let firstGeneration = try XCTUnwrap(
+            pendingMutation(for: file, in: realm)?.generation
+        )
+        XCTAssertEqual(pendingMutation(for: file, in: realm)?.changedAt, mutationDate)
+
+        try await EbookFileManager.applyMetadataUpdates(
+            images: [],
+            titles: [],
+            authors: [],
+            publicationDates: [(file, publicationDate)],
+            physicalMedia: [],
+            at: mutationDate.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(
+            pendingMutation(for: file, in: realm)?.generation,
+            firstGeneration
+        )
+    }
+
     private func makeConfiguration(objectTypes: [Object.Type]) -> Realm.Configuration {
         var configuration = Realm.Configuration(inMemoryIdentifier: UUID().uuidString)
         configuration.objectTypes = objectTypes + [BigSyncPendingMutation.self]
