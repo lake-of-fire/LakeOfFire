@@ -66,6 +66,15 @@ private func urlsMatchWithoutHashForHotfix(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
+func normalizedReaderModePendingMatchKey(for url: URL?) -> String? {
+    guard let url else { return nil }
+    let canonicalURL = url.canonicalReaderContentURLForHotfix()
+    if let snippetKey = canonicalURL.snippetKey {
+        return "snippet:\(snippetKey)"
+    }
+    return canonicalURL.removingFragmentIfNeeded().absoluteString
+}
+
 private struct ReaderFontBlobPayload {
     let base64CSS: String
     let identity: String
@@ -2312,26 +2321,7 @@ public class ReaderModeViewModel: ObservableObject, @unchecked Sendable {
     }
 
     private func normalizedPendingMatchKey(for url: URL?) -> String? {
-        guard let url else { return nil }
-
-        if let snippetKey = url.snippetKey {
-            return "snippet:\(snippetKey)"
-        }
-
-        if url.isReaderURLLoaderURL,
-           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-           let readerValue = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
-            let decodedReaderURLString = readerValue.removingPercentEncoding ?? readerValue
-            guard let readerURL = URL(string: decodedReaderURLString) else {
-                return url.absoluteString
-            }
-            if let snippetKey = readerURL.snippetKey {
-                return "snippet:\(snippetKey)"
-            }
-            return readerURL.removingFragmentIfNeeded().absoluteString
-        }
-
-        return url.canonicalReaderContentURLForHotfix().removingFragmentIfNeeded().absoluteString
+        normalizedReaderModePendingMatchKey(for: url)
     }
 
     private func pendingKeysMatch(_ lhs: URL?, _ rhs: URL?) -> Bool {
