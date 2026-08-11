@@ -649,6 +649,36 @@ final class FeedStateIndicatorTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoryVisitFallsBackToCanonicalURLWhenSourceCannotResolve() async throws {
+        let configuration = makeConfiguration()
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        defer {
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+        }
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let targetURL = try XCTUnwrap(URL(string: "https://example.com/articles/unavailable-source"))
+        let unavailableEntry = FeedEntry()
+        unavailableEntry.url = targetURL
+        unavailableEntry.title = "Unavailable source"
+        unavailableEntry.updateCompoundKey()
+
+        try await ReaderContentLoader.recordHistoryVisit(for: unavailableEntry)
+
+        let realm = try await Realm(configuration: configuration)
+        await realm.asyncRefresh()
+        XCTAssertTrue(HistoryRecord.hasOpenedRecord(for: targetURL, in: realm))
+        XCTAssertEqual(HistoryRecord.records(matching: targetURL, in: realm).count, 1)
+    }
+
+    @MainActor
     func testGetContentSeparatesHistoryVisitIntentAndInvalidatesCachedCandidates() async throws {
         let configuration = makeConfiguration()
         let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
