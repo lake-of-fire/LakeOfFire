@@ -2,11 +2,31 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    compactEbookSegmentRuntimeIDsAreUnique,
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    expandCompactEbookSegmentIDToken,
     indexUniqueEbookSegmentAlias,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-identity.js'
+
+test('expands only explicit compact v9 segment ID encodings', () => {
+    assert.equal(expandCompactEbookSegmentIDToken('Ab09'), 'mnb-sAb09')
+    assert.equal(expandCompactEbookSegmentIDToken('!source-segment'), 'source-segment')
+    assert.equal(expandCompactEbookSegmentIDToken('~123'), '_m123')
+    assert.equal(expandCompactEbookSegmentIDToken('legacy-token'), null)
+    assert.equal(expandCompactEbookSegmentIDToken(''), null)
+    assert.equal(expandCompactEbookSegmentIDToken('!'), null)
+    assert.equal(expandCompactEbookSegmentIDToken('~'), null)
+})
+
+test('rejects compact token aliases that expand to the same runtime ID', () => {
+    const tuple = token => [token, 0, null, null, null, null, null, null, null, 0, 0]
+
+    assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('Cd10')]), true)
+    assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('Ab09')]), false)
+    assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('!mnb-sAb09')]), false)
+})
 
 test('uses only explicit sentence identity and never promotes a hash', () => {
     const attributes = { sid: 'sentence-id', h: 'sentence-hash' }

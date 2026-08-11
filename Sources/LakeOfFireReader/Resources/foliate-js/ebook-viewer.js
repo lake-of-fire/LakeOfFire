@@ -20,9 +20,11 @@ import { makeDirectSectionURLResolver } from './ebook-direct-section.js'
 import { applyEbookViewerWritingDirection } from './ebook-viewer-writing-direction.js'
 import { ebookProgressFractionForRelocate } from './ebook-reading-progress.js'
 import {
+    compactEbookSegmentRuntimeIDsAreUnique,
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
     ebookSegmentIdentifierAliases,
+    expandCompactEbookSegmentIDToken,
     indexUniqueEbookSegmentAlias,
 } from './ebook-segment-identity.js'
 import {
@@ -2223,13 +2225,6 @@ const segmentMetadataTableValue = (table, index, fallback = null) => (
 
 const segmentMetadataParserVersion = 9;
 
-const expandSegmentIDToken = (token) => {
-    if (typeof token !== 'string' || token.length <= 1) return null;
-    if (token.startsWith('!')) return token.slice(1);
-    if (token.startsWith('~')) return `_m${token.slice(1)}`;
-    return null;
-};
-
 const segmentMetadataTableArray = (tables, shortKey) => (
     Array.isArray(tables?.[shortKey])
         ? tables[shortKey]
@@ -2250,14 +2245,7 @@ const compactSegmentMetadataTables = (compactTables) => ({
 
 const compactSegmentMetadataTupleIsExactV9 = (segment, tables) => {
     if (!Array.isArray(segment) || segment.length !== 11) return false;
-    const token = segment[0];
-    if (
-        typeof token !== 'string'
-        || token.length <= 1
-        || (token[0] !== '!' && token[0] !== '~')
-    ) {
-        return false;
-    }
+    if (expandCompactEbookSegmentIDToken(segment[0]) === null) return false;
     return [
         segmentMetadataTableValue(tables.h, segment[1], null),
         segmentMetadataTableValue(tables.sid, segment[9], null),
@@ -2270,7 +2258,7 @@ const segmentMetadataFromCompactTuple = (segment, tables) => {
     const sentenceIdentifier = segmentMetadataTableValue(tables.sid, segment?.[9], null);
     const paragraphIdentifier = segmentMetadataTableValue(tables.pid, segment?.[10], null);
     return {
-        i: expandSegmentIDToken(segment?.[0]),
+        i: expandCompactEbookSegmentIDToken(segment?.[0]),
         h: segmentHash,
         sid: sentenceIdentifier && segmentHash
             ? `${sentenceIdentifier}-${segmentHash}`
@@ -2291,7 +2279,10 @@ const segmentMetadataFromCompactTuple = (segment, tables) => {
 const expandSegmentMetadataPayload = (payload) => {
     if (payload?.v !== segmentMetadataParserVersion || !payload?.t || !Array.isArray(payload?.s)) return [];
     const tables = compactSegmentMetadataTables(payload.t);
-    if (!payload.s.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))) return [];
+    if (
+        !compactEbookSegmentRuntimeIDsAreUnique(payload.s)
+        || !payload.s.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))
+    ) return [];
     return payload.s.map((segment) => segmentMetadataFromCompactTuple(segment, tables));
 };
 
@@ -2328,7 +2319,10 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
     const compactSegments = payload?.s;
     if (payload?.v === segmentMetadataParserVersion && payload?.t && Array.isArray(compactSegments)) {
         const tables = compactSegmentMetadataTables(payload.t);
-        if (!compactSegments.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))) {
+        if (
+            !compactEbookSegmentRuntimeIDsAreUnique(compactSegments)
+            || !compactSegments.every((segment) => compactSegmentMetadataTupleIsExactV9(segment, tables))
+        ) {
             return null;
         }
         const state = segmentMetadataPayloadLookupState(payload);

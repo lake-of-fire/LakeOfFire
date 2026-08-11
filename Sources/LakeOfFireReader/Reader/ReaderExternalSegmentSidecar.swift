@@ -62,22 +62,28 @@ private func readerSegmentSidecarHasDurableSegmentIdentities(
         return !table[tableIndex.intValue].isEmpty
     }
 
-    func isCanonicalRuntimeIdentifierToken(_ token: String) -> Bool {
-        guard let first = token.first else { return false }
-        if first == "!" || first == "~" {
-            return token.count > 1
+    func expandedRuntimeIdentifier(from token: String) -> String? {
+        guard let first = token.first else { return nil }
+        if first == "!" {
+            let identifier = String(token.dropFirst())
+            return identifier.isEmpty ? nil : identifier
         }
-        return token.unicodeScalars.allSatisfy {
+        if first == "~" {
+            let suffix = String(token.dropFirst())
+            return suffix.isEmpty ? nil : "_m" + suffix
+        }
+        let isCompactMnbSegmentToken = token.unicodeScalars.allSatisfy {
             $0.isASCII && CharacterSet.alphanumerics.contains($0)
         }
+        return isCompactMnbSegmentToken ? "mnb-s" + token : nil
     }
 
-    var runtimeIdentifierTokens = Set<String>()
+    var runtimeIdentifiers = Set<String>()
     return segments.allSatisfy { tuple in
         guard tuple.count == 11,
               let runtimeIdentifierToken = tuple.first as? String,
-              isCanonicalRuntimeIdentifierToken(runtimeIdentifierToken),
-              runtimeIdentifierTokens.insert(runtimeIdentifierToken).inserted else {
+              let runtimeIdentifier = expandedRuntimeIdentifier(from: runtimeIdentifierToken),
+              runtimeIdentifiers.insert(runtimeIdentifier).inserted else {
             return false
         }
         return hasNonEmptyValue(hashes, tuple: tuple, index: 1)
