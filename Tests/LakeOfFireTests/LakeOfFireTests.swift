@@ -100,6 +100,8 @@ final class LakeOfFireTests: XCTestCase {
                 languageCode: "en-CA"
             )
         )
+        XCTAssertEqual(transcript.compoundKey.count, 64)
+        XCTAssertTrue(transcript.compoundKey.allSatisfy { $0.isHexDigit && !$0.isUppercase })
         XCTAssertEqual(try transcript.webVTTString(), "WEBVTT\n\n00:00.000 --> 00:01.000\nHello world")
         XCTAssertTrue(
             transcript.matchesReuse(
@@ -119,6 +121,34 @@ final class LakeOfFireTests: XCTestCase {
                 mediaFingerprint: nil
             )
         )
+    }
+
+    func testMediaTranscriptCompoundKeyIsBoundedForLongSourceIdentities() throws {
+        let longComponent = String(repeating: "segment", count: 100)
+        let contentURL = try XCTUnwrap(
+            URL(string: "https://example.com/watch?source=\(longComponent)")
+        )
+        let stableIdentity = "url:https://cdn.example.com/\(longComponent)/master.m3u8"
+
+        let firstKey = MediaTranscript.makeCompoundKey(
+            contentURL: contentURL,
+            stableMediaIdentity: stableIdentity,
+            languageCode: "EN-ca"
+        )
+        let equivalentKey = MediaTranscript.makeCompoundKey(
+            contentURL: contentURL,
+            stableMediaIdentity: stableIdentity,
+            languageCode: "en-CA"
+        )
+        let differentKey = MediaTranscript.makeCompoundKey(
+            contentURL: contentURL,
+            stableMediaIdentity: stableIdentity + "?alternate=1",
+            languageCode: "en-CA"
+        )
+
+        XCTAssertEqual(firstKey.count, 64)
+        XCTAssertEqual(firstKey, equivalentKey)
+        XCTAssertNotEqual(firstKey, differentKey)
     }
 
     func testSoftDeleteTranscriptsWhenLastOwnerIsDeleted() async throws {

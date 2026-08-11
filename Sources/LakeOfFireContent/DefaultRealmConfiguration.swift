@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 71
+    public static let schemaVersion: UInt64 = 72
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -116,6 +116,11 @@ public enum DefaultRealmConfiguration {
                 guard oldSchemaVersion >= 70 else { return }
                 newObject?["ordinal"] = oldObject?["opmlOrder"]
             }
+        }
+        if oldSchemaVersion < 72 {
+            // Transcript rows are regenerable derived data. Their former raw
+            // compound keys are not valid bounded CloudKit record identities.
+            migration.deleteData(forType: MediaTranscript.className())
         }
     }
 
