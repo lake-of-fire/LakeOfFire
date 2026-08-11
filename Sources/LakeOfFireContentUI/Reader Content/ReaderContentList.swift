@@ -444,16 +444,26 @@ public enum ReaderContentSortOrder: Sendable {
 
 @MainActor
 public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
-    public init() { }
+    private struct FilteredContentSnapshot {
+        let contents: [C]
+        let ids: [String]
+    }
+
+    public init() {
+        filteredContentSnapshot = FilteredContentSnapshot(contents: [], ids: [])
+    }
 
     public init(initialContents contents: [C], sortOrder: ReaderContentSortOrder? = nil) {
         let initialContents = Self.initialDisplayContents(from: contents, sortOrder: sortOrder)
-        self.filteredContentIDs = initialContents.map(\.compoundKey)
-        self.filteredContents = initialContents
+        filteredContentSnapshot = FilteredContentSnapshot(
+            contents: initialContents,
+            ids: initialContents.map(\.compoundKey)
+        )
     }
-    
-    @Published public var filteredContents: [C] = []
-    public var filteredContentIDs: [String] = []
+
+    @Published private var filteredContentSnapshot: FilteredContentSnapshot
+    public var filteredContents: [C] { filteredContentSnapshot.contents }
+    public var filteredContentIDs: [String] { filteredContentSnapshot.ids }
     public var realmConfiguration: Realm.Configuration?
     var refreshSelectionTask: Task<Void, Error>?
     @Published public var loadContentsTask: Task<Void, Error>?
@@ -517,9 +527,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
 
     @MainActor
     private func applyFilteredContents(_ contents: [C], ids: [String]) {
+        assert(ids.count == contents.count, "Reader content IDs and values must remain aligned")
         let updateState = {
-            self.filteredContentIDs = ids
-            self.filteredContents = contents
+            self.filteredContentSnapshot = FilteredContentSnapshot(contents: contents, ids: ids)
             self.hasLoadedBefore = true
         }
 
@@ -637,21 +647,30 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try Task.checkCancellation()
             
             // TODO: Pagination
-            let ids = Array(filtered.prefix(10_000)).map { $0.compoundKey }
+            let publicationContents = Array(filtered.prefix(10_000))
+            let ids = publicationContents.map(\.compoundKey)
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
                 guard self.currentLoadID == loadID else { return }
 
                 let resolvedContents: [C]
+                let resolvedIDs: [String]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
                     guard self.currentLoadID == loadID else { return }
-                    resolvedContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
+                    let resolvedItems = ids.compactMap { id in
+                        realm.object(ofType: C.self, forPrimaryKey: id).map { content in
+                            (id: id, content: content)
+                        }
+                    }
+                    resolvedContents = resolvedItems.map(\.content)
+                    resolvedIDs = resolvedItems.map(\.id)
                 } else {
-                    resolvedContents = filtered
+                    resolvedContents = publicationContents
+                    resolvedIDs = ids
                 }
-                self.applyFilteredContents(resolvedContents, ids: ids)
+                self.applyFilteredContents(resolvedContents, ids: resolvedIDs)
             }()
         }
         loadContentsTask = task
