@@ -12,6 +12,53 @@ import LakeOfFireFiles
 import UIKit
 #endif
 
+struct ReaderWebViewObscuredInsetResolver {
+    static func resolve(
+        obscuredInsets: EdgeInsets?,
+        additionalInsets: EdgeInsets,
+        usesEBookChromeInsets: Bool,
+        preservesLeadingSafeAreaInset: Bool,
+        ignoresSampledTopObscuredInset: Bool = false,
+        fallbackTopInset: CGFloat = 0
+    ) -> EdgeInsets {
+#if os(iOS)
+        let rawSampledTop = obscuredInsets?.top ?? 0
+        let sampledTop: CGFloat
+        if additionalInsets.top > 0 || usesEBookChromeInsets {
+            sampledTop = 0
+        } else if ignoresSampledTopObscuredInset {
+            let clampedSampledInset = rawSampledTop > 0 ? min(rawSampledTop, 88) : 0
+            sampledTop = max(0, fallbackTopInset, clampedSampledInset)
+        } else {
+            sampledTop = rawSampledTop
+        }
+        let sampledBottom = obscuredInsets?.bottom ?? 0
+        let sampledLeading = additionalInsets.leading > 0
+            ? 0
+            : (obscuredInsets?.leading ?? 0)
+        let resolvedBottom = usesEBookChromeInsets
+            ? max(sampledBottom, additionalInsets.bottom)
+            : sampledBottom + additionalInsets.bottom
+        let resolvedLeading = preservesLeadingSafeAreaInset
+            ? max(0, sampledLeading + additionalInsets.leading)
+            : 0
+        return EdgeInsets(
+            top: max(0, sampledTop + additionalInsets.top),
+            leading: resolvedLeading,
+            bottom: max(0, resolvedBottom),
+            trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
+        )
+#else
+        return EdgeInsets(
+            top: max(0, additionalInsets.top),
+            leading: preservesLeadingSafeAreaInset ? max(0, additionalInsets.leading) : 0,
+            bottom: max(0, additionalInsets.bottom),
+            trailing: max(0, additionalInsets.trailing)
+        )
+#endif
+    }
+}
+
 fileprivate let blockedHosts = Set([
     "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
     "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
@@ -450,43 +497,20 @@ fileprivate struct ReaderWebViewInternal: View {
 
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
-        let rawSampledTop = obscuredInsets?.top ?? 0
-        let sampledTop: CGFloat = {
-            if additionalInsets.top > 0 || usesEBookChromeInsets {
-                return 0
-            }
-            guard ignoresSampledTopObscuredInset else {
-                return rawSampledTop
-            }
-#if os(iOS)
-            let fallbackTopInset = max(0, currentWindowTopSafeAreaInset())
-            let clampedSampledInset = rawSampledTop > 0 ? min(rawSampledTop, 88) : 0
-            return max(fallbackTopInset, clampedSampledInset)
+        let preservesLeadingSafeAreaInset = UIDevice.current.userInterfaceIdiom == .phone
+        let fallbackTopInset = max(0, currentWindowTopSafeAreaInset())
 #else
-            return 0
+        let preservesLeadingSafeAreaInset = true
+        let fallbackTopInset: CGFloat = 0
 #endif
-        }()
-        let sampledBottom = obscuredInsets?.bottom ?? 0
-        let sampledLeading = additionalInsets.leading > 0
-            ? 0
-            : (obscuredInsets?.leading ?? 0)
-        let resolvedBottom = usesEBookChromeInsets
-            ? max(sampledBottom, additionalInsets.bottom)
-            : sampledBottom + additionalInsets.bottom
-        return EdgeInsets(
-            top: max(0, sampledTop + additionalInsets.top),
-            leading: max(0, sampledLeading + additionalInsets.leading),
-            bottom: max(0, resolvedBottom),
-            trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
+        return ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: obscuredInsets,
+            additionalInsets: additionalInsets,
+            usesEBookChromeInsets: usesEBookChromeInsets,
+            preservesLeadingSafeAreaInset: preservesLeadingSafeAreaInset,
+            ignoresSampledTopObscuredInset: ignoresSampledTopObscuredInset,
+            fallbackTopInset: fallbackTopInset
         )
-#else
-        EdgeInsets(
-            top: max(0, additionalInsets.top),
-            leading: max(0, additionalInsets.leading),
-            bottom: max(0, additionalInsets.bottom),
-            trailing: max(0, additionalInsets.trailing)
-        )
-#endif
     }
 
     public var body: some View {

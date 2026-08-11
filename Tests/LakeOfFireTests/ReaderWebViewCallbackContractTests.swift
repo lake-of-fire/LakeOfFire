@@ -22,6 +22,52 @@ private enum ReaderCallbackTestError: Error {
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testIPadReaderModeDoesNotApplySplitViewLeadingInsetInsideWebKit() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: false,
+            preservesLeadingSafeAreaInset: false
+        )
+
+        XCTAssertEqual(resolved.leading, 0)
+    }
+
+    func testPhoneReaderModeRetainsPhysicalLeadingSafeAreaInset() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 44, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: false,
+            preservesLeadingSafeAreaInset: true
+        )
+
+        XCTAssertEqual(resolved.leading, 44)
+    }
+
+    func testIPadEBookDoesNotApplySplitViewLeadingInsetInsideWebKit() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: true,
+            preservesLeadingSafeAreaInset: false
+        )
+
+        XCTAssertEqual(resolved.leading, 0)
+    }
+
+    func testIgnoredSampledTopRetainsFallbackAndClampPolicy() {
+        let resolved = ReaderWebViewObscuredInsetResolver.resolve(
+            obscuredInsets: EdgeInsets(top: 160, leading: 0, bottom: 0, trailing: 0),
+            additionalInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0),
+            usesEBookChromeInsets: false,
+            preservesLeadingSafeAreaInset: false,
+            ignoresSampledTopObscuredInset: true,
+            fallbackTopInset: 47
+        )
+
+        XCTAssertEqual(resolved.top, 88)
+    }
+
     func testCommitFailureSuppressesFinishAndPendingURLChange() async {
         let manager = NavigationTaskManager()
         var finishCount = 0
