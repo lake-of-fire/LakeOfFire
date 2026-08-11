@@ -165,10 +165,72 @@ final class LakeOfFireTests: XCTestCase {
         XCTAssertFalse(transcriptWasDeleted)
     }
 
+    func testSoftDeleteTranscriptsUsesDedicatedTranscriptRealmConfiguration() async throws {
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalTranscriptConfiguration = ReaderContentLoader.transcriptRealmConfiguration
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LakeOfFireSeparateTranscriptTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer {
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            ReaderContentLoader.transcriptRealmConfiguration = originalTranscriptConfiguration
+            try? FileManager.default.removeItem(at: directoryURL)
+        }
+
+        var ownerConfiguration = Realm.Configuration()
+        ownerConfiguration.fileURL = directoryURL.appendingPathComponent("owners.realm")
+        ownerConfiguration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self]
+        var transcriptConfiguration = Realm.Configuration()
+        transcriptConfiguration.fileURL = directoryURL.appendingPathComponent("transcripts.realm")
+        transcriptConfiguration.objectTypes = [MediaTranscript.self]
+        ReaderContentLoader.historyRealmConfiguration = ownerConfiguration
+        ReaderContentLoader.feedEntryRealmConfiguration = ownerConfiguration
+        ReaderContentLoader.transcriptRealmConfiguration = transcriptConfiguration
+
+        let url = try XCTUnwrap(URL(string: "https://example.com/watch?v=separate"))
+        let ownerRealm = try await Realm(
+            configuration: ownerConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
+        let bookmark = Bookmark()
+        bookmark.url = url
+        bookmark.updateCompoundKey()
+        try await ownerRealm.asyncWrite {
+            ownerRealm.add(bookmark)
+            bookmark.isDeleted = true
+        }
+
+        let transcriptRealm = try await Realm(
+            configuration: transcriptConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
+        let transcript = MediaTranscript()
+        transcript.contentURL = MediaTranscript.canonicalContentURL(from: url)
+        transcript.stableMediaIdentity = "url:https://cdn.example.com/watch.m3u8"
+        transcript.languageCode = "en"
+        transcript.updateCompoundKey()
+        try await transcriptRealm.asyncWrite {
+            transcriptRealm.add(transcript)
+        }
+
+        try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
+
+        XCTAssertTrue(
+            transcriptRealm.object(
+                ofType: MediaTranscript.self,
+                forPrimaryKey: transcript.compoundKey
+            )?.isDeleted == true
+        )
+    }
+
     private func makeReaderContentConfiguration() throws -> (Realm.Configuration, () -> Void) {
         let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalTranscriptConfiguration = ReaderContentLoader.transcriptRealmConfiguration
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("LakeOfFireTranscriptTests-\(UUID().uuidString)", isDirectory: true)
 
@@ -188,12 +250,14 @@ final class LakeOfFireTests: XCTestCase {
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.transcriptRealmConfiguration = configuration
         return (
             configuration,
             {
                 ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
                 ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
                 ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+                ReaderContentLoader.transcriptRealmConfiguration = originalTranscriptConfiguration
                 try? FileManager.default.removeItem(at: directoryURL)
             }
         )

@@ -114,6 +114,7 @@ public struct ReaderContentLoader {
     nonisolated(unsafe) public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    nonisolated(unsafe) public static var transcriptRealmConfiguration: Realm.Configuration = .defaultConfiguration
     nonisolated(unsafe) public static var additionalContentProviders: [ReaderContentAdditionalProvider] = []
 
     public static func registerAdditionalContentProvider(_ provider: ReaderContentAdditionalProvider) {
@@ -321,7 +322,7 @@ public struct ReaderContentLoader {
               !hasLiveOwner(in: feedRealm, type: FeedEntry.self, ownerURLs: ownerURLs)
         else { return }
 
-        let realm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let realm = try await Realm(configuration: transcriptRealmConfiguration, actor: RealmBackgroundActor.shared)
         await realm.asyncRefresh()
         let transcripts = realm.objects(MediaTranscript.self)
             .where { $0.isDeleted == false }

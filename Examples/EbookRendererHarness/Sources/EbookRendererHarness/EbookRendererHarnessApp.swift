@@ -355,6 +355,7 @@ private final class EbookRendererHarnessModel: ObservableObject {
             ReaderContentLoader.bookmarkRealmConfiguration = readerRealmConfiguration
             ReaderContentLoader.historyRealmConfiguration = readerRealmConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = sharedRealmConfiguration
+            ReaderContentLoader.transcriptRealmConfiguration = sharedRealmConfiguration
             LibraryDataManager.realmConfiguration = sharedRealmConfiguration
             harnessLog("bootstrap.realm.ready reader=\(readerRealmConfiguration.fileURL?.path ?? "<none>") shared=\(sharedRealmConfiguration.fileURL?.path ?? "<none>")")
         } catch {

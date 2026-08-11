@@ -3,10 +3,23 @@ import LakeOfFireOPDS
 import RealmSwift
 import RealmSwiftGaps
 import Combine
+import LakeOfFireContent
+
+struct OPDSCatalogSnapshot: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let title: String
+    let url: String
+
+    init(_ catalog: OPDSCatalog) {
+        id = catalog.id
+        title = catalog.title
+        url = catalog.url
+    }
+}
 
 @MainActor
 class OPDSCatalogsViewModel: ObservableObject {
-    @Published var catalogs: [OPDSCatalog] = []
+    @Published var catalogs: [OPDSCatalogSnapshot] = []
     @Published var errorMessage: String?
     private var cancellables = Set<AnyCancellable>()
 
@@ -26,13 +39,17 @@ class OPDSCatalogsViewModel: ObservableObject {
     private func observeCatalogs() {
         Task { @RealmBackgroundActor in
             do {
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: ReaderContentLoader.historyRealmConfiguration
+                )
                 let results = realm.objects(OPDSCatalog.self)
+                    .where { !$0.isDeleted }
                 notificationToken = results.observe { [weak self] (changes: RealmCollectionChange) in
                     switch changes {
-                    case .initial, .update:
+                    case .initial(let catalogs), .update(let catalogs, _, _, _):
+                        let snapshots = Array(catalogs.map(OPDSCatalogSnapshot.init))
                         Task { @MainActor [weak self] in
-                            await self?.fetchAllData() // Refresh data whenever there's a change
+                            self?.catalogs = snapshots
                         }
                     case .error(let error):
                         Task { @MainActor [weak self] in
@@ -45,22 +62,35 @@ class OPDSCatalogsViewModel: ObservableObject {
     }
 
     func fetchAllData() async {
-        // Simulate fetching "Editor's Picks" data
-//        editorsPicks = [Book(title: "Editor's Pick 1"), Book(title: "Editor's Pick 2")]
-        // No need to update catalogs here, as they are managed directly by Realm and observed via notificationToken
+        do {
+            catalogs = try await Self.loadCatalogs()
+        } catch {
+            errorMessage = "Error loading catalogs: \(error.localizedDescription)"
+        }
+    }
+
+    @RealmBackgroundActor
+    private static func loadCatalogs() async throws -> [OPDSCatalogSnapshot] {
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(
+            for: ReaderContentLoader.historyRealmConfiguration
+        )
+        await realm.asyncRefresh()
+        return Array(
+            realm.objects(OPDSCatalog.self)
+                .where { !$0.isDeleted }
+                .map(OPDSCatalogSnapshot.init)
+        )
     }
 
     @RealmBackgroundActor
     func addCatalog(title: String, url: String) async {
-        let newCatalog = OPDSCatalog()
-        newCatalog.title = title
-        newCatalog.url = url
-
         do {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: ReaderContentLoader.historyRealmConfiguration
+            )
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                realm.add(newCatalog, update: .modified)
+                OPDSCatalog.add(title: title, url: url, to: realm)
             }
         } catch {
             Task { @MainActor [weak self] in
@@ -72,11 +102,13 @@ class OPDSCatalogsViewModel: ObservableObject {
     func deleteCatalogs(at offsets: IndexSet) {
         let catalogIDsToDelete = offsets.map { catalogs[$0].id }
         Task { @RealmBackgroundActor [weak self] in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: ReaderContentLoader.historyRealmConfiguration
+            )
             await realm.asyncRefresh()
             try? await realm.asyncWrite {
                 for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
-                    catalog.isDeleted = true
+                    catalog.softDelete()
                 }
             }
         }
@@ -85,13 +117,13 @@ class OPDSCatalogsViewModel: ObservableObject {
 @available(macOS 13.0, iOS 16, *)
 struct OPDSCatalogsView: View {
     @EnvironmentObject private var viewModel: OPDSCatalogsViewModel
-    @State private var showingCatalogDetail: OPDSCatalog?
+    @State private var showingCatalogDetail: OPDSCatalogSnapshot?
 
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
 
     var body: some View {
         List {
-            ForEach(viewModel.catalogs, id: \.self) { catalog in
+            ForEach(viewModel.catalogs) { catalog in
                 Button(catalog.title) {
                     showingCatalogDetail = catalog
                 }
@@ -115,7 +147,7 @@ struct OPDSCatalogsView: View {
 }
 
 struct OPDSCatalogDetailView: View {
-    @ObservedRealmObject var catalog: OPDSCatalog
+    let catalog: OPDSCatalogSnapshot
     @State private var publications: [Publication] = []
     @State private var errorMessage: String?
 
@@ -195,15 +227,13 @@ struct AddCatalogView: View {
 
     @RealmBackgroundActor
     private func addCatalog(title: String, url: String) async {
-        let newCatalog = OPDSCatalog()
-        newCatalog.title = title
-        newCatalog.url = url
-
         do {
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                for: ReaderContentLoader.historyRealmConfiguration
+            )
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                realm.add(newCatalog, update: .modified)
+                OPDSCatalog.add(title: title, url: url, to: realm)
             }
             await MainActor.run { dismiss() }
         } catch {

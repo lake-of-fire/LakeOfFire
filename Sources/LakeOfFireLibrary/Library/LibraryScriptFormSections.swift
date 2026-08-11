@@ -59,7 +59,9 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
+                        guard script.title != scriptTitle else { return }
                         script.title = scriptTitle
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -72,7 +74,9 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
+                        guard script.script != scriptText else { return }
                         script.script = scriptText
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -84,7 +88,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        script.isArchived = !scriptEnabled
+                        let isArchived = !scriptEnabled
+                        guard script.isArchived != isArchived else { return }
+                        script.isArchived = isArchived
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -96,7 +103,9 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
+                        guard script.injectAtStart != scriptInjectAtStart else { return }
                         script.injectAtStart = scriptInjectAtStart
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -108,7 +117,9 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
+                        guard script.mainFrameOnly != scriptMainFrameOnly else { return }
                         script.mainFrameOnly = scriptMainFrameOnly
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -120,7 +131,9 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
+                        guard script.sandboxed != scriptSandboxed else { return }
                         script.sandboxed = scriptSandboxed
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -133,11 +146,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
                     try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
-                        if scriptPreviewURL.isEmpty {
-                            script.previewURL = nil
-                        } else {
-                            script.previewURL = URL(string: scriptPreviewURL)
-                        }
+                        let previewURL = scriptPreviewURL.isEmpty ? nil : URL(string: scriptPreviewURL)
+                        guard script.previewURL != previewURL else { return }
+                        script.previewURL = previewURL
+                        script.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -171,8 +183,19 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     func onDeleteOfAllowedDomains(at offsets: IndexSet) {
         Task { @MainActor [weak self] in
             guard let self = self, let script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
+            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
+                let deletedDomainIDs = offsets.compactMap { offset in
+                    script.allowedDomainIDs.indices.contains(offset) ? script.allowedDomainIDs[offset] : nil
+                }
+                for domainID in deletedDomainIDs {
+                    if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID), !domain.isDeleted {
+                        domain.isDeleted = true
+                        domain.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                }
+                guard !deletedDomainIDs.isEmpty else { return }
                 script.allowedDomainIDs.remove(atOffsets: offsets)
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -183,7 +206,9 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
                 let allowedDomain = UserScriptAllowedDomain()
                 realm.add(allowedDomain, update: .modified)
+                allowedDomain.refreshChangeMetadata(explicitlyModified: true)
                 script.allowedDomainIDs.append(allowedDomain.id)
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -192,7 +217,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self = self, let script = script else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-                script.previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
+                let previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
+                guard script.previewURL != previewURL else { return }
+                script.previewURL = previewURL
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -289,9 +317,14 @@ struct LibraryScriptFormSections: View {
                         if script.isUserEditable {
                             Button(role: .destructive) {
                                 Task { @MainActor in
-                                    try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
+                                    try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
                                         if let idx = script.allowedDomainIDs.index(of: domainID) {
                                             script.allowedDomainIDs.remove(at: idx)
+                                            if let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID), !domain.isDeleted {
+                                                domain.isDeleted = true
+                                                domain.refreshChangeMetadata(explicitlyModified: true)
+                                            }
+                                            script.refreshChangeMetadata(explicitlyModified: true)
                                         }
                                     }
                                 }

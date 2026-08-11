@@ -402,6 +402,18 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     }
 }
 
+extension Feed: SyncSkippablePropertiesModel {
+    public func skipSyncingProperties() -> Set<String>? {
+        [
+            "lastViewedAt",
+            "lastSeenFeedEntriesAt",
+            "lastRefreshedEntriesAt",
+            "lastFetchedETag",
+            "lastFetchedModifiedAt",
+        ]
+    }
+}
+
 public extension Feed {
     var entryContentKind: ReaderContentKind {
         get { ReaderContentKind(rawValue: entryContentKindRawValue) ?? .readerContent }
@@ -544,12 +556,42 @@ public extension Feed {
         let feedIDs = Set(plan.feedIDs)
 
         for feed in feeds where feedIDs.contains(feed.id) {
+            let followingOrdinal =
+                plan.followingOrdinal ?? feed.followingOrdinal
+            guard feed.isFollowed != plan.isFollowed
+                    || feed.followingOrdinal != followingOrdinal else {
+                continue
+            }
             feed.isFollowed = plan.isFollowed
             if let ordinal = plan.followingOrdinal {
                 feed.followingOrdinal = ordinal
             }
-            feed.explicitlyModifiedAt = now
-            feed.modifiedAt = now
+            feed.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: now
+            )
+        }
+    }
+
+    public static func setShowsUnseenBadge(
+        _ showsUnseenBadge: Bool,
+        forCategoryID categoryID: UUID,
+        in realm: Realm,
+        now: Date = Date()
+    ) {
+        let visibleFeeds = realm.objects(Feed.self)
+            .where {
+                $0.categoryID == categoryID
+                    && !$0.isDeleted
+                    && !$0.isArchived
+                    && $0.showsUnseenBadge != showsUnseenBadge
+            }
+        for feed in visibleFeeds {
+            feed.showsUnseenBadge = showsUnseenBadge
+            feed.refreshChangeMetadata(
+                explicitlyModified: true,
+                at: now
+            )
         }
     }
 

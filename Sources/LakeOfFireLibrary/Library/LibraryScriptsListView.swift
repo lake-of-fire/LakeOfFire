@@ -59,12 +59,22 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         }
         
         try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-            if script.isArchived, let opmlURL = script.opmlURL, !LibraryConfiguration.opmlURLs.contains(opmlURL) {
+            var didChange = false
+            if script.isArchived,
+               let opmlURL = script.opmlURL,
+               !LibraryConfiguration.opmlURLs.contains(opmlURL),
+               !script.isDeleted {
                 script.isDeleted = true
-            } else if script.isArchived && script.opmlURL == nil {
+                didChange = true
+            } else if script.isArchived, script.opmlURL == nil, !script.isDeleted {
                 script.isDeleted = true
+                didChange = true
             } else if !script.isArchived {
                 script.isArchived = true
+                didChange = true
+            }
+            if didChange {
+                script.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -99,6 +109,10 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         Task { @MainActor in
             guard let libraryConfiguration = libraryConfiguration else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
+                let originalIDs = Array(libraryConfiguration.userScriptIDs)
+                var reorderedIDs = originalIDs
+                reorderedIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
+                guard originalIDs != reorderedIDs else { return }
                 libraryConfiguration.userScriptIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
                 libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }

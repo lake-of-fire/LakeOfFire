@@ -27,7 +27,9 @@ struct UserScriptAllowedDomainCell: View {
                     let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                     guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
                     try await realm.asyncWrite {
+                        guard domain.domain != domainText else { return }
                         domain.domain = domainText
+                        domain.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
