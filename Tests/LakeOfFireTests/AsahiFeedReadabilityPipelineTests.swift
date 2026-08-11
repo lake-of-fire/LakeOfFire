@@ -8,6 +8,26 @@ import XCTest
 @testable import LakeOfFireReader
 
 final class AsahiFeedReadabilityPipelineTests: XCTestCase {
+    @MainActor
+    func testCanonicalReadabilityHTMLLabelsPublicationDateWithoutChangingVisibleText() throws {
+        let publishedTime = "May 11, 2026 <evening> & later"
+        let html = buildCanonicalReadabilityHTML(
+            title: "Title",
+            byline: "",
+            publishedTime: publishedTime,
+            content: "<p>Body</p>",
+            contentURL: URL(string: "https://example.com/article")!
+        )
+
+        let document = try SwiftSoup.parse(html)
+        let publicationDate = try XCTUnwrap(document.getElementById("reader-publication-date"))
+        XCTAssertEqual(try publicationDate.text(), publishedTime)
+        XCTAssertEqual(
+            try publicationDate.attr("aria-label"),
+            "Reader metadata date: \(publishedTime)"
+        )
+    }
+
     private final class FeedURLProtocol: URLProtocol {
         nonisolated(unsafe) static var responses = [URL: Data]()
 

@@ -22,6 +22,11 @@ private enum ReaderCallbackTestError: Error {
 
 @MainActor
 final class ReaderWebViewCallbackContractTests: XCTestCase {
+    func testOnlyPhoneReaderExpandsIntoEverySafeArea() {
+        XCTAssertTrue(ReaderWebViewSafeAreaPolicy.expandsIntoAllSafeAreas(isPhone: true))
+        XCTAssertFalse(ReaderWebViewSafeAreaPolicy.expandsIntoAllSafeAreas(isPhone: false))
+    }
+
     func testIPadReaderModeDoesNotApplySplitViewLeadingInsetInsideWebKit() {
         let resolved = ReaderWebViewObscuredInsetResolver.resolve(
             obscuredInsets: EdgeInsets(top: 0, leading: 450, bottom: 0, trailing: 0),

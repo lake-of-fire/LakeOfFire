@@ -87,6 +87,27 @@ private extension View {
 #endif
     }
 
+    @ViewBuilder
+    func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
+#if os(iOS)
+        if ReaderWebViewSafeAreaPolicy.expandsIntoAllSafeAreas(
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone
+        ) {
+            ignoresSafeArea(.all, edges: .all)
+        } else {
+            self
+        }
+#else
+        self
+#endif
+    }
+
+}
+
+enum ReaderWebViewSafeAreaPolicy {
+    static func expandsIntoAllSafeAreas(isPhone: Bool) -> Bool {
+        isPhone
+    }
 }
 
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
@@ -1058,7 +1079,7 @@ public struct Reader: View {
             top: effectiveSampledTopInset,
             backgroundColor: statusBarFadeBackgroundColor
         )
-        .ignoresSafeArea(.all, edges: .all)
+        .readerWebViewSafeAreaExpansionForCurrentDevice()
         .modifier {
             if #available(iOS 26, *) {
                 $0
