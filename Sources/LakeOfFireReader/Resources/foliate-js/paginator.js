@@ -3248,7 +3248,13 @@ export class Paginator extends HTMLElement {
         })
     }
     async lastSection() {
-        const index = this.sections.findLastIndex(section => section.linear !== 'no')
+        let index = -1
+        for (let candidate = this.sections.length - 1; candidate >= 0; candidate -= 1) {
+            if (this.sections[candidate].linear !== 'no') {
+                index = candidate
+                break
+            }
+        }
         return await this.goTo({
             index
         })

@@ -540,7 +540,7 @@ class Resources {
         // mainly because Epub.js used to generate wrong ID assertions
         // https://github.com/futurepress/epub.js/issues/1236
         if ($itemref && $itemref.nodeName !== 'idref') {
-            top.at(-1).id = null
+            top[top.length - 1].id = null
             $itemref = CFI.toElement(this.opf, top)
         }
         const idref = $itemref?.getAttribute('idref')
@@ -641,7 +641,7 @@ class Loader {
         const isScript = MIME.JS.test(item.mediaType)
         if (isScript && !this.allowScript) return null
 
-        const parent = parents.at(-1)
+        const parent = parents[parents.length - 1]
         if (this.#cache.has(href)) return this.ref(href, parent)
 
         if (this.replaceURL && [MIME.XHTML, MIME.HTML].includes(mediaType)) {
@@ -670,7 +670,7 @@ class Loader {
             href,
             mediaType
         } = item
-        const parent = parents.at(-1)
+        const parent = parents[parents.length - 1]
         const str = await this.loadText(href)
         if (!str) return null
 

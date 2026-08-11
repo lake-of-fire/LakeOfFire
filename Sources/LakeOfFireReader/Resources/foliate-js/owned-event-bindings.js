@@ -90,7 +90,7 @@ export class OwnedEventBindings {
                 return true
             }
 
-            const currentClaim = record.claims.at(-1)
+            const currentClaim = record.claims[record.claims.length - 1]
             if (currentClaim) {
                 target[key] = currentClaim.value
             } else {

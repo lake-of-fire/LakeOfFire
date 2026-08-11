@@ -244,7 +244,7 @@ const matchesSelector = (selector, element, root) => {
     const components = selectorComponents(selector)
     if (!components) return false
     const { compounds, combinators } = components
-    if (!matchesSimpleSelector(compounds.at(-1), element, root)) return false
+    if (!matchesSimpleSelector(compounds[compounds.length - 1], element, root)) return false
     let ancestor = element
     for (let index = compounds.length - 2; index >= 0; index -= 1) {
         if (ancestor.tagName !== 'body') return false
