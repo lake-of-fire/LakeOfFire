@@ -91,6 +91,12 @@ final class SyncMutationBoundaryTests: XCTestCase {
 
         XCTAssertTrue(catalog.isDeleted)
         XCTAssertEqual(pendingMutation(for: catalog, in: realm)?.changedAt, deletedAt)
+        let deletedGeneration = try XCTUnwrap(pendingMutation(for: catalog, in: realm)?.generation)
+
+        try realm.write {
+            XCTAssertFalse(catalog.softDelete(at: deletedAt.addingTimeInterval(60)))
+        }
+        XCTAssertEqual(pendingMutation(for: catalog, in: realm)?.generation, deletedGeneration)
     }
 
     private func makeConfiguration(objectTypes: [Object.Type]) -> Realm.Configuration {

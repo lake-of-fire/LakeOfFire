@@ -57,6 +57,10 @@ class OPDSCatalogsViewModel: ObservableObject {
                         }
                     }
                 }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = "Error observing catalogs: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -102,13 +106,19 @@ class OPDSCatalogsViewModel: ObservableObject {
     func deleteCatalogs(at offsets: IndexSet) {
         let catalogIDsToDelete = offsets.map { catalogs[$0].id }
         Task { @RealmBackgroundActor [weak self] in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(
-                for: ReaderContentLoader.historyRealmConfiguration
-            )
-            await realm.asyncRefresh()
-            try? await realm.asyncWrite {
-                for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
-                    catalog.softDelete()
+            do {
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(
+                    for: ReaderContentLoader.historyRealmConfiguration
+                )
+                await realm.asyncRefresh()
+                try await realm.asyncWrite {
+                    for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
+                        catalog.softDelete()
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = "Error deleting catalogs: \(error.localizedDescription)"
                 }
             }
         }

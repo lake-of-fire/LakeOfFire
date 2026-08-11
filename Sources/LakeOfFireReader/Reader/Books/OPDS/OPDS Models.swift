@@ -39,12 +39,14 @@ public class OPDSCatalog: Object, UnownedSyncableObject, ObjectKeyIdentifiable, 
         return catalog
     }
 
-    public func softDelete(at timestamp: Date = Date()) {
-        guard !isDeleted else { return }
+    @discardableResult
+    public func softDelete(at timestamp: Date = Date()) -> Bool {
+        guard !isDeleted else { return false }
         isDeleted = true
         refreshChangeMetadata(
             explicitlyModified: true,
             at: timestamp
         )
+        return true
     }
 }
