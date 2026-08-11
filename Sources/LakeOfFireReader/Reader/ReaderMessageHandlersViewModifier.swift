@@ -83,6 +83,45 @@ public extension View {
     }
 }
 
+struct ReaderProgressMessageSequenceGate {
+    private var activeContentURL: URL?
+    private var latestSequence: UInt64?
+
+    mutating func activate(contentURL: URL) {
+        let canonicalURL = Self.canonicalContentURL(contentURL)
+        guard activeContentURL != canonicalURL else { return }
+        activeContentURL = canonicalURL
+        latestSequence = nil
+    }
+
+    mutating func reserve(sequence: UInt64, contentURL: URL) -> Bool {
+        let canonicalURL = Self.canonicalContentURL(contentURL)
+        if let activeContentURL, activeContentURL != canonicalURL {
+            return false
+        }
+        if activeContentURL == nil {
+            activeContentURL = canonicalURL
+        }
+        if let latestSequence, sequence <= latestSequence {
+            return false
+        }
+        latestSequence = sequence
+        return true
+    }
+
+    private static func canonicalContentURL(_ url: URL) -> URL {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        guard var components = URLComponents(
+            url: resolvedURL,
+            resolvingAgainstBaseURL: false
+        ) else {
+            return resolvedURL
+        }
+        components.fragment = nil
+        return components.url ?? resolvedURL
+    }
+}
+
 private struct ReaderSizeTrackingCacheEntry: Codable {
     let id: String
     let inlineSize: Double
@@ -164,6 +203,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
+    private var readingProgressSequenceGate = ReaderProgressMessageSequenceGate()
     private let trackingSizeCache = PersistedCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
@@ -172,6 +212,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     )
     private let trackingSizeHistoryLimit = 10
     fileprivate var automaticReadabilityTask: Task<Void, Never>?
+
+    fileprivate func activateReadingProgressContentURL(_ contentURL: URL) {
+        readingProgressSequenceGate.activate(contentURL: contentURL)
+    }
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
         let parts = cacheKey.split(separator: "|").map(String.init)
@@ -991,6 +1035,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("updateReadingProgress", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
+                guard let sequence = message.receiptSequence,
+                      let contentURL = result.mainDocumentURL ?? message.mainDocumentURL,
+                      readingProgressSequenceGate.reserve(
+                        sequence: sequence,
+                        contentURL: contentURL
+                      ) else {
+                    return
+                }
                 handleNavigationVisibility(for: result)
             }),
             (ReaderWebMediaBridge.messageHandlerName, { @MainActor message in
@@ -1219,6 +1271,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 await pushHideNavigationStateToWebView(reason: "binding", force: false)
             }
             .task(id: readerContent.pageURL) {
+                readerMessageHandlers?.activateReadingProgressContentURL(readerContent.pageURL)
                 await pushHideNavigationStateToWebView(reason: "pageURL", force: true)
             }
     }
