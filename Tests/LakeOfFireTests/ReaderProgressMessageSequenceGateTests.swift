@@ -26,7 +26,7 @@ final class ReaderProgressMessageSequenceGateTests: XCTestCase {
     func testLoaderAndSourceURLsShareSequenceIdentity() throws {
         var gate = ReaderProgressMessageSequenceGate()
         let sourceURL = URL(fileURLWithPath: "/tmp/Books/sample.epub")
-        let loaderURL = ReaderContentLoader.readerLoaderURL(for: sourceURL)
+        let loaderURL = try XCTUnwrap(ReaderContentLoader.readerLoaderURL(for: sourceURL))
 
         XCTAssertTrue(gate.reserve(sequence: 30, contentURL: loaderURL))
         XCTAssertFalse(gate.reserve(sequence: 29, contentURL: sourceURL))
