@@ -30,9 +30,12 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
 
     private final class FeedURLProtocol: URLProtocol {
         nonisolated(unsafe) static var responses = [URL: Data]()
+        nonisolated(unsafe) static var requestHandler:
+            ((URLRequest) -> (statusCode: Int, headers: [String: String], data: Data))?
 
         override class func canInit(with request: URLRequest) -> Bool {
-            request.url.map { responses[$0] != nil } ?? false
+            requestHandler != nil
+                || (request.url.map { responses[$0] != nil } ?? false)
         }
 
         override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -40,23 +43,39 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
         }
 
         override func startLoading() {
-            guard let url = request.url, let data = Self.responses[url] else {
+            guard let url = request.url else {
                 client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
                 return
             }
-            let headers = [
-                "Content-Type": "application/rdf+xml; charset=utf-8",
-                "Content-Length": String(data.count),
-            ]
+            let responsePayload: (
+                statusCode: Int,
+                headers: [String: String],
+                data: Data
+            )
+            if let requestHandler = Self.requestHandler {
+                responsePayload = requestHandler(request)
+            } else if let data = Self.responses[url] {
+                responsePayload = (
+                    200,
+                    [
+                        "Content-Type": "application/rdf+xml; charset=utf-8",
+                        "Content-Length": String(data.count),
+                    ],
+                    data
+                )
+            } else {
+                client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+                return
+            }
             let response = HTTPURLResponse(
                 url: url,
-                statusCode: 200,
+                statusCode: responsePayload.statusCode,
                 httpVersion: "HTTP/1.1",
-                headerFields: headers
+                headerFields: responsePayload.headers
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             if request.httpMethod != "HEAD" {
-                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocol(self, didLoad: responsePayload.data)
             }
             client?.urlProtocolDidFinishLoading(self)
         }
@@ -100,6 +119,96 @@ final class AsahiFeedReadabilityPipelineTests: XCTestCase {
             bundle.url(forResource: fileName, withExtension: nil, subdirectory: "Fixtures/Asahi"),
         ]
         return try XCTUnwrap(candidates.compactMap { $0 }.first)
+    }
+
+    @MainActor
+    func testFeedWithValidatorsButNoLocalEntriesRefetchesBody() async throws {
+        let rssURL = try XCTUnwrap(URL(string: "https://example.com/feed.xml"))
+        let entryURL = try XCTUnwrap(URL(string: "https://example.com/article"))
+        let rssData = Data(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0">
+              <channel>
+                <title>Recovery Feed</title>
+                <link>https://example.com/</link>
+                <description>Recovery test</description>
+                <item>
+                  <guid>recovered-entry</guid>
+                  <title>Recovered Entry</title>
+                  <link>\(entryURL.absoluteString)</link>
+                  <description>Recovered body</description>
+                </item>
+              </channel>
+            </rss>
+            """.utf8
+        )
+        let configuration = makeRealmConfiguration()
+        let originalLibraryConfiguration = LibraryDataManager.realmConfiguration
+        let originalBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
+        let originalHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
+        let originalFeedEntryConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
+        let originalFeedSessionOverride = makeFeedSessionOverrideForTesting
+        defer {
+            LibraryDataManager.realmConfiguration = originalLibraryConfiguration
+            ReaderContentLoader.bookmarkRealmConfiguration = originalBookmarkConfiguration
+            ReaderContentLoader.historyRealmConfiguration = originalHistoryConfiguration
+            ReaderContentLoader.feedEntryRealmConfiguration = originalFeedEntryConfiguration
+            makeFeedSessionOverrideForTesting = originalFeedSessionOverride
+            FeedURLProtocol.requestHandler = nil
+        }
+        LibraryDataManager.realmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+        ReaderContentLoader.historyRealmConfiguration = configuration
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        await ReaderContentLoader.resetTransientCachesForTesting()
+
+        let realm = try await Realm(configuration: configuration, actor: MainActor.shared)
+        let feed = Feed()
+        feed.rssUrl = rssURL
+        feed.lastFetchedETag = "\"stale-validator\""
+        try await realm.asyncWrite {
+            realm.add(feed)
+        }
+
+        var requests = [(method: String, validator: String?)]()
+        FeedURLProtocol.requestHandler = { request in
+            requests.append(
+                (
+                    request.httpMethod ?? "",
+                    request.value(forHTTPHeaderField: "If-None-Match")
+                )
+            )
+            if request.value(forHTTPHeaderField: "If-None-Match") != nil {
+                return (304, ["ETag": "\"stale-validator\""], Data())
+            }
+            return (
+                200,
+                [
+                    "Content-Type": "application/rss+xml; charset=utf-8",
+                    "Content-Length": String(rssData.count),
+                    "ETag": "\"fresh-validator\"",
+                ],
+                rssData
+            )
+        }
+        makeFeedSessionOverrideForTesting = {
+            let sessionConfiguration = URLSessionConfiguration.ephemeral
+            sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            sessionConfiguration.protocolClasses = [FeedURLProtocol.self]
+            return URLSession(configuration: sessionConfiguration)
+        }
+
+        try await feed.fetch(realmConfiguration: configuration)
+        await realm.asyncRefresh()
+
+        XCTAssertEqual(realm.objects(FeedEntry.self).where { !$0.isDeleted }.count, 1)
+        XCTAssertEqual(
+            realm.object(ofType: Feed.self, forPrimaryKey: feed.id)?.lastFetchedETag,
+            "\"fresh-validator\""
+        )
+        XCTAssertEqual(requests.map(\.method), ["HEAD", "HEAD", "GET"])
+        XCTAssertEqual(requests.map(\.validator), ["\"stale-validator\"", nil, nil])
     }
 
     @MainActor

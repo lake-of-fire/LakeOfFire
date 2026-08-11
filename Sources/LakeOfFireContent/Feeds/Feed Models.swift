@@ -1352,7 +1352,8 @@ fileprivate func isSuccessfulFeedRefreshStatus(_ statusCode: Int) -> Bool {
 fileprivate func getRssData(
     rssUrl: URL,
     lastFetchedETag: String?,
-    lastFetchedModifiedAt: Date?
+    lastFetchedModifiedAt: Date?,
+    allowNotModified: Bool = true
 ) async throws -> FeedFetchResult {
     let session = makeFeedSession()
     logRSS(
@@ -1375,10 +1376,12 @@ fileprivate func getRssData(
     )
     switch headHTTPResponse.statusCode {
     case 304:
-        logRSS("stage=http.notModified source=head304 url=\(rssUrl.absoluteString)")
-        return .notModified(metadata: headMetadata)
+        if allowNotModified {
+            logRSS("stage=http.notModified source=head304 url=\(rssUrl.absoluteString)")
+            return .notModified(metadata: headMetadata)
+        }
     case let statusCode where isSuccessfulFeedRefreshStatus(statusCode):
-        if isFeedUnchanged(
+        if allowNotModified, isFeedUnchanged(
             remoteMetadata: headMetadata,
             lastFetchedETag: lastFetchedETag,
             lastFetchedModifiedAt: lastFetchedModifiedAt
@@ -1409,13 +1412,16 @@ fileprivate func getRssData(
     )
     switch getHTTPResponse.statusCode {
     case 304:
-        logRSS("stage=http.notModified source=get304 url=\(rssUrl.absoluteString)")
-        return .notModified(metadata: getMetadata)
+        if allowNotModified {
+            logRSS("stage=http.notModified source=get304 url=\(rssUrl.absoluteString)")
+            return .notModified(metadata: getMetadata)
+        }
+        throw FeedError.downloadFailed
     case 200..<300:
         return .fetched(data, metadata: getMetadata)
     case 300..<400:
-        logRSS("stage=http.notModified source=getRedirect url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode)")
-        return .notModified(metadata: getMetadata)
+        logRSS("stage=http.error source=getRedirect url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode)")
+        throw FeedError.downloadFailed
     default:
         logRSS("stage=http.get.error url=\(rssUrl.absoluteString) status=\(getHTTPResponse.statusCode)")
         throw FeedError.downloadFailed
@@ -1770,7 +1776,7 @@ public extension Feed {
         logRSS(
             "stage=fetch.start feedID=\(feedID.uuidString) title=\(feedTitle) url=\(rssUrl.absoluteString) lastRefresh=\(lastRefreshedEntriesAt?.description ?? "nil") etag=\(lastFetchedETag ?? "nil") lastModified=\(lastFetchedModifiedAt?.description ?? "nil") deleteOrphans=\(deleteOrphans)"
         )
-        let fetchResult: FeedFetchResult
+        var fetchResult: FeedFetchResult
         do {
             fetchResult = try await getRssData(
                 rssUrl: rssUrl,
@@ -1780,6 +1786,15 @@ public extension Feed {
         } catch {
             logRSS("stage=fetch.download.error feedID=\(feedID.uuidString) url=\(rssUrl.absoluteString) error=\(error)")
             throw error
+        }
+        if case .notModified = fetchResult,
+           getEntries()?.isEmpty != false {
+            fetchResult = try await getRssData(
+                rssUrl: rssUrl,
+                lastFetchedETag: nil,
+                lastFetchedModifiedAt: nil,
+                allowNotModified: false
+            )
         }
         switch fetchResult {
         case .notModified(let metadata):
