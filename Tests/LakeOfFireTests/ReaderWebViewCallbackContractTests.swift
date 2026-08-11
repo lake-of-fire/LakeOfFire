@@ -115,6 +115,24 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertEqual(finishCount, 1)
     }
 
+    func testURLChangeBeforeDidFinishQueuesBehindDocumentFinish() async throws {
+        let manager = NavigationTaskManager()
+        var order = [String]()
+
+        manager.startOnNavigationCommitted { order.append("commit") }
+        try await manager.onNavigationCommittedTask?.value
+        manager.startOnURLChanged { order.append("url") }
+
+        await Task.yield()
+        XCTAssertEqual(order, ["commit"])
+        XCTAssertNil(manager.onURLChangedTask)
+
+        manager.startOnNavigationFinished { order.append("finish") }
+        try await manager.onNavigationFinishedTask?.value
+        try await manager.onURLChangedTask?.value
+        XCTAssertEqual(order, ["commit", "finish", "url"])
+    }
+
     func testURLChangeDuringFinishKeepsOnlyLatestMutation() async throws {
         let manager = NavigationTaskManager()
         let gate = ReaderCallbackGate()
@@ -149,6 +167,82 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         XCTAssertNil(manager.onURLChangedTask)
     }
 
+    func testSettledDocumentURLChangeRunsWithoutAnotherDidFinish() async throws {
+        let manager = NavigationTaskManager()
+        var order = [String]()
+
+        manager.startOnNavigationCommitted { order.append("commit") }
+        manager.startOnNavigationFinished { order.append("finish") }
+        try await manager.onNavigationFinishedTask?.value
+
+        manager.startOnURLChanged { order.append("url") }
+        try await manager.onURLChangedTask?.value
+        XCTAssertEqual(order, ["commit", "finish", "url"])
+    }
+
+    func testNewCommitCancelsFinishWaitingOnPreviousCommit() async {
+        let manager = NavigationTaskManager()
+        let firstCommitStarted = expectation(description: "first commit started")
+        let firstCommitCancelled = expectation(description: "first commit cancelled")
+        let staleFinishCalled = expectation(description: "stale finish must not run")
+        staleFinishCalled.isInverted = true
+        let replacementCommitCalled = expectation(description: "replacement commit called")
+
+        manager.startOnNavigationCommitted {
+            firstCommitStarted.fulfill()
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch is CancellationError {
+                firstCommitCancelled.fulfill()
+                throw CancellationError()
+            }
+        }
+        manager.startOnNavigationFinished {
+            staleFinishCalled.fulfill()
+        }
+
+        await fulfillment(of: [firstCommitStarted], timeout: 1)
+        manager.startOnNavigationCommitted {
+            replacementCommitCalled.fulfill()
+        }
+        await fulfillment(of: [firstCommitCancelled, replacementCommitCalled], timeout: 1)
+        await fulfillment(of: [staleFinishCalled], timeout: 0.05)
+    }
+
+    func testTerminalCancellationStopsRunningURLCallbackAndClearsTasks() async throws {
+        let manager = NavigationTaskManager()
+        let urlStarted = expectation(description: "URL callback started")
+        let urlCancelled = expectation(description: "URL callback cancelled")
+
+        manager.startOnNavigationCommitted {}
+        manager.startOnNavigationFinished {}
+        try await manager.onNavigationFinishedTask?.value
+        manager.startOnURLChanged {
+            urlStarted.fulfill()
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch is CancellationError {
+                urlCancelled.fulfill()
+                throw CancellationError()
+            }
+        }
+
+        await fulfillment(of: [urlStarted], timeout: 1)
+        manager.cancelNavigationWork()
+        await fulfillment(of: [urlCancelled], timeout: 1)
+
+        XCTAssertNil(manager.onNavigationCommittedTask)
+        XCTAssertNil(manager.onNavigationFinishedTask)
+        XCTAssertNil(manager.onNavigationFailedTask)
+        XCTAssertNil(manager.onURLChangedTask)
+
+        var lateURLCount = 0
+        manager.startOnURLChanged { lateURLCount += 1 }
+        await Task.yield()
+        XCTAssertEqual(lateURLCount, 0)
+        XCTAssertNil(manager.onURLChangedTask)
+    }
+
     func testTerminalFailureCancelsDocumentWork() async {
         let manager = NavigationTaskManager()
         let commitStarted = expectation(description: "commit started")
@@ -170,6 +264,35 @@ final class ReaderWebViewCallbackContractTests: XCTestCase {
         }
 
         await fulfillment(of: [commitCancelled, failureCalled], timeout: 1)
+    }
+
+    func testNavigationFailureCancelsPendingDocumentWorkBeforeFailureCallback() async {
+        let manager = NavigationTaskManager()
+        let commitStarted = expectation(description: "commit started")
+        let commitCancelled = expectation(description: "commit cancelled")
+        let pendingURLCalled = expectation(description: "pending URL callback must not run")
+        pendingURLCalled.isInverted = true
+        let failureCalled = expectation(description: "failure callback called")
+
+        manager.startOnNavigationCommitted {
+            commitStarted.fulfill()
+            do {
+                try await Task.sleep(for: .seconds(30))
+            } catch is CancellationError {
+                commitCancelled.fulfill()
+                throw CancellationError()
+            }
+        }
+        manager.startOnURLChanged {
+            pendingURLCalled.fulfill()
+        }
+
+        await fulfillment(of: [commitStarted], timeout: 1)
+        manager.startOnNavigationFailed {
+            failureCalled.fulfill()
+        }
+        await fulfillment(of: [commitCancelled, failureCalled], timeout: 1)
+        await fulfillment(of: [pendingURLCalled], timeout: 0.05)
     }
 
     func testPreservedDocumentFailureKeepsSettledURLLifecycle() async throws {
