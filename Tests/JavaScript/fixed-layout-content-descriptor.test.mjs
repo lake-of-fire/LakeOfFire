@@ -60,6 +60,12 @@ globalThis.ResizeObserver = class {
 globalThis.customElements = { define() {} }
 globalThis.document = {
     createElement(tagName) {
+        if (tagName === 'style') {
+            return {
+                parent: null,
+                textContent: '',
+            }
+        }
         if (tagName === 'div') {
             return {
                 parent: null,
