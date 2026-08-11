@@ -728,6 +728,15 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
                 #"{"v":9,"t":{"h":["hash"],"sid":["sentence"]},"s":[["!a",0,null,null,null,null,null,null,null,0]]}"#.utf8
             )
         )
+        let canonicalBareToken = EbookProcessedSectionPayload(
+            documentHTML: Data("<m-m id=\"mnb-sAb09\">猫</m-m>".utf8),
+            segmentSidecar: Data(
+                #"""
+                {"v":9,"t":{"h":["hash"],"sid":["sentence"],"pid":["paragraph"]},
+                 "s":[["Ab09",0,null,null,null,null,null,null,null,0,0]]}
+                """#.utf8
+            )
+        )
 
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(incomplete))
         XCTAssertFalse(ebookProcessedSectionPayloadHasDurableSegmentIdentities(legacy))
@@ -737,6 +746,7 @@ final class EbookURLSchemeHandlerTests: XCTestCase {
         XCTAssertFalse(
             ebookProcessedSectionPayloadHasDurableSegmentIdentities(transitionalTenFieldTuple)
         )
+        XCTAssertTrue(ebookProcessedSectionPayloadHasDurableSegmentIdentities(canonicalBareToken))
     }
 
     func testProcessingRegeneratesCachedHTMLWithoutDurableSegmentIdentity() async throws {

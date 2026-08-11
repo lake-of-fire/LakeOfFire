@@ -62,12 +62,21 @@ private func readerSegmentSidecarHasDurableSegmentIdentities(
         return !table[tableIndex.intValue].isEmpty
     }
 
+    func isCanonicalRuntimeIdentifierToken(_ token: String) -> Bool {
+        guard let first = token.first else { return false }
+        if first == "!" || first == "~" {
+            return token.count > 1
+        }
+        return token.unicodeScalars.allSatisfy {
+            $0.isASCII && CharacterSet.alphanumerics.contains($0)
+        }
+    }
+
     var runtimeIdentifierTokens = Set<String>()
     return segments.allSatisfy { tuple in
         guard tuple.count == 11,
               let runtimeIdentifierToken = tuple.first as? String,
-              runtimeIdentifierToken.count > 1,
-              (runtimeIdentifierToken.first == "!" || runtimeIdentifierToken.first == "~"),
+              isCanonicalRuntimeIdentifierToken(runtimeIdentifierToken),
               runtimeIdentifierTokens.insert(runtimeIdentifierToken).inserted else {
             return false
         }
