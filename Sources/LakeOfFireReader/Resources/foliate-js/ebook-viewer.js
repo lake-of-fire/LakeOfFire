@@ -2296,12 +2296,10 @@ const segmentMetadataPayloadLookupState = (payload) => {
 };
 
 const findSegmentMetadataInPayload = (payload, segmentID) => {
-    const cacheSegmentMetadataAliases = (metadata, index, state) => {
-        if (!state?.byID || !metadata) return;
-        for (const alias of [metadata.i, metadata.sid]) {
-            if (typeof alias === 'string' && alias.length > 0 && !state.byID.has(alias)) {
-                state.byID.set(alias, index);
-            }
+    const cacheSegmentMetadataRuntimeID = (metadata, index, state) => {
+        const runtimeID = metadata?.i;
+        if (state?.byID && typeof runtimeID === 'string' && runtimeID.length > 0) {
+            state.byID.set(runtimeID, index);
         }
     };
     const compactSegments = payload?.s;
@@ -2325,9 +2323,9 @@ const findSegmentMetadataInPayload = (payload, segmentID) => {
         for (let index = (state?.scannedThrough ?? -1) + 1; index < compactSegments.length; index += 1) {
             const segment = compactSegments[index];
             const metadata = segmentMetadataFromCompactTuple(segment, tables);
-            cacheSegmentMetadataAliases(metadata, index, state);
+            cacheSegmentMetadataRuntimeID(metadata, index, state);
             if (state) state.scannedThrough = index;
-            if (metadata?.i !== segmentID && metadata?.sid !== segmentID) continue;
+            if (metadata?.i !== segmentID) continue;
             return metadata;
         }
         if (state) state.complete = true;
@@ -2358,13 +2356,15 @@ const segmentMetadataForNode = (segmentNode) => {
     if (byID.has(segmentID)) {
         return byID.get(segmentID) || null;
     }
+    let matchingMetadata = null;
     for (const payload of segmentMetadataPayloadsForSnapshot(doc, snapshot)) {
         const metadata = findSegmentMetadataInPayload(payload, segmentID);
         if (!metadata?.i) continue;
-        byID.set(segmentID, metadata);
-        return metadata;
+        if (matchingMetadata !== null) return null;
+        matchingMetadata = metadata;
     }
-    return null;
+    if (matchingMetadata !== null) byID.set(segmentID, matchingMetadata);
+    return matchingMetadata;
 };
 
 const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
