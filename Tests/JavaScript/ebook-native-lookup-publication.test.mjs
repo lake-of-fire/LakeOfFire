@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+    nativeLookupFramePublicationTransition,
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-native-lookup-publication.js'
@@ -42,6 +43,45 @@ test('publication identity requires an owning document URL', () => {
 
     assert.equal(nativeLookupPublicationIdentityForDocument(doc), null)
     assert.equal(doc.body.dataset.swiftuiwebviewFrameUuid, undefined)
+})
+
+test('fragment-only navigation retains one frame publication key', () => {
+    const before = makeDocument('ebook://ebook/load/book/chapter.xhtml?edition=1#before', 'frame-1')
+    const after = makeDocument('ebook://ebook/load/book/chapter.xhtml?edition=1#after', 'frame-1')
+    const otherQuery = makeDocument('ebook://ebook/load/book/chapter.xhtml?edition=2#after', 'frame-1')
+
+    assert.equal(
+        nativeLookupPublicationIdentityForDocument(before).frameKey,
+        nativeLookupPublicationIdentityForDocument(after).frameKey
+    )
+    assert.equal(
+        nativeLookupPublicationIdentityForDocument(before).documentURL,
+        'ebook://ebook/load/book/chapter.xhtml?edition=1'
+    )
+    assert.notEqual(
+        nativeLookupPublicationIdentityForDocument(before).frameKey,
+        nativeLookupPublicationIdentityForDocument(otherQuery).frameKey
+    )
+})
+
+test('a newly displayed frame creates a destructive publication reset boundary', () => {
+    const previous = makeDocument('ebook://ebook/load/book/chapter.xhtml', 'frame-1')
+    const next = makeDocument('ebook://ebook/load/book/chapter.xhtml', 'frame-2')
+
+    assert.deepEqual(nativeLookupFramePublicationTransition({
+        previousFrameKey: nativeLookupPublicationIdentityForDocument(previous).frameKey,
+        document: next,
+    }), {
+        frameKey: 'ebook://ebook/load/book/chapter.xhtml|frame-2',
+        shouldResetPreviousTargets: true,
+    })
+    assert.deepEqual(nativeLookupFramePublicationTransition({
+        previousFrameKey: nativeLookupPublicationIdentityForDocument(next).frameKey,
+        document: next,
+    }), {
+        frameKey: 'ebook://ebook/load/book/chapter.xhtml|frame-2',
+        shouldResetPreviousTargets: false,
+    })
 })
 
 test('scheduled refresh rejects superseded generations and detached explicit documents', () => {

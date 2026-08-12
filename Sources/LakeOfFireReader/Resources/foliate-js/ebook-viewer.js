@@ -54,6 +54,7 @@ import {
     getPrimaryRendererContentIndex,
 } from './renderer-content.js'
 import {
+    nativeLookupFramePublicationTransition,
     nativeLookupPublicationIdentityForDocument,
     shouldRunNativeLookupRefresh,
 } from './ebook-native-lookup-publication.js'
@@ -4313,6 +4314,7 @@ class Reader {
     nativeLookupHitTargetRefreshTask = null;
     nativeLookupHitTargetSettleHandle = null;
     nativeLookupHitTargetRefreshGeneration = 0;
+    nativeLookupPublishedFrameKey = null;
     displaySettledSequence = 0;
     displaySettledWaiters = [];
     lookupNavigationPageTurnActive = false;
@@ -5711,6 +5713,34 @@ class Reader {
             ? range
             : null;
     }
+    #postVisiblePageLookupTargets(doc, result, reason = 'unspecified') {
+        // Delayed work may complete after Foliate has detached or superseded
+        // the iframe. Only the committed displayed document owns publication.
+        if (getCurrentRendererDocument(this.view?.renderer, doc) !== doc) return;
+        const transition = nativeLookupFramePublicationTransition({
+            previousFrameKey: this.nativeLookupPublishedFrameKey,
+            document: doc,
+        });
+        if (!transition.frameKey) return;
+        if (transition.shouldResetPreviousTargets) {
+            // No frame key is intentional: this is a destructive sequence
+            // barrier that retires every publication from the prior iframe.
+            window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+                targets: [],
+                reason: 'nativeLookup.displayedFrameChanged',
+                sourceReason: reason,
+                isExplicitReset: true,
+                isAuthoritativeTargetSet: true,
+                visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+                viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
+                viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
+                viewportLeft: 0,
+                viewportTop: 0,
+            });
+        }
+        this.nativeLookupPublishedFrameKey = transition.frameKey;
+        postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
+    }
     #visiblePageSegmentResult(doc, visibleRange = null, reason = 'visible-page-segment-result', {
         postIfCached = false,
         postLookupTargets = true,
@@ -5731,7 +5761,7 @@ class Reader {
                 snapshot.result.lookupIndex = snapshot.lookupIndex;
             }
             if (postLookupTargets && postIfCached) {
-                postNativeLookupHitTargetsForVisibleSegments(doc, snapshot.result, reason);
+                this.#postVisiblePageLookupTargets(doc, snapshot.result, reason);
             }
             return snapshot.result;
         }
@@ -5752,7 +5782,7 @@ class Reader {
             lookupIndex,
         };
         if (postLookupTargets) {
-            postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
+            this.#postVisiblePageLookupTargets(doc, result, reason);
         }
         return result;
     }
@@ -6022,6 +6052,7 @@ class Reader {
         this.hasLoadedLastPosition = false
         this.lastCFIPersistenceObservation = null;
         this.unstableCFIs.clear();
+        this.nativeLookupPublishedFrameKey = null;
         if (this.initialPaginatorSettleHandle) {
             cancelAnimationFrame(this.initialPaginatorSettleHandle);
             this.initialPaginatorSettleHandle = null;

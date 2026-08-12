@@ -16,16 +16,33 @@ const rendererCurrentIndex = renderer => {
     }
 }
 
+// Foliate can advance currentIndex before its replacement iframe becomes the
+// committed visible surface. Prefer displayedIndex whenever it is available.
+const rendererDisplayedIndex = renderer => {
+    try {
+        const index = renderer?.displayedIndex
+        return Number.isInteger(index) ? index : null
+    } catch (_error) {
+        return null
+    }
+}
+
+const rendererPublicationIndex = renderer =>
+    rendererDisplayedIndex(renderer) ?? rendererCurrentIndex(renderer)
+
+const displayedContents = contents =>
+    contents.filter(content => content?.isDisplayed !== false)
+
 export const getPrimaryRendererContentIndex = renderer => {
-    const currentIndex = rendererCurrentIndex(renderer)
+    const currentIndex = rendererPublicationIndex(renderer)
     if (currentIndex !== null) return currentIndex
-    const primaryContent = rendererContents(renderer)[0] ?? null
+    const primaryContent = displayedContents(rendererContents(renderer))[0] ?? null
     return Number.isInteger(primaryContent?.index) ? primaryContent.index : null
 }
 
 export const getPrimaryRendererContent = renderer => {
-    const contents = rendererContents(renderer)
-    const currentIndex = rendererCurrentIndex(renderer)
+    const contents = displayedContents(rendererContents(renderer))
+    const currentIndex = rendererPublicationIndex(renderer)
     if (currentIndex !== null) {
         return contents.find(content => content?.index === currentIndex) ?? null
     }
@@ -46,8 +63,8 @@ export const getCurrentRendererDocument = (renderer, explicitDocument = null) =>
 }
 
 export const activeRendererContentsForLookup = renderer => {
-    const contents = rendererContents(renderer)
-    const currentIndex = rendererCurrentIndex(renderer)
+    const contents = displayedContents(rendererContents(renderer))
+    const currentIndex = rendererPublicationIndex(renderer)
         ?? (Number.isInteger(contents[0]?.index) ? contents[0].index : null)
     return Number.isInteger(currentIndex)
         ? contents.filter(content => content?.index === currentIndex)
