@@ -194,6 +194,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .environment(\.readerContentRowOwnsAccessibilityLabel, true)
             }
             .applyStackListGroupBoxStyle(.automatic, defaultIsGrouped: stackListStyle == .grouped)
             .stackListGroupBoxContentInsets(ReaderContentHorizontalListLayout.groupBoxContentInsets)

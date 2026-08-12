@@ -255,6 +255,17 @@ public extension View {
     }
 }
 
+private struct ReaderContentRowOwnsAccessibilityLabelKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var readerContentRowOwnsAccessibilityLabel: Bool {
+        get { self[ReaderContentRowOwnsAccessibilityLabelKey.self] }
+        set { self[ReaderContentRowOwnsAccessibilityLabelKey.self] = newValue }
+    }
+}
+
 public struct ReaderContentCellAnnotationStatus: Equatable, Sendable {
     public var noteCount: Int
     public var unfinishedTaskCount: Int
@@ -713,6 +724,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.readerContentCellStyle) private var readerContentCellStyle
+    @Environment(\.readerContentRowOwnsAccessibilityLabel) private var readerContentRowOwnsAccessibilityLabel
     @Environment(\.controlSize) private var controlSize
 
     private var usesCompactControlSize: Bool {
@@ -767,28 +779,31 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
 
     @ViewBuilder
     private var sourceOrAuthorRow: some View {
-        if appearance.isEbookStyle, let authorText = bookAuthorText {
-            Text(authorText)
-                .lineLimit(1)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else if appearance.includeSource {
-            HStack(alignment: .center, spacing: 6) {
-                if let sourceIconURL = inlineSourceIconURL {
-                    ReaderContentSourceIconImage(
-                        sourceIconURL: sourceIconURL,
-                        iconSize: sourceIconSize
-                    )
-                    .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
-                }
-                if let sourceTitle = displaySourceTitle {
-                    Text(sourceTitle)
-                        .lineLimit(1)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Group {
+            if appearance.isEbookStyle, let authorText = bookAuthorText {
+                Text(authorText)
+                    .lineLimit(1)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if appearance.includeSource {
+                HStack(alignment: .center, spacing: 6) {
+                    if let sourceIconURL = inlineSourceIconURL {
+                        ReaderContentSourceIconImage(
+                            sourceIconURL: sourceIconURL,
+                            iconSize: sourceIconSize
+                        )
+                        .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
+                    }
+                    if let sourceTitle = displaySourceTitle {
+                        Text(sourceTitle)
+                            .lineLimit(1)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
+        .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
     }
 
     @ViewBuilder
@@ -823,6 +838,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             }
         }
         .frame(height: scaledSmallNewBadgeHeight)
+        .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
         .animation(.easeInOut(duration: 0.2), value: showsNewBadge)
     }
 
@@ -834,6 +850,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .multilineTextAlignment(.leading)
             .environment(\._lineHeightMultiple, 0.875)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
     }
 
     private var titleText: Text {
@@ -849,6 +866,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
             .multilineTextAlignment(.leading)
             .environment(\._lineHeightMultiple, 0.875)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
     }
 
     private var showsNewBadge: Bool {
@@ -867,6 +885,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .layoutPriority(2)
+                .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
         }
     }
 
@@ -895,6 +914,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                 }
             }
             .transition(.opacity.combined(with: .move(edge: .bottom)))
+            .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
         }
     }
 
@@ -1089,6 +1109,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
                     edgeLength: compactThumbnailEdgeLength,
                     contentHeight: compactCellHeight
                 )
+                .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1113,6 +1134,7 @@ private struct ReaderContentCellBody<C: ReaderContentProtocol & ObjectKeyIdentif
         HStack(alignment: .top, spacing: 12) {
             if let thumbnailChoice {
                 thumbnailView(for: thumbnailChoice)
+                    .accessibilityHidden(readerContentRowOwnsAccessibilityLabel)
             }
 
             Group {

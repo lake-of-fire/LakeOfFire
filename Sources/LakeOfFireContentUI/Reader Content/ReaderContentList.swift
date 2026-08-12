@@ -738,6 +738,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .padding(appearance.usesNativeRowInsets ? 0 : 11)
+        .environment(\.readerContentRowOwnsAccessibilityLabel, true)
     }
 
     @ViewBuilder private func rowContent(item: C) -> some View {
@@ -775,7 +776,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .tag(content.compoundKey)
                     .contentShape(Rectangle())
                     .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
-                    .accessibilityLabel(content.title)
+                    .accessibilityLabel(content.titleForDisplay)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction {
                         selectContent()
@@ -790,6 +791,8 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .buttonStyle(.borderless)
                 .tint(.primary)
                 .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
+                .accessibilityLabel(content.titleForDisplay)
             }
         }
         .id(readerContentListSeparatedRowScrollAnchorID(content.compoundKey))
