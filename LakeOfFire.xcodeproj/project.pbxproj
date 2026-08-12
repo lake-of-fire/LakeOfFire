@@ -122,7 +122,6 @@
 		52E9D564CC7C6233AA680257 /* ReaderEnvironmentViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */; };
 		52FBCA2E87EE0D771931B2AC /* libLakeOfFireAdblock.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 497C719B89832F484459EAB5 /* libLakeOfFireAdblock.a */; };
 		552EEA670491E9BC7253EC14 /* OPDS1Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA602C324AB24D3A8B24474C /* OPDS1Parser.swift */; };
-		556B5EC2DDFFD752A8AF8EE7 /* Brotli.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6DD6D80CA51E2F52513C71E4 /* Brotli.framework */; };
 		55BC904EFD19D052347124D7 /* ReaderContentList.swift in Sources */ = {isa = PBXBuildFile; fileRef = A32952544F41B678E8087702 /* ReaderContentList.swift */; };
 		57FAEC17DA916FAE7F5B9252 /* swift-sharing_Sharing.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 51C0EEBF886293B2139B6FF3 /* swift-sharing_Sharing.bundle */; };
 		598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
@@ -137,6 +136,7 @@
 		5F02C6DB385F1DEF4212ACA8 /* URL+EBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */; };
 		5F1C08707556392FD1E9000C /* StructuredQueriesSQLiteCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 705740EFB60C15F24E81DF2B /* StructuredQueriesSQLiteCore.framework */; };
 		602A9980815C4D77EE598621 /* LibraryScriptFormSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */; };
+		6051B7738DDF1755FBCBC401 /* libBrotli.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 2AE2D7F3661FA832927B6DA1 /* libBrotli.a */; };
 		61838981FF1489A3179195B6 /* RealmDatabase_RealmCoreResources.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 197B226A7C5AD2C6872E5303 /* RealmDatabase_RealmCoreResources.bundle */; };
 		619936BCC4D239752919BF05 /* EPubParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8CF30D23C857DABADD4F9B9 /* EPubParser.swift */; };
 		623E52909BC90590EDDC6002 /* Logging.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BAFD50164A82B1A58BD8ACEF /* Logging.framework */; };
@@ -999,6 +999,7 @@
 		2699F246E2EA16BCB1C61022 /* Sharing.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Sharing.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		28811599CCF9F57680CE6B42 /* OPDS Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OPDS Models.swift"; sourceTree = "<group>"; };
 		2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEbookTextProcessor.swift; sourceTree = "<group>"; };
+		2AE2D7F3661FA832927B6DA1 /* libBrotli.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libBrotli.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		2B63520D3232202F79B1DE7A /* Sharing1.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Sharing1.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		2B72D8DD2B1EFFC2F2B45D37 /* ConcurrencyExtras.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ConcurrencyExtras.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		2BC33C835B8CB12369760BA3 /* Asahi */ = {isa = PBXFileReference; path = Asahi; sourceTree = "<group>"; };
@@ -1068,7 +1069,6 @@
 		692614AB4B368D33116EF24A /* FeedFollowingEditListBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedFollowingEditListBuilderTests.swift; sourceTree = "<group>"; };
 		69799392CC509CD5B7CA711D /* JapaneseLanguageTools_JapaneseLanguageTools.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JapaneseLanguageTools_JapaneseLanguageTools.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		6D46E0204024D29E3136178D /* EbookFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookFileManager.swift; sourceTree = "<group>"; };
-		6DD6D80CA51E2F52513C71E4 /* Brotli.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Brotli.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6ED0F7B0B82088C39203E007 /* LakeOfFireOPDSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LakeOfFireOPDSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BigSyncKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6F9CC28C85018D2C872F0F69 /* libRealmSwiftGaps.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libRealmSwiftGaps.a; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1290,7 +1290,7 @@
 				04627DE8A414F8B0599686F4 /* AsyncView.framework in Frameworks */,
 				196498E7E2912C6BD39B8A00 /* BetterSafariView.framework in Frameworks */,
 				2AB81FF257AB7FD41566264D /* BigSyncKit.framework in Frameworks */,
-				556B5EC2DDFFD752A8AF8EE7 /* Brotli.framework in Frameworks */,
+				6051B7738DDF1755FBCBC401 /* libBrotli.a in Frameworks */,
 				6DEF5FB12FDF079ECBA8892F /* Clocks.framework in Frameworks */,
 				DED4D057D159889FE3213DB7 /* CloudKitSyncMonitor.framework in Frameworks */,
 				988ED87521CE83F33856A578 /* Collections.framework in Frameworks */,
@@ -1660,7 +1660,6 @@
 				F4A82BCE41E472AABFC4F59A /* BetterSafariView.framework */,
 				646E399FF73B28D956EABDAC /* BigSyncKit_BigSyncKit.bundle */,
 				6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */,
-				6DD6D80CA51E2F52513C71E4 /* Brotli.framework */,
 				93FADF363806C5406F404483 /* Clocks.framework */,
 				8730C0A30790A4E6F2424949 /* CloudKitSyncMonitor_CloudKitSyncMonitor.bundle */,
 				F5E98EDE4DC69472A583A6BA /* CloudKitSyncMonitor.framework */,
@@ -1692,6 +1691,7 @@
 				15A429C5C9927AD55853FADB /* LakeOfFire_LakeOfFireReader.bundle */,
 				6ED0F7B0B82088C39203E007 /* LakeOfFireOPDSTests.xctest */,
 				0F106499C783BA02773080CC /* LakeOfFireTests.xctest */,
+				2AE2D7F3661FA832927B6DA1 /* libBrotli.a */,
 				0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */,
 				CA51D72957919A6BD40B1AEA /* libLakeOfFire.a */,
 				497C719B89832F484459EAB5 /* libLakeOfFireAdblock.a */,
