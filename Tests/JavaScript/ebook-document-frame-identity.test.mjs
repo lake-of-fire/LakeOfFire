@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
     ebookDocumentFrameIdentity,
+    nativeLookupFramePublicationTransition,
     shouldPublishForDocumentFrame,
 } from '../../Sources/LakeOfFireReader/Resources/Resources/foliate-js/ebook-document-frame-identity.js'
 
@@ -80,4 +81,24 @@ test('fragment-only navigation retains one frame publication key', () => {
         ebookDocumentFrameIdentity(before).frameKey,
         ebookDocumentFrameIdentity(otherQuery).frameKey
     )
+})
+
+test('a newly displayed frame creates a destructive publication reset boundary', () => {
+    const previous = documentWithIdentity('ebook://book/chapter.xhtml', 'frame-1')
+    const next = documentWithIdentity('ebook://book/chapter.xhtml', 'frame-2')
+
+    assert.deepEqual(nativeLookupFramePublicationTransition({
+        previousFrameKey: ebookDocumentFrameIdentity(previous).frameKey,
+        document: next,
+    }), {
+        frameKey: 'ebook://book/chapter.xhtml|frame-2',
+        shouldResetPreviousTargets: true,
+    })
+    assert.deepEqual(nativeLookupFramePublicationTransition({
+        previousFrameKey: ebookDocumentFrameIdentity(next).frameKey,
+        document: next,
+    }), {
+        frameKey: 'ebook://book/chapter.xhtml|frame-2',
+        shouldResetPreviousTargets: false,
+    })
 })

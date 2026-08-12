@@ -12,6 +12,7 @@ import {
 } from './ebook-segment-identity.js'
 import {
     ebookDocumentFrameIdentity,
+    nativeLookupFramePublicationTransition,
     shouldPublishForDocumentFrame,
 } from './ebook-document-frame-identity.js'
 import {
@@ -19,6 +20,10 @@ import {
     observedPageTurnMovementDisposition,
     pageTurnMovementDisposition,
 } from './page-turn-coordination.js'
+import {
+    confirmedPageTurnProgressDecision,
+    shouldRequestConfirmedPageTurnProgress,
+} from './confirmed-page-turn-progress.js'
 import { beginNavigationIntent } from './navigation-intent.js'
 import { beginOwnedElementOperation, finishOwnedElementOperation } from './owned-element-operation.js'
 import { createOwnedAsyncCache } from './owned-async-cache.js'
@@ -5703,6 +5708,7 @@ class Reader {
 
         this.scheduleGoToPageNumber?.cancel?.();
         this.scheduleGoToFraction?.cancel?.();
+        this.#postConfirmedPageTurnProgress?.cancel?.();
         this.#postUpdateReadingProgressMessage?.cancel?.();
         clearTimeout(this.loadingVisualTimer);
         this.loadingVisualTimer = null;
@@ -5931,6 +5937,7 @@ class Reader {
     nativeLookupHitTargetRefreshFallbackHandle = null;
     nativeLookupHitTargetRefreshGeneration = 0;
     pendingNativeLookupHitTargetRefresh = null;
+    nativeLookupPublishedFrameKey = null;
     pendingBookContentHideNavigationDueToScroll = null;
     annotations = new Map()
     annotationsByValue = new Map()
@@ -7544,6 +7551,9 @@ class Reader {
                 result = this.#readerClosedPageTurnResult('after-renderer-attempt');
             }
             const movementDisposition = pageTurnMovementDisposition(result);
+            if (shouldRequestConfirmedPageTurnProgress(movementDisposition)) {
+                this.#postConfirmedPageTurnProgress();
+            }
             if (
                 movementDisposition === PAGE_TURN_MOVEMENT_DISPOSITION.noMove
                 && !deferVisiblePageResetUntilMovement
@@ -7889,10 +7899,34 @@ class Reader {
         return snapshot.lookupIndex;
     }
     #postVisiblePageLookupTargets(doc, result, reason = 'unspecified', shouldPost = true) {
-        if (shouldPost) {
-            return postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
+        if (!shouldPost) return null;
+        // A delayed callback must never publish after its iframe stops being
+        // the renderer's committed displayed document.
+        if (getCurrentRendererDocument(this.view?.renderer, doc) !== doc) return null;
+        const transition = nativeLookupFramePublicationTransition({
+            previousFrameKey: this.nativeLookupPublishedFrameKey,
+            document: doc,
+        });
+        if (!transition.frameKey) return null;
+        if (transition.shouldResetPreviousTargets) {
+            // Deliberately omit nativeLookupFrameKey. Swift treats this as a
+            // destructive sequence barrier, so a delayed old-frame publication
+            // cannot repopulate targets after the displayed-frame handoff.
+            window.webkit?.messageHandlers?.nativeLookupHitTargetsUpdated?.postMessage?.({
+                targets: [],
+                reason: 'nativeLookup.displayedFrameChanged',
+                sourceReason: reason,
+                isExplicitReset: true,
+                isAuthoritativeTargetSet: true,
+                visualViewportScale: Number.isFinite(window.visualViewport?.scale) ? window.visualViewport.scale : 1,
+                viewportWidth: window.visualViewport?.width ?? window.innerWidth ?? document.documentElement?.clientWidth ?? null,
+                viewportHeight: window.visualViewport?.height ?? window.innerHeight ?? document.documentElement?.clientHeight ?? null,
+                viewportLeft: 0,
+                viewportTop: 0,
+            });
         }
-        return null;
+        this.nativeLookupPublishedFrameKey = transition.frameKey;
+        return postNativeLookupHitTargetsForVisibleSegments(doc, result, reason);
     }
     #hydrateVisiblePageTracking(doc, result, reason = 'unspecified', hydrateStatuses = true, {
         synchronous = true,
@@ -8567,6 +8601,7 @@ class Reader {
         this.lastCFIPersistenceObservation = null;
         this.unstableCFIs.clear();
         this.#lastPublishedCurrentContentPageKey = null;
+        this.nativeLookupPublishedFrameKey = null;
         if (this.initialPaginatorSettleHandle) {
             cancelAnimationFrame(this.initialPaginatorSettleHandle);
             this.initialPaginatorSettleHandle = null;
@@ -10802,6 +10837,63 @@ class Reader {
         });
     }
 
+    #postConfirmedPageTurnProgress = debounce(() => {
+        const location = this.view?.lastLocation ?? null;
+        const sectionIndex = typeof location?.sectionIndex === 'number'
+            ? location.sectionIndex
+            : (typeof location?.index === 'number' ? location.index : null);
+        const content = getPrimaryRendererContent(this.view?.renderer);
+        const doc = content?.doc ?? content?.document ?? null;
+        const currentDocumentURL = doc?.location?.href ?? null;
+        const currentSectionIndex = typeof content?.index === 'number'
+            ? content.index
+            : (typeof this.view?.renderer?.currentIndex === 'number'
+                ? this.view.renderer.currentIndex
+                : null);
+        const sectionBaseCFI = this.view?.book?.sections?.[sectionIndex]?.cfi ?? null;
+        const localSectionIndex = typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+            ? Math.max(0, this.navHUD.rendererPageSnapshot.current - 1)
+            : null;
+        const rendererTotal = typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
+            ? this.navHUD.rendererPageSnapshot.total
+            : null;
+        const decision = confirmedPageTurnProgressDecision({
+            closed: this.#closed,
+            hasLoadedLastPosition: this.hasLoadedLastPosition === true,
+            restoreInProgress: globalThis.__manabiRestoreInProgress === true,
+            requiresUserInput:
+                globalThis.__manabiRequireUserInputBeforePositionSave === true,
+            location,
+            currentDocumentURL,
+            currentSectionIndex,
+            sectionBaseCFI,
+            rendererLocalName: this.view?.renderer?.localName ?? null,
+            localSectionIndex,
+            rendererTotal,
+            priorObservation: this.lastCFIPersistenceObservation,
+            cfiAlreadyUnstable: this.unstableCFIs.has(location?.cfi),
+        });
+        if (!decision.shouldPost) return;
+        if (decision.markCFIUnstable) this.unstableCFIs.add(decision.cfi);
+        this.lastCFIPersistenceObservation = decision.nextObservation;
+        this.#postUpdateReadingProgressMessage({
+            fraction: decision.fraction,
+            cfi: decision.persistedLocator,
+            reason: decision.progressReason,
+            currentPageNumber: typeof this.navHUD?.rendererPageSnapshot?.current === 'number'
+                ? this.navHUD.rendererPageSnapshot.current
+                : null,
+            totalPages: typeof this.navHUD?.rendererPageSnapshot?.total === 'number'
+                ? this.navHUD.rendererPageSnapshot.total
+                : null,
+            sectionIndex: decision.sectionIndex,
+            expectedDocumentURL: decision.currentDocumentURL,
+            expectedSectionIndex: decision.sectionIndex,
+            expectedLocationCFI: decision.cfi,
+            expectedLocationFraction: decision.fraction,
+        });
+    }, 0)
+
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
         cfi,
@@ -10811,8 +10903,18 @@ class Reader {
         sectionIndex,
         expectedDocumentURL = null,
         expectedSectionIndex = null,
+        expectedLocationCFI = null,
+        expectedLocationFraction = null,
     }) => {
-        if (this.#closed) return;
+        if (
+            this.#closed
+            || this.hasLoadedLastPosition !== true
+            || globalThis.__manabiRestoreInProgress === true
+            || globalThis.__manabiSuppressNextRestoreRelocateSave === true
+            || globalThis.__manabiRequireUserInputBeforePositionSave === true
+        ) {
+            return;
+        }
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         const content = getPrimaryRendererContent(this.view?.renderer);
         const doc = content?.doc || content?.document || null;
@@ -10828,7 +10930,17 @@ class Reader {
         const sectionMismatch = typeof expectedSectionIndex === 'number'
             && typeof currentSectionIndex === 'number'
             && currentSectionIndex !== expectedSectionIndex;
-        if (documentMismatch || sectionMismatch) {
+        const currentLocation = this.view?.lastLocation ?? null;
+        const locationCFIMismatch = typeof expectedLocationCFI === 'string'
+            && currentLocation?.cfi !== expectedLocationCFI;
+        const locationFractionMismatch = Number.isFinite(expectedLocationFraction)
+            && currentLocation?.fraction !== expectedLocationFraction;
+        if (
+            documentMismatch
+            || sectionMismatch
+            || locationCFIMismatch
+            || locationFractionMismatch
+        ) {
             return;
         }
         const visibleRange = isDocumentLike(doc) ? this.#visibleRangeForDocument(doc) : null;

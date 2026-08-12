@@ -117,11 +117,25 @@ private extension View {
     func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
         if UIDevice.current.userInterfaceIdiom == .phone {
             ignoresSafeArea(.all, edges: .all)
+        } else if #available(iOS 26, *) {
+            // Keep the WebView inside its iPad split-view column while letting
+            // its themed background continue beneath vertical reader chrome.
+            // The sampled WebKit obscured insets still keep document content
+            // below the native controls.
+            ignoresSafeArea(.container, edges: .vertical)
         } else {
             self
         }
     }
-
+#elseif os(macOS)
+    @ViewBuilder
+    func readerWebViewSafeAreaExpansionForCurrentDevice() -> some View {
+        if #available(macOS 26, *) {
+            ignoresSafeArea(.container, edges: .top)
+        } else {
+            self
+        }
+    }
 #endif
 }
 
@@ -1213,8 +1227,8 @@ public struct Reader: View {
             top: effectiveSampledTopInset,//    + 8 + 2)
             backgroundColor: statusBarFadeBackgroundColor
         )
-        .readerWebViewSafeAreaExpansionForCurrentDevice()
 #endif
+        .readerWebViewSafeAreaExpansionForCurrentDevice()
         .background {
             GeometryReader { geometry in
                 WithPerceptionTracking {

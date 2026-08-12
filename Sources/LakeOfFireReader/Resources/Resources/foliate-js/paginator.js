@@ -1755,6 +1755,8 @@ export class Paginator extends HTMLElement {
     #header
     #footer
     #view
+    #displayedView = null
+    #displayedIndex = null
     #viewDocumentDetails = new WeakMap()
     #documentInputCleanups = new Map()
     #hostInputRegistrations = []
@@ -2136,6 +2138,8 @@ export class Paginator extends HTMLElement {
         }
 
         this.#isCacheWarmer = isCacheWarmer
+        this.#displayedView = null
+        this.#displayedIndex = null
         this.#installContainerLifecycle()
         this.bookDir = book.dir
         this.sections = book.sections
@@ -2233,6 +2237,11 @@ export class Paginator extends HTMLElement {
         return manabiCommitPaginatorDocumentState({
             state,
             publishCommit: () => {
+                // #index advances when navigation begins, while a replacement
+                // iframe is still hidden. Lookup/status consumers may only use
+                // the document once this visible commit boundary is crossed.
+                this.#displayedView = view
+                this.#displayedIndex = state.detail.index
                 this.dispatchEvent(new CustomEvent('document-committed', {
                     detail: state.detail,
                 }))
@@ -2259,6 +2268,10 @@ export class Paginator extends HTMLElement {
         const state = view ? this.#viewDocumentDetails.get(view) : null
         if (!state) return false
         this.#viewDocumentDetails.delete(view)
+        if (this.#displayedView === view) {
+            this.#displayedView = null
+            this.#displayedIndex = null
+        }
         if (this.#pendingProvisionalRelocation?.view === view) {
             this.#pendingProvisionalRelocation = null
         }
@@ -6501,14 +6514,27 @@ export class Paginator extends HTMLElement {
         })
     }
     getContents() {
-        if (this.#view) return [{
-            index: this.#index,
-            overlayer: this.#view.overlayer,
-            doc: this.#view.document,
-            element: this.#view.element,
-            iframe: this.#view.element?.querySelector?.('iframe') ?? null,
+        const view = this.#displayedView
+        const state = view ? this.#viewDocumentDetails.get(view) : null
+        // A staged view, or an iframe that has since navigated away from its
+        // committed document, must not masquerade as displayed content.
+        if (
+            view
+            && state?.committed === true
+            && state.detail?.doc === view.document
+            && Number.isInteger(state.detail?.index)
+        ) return [{
+            index: state.detail.index,
+            overlayer: view.overlayer,
+            doc: state.detail.doc,
+            element: view.element,
+            iframe: view.element?.querySelector?.('iframe') ?? null,
+            isDisplayed: true,
         }]
         return []
+    }
+    get displayedIndex() {
+        return this.#displayedIndex
     }
     setStyles(styles) {
         if (styles == null) return
@@ -6559,6 +6585,8 @@ export class Paginator extends HTMLElement {
         this.#unloadViewDocument(this.#view, 'paginator.destroy')
         this.#view?.destroy?.()
         this.#view = null
+        this.#displayedView = null
+        this.#displayedIndex = null
         this.#releaseAllDocumentInputHandlers()
         this.sections?.[this.#index]?.unload?.()
     }

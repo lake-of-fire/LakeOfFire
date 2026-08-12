@@ -21,6 +21,30 @@ test('currentIndex selects the visible fixed-layout document instead of DOM orde
     assert.deepEqual(activeRendererContentsForLookup(renderer).map(item => item.index), [1])
 })
 
+test('displayedIndex wins while a pending navigation index still names a stale frame', () => {
+    const stale = content(0)
+    const displayed = { ...content(1), isDisplayed: true }
+    const renderer = {
+        currentIndex: 0,
+        displayedIndex: 1,
+        getContents: () => [stale, displayed],
+    }
+
+    assert.equal(getPrimaryRendererContent(renderer), displayed)
+    assert.equal(getPrimaryRendererContentIndex(renderer), 1)
+    assert.deepEqual(activeRendererContentsForLookup(renderer), [displayed])
+    assert.equal(getCurrentRendererDocument(renderer, stale.doc), null)
+})
+
+test('explicitly non-displayed contents never become fallback lookup documents', () => {
+    const staged = { ...content(3), isDisplayed: false }
+    const renderer = { getContents: () => [staged] }
+
+    assert.equal(getPrimaryRendererContent(renderer), null)
+    assert.equal(getPrimaryRendererContentIndex(renderer), null)
+    assert.deepEqual(activeRendererContentsForLookup(renderer), [])
+})
+
 test('declared currentIndex never falls back to a stale first document', () => {
     const renderer = {
         currentIndex: 2,

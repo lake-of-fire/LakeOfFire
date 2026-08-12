@@ -164,6 +164,7 @@
 		749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C61C089C1B653DE60FEEFBE1 /* Collections.framework */; };
 		74DDFA8F962056FB207955DB /* FeedKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		7590EC1D6564D11987004068 /* Pow_Pow.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = A1C179BE8A90F664850C9605 /* Pow_Pow.bundle */; };
+		75DC9E92CD754E49CACC5562 /* ReaderWebViewCallbackContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B370C68FD042BD7384ABA70D /* ReaderWebViewCallbackContractTests.swift */; };
 		764146A194ED1E557C882012 /* Mute_Mute.bundle in Dependencies */ = {isa = PBXBuildFile; fileRef = A2E75AB9C50677029215E0D4 /* Mute_Mute.bundle */; };
 		780F7EA475E4BF038CDB59EF /* libLakeOfFireContent.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 3956EAD702E8250461971C1F /* libLakeOfFireContent.a */; };
 		7918A6E95C2C1CAD81E5E2B9 /* SwiftUIBackports.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */; };
@@ -222,6 +223,7 @@
 		9C2E3BDB1A903E042E27D473 /* SyncMutationBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF6C7F7E410A6F9161416C1D /* SyncMutationBoundaryTests.swift */; };
 		9D5B3F32C3B9FABF9B0333B5 /* ZIPFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		9D7B7F5C45C4584A3DA6BAFE /* Sharing2.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ABFEC6846BD8486253ECBC22 /* Sharing2.framework */; };
+		9EF91B4A0C108ACA6F2ED540 /* ReaderContentListSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E623CB00E15535F8426A591 /* ReaderContentListSnapshotTests.swift */; };
 		9F475E65E0E2CB5F707AD09C /* Mute.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E41040DF1FD30C8416AEED99 /* Mute.framework */; };
 		9F4D094C01515558F0B09FD2 /* libLakeOfFireAdblock.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 497C719B89832F484459EAB5 /* libLakeOfFireAdblock.a */; };
 		A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
@@ -1036,6 +1038,7 @@
 		4DEB6279A7D8177EDD58CECA /* libLakeOfFireWeb.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libLakeOfFireWeb.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E12213CF1250504A9D195A1 /* Bookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bookmark.swift; sourceTree = "<group>"; };
 		4E18D0EF549BDEF032346A8D /* EbookURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookURLSchemeHandler.swift; sourceTree = "<group>"; };
+		4E623CB00E15535F8426A591 /* ReaderContentListSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentListSnapshotTests.swift; sourceTree = "<group>"; };
 		4E8C02F879DBD8C9520C36AA /* readium_opds2_0_test.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = readium_opds2_0_test.swift; sourceTree = "<group>"; };
 		5126A6F6B4DB514C3874C507 /* FeedKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FeedKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		5167C1FBA25B7CF518F65926 /* Resources */ = {isa = PBXFileReference; path = Resources; sourceTree = "<group>"; };
@@ -1132,6 +1135,7 @@
 		B09F56203CD6E123A823245D /* NavigationBackport.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = NavigationBackport.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2685ABB176319217D80A76B /* Feed Model Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Feed Model Extensions.swift"; sourceTree = "<group>"; };
 		B287731F0C7959837AAF0105 /* WikipediaReadabilityRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WikipediaReadabilityRegressionTests.swift; sourceTree = "<group>"; };
+		B370C68FD042BD7384ABA70D /* ReaderWebViewCallbackContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebViewCallbackContractTests.swift; sourceTree = "<group>"; };
 		B5F2C84339C2F4168C93F8DC /* readium_opds1_1_test.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = readium_opds1_1_test.swift; sourceTree = "<group>"; };
 		B64D98529179A4224AB231B2 /* Samples */ = {isa = PBXFileReference; path = Samples; sourceTree = "<group>"; };
 		B75D9E6388FFDD5F7C0F4294 /* ContentPackageFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentPackageFile.swift; sourceTree = "<group>"; };
@@ -1790,10 +1794,12 @@
 				6250580024957758DB12CEF5 /* FeedStateIndicatorTests.swift */,
 				2230BD70A581D7C9C1AF826A /* ReadabilityMessageFrameFilteringTests.swift */,
 				2D8B92EB6F1D3C9B83AF5A33 /* ReaderContentInitialImageRendererTests.swift */,
+				4E623CB00E15535F8426A591 /* ReaderContentListSnapshotTests.swift */,
 				9B74BFFCABE24CA657A9DCF8 /* ReaderFileManagerNormalizationTests.swift */,
 				D06E45617FECE3EBC4EF07EB /* ReaderHTTPErrorRecoveryPolicyTests.swift */,
 				C63ABAACC5A7B1C54FB7BC63 /* ReaderMediaMetadataTests.swift */,
 				E50198207B2DB46B0C2121F3 /* ReaderSnippetTitleTests.swift */,
+				B370C68FD042BD7384ABA70D /* ReaderWebViewCallbackContractTests.swift */,
 				35C21FF5D9C7157D6432E6C7 /* SharedReaderFontTests.swift */,
 				CF6C7F7E410A6F9161416C1D /* SyncMutationBoundaryTests.swift */,
 				9DEB7FECC9A96ADDFBA2A6DF /* URLInternalTests.swift */,
@@ -2703,10 +2709,12 @@
 				DBB78FAA1B55950A4DCB21FD /* FeedStateIndicatorTests.swift in Sources */,
 				28BAB36EFB68A72595130B4D /* ReadabilityMessageFrameFilteringTests.swift in Sources */,
 				2C87F5BA634CB02C1692BBFA /* ReaderContentInitialImageRendererTests.swift in Sources */,
+				9EF91B4A0C108ACA6F2ED540 /* ReaderContentListSnapshotTests.swift in Sources */,
 				DBFDB03836B45D4387769031 /* ReaderFileManagerNormalizationTests.swift in Sources */,
 				92EDE29410E77DBF931D7080 /* ReaderHTTPErrorRecoveryPolicyTests.swift in Sources */,
 				BC5E178CE6E5937DDC7001B3 /* ReaderMediaMetadataTests.swift in Sources */,
 				21C23126157B77D43BACF325 /* ReaderSnippetTitleTests.swift in Sources */,
+				75DC9E92CD754E49CACC5562 /* ReaderWebViewCallbackContractTests.swift in Sources */,
 				24D66F4E164B8839FA0F2658 /* SharedReaderFontTests.swift in Sources */,
 				9C2E3BDB1A903E042E27D473 /* SyncMutationBoundaryTests.swift in Sources */,
 				F36EEDB7C4893D8E8E94FB13 /* URLInternalTests.swift in Sources */,

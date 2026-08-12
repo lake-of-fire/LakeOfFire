@@ -128,6 +128,7 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
                 $0.labelStyle(.iconOnly)
             } else { $0 }
         }
+        .accessibilityIdentifier("ReaderBookmark.Toggle")
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
         .task { @MainActor in

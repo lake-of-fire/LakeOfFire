@@ -834,6 +834,10 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 rowContent(item: content)
                     .tag(content.compoundKey)
                     .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectContent()
+                    }
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
                     .accessibilityLabel(
                         ReaderContentLoader.normalizedDisplayTitle(

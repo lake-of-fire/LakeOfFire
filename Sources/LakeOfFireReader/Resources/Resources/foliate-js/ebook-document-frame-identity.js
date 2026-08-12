@@ -31,3 +31,24 @@ export const shouldPublishForDocumentFrame = ({
     currentDocuments = [],
 }) => scheduledGeneration === currentGeneration
     && (!explicitDocument || currentDocuments.includes(explicitDocument))
+
+export const nativeLookupFramePublicationTransition = ({
+    previousFrameKey = null,
+    document,
+}) => {
+    const identity = ebookDocumentFrameIdentity(document)
+    if (!identity) {
+        return {
+            frameKey: null,
+            shouldResetPreviousTargets: false,
+        }
+    }
+    return {
+        frameKey: identity.frameKey,
+        // The reset intentionally has no frame key at its call site: it is a
+        // destructive ordering barrier for every prior frame publication.
+        shouldResetPreviousTargets: typeof previousFrameKey === 'string'
+            && previousFrameKey.length > 0
+            && previousFrameKey !== identity.frameKey,
+    }
+}
