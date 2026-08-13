@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-    compactEbookSegmentMetadataPayloadIsExactV9,
+    compactEbookSegmentMetadataPayloadIsCurrent,
+    compactEbookSegmentSidecarVersion,
     compactEbookSegmentRuntimeIDsAreUnique,
     ebookSentenceIdentifier,
     ebookSegmentIdentity,
@@ -11,7 +12,7 @@ import {
     indexUniqueEbookSegmentAlias,
 } from '../../Sources/LakeOfFireReader/Resources/foliate-js/ebook-segment-identity.js'
 
-test('expands only explicit compact v9 segment ID encodings', () => {
+test('expands only explicit compact segment ID encodings', () => {
     assert.equal(expandCompactEbookSegmentIDToken('Ab09'), 'mnb-sAb09')
     assert.equal(expandCompactEbookSegmentIDToken('!source-segment'), 'source-segment')
     assert.equal(expandCompactEbookSegmentIDToken('~123'), '_m123')
@@ -29,9 +30,9 @@ test('rejects compact token aliases that expand to the same runtime ID', () => {
     assert.equal(compactEbookSegmentRuntimeIDsAreUnique([tuple('Ab09'), tuple('!mnb-sAb09')]), false)
 })
 
-test('validates every compact v9 tuple reference without numeric coercion', () => {
+test('validates every current compact tuple reference without numeric coercion', () => {
     const payload = {
-        v: 9,
+        v: 10,
         t: {
             h: ['hash'],
             j: [[1001]],
@@ -46,32 +47,34 @@ test('validates every compact v9 tuple reference without numeric coercion', () =
         s: [['Ab09', 0, 0, null, 0, null, 0, null, 0, 0, 0]],
     }
 
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9(payload), true)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentSidecarVersion, 10)
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent(payload), true)
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({ ...payload, v: 9 }), false)
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         s: [['Ab09', 0, 0.5, null, 0, null, 0, null, 0, 0, 0]],
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         s: [['Ab09', 0, true, null, 0, null, 0, null, 0, 0, 0]],
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         s: [['Ab09', 0, 0, null, 3, null, 0, null, 0, 0, 0]],
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         t: { ...payload.t, j: [[0]] },
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         s: [['Ab09', 0, 0, null, 0, null, 0, 0, 0, 0, 0]],
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         s: [['Ab09', 0, 0, null, 0, null, 0, 6, 0, 0, 0]],
     }), false)
-    assert.equal(compactEbookSegmentMetadataPayloadIsExactV9({
+    assert.equal(compactEbookSegmentMetadataPayloadIsCurrent({
         ...payload,
         s: [['Ab09', 0, 0, null, 0, null, 0, 5, 0, 0, 0]],
     }), true)
