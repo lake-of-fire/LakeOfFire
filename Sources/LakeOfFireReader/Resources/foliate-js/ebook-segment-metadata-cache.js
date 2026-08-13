@@ -1,5 +1,7 @@
 import {
-    compactEbookSegmentMetadataPayloadIsExactV9,
+    compactEbookSegmentMetadataPayloadIsCurrent,
+    compactEbookSegmentSchemaVersionsAreCompatible,
+    compactEbookSegmentSidecarVersion,
     expandCompactEbookSegmentIDToken,
 } from './ebook-segment-identity.js'
 
@@ -164,14 +166,15 @@ const metadataFromTuple = (segment, tables) => {
     }
 }
 
-const validatedPayloadRecord = sidecar => {
+const validatedPayloadRecord = (sidecar, schemaIsCompatible) => {
+    if (!schemaIsCompatible) return null
     let payload
     try {
         payload = JSON.parse(sidecar.textContent || '{}')
     } catch (_error) {
         return null
     }
-    if (!compactEbookSegmentMetadataPayloadIsExactV9(payload)) return null
+    if (!compactEbookSegmentMetadataPayloadIsCurrent(payload)) return null
     return {
         payload,
         tables: compactTables(payload.t),
@@ -181,12 +184,12 @@ const validatedPayloadRecord = sidecar => {
     }
 }
 
-const payloadRecordsForSnapshot = (cache, snapshot) => {
+const payloadRecordsForSnapshot = (cache, snapshot, schemaIsCompatible) => {
     if (snapshotMatchesCache(cache, snapshot) && Array.isArray(cache.payloads)) {
         return cache.payloads
     }
     const payloads = snapshot.sidecars
-        .map(validatedPayloadRecord)
+        .map(sidecar => validatedPayloadRecord(sidecar, schemaIsCompatible))
         .filter(payload => payload !== null)
     cache.payloads = payloads
     updateCachedSnapshot(cache, snapshot)
@@ -212,9 +215,17 @@ const findMetadataInPayload = (record, runtimeID) => {
     return null
 }
 
-export const createEbookSegmentMetadataLookup = () => {
+export const createEbookSegmentMetadataLookup = ({
+    nativeSchemaVersion = globalThis.manabi_compactSegmentSidecarSchemaVersion,
+} = {}) => {
     const documentCache = createEbookSegmentMetadataDocumentCache()
+    const schemaIsCompatible = compactEbookSegmentSchemaVersionsAreCompatible(nativeSchemaVersion)
     return {
+        schemaDiagnostics: Object.freeze({
+            parserVersion: compactEbookSegmentSidecarVersion,
+            nativeVersion: Number.isSafeInteger(nativeSchemaVersion) ? nativeSchemaVersion : null,
+            nativeSchemaIsCompatible: schemaIsCompatible,
+        }),
         metadataForNode(segmentNode) {
             const document = segmentNode?.ownerDocument ?? null
             const runtimeID = segmentNode?.id || segmentNode?.getAttribute?.('id') || null
@@ -231,7 +242,7 @@ export const createEbookSegmentMetadataLookup = () => {
             if (cache.rejectedRuntimeIDs.has(runtimeID)) return null
 
             let matchingMetadata = null
-            for (const payload of payloadRecordsForSnapshot(cache, snapshot)) {
+            for (const payload of payloadRecordsForSnapshot(cache, snapshot, schemaIsCompatible)) {
                 const metadata = findMetadataInPayload(payload, runtimeID)
                 if (!metadata) continue
                 if (matchingMetadata !== null) {

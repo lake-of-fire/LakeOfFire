@@ -4,6 +4,13 @@ const nonEmptyString = value => typeof value === 'string' && value.length > 0
 
 const compactMnbSegmentTokenPattern = /^[0-9A-Za-z]+$/
 
+export const compactEbookSegmentSidecarVersion = 10
+
+export const compactEbookSegmentSchemaVersionsAreCompatible = nativeVersion => (
+    Number.isSafeInteger(nativeVersion)
+    && nativeVersion === compactEbookSegmentSidecarVersion
+)
+
 export const expandCompactEbookSegmentIDToken = token => {
     if (typeof token !== 'string' || token.length === 0) return null
     if (token.startsWith('!')) return nonEmptyString(token.slice(1))
@@ -47,7 +54,7 @@ const entryIDTableIsValid = value => Array.isArray(value) && value.every(entryID
 
 const stringTableIsValid = value => Array.isArray(value) && value.every(nonEmptyStringIsValid)
 
-const compactSegmentTablesAreExactV9 = tables => (
+const compactSegmentTablesAreCurrent = tables => (
     entryIDTableIsValid(tables?.j)
     && entryIDTableIsValid(tables?.n)
     && stringTableIsValid(tables?.s)
@@ -59,7 +66,7 @@ const compactSegmentTablesAreExactV9 = tables => (
     && (tables?.x == null || stringTableIsValid(tables.x))
 )
 
-const compactSegmentTupleIsExactV9 = (segment, tables) => {
+const compactSegmentTupleIsCurrent = (segment, tables) => {
     if (!Array.isArray(segment) || segment.length !== 11) return false
     if (expandCompactEbookSegmentIDToken(segment[0]) === null) return false
     return [
@@ -77,12 +84,12 @@ const compactSegmentTupleIsExactV9 = (segment, tables) => {
         && optionalTableReferenceIsValid(tables?.x, segment[8], nonEmptyStringIsValid)
 }
 
-export const compactEbookSegmentMetadataPayloadIsExactV9 = payload => (
-    payload?.v === 9
-    && compactSegmentTablesAreExactV9(payload?.t)
+export const compactEbookSegmentMetadataPayloadIsCurrent = payload => (
+    payload?.v === compactEbookSegmentSidecarVersion
+    && compactSegmentTablesAreCurrent(payload?.t)
     && Array.isArray(payload?.s)
     && compactEbookSegmentRuntimeIDsAreUnique(payload.s)
-    && payload.s.every(segment => compactSegmentTupleIsExactV9(segment, payload.t))
+    && payload.s.every(segment => compactSegmentTupleIsCurrent(segment, payload.t))
 )
 
 export const ebookSegmentIdentity = (segmentNode, metadata = null) => {

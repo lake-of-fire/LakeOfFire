@@ -5,7 +5,7 @@ import SwiftSoup
 import SwiftUtilities
 
 public enum ReaderCompactSegmentSidecarSchema {
-    public static let currentVersion = 9
+    public static let currentVersion = 10
 }
 
 public struct EbookProcessedSectionPayload: Sendable {

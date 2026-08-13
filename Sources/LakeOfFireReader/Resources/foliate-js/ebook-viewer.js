@@ -2149,6 +2149,7 @@ const isDocumentLike = (value) =>
 // Sidecar parsing stays generation-owned and lazy: validation scans each payload
 // once, while tuple projection advances only as far as requested runtime IDs.
 const segmentMetadataLookup = createEbookSegmentMetadataLookup();
+globalThis.manabi_ebookSegmentSidecarSchemaDiagnostics = segmentMetadataLookup.schemaDiagnostics;
 const segmentMetadataForNode = segmentNode => segmentMetadataLookup.metadataForNode(segmentNode);
 
 const segmentEntryIDsForNode = (segmentNode, kind = 'primary') => {
